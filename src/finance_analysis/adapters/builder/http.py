@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 
 import httpx
 
-from finance_analysis.adapters.builder.acl import parse_context, parse_graph, parse_summary
+from finance_analysis.adapters.builder.acl import (
+    is_meta_payload,
+    parse_context,
+    parse_graph,
+    parse_summary,
+)
 from finance_analysis.domain.book import NotModified, Summary, WorkbookSnapshot
 from finance_analysis.domain.errors import DependencyUnavailable
 from finance_analysis.settings import Settings
@@ -22,6 +27,7 @@ class HttpBuilder:
         self._owns = client is None
         self._failures = 0
         self._open_until: datetime | None = None
+        self._graph_versions: dict[str, str] = {}
 
     async def _http(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -73,6 +79,19 @@ class HttpBuilder:
             return response
         raise DependencyUnavailable(f"builder недоступен: {last}")
 
+    async def _graph_schema(self, job_id: str) -> str:
+        cached = self._graph_versions.get(job_id)
+        if cached is not None:
+            return cached
+        response = await self._request("GET", f"/v1/context-jobs/{job_id}/graph.json")
+        if response.status_code == 404:
+            self._graph_versions[job_id] = ""
+            return ""
+        response.raise_for_status()
+        version = str((response.json() or {}).get("schema_version") or "")
+        self._graph_versions[job_id] = version
+        return version
+
     async def summary(self, job_id: str, etag: str | None) -> Summary | NotModified:
         headers = {"If-None-Match": etag} if etag else None
         head = await self._request("HEAD", f"/v1/context-jobs/{job_id}/summary", headers=headers)
@@ -84,8 +103,19 @@ class HttpBuilder:
             return NotModified(etag or "")
         response.raise_for_status()
         payload = response.json()
-        tag = response.headers.get("etag") or current or ""
-        return parse_summary(payload, etag=tag, job_id=job_id)
+        if is_meta_payload(payload):
+            parsed = parse_summary(
+                payload,
+                etag="",
+                job_id=job_id,
+                graph_schema_version=await self._graph_schema(job_id),
+            )
+        else:
+            tag = response.headers.get("etag") or current or ""
+            parsed = parse_summary(payload, etag=tag, job_id=job_id)
+        if etag and etag == parsed.etag:
+            return NotModified(etag)
+        return parsed
 
     async def context(self, job_id: str) -> tuple[WorkbookSnapshot, str | None, str]:
         response = await self._request("GET", f"/v1/context-jobs/{job_id}/context.json")

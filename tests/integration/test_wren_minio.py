@@ -14,6 +14,12 @@ from finance_analysis.adapters.wren.query import WrenQuery, _apply_limits
 from finance_analysis.application.service import FasService
 from finance_analysis.domain.book import Actor
 from finance_analysis.domain.errors import InvalidArgument
+from tests.books import (
+    PACKT_PERIOD,
+    PACKT_TRAFFIC_DIFF,
+    PACKT_TRAFFIC_HV_ROW,
+    PACKT_TRAFFIC_PC_ROW,
+)
 from tests.conftest import JOB, s3_settings
 
 pytestmark = pytest.mark.asyncio
@@ -21,26 +27,31 @@ pytestmark = pytest.mark.asyncio
 
 async def test_series_expression_on_minio(tmp_path, minio_endpoint, redis_runtime, builder):
     settings = s3_settings(tmp_path, minio_endpoint)
-    settings = settings.model_copy(update={"fas_s3_prefix": f"golden{tmp_path.name}"})
+    settings = settings.model_copy(update={"fas_s3_prefix": f"packt{tmp_path.name}"})
     store = await open_storage(settings)
     service = FasService(settings, store, __import__("finance_analysis.adapters.storage.parquet_io", fromlist=["PyarrowParquet"]).PyarrowParquet(), builder, WrenQuery(settings), redis_runtime)
     actor = Actor(user_id="alex", client_id="desk")
     await service.perform_load(JOB, actor=actor, fence=1)
-    series = await service.series(JOB, {"row_keys": ["cost"], "periods": ["2024"]}, actor, wait_sec=5)
-    assert series["result_data"]["series"][0]["value"] == "40"
+    series = await service.series(
+        JOB,
+        {"row_keys": [PACKT_TRAFFIC_PC_ROW], "periods": [PACKT_PERIOD]},
+        actor,
+        wait_sec=30,
+    )
+    assert series["result_data"]["series"][0]["value"] == "3125000"
     expression = await service.expression(
         JOB,
         {
             "expression": "a - b",
             "bindings": {
-                "a": {"row_key": "rev", "period_id": "2024"},
-                "b": {"row_key": "cost", "period_id": "2024"},
+                "a": {"row_key": PACKT_TRAFFIC_PC_ROW, "period_id": PACKT_PERIOD},
+                "b": {"row_key": PACKT_TRAFFIC_HV_ROW, "period_id": PACKT_PERIOD},
             },
         },
         actor,
-        wait_sec=5,
+        wait_sec=30,
     )
-    assert expression["result_data"]["expression"]["result"] == "60.5"
+    assert expression["result_data"]["expression"]["result"] == PACKT_TRAFFIC_DIFF
     await store.delete_prefix("")
 
 
@@ -95,7 +106,7 @@ async def test_minio_region_and_conditional(minio_endpoint, tmp_path):
         "region": "ap-northeast-1",
         "endpoint": minio_endpoint,
     }
-    path = Path("deploy/k6/must-verify.json")
+    path = Path("deploy/must-verify.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = {}
     if path.is_file():
@@ -143,7 +154,7 @@ async def test_pool_memory_and_gil(local_service):
             notes["cursor_error"] = str(exc)
         notes["cursor_safe"] = cursor_safe
         notes["semaphore"] = 1
-    path = Path("deploy/k6/must-verify.json")
+    path = Path("deploy/must-verify.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = json.loads(path.read_text()) if path.is_file() else {}
     existing["pool"] = notes

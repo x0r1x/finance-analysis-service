@@ -10,6 +10,17 @@ from httpx import ASGITransport, AsyncClient
 from finance_analysis.adapters.api.app import create_app
 from finance_analysis.domain.book import Actor
 from finance_analysis.domain.errors import InvalidArgument
+from tests.books import (
+    PACKT_PERIOD,
+    PACKT_PHASE_AXIS,
+    PACKT_REVENUE_CELL,
+    PACKT_REVENUE_ROW,
+    PACKT_REVENUE_VALUE,
+    PACKT_TRAFFIC_DIFF,
+    PACKT_TRAFFIC_HV_ROW,
+    PACKT_TRAFFIC_PC_ROW,
+    job_id,
+)
 from tests.conftest import JOB
 
 pytestmark = pytest.mark.asyncio
@@ -43,32 +54,34 @@ async def test_series_and_expression_match_excel_cache(app):
         series = await client.post(
             f"/v1/books/{JOB}/series",
             headers=headers,
-            json={"row_keys": ["rev"], "periods": ["2024"]},
+            json={"row_keys": [PACKT_REVENUE_ROW], "periods": [PACKT_PERIOD]},
         )
         assert series.status_code == 200, series.text
         rows = series.json()["result_data"]["series"]
-        assert rows[0]["value"] == "100.5"
-        assert rows[0]["cell_id"] == "Model!H10"
+        assert rows[0]["value"] == PACKT_REVENUE_VALUE
+        assert rows[0]["cell_id"] == PACKT_REVENUE_CELL
         expression = await client.post(
             f"/v1/books/{JOB}/expression",
             headers=headers,
             json={
                 "expression": "a - b",
                 "bindings": {
-                    "a": {"row_key": "rev", "period_id": "2024", "axis_id": "years"},
-                    "b": {"row_key": "cost", "period_id": "2024", "axis_id": "years"},
+                    "a": {"row_key": PACKT_TRAFFIC_PC_ROW, "period_id": PACKT_PERIOD},
+                    "b": {"row_key": PACKT_TRAFFIC_HV_ROW, "period_id": PACKT_PERIOD},
                 },
             },
         )
         assert expression.status_code == 200, expression.text
-        assert expression.json()["result_data"]["expression"]["result"] == "60.5"
+        assert expression.json()["result_data"]["expression"]["result"] == PACKT_TRAFFIC_DIFF
         resolved = await client.post(
             f"/v1/books/{JOB}/periods:resolve",
             headers=headers,
             json={"text": "первый операционный год"},
         )
         assert resolved.status_code == 200, resolved.text
-        assert resolved.json()["periods"][0]["period_id"] == "2024"
+        found = {(item["axis_id"], item["period_id"]) for item in resolved.json()["periods"]}
+        assert (PACKT_PHASE_AXIS, PACKT_PERIOD) in found
+        assert (PACKT_PHASE_AXIS, "Y1") not in found
         sliced = await client.post(
             f"/v1/books/{JOB}/slice",
             headers=headers,
@@ -80,6 +93,23 @@ async def test_series_and_expression_match_excel_cache(app):
         assert bad.json()["code"] == "invalid_id"
         bare = await client.post("/v1/books/" + JOB + "/series", json={})
         assert bare.status_code == 400
+
+
+async def test_rvi_warnings_on_succeeded_book(app):
+    rvi = job_id("rvi")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
+        headers = {"X-User-Id": "alex", "X-Client-Id": "desk"}
+        loaded = await client.post(f"/v1/books/{rvi}:load", headers=headers)
+        assert loaded.status_code == 200, loaded.text
+        body = loaded.json()
+        assert body["builder_ref"]["builder_status"] == "succeeded"
+        messages = [
+            item["params"].get("message", "")
+            for item in body["warnings"]
+            if item["code"] == "builder_warning"
+        ]
+        assert any("missing cached values" in message for message in messages)
+        assert all(item["code"] != "builder_degraded" for item in body["warnings"])
 
 
 async def test_idempotency_and_actor(app):

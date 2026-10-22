@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 from datetime import datetime, timedelta, timezone
@@ -138,9 +139,10 @@ async def test_two_glossary_derive_keys(local_service):
     from finance_analysis.adapters.builder.acl import parse_context, parse_graph
     from finance_analysis.application.project import project
     import json
-    from pathlib import Path
 
-    folder = Path(__file__).resolve().parents[1] / "fixtures" / "golden" / JOB
+    from tests.books import BUILDER_ROOT
+
+    folder = BUILDER_ROOT / JOB
     snapshot = parse_graph(json.loads((folder / "graph.json").read_text()), parse_context(json.loads((folder / "context.json").read_text())))
     projected = project(snapshot, model_id=JOB, build=head.build_key)
     first = await service.materialize_derived(JOB, glossary_version="g1", projected=projected)
@@ -158,14 +160,30 @@ async def test_builder_flip_then_stable_and_unstable(settings, redis_runtime):
     from finance_analysis.adapters.wren.query import WrenQuery
     from finance_analysis.application.service import FasService
     from finance_analysis.domain.errors import BuilderUnstable
-    from tests.conftest import GOLDEN
+    from finance_analysis.adapters.builder.acl import consistency_token
+    from tests.books import BUILDER_ROOT
 
     store = await open_storage(settings)
-    builder = FixtureBuilder(GOLDEN)
+    builder = FixtureBuilder(BUILDER_ROOT)
     service = FasService(settings, store, PyarrowParquet(), builder, WrenQuery(settings), redis_runtime)
+    meta = json.loads((BUILDER_ROOT / JOB / "meta.json").read_text(encoding="utf-8"))
+
+    stable = consistency_token(
+        status=meta["status"],
+        generation=meta["generation"],
+        content_sha256=meta["content_sha256"],
+        stages=meta["stages"],
+    )
+    bumped = consistency_token(
+        status=meta["status"],
+        generation=int(meta["generation"]) + 1,
+        content_sha256=meta["content_sha256"],
+        stages=meta["stages"],
+    )
     builder.flips_left[JOB] = 1
     summary, _snapshot = await service.load_consistent(JOB, known_etag=None)
-    assert summary.etag.endswith("-next")
+    assert summary.etag == bumped
+    assert summary.etag != stable
     builder.flips_left[JOB] = 5
     with pytest.raises(BuilderUnstable):
         await service.load_consistent(JOB, known_etag=None)

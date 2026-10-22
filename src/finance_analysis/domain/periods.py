@@ -51,18 +51,35 @@ def marker_class(marker: str | None) -> str | None:
     return "other"
 
 
+def _flag_on(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() not in {"", "false", "0", "no", "off"}
+    if value is None:
+        return False
+    return bool(value)
+
+
 def phase_from_flags(flags: dict | None) -> str | None:
+    """Фаза из флагов периода.
+
+    Учитываются только включённые флаги. Строковое значение вроде
+    `phase=operation` по-прежнему задаёт фазу. Ключ `operation: false`
+    фазу не включает: в реальном дампе на периоде бывают оба ключа.
+    """
+
     if not flags:
         return None
-    tokens: list[str] = []
     for key, value in flags.items():
-        tokens.append(str(key))
         if isinstance(value, str):
-            tokens.append(value)
-    for token in tokens:
-        hit = PHASE_WORDS.get(token.casefold().strip())
-        if hit:
-            return hit
+            named = PHASE_WORDS.get(value.casefold().strip())
+            if named:
+                return named
+        if _flag_on(value):
+            named = PHASE_WORDS.get(str(key).casefold().strip())
+            if named:
+                return named
     return None
 
 

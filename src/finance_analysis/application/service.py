@@ -71,6 +71,16 @@ def _json_default(value):
     raise TypeError(type(value))
 
 
+def _builder_warnings(manifest: dict) -> list[dict]:
+    warnings = []
+    ref = manifest.get("builder_ref") or {}
+    if ref.get("builder_status") == "degraded":
+        warnings.append({"code": "builder_degraded", "params": {}})
+    for message in manifest.get("builder_warnings") or []:
+        warnings.append({"code": "builder_warning", "params": {"message": str(message)}})
+    return warnings
+
+
 def _decimal_text(value) -> str | None:
     if value is None:
         return None
@@ -323,6 +333,7 @@ class FasService:
             "attempt": attempt,
             "files": file_map,
             "builder_files": {"context.json": {"etag": summary.context_etag}},
+            "builder_warnings": [str(item) for item in summary.warnings],
             "loaded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "loader_version": FAS_VERSION,
             "fence": fence,
@@ -458,6 +469,7 @@ class FasService:
             warnings.append({"code": "freshness_unknown", "params": {}})
         builds = [item.key async for item in self.store.list(f"books/{job_id}/_builds")]
         manifest = await self._manifest(job_id, head.build_key)
+        warnings.extend(_builder_warnings(manifest))
         body = {
             "job_id": job_id,
             "loaded": True,

@@ -17,9 +17,9 @@ from finance_analysis.adapters.storage.store import LocalStore, S3Store, open_st
 from finance_analysis.adapters.wren.query import WrenQuery
 from finance_analysis.application.service import FasService
 from finance_analysis.settings import Settings
+from tests.books import ALIASES, BUILDER_ROOT
 
-GOLDEN = Path(__file__).resolve().parent / "fixtures" / "golden"
-JOB = "a" * 64
+JOB = ALIASES["packt"]
 REDIS_URL = os.environ.get("FAS_TEST_REDIS", "redis://127.0.0.1:6379/15")
 
 
@@ -43,8 +43,8 @@ def settings(tmp_path) -> Settings:
         WREN_DUCKDB_THREADS=1,
         WREN_THREADS=2,
         CPU_THREADS=2,
-        SYNC_DEADLINE_MS=5000,
-        LOAD_SYNC_SEC=5,
+        SYNC_DEADLINE_MS=15000,
+        LOAD_SYNC_SEC=60,
         RATE_USER_RPS=1000,
         RATE_CLIENT_RPS=1000,
         RATE_ANON_RPS=1000,
@@ -67,7 +67,7 @@ async def redis_runtime(settings):
 
 @pytest.fixture
 def builder() -> FixtureBuilder:
-    return FixtureBuilder(GOLDEN)
+    return FixtureBuilder(BUILDER_ROOT)
 
 
 @pytest.fixture
@@ -101,8 +101,8 @@ def s3_settings(tmp_path, endpoint: str, bucket: str = "fas") -> Settings:
         WREN_DUCKDB_THREADS=1,
         WREN_THREADS=2,
         CPU_THREADS=2,
-        SYNC_DEADLINE_MS=8000,
-        LOAD_SYNC_SEC=8,
+        SYNC_DEADLINE_MS=15000,
+        LOAD_SYNC_SEC=60,
         RATE_ANON_RPS=1000,
         RATE_USER_RPS=1000,
         RATE_USER_BURST=1000,

@@ -11,3 +11,4 @@ data/
 .env
 .coverage
 htmlcov/
+tests/fixtures/local-builder/

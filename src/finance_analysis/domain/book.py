@@ -264,6 +264,7 @@ class Summary:
     status: str
     context_etag: str | None = None
     graph_etag: str | None = None
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

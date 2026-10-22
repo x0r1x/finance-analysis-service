@@ -55,6 +55,7 @@ async def test_event_loop_not_blocked_on_health(settings, local_service, redis_r
     from httpx import ASGITransport, AsyncClient
 
     from finance_analysis.adapters.api.app import create_app
+    from tests.conftest import JOB
 
     app = create_app(settings, service=local_service, support=redis_runtime)
     loop = asyncio.get_running_loop()
@@ -73,7 +74,7 @@ async def test_event_loop_not_blocked_on_health(settings, local_service, redis_r
             for path in ("/health/live", "/health/ready", "/v1/capabilities"):
                 response = await client.get(path)
                 assert response.status_code in {200, 503}
-            loaded = await client.post(f"/v1/books/{'a'*64}:load")
+            loaded = await client.post(f"/v1/books/{JOB}:load")
             assert loaded.status_code in {200, 202}
     finally:
         loop.set_exception_handler(previous)

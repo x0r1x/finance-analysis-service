@@ -4,9 +4,13 @@ import { check, sleep } from "k6";
 const base = __ENV.BASE_URL || "http://127.0.0.1:8080";
 const job = __ENV.JOB_ID;
 const vus = Number(__ENV.VUS || 50);
-const duration = __ENV.DURATION || "30s";
+const duration = __ENV.DURATION || "60s";
+const rowKey = __ENV.ROW_KEY;
+const period = __ENV.PERIOD;
+const expectValue = __ENV.EXPECT_VALUE;
 
 export const options = {
+  setupTimeout: "180s",
   scenarios: {
     s1_hot_book: {
       executor: "constant-vus",
@@ -16,12 +20,14 @@ export const options = {
   },
   thresholds: {
     http_req_failed: ["rate<0.05"],
+    checks: ["rate>0.99"],
   },
 };
 
 export function setup() {
   const loaded = http.post(`${base}/v1/books/${job}:load`, null, {
     headers: { "X-User-Id": "s1", "X-Client-Id": "k6" },
+    timeout: "180s",
   });
   check(loaded, { "load ok": (r) => r.status === 200 || r.status === 202 });
 }
@@ -29,9 +35,12 @@ export function setup() {
 export default function () {
   const response = http.post(
     `${base}/v1/books/${job}/series`,
-    JSON.stringify({ row_keys: ["rev"], periods: ["2024"] }),
-    { headers: { "Content-Type": "application/json", "X-User-Id": `s1-${__VU}`, "X-Client-Id": "k6" } },
+    JSON.stringify({ row_keys: [rowKey], periods: [period] }),
+    { headers: { "Content-Type": "application/json", "X-User-Id": `s1-${__VU}`, "X-Client-Id": "k6" }, timeout: "30s" },
   );
-  check(response, { "series 200": (r) => r.status === 200 });
+  check(response, {
+    "series 200": (r) => r.status === 200,
+    "cell present": (r) => String(r.body).includes(expectValue),
+  });
   sleep(0.05);
 }
