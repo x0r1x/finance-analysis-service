@@ -1,0 +1,79 @@
+{
+  "dataset": "coverage",
+  "version": "1.0",
+  "title": "Покрытие статусов",
+  "columns": [
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги",
+      "since": "1.0"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.0"
+    },
+    {
+      "name": "state_seq",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Номер состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "derive_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ производного состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "glossary_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия глоссария",
+      "since": "1.0"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Статус",
+      "since": "1.0"
+    },
+    {
+      "name": "importance",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Важность",
+      "since": "1.0"
+    },
+    {
+      "name": "rows",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Число строк",
+      "since": "1.0"
+    },
+    {
+      "name": "value_abs_sum",
+      "type": "decimal128(38,6)",
+      "nullable": true,
+      "unit": "",
+      "description": "Сумма модулей",
+      "since": "1.0"
+    }
+  ]
+}

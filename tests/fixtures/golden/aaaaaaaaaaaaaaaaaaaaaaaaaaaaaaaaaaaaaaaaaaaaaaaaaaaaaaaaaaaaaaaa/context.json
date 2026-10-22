@@ -1,0 +1,70 @@
+{
+  "axes": {
+    "years": {
+      "id": "years",
+      "sheet": "Model",
+      "grain": "year",
+      "header_row": 3,
+      "periods": [
+        {
+          "col": 8,
+          "text": "2024",
+          "period_key": "2024",
+          "index": 0,
+          "calendar_year": 2024,
+          "flags": {"phase": "operation"}
+        },
+        {
+          "col": 9,
+          "text": "2025 факт",
+          "period_key": "2025@факт",
+          "index": 1,
+          "calendar_year": 2025,
+          "flags": {"phase": "эксплуатация"}
+        }
+      ]
+    }
+  },
+  "blocks": [
+    {
+      "block_id": "pl",
+      "sheet": "Model",
+      "kind": "line",
+      "rows": [
+        {
+          "row_key": "rev",
+          "sheet": "Model",
+          "row": 10,
+          "label": "Выручка",
+          "label_path": ["P&L"],
+          "kind": "fact",
+          "unit": "RUB",
+          "series": [
+            {
+              "axis_id": "years",
+              "values": ["100.5", "210"],
+              "value_statuses": ["cached", "cached"],
+              "normalized_values": ["100.5", "210"]
+            }
+          ]
+        },
+        {
+          "row_key": "cost",
+          "sheet": "Model",
+          "row": 11,
+          "label": "Себестоимость",
+          "label_path": ["P&L"],
+          "kind": "fact",
+          "unit": "RUB",
+          "series": [
+            {
+              "axis_id": "years",
+              "values": ["40", "80"],
+              "value_statuses": ["cached", "cached"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

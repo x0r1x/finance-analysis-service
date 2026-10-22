@@ -1,0 +1,87 @@
+{
+  "dataset": "period_semantics",
+  "version": "1.0",
+  "title": "Семантика периодов",
+  "columns": [
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги",
+      "since": "1.0"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.0"
+    },
+    {
+      "name": "state_seq",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Номер состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "derive_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ производного состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "axis_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ось",
+      "since": "1.0"
+    },
+    {
+      "name": "period_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Период",
+      "since": "1.0"
+    },
+    {
+      "name": "phase",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Фаза",
+      "since": "1.0"
+    },
+    {
+      "name": "phase_year",
+      "type": "int16",
+      "nullable": true,
+      "unit": "",
+      "description": "Год внутри фазы",
+      "since": "1.0"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Источник",
+      "since": "1.0"
+    },
+    {
+      "name": "evidence_json",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Доказательства, JSON",
+      "since": "1.0"
+    }
+  ]
+}

@@ -1,0 +1,143 @@
+{
+  "dataset": "row_semantics",
+  "version": "1.0",
+  "title": "Семантика строк",
+  "columns": [
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги",
+      "since": "1.0"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.0"
+    },
+    {
+      "name": "state_seq",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Номер состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "derive_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ производного состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "binding_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ привязки",
+      "since": "1.0"
+    },
+    {
+      "name": "row_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Строка",
+      "since": "1.0"
+    },
+    {
+      "name": "sign",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Знак",
+      "since": "1.0"
+    },
+    {
+      "name": "nature",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Природа",
+      "since": "1.0"
+    },
+    {
+      "name": "aggregation",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Агрегация",
+      "since": "1.0"
+    },
+    {
+      "name": "period_position",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Позиция в периоде",
+      "since": "1.0"
+    },
+    {
+      "name": "excluded",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Исключена из расчётов",
+      "since": "1.0"
+    },
+    {
+      "name": "exclusion_reason",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Причина исключения",
+      "since": "1.0"
+    },
+    {
+      "name": "is_check",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Проверка",
+      "since": "1.0"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Источник семантики",
+      "since": "1.0"
+    },
+    {
+      "name": "confidence",
+      "type": "float32",
+      "nullable": true,
+      "unit": "",
+      "description": "Уверенность",
+      "since": "1.0"
+    },
+    {
+      "name": "evidence_json",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Доказательства, JSON",
+      "since": "1.0"
+    },
+    {
+      "name": "stale",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Устарела после пересборки",
+      "since": "1.0"
+    }
+  ]
+}

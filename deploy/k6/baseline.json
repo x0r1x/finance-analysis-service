@@ -1,0 +1,46 @@
+{
+  "s1": {
+    "exit_code": 0,
+    "vus": 50,
+    "duration": "8s",
+    "p95_ms": 86.191969,
+    "avg_ms": 50.82900565031606,
+    "max_ms": 397.07569,
+    "failed_rate": 0,
+    "count": 3955
+  },
+  "s2": {
+    "exit_code": 0,
+    "vus": 16,
+    "duration": "8s",
+    "p95_ms": 429.05271544999994,
+    "avg_ms": 209.86304051199988,
+    "max_ms": 705.515294,
+    "failed_rate": 0,
+    "count": 500
+  },
+  "slo": {
+    "assumption_warm_p95_ms": 500,
+    "met": true,
+    "revised_warm_p95_ms": null,
+    "note": "короткий прогон стенда; цель §4.13.9 — тёплый p95 ≤ 500 мс"
+  },
+  "must_verify": {
+    "minio": {
+      "if_none_match": true,
+      "if_match": true,
+      "region": "ap-northeast-1",
+      "endpoint": "http://127.0.0.1:9000"
+    },
+    "pool": {
+      "memory_limit": "244.1 MiB",
+      "threads": 1,
+      "set_ok": true,
+      "loop_ticks_during_query": 177987,
+      "gil_released": true,
+      "cold_starts": 1,
+      "cursor_safe": true,
+      "semaphore": 1
+    }
+  }
+}

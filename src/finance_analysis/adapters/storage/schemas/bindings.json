@@ -1,0 +1,183 @@
+{
+  "dataset": "bindings",
+  "version": "1.0",
+  "title": "Привязки строк к понятиям",
+  "columns": [
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги",
+      "since": "1.0"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.0"
+    },
+    {
+      "name": "state_seq",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Номер состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "derive_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ производного состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "concept",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Понятие, NULL если unknown",
+      "since": "1.0"
+    },
+    {
+      "name": "effective_concept",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Понятие с учётом слияния",
+      "since": "1.0"
+    },
+    {
+      "name": "is_primary",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Основная строка понятия",
+      "since": "1.0"
+    },
+    {
+      "name": "matched_label_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Метка глоссария",
+      "since": "1.0"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Статус строки",
+      "since": "1.0"
+    },
+    {
+      "name": "binding_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ привязки",
+      "since": "1.0"
+    },
+    {
+      "name": "row_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Строка",
+      "since": "1.0"
+    },
+    {
+      "name": "label_path_text",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Путь подписи",
+      "since": "1.0"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Источник привязки",
+      "since": "1.0"
+    },
+    {
+      "name": "confidence",
+      "type": "float32",
+      "nullable": true,
+      "unit": "",
+      "description": "Уверенность",
+      "since": "1.0"
+    },
+    {
+      "name": "evidence_json",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Доказательства, JSON",
+      "since": "1.0"
+    },
+    {
+      "name": "calibrator_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия калибратора",
+      "since": "1.0"
+    },
+    {
+      "name": "glossary_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия глоссария",
+      "since": "1.0"
+    },
+    {
+      "name": "taxonomy_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия таксономии",
+      "since": "1.0"
+    },
+    {
+      "name": "decided_by",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Кто решил",
+      "since": "1.0"
+    },
+    {
+      "name": "stale",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Устарела",
+      "since": "1.0"
+    },
+    {
+      "name": "importance",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Важность",
+      "since": "1.0"
+    },
+    {
+      "name": "updated_at_utc",
+      "type": "timestamp(us, tz=UTC)",
+      "nullable": true,
+      "unit": "",
+      "description": "Момент обновления UTC",
+      "since": "1.0"
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "dataset": "graph_links",
+  "version": "1.0",
+  "title": "Рёбра графа формул",
+  "columns": [
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги",
+      "since": "1.0"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.0"
+    },
+    {
+      "name": "cell",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Ячейка-источник",
+      "since": "1.0"
+    },
+    {
+      "name": "formula",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Формула",
+      "since": "1.0"
+    },
+    {
+      "name": "formula_class",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Класс формулы",
+      "since": "1.0"
+    },
+    {
+      "name": "ref_cell",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Ячейка-ссылка",
+      "since": "1.0"
+    },
+    {
+      "name": "row_key",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Строка",
+      "since": "1.0"
+    },
+    {
+      "name": "period_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Период",
+      "since": "1.0"
+    },
+    {
+      "name": "truncated",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Диапазон усечён",
+      "since": "1.0"
+    }
+  ]
+}
