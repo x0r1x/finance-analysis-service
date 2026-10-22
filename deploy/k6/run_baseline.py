@@ -74,11 +74,12 @@ def main() -> None:
             "WREN_POOL_MEMORY_MB": "1024",
             "WREN_ENGINE_POOL": "4",
             "WREN_THREADS": "4",
-            "RATE_USER_RPS": "500",
-            "RATE_USER_BURST": "500",
-            "RATE_CLIENT_RPS": "500",
-            "RATE_CLIENT_BURST": "500",
-            "RATE_ANON_RPS": "500",
+            # Общий X-Client-Id. Квота выше потока S1, иначе 429 — это GCRA, не книга.
+            "RATE_USER_RPS": "2000",
+            "RATE_USER_BURST": "2000",
+            "RATE_CLIENT_RPS": "2000",
+            "RATE_CLIENT_BURST": "2000",
+            "RATE_ANON_RPS": "2000",
             "SYNC_DEADLINE_MS": "15000",
             "LOAD_SYNC_SEC": "120",
         }
@@ -152,7 +153,8 @@ def main() -> None:
             "assumption_warm_p95_ms": assumption_ms,
             "met": p95 <= assumption_ms,
             "revised_warm_p95_ms": None if p95 <= assumption_ms else round(p95, 1),
-            "note": "прогон 60 с на копиях книги packt; цель §4.13.9 — тёплый p95 ≤ 500 мс",
+            "note": "прогон 60 с на копиях книги packt; цель §4.13.9 — тёплый p95 ≤ 500 мс; квота клиента на стенде 2000 rps",
+            "stand_rate_client_rps": 2000,
         }
         OUT.write_text(json.dumps(reports, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(OUT.read_text(encoding="utf-8"))

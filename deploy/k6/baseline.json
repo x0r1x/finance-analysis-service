@@ -2,45 +2,34 @@
   "s1": {
     "exit_code": 0,
     "vus": 50,
-    "duration": "8s",
-    "p95_ms": 86.191969,
-    "avg_ms": 50.82900565031606,
-    "max_ms": 397.07569,
+    "duration": "60s",
+    "p95_ms": 79.4262732,
+    "avg_ms": 41.092760206907336,
+    "max_ms": 435.250906,
     "failed_rate": 0,
-    "count": 3955
+    "count": 32749,
+    "book": "packt",
+    "row_key": "Operation|10|Operation!r2",
+    "period": "Y5"
   },
   "s2": {
     "exit_code": 0,
     "vus": 16,
-    "duration": "8s",
-    "p95_ms": 429.05271544999994,
-    "avg_ms": 209.86304051199988,
-    "max_ms": 705.515294,
+    "duration": "60s",
+    "p95_ms": 380.304635,
+    "avg_ms": 209.42874769564034,
+    "max_ms": 598.113028,
     "failed_rate": 0,
-    "count": 500
+    "count": 3716,
+    "book": "packt",
+    "row_key": "Operation|10|Operation!r2",
+    "period": "Y5"
   },
   "slo": {
     "assumption_warm_p95_ms": 500,
     "met": true,
     "revised_warm_p95_ms": null,
-    "note": "короткий прогон стенда; цель §4.13.9 — тёплый p95 ≤ 500 мс"
-  },
-  "must_verify": {
-    "minio": {
-      "if_none_match": true,
-      "if_match": true,
-      "region": "ap-northeast-1",
-      "endpoint": "http://127.0.0.1:9000"
-    },
-    "pool": {
-      "memory_limit": "244.1 MiB",
-      "threads": 1,
-      "set_ok": true,
-      "loop_ticks_during_query": 177987,
-      "gil_released": true,
-      "cold_starts": 1,
-      "cursor_safe": true,
-      "semaphore": 1
-    }
+    "note": "прогон 60 с на копиях книги packt; цель §4.13.9 — тёплый p95 ≤ 500 мс; квота клиента на стенде 2000 rps",
+    "stand_rate_client_rps": 2000
   }
 }
