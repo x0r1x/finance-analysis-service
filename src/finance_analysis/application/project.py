@@ -14,6 +14,7 @@ from finance_analysis.domain.book import (
     cell_id,
     parse_decimal_text,
 )
+from finance_analysis.domain.currency import resolve_currencies
 from finance_analysis.domain.periods import (
     expand_ref,
     marker_class,
@@ -111,6 +112,7 @@ def project(
                 "unit": hints.get("unit") or row.unit,
                 "unit_per": hints.get("unit_per"),
                 "currency": hints.get("currency"),
+                "currency_source": None,
                 "scale": hints.get("scale"),
                 "scale_factor": row.scale_factor,
                 "has_formula": bool(row.formula),
@@ -161,6 +163,11 @@ def project(
                         "value_status": status or "empty",
                     }
                 )
+
+    resolved = resolve_currencies([(row["kind"], row.get("currency")) for row in dim_rows])
+    for row, (currency, source) in zip(dim_rows, resolved, strict=True):
+        row["currency"] = currency
+        row["currency_source"] = source
 
     return {
         "dim_row": dim_rows,

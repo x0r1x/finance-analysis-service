@@ -20,7 +20,7 @@ from prometheus_client import (
 
 from finance_analysis.adapters.api.problems import problem_response
 from finance_analysis.application.service import Accepted, Freshness
-from finance_analysis.domain.book import Actor
+from finance_analysis.domain.book import FAS_VERSION, Actor
 from finance_analysis.domain.errors import (
     DeadlineExceeded,
     DependencyUnavailable,
@@ -85,7 +85,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         stop.set()
         task.cancel()
 
-    app = FastAPI(title="finance-analysis-service", version="0.22.0", lifespan=_lifespan)
+    app = FastAPI(title="finance-analysis-service", version=FAS_VERSION, lifespan=_lifespan)
     app.state.settings = settings
     app.state.service = service
     app.state.support = support

@@ -1,6 +1,6 @@
 [project]
 name = "finance-analysis-service"
-version = "0.22.0"
+version = "0.23.0"
 description = "finance-analysis-service (FAS): семантический и аналитический слой поверх finance-context-builder"
 readme = "README.md"
 requires-python = ">=3.11"

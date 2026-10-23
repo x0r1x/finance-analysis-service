@@ -1,6 +1,6 @@
 {
   "dataset": "dim_row",
-  "version": "1.0",
+  "version": "1.1",
   "title": "Строки книги",
   "columns": [
     {
@@ -154,6 +154,14 @@
       "unit": "",
       "description": "Валюта",
       "since": "1.0"
+    },
+    {
+      "name": "currency_source",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Откуда взята валюта: hints, book_single или null",
+      "since": "1.1"
     },
     {
       "name": "scale",
