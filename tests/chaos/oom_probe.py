@@ -27,7 +27,7 @@ def main() -> None:
             try:
                 (cgroup / "cgroup.procs").write_text(str(os.getpid()))
             except OSError as exc:
-                print(f"enter failed: {exc}")
+                print(f"enter failed: {exc}", flush=True)
                 os._exit(2)
             blobs: list[bytearray] = []
             try:

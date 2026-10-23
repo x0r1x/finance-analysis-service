@@ -38,40 +38,37 @@ jobs:
 
       - name: Memory cgroup for chaos
         run: |
-          set -euo pipefail
-          prepare() {
-            local dest="$1"
-            sudo mkdir -p "$dest"
-            sudo chown -R "$(id -u):$(id -g)" "$dest"
-            if [[ -f "$dest/memory.swap.max" ]]; then
-              echo 0 | sudo tee "$dest/memory.swap.max" >/dev/null || true
-              sudo chown "$(id -u):$(id -g)" "$dest/memory.swap.max" || true
-            fi
-          }
+          set -x
           self="$(awk -F: '{line=$NF} END{print line}' /proc/self/cgroup)"
           base="/sys/fs/cgroup${self}"
           target="${base}/fasoom2"
-          sudo mkdir -p "${base}/init" || true
-          if [[ -f "${base}/cgroup.procs" ]]; then
-            while read -r pid; do
-              echo "$pid" | sudo tee "${base}/init/cgroup.procs" >/dev/null || true
-            done < "${base}/cgroup.procs" || true
+          echo "base=$base type=$(cat "$base/cgroup.type" 2>/dev/null || true)"
+          echo "controllers=$(cat "$base/cgroup.controllers" 2>/dev/null || true)"
+          echo "subtree=$(cat "$base/cgroup.subtree_control" 2>/dev/null || true)"
+          mkdir -p "$base/init" || sudo mkdir -p "$base/init"
+          move() {
+            local pid="$1"
+            echo "$pid" > "$base/init/cgroup.procs" 2>/dev/null && return 0
+            sudo sh -c "echo $pid > '$base/init/cgroup.procs'" 2>/dev/null && return 0
+            return 1
+          }
+          for _ in 1 2 3 4 5 6 7 8; do
+            mapfile -t pids < "$base/cgroup.procs" || pids=()
+            echo "remaining=${#pids[@]}"
+            [[ ${#pids[@]} -eq 0 ]] && break
+            for pid in "${pids[@]}"; do
+              move "$pid" || echo "move failed $pid"
+            done
+          done
+          echo '+memory' > "$base/cgroup.subtree_control" 2>/dev/null \
+            || echo '+memory' | sudo tee "$base/cgroup.subtree_control" >/dev/null \
+            || echo "subtree_control failed"
+          mkdir -p "$target" || sudo mkdir -p "$target"
+          sudo chown -R "$(id -u):$(id -g)" "$target" || true
+          if [[ -f "$target/memory.swap.max" ]]; then
+            echo 0 > "$target/memory.swap.max" 2>/dev/null || sudo sh -c "echo 0 > '$target/memory.swap.max'" || true
           fi
-          echo '+memory' | sudo tee "${base}/cgroup.subtree_control" >/dev/null || true
-          prepare "$target" || true
-          if [[ ! -w "$target/memory.max" || ! -w "$target/cgroup.procs" ]]; then
-            target="/sys/fs/cgroup/fasoom2"
-            sudo mkdir -p /sys/fs/cgroup/init || true
-            if [[ -f /sys/fs/cgroup/cgroup.procs ]]; then
-              while read -r pid; do
-                echo "$pid" | sudo tee /sys/fs/cgroup/init/cgroup.procs >/dev/null || true
-              done < /sys/fs/cgroup/cgroup.procs || true
-            fi
-            echo '+memory' | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null || true
-            prepare "$target"
-          fi
-          test -w "$target/memory.max"
-          test -w "$target/cgroup.procs"
+          echo "target files:"; ls -l "$target" || true
           FAS_TEST_OOM_CGROUP="$target" python3 tests/chaos/oom_probe.py
           echo "FAS_TEST_OOM_CGROUP=$target" >> "$GITHUB_ENV"
 
