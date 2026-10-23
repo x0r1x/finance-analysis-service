@@ -11,7 +11,7 @@
 - `circularity_hints` — `{sheet, row, label}` без `cell_ids`;
 - `iterate` — `workbook.iterate`;
 - `source_filename`, `content_sha256`, `status`, `stage` — из `meta.json`,
-  иначе из `context.meta`;
+  иначе из `context.meta`; отсутствующее поле становится `null`;
 - `warnings` — список `context.warnings`;
 - `missing_cached_values` — число из `workbook`.
 
@@ -43,10 +43,10 @@ def build_summary(context: dict, graph: dict, meta: dict | None = None) -> dict:
         "schema_version": "summary-2",
         "context_schema_version": context["schema_version"],
         "graph_schema_version": graph["schema_version"],
-        "source_filename": identity["source_filename"],
-        "content_sha256": identity["content_sha256"],
-        "status": identity["status"],
-        "stage": identity["stage"],
+        "source_filename": identity.get("source_filename"),
+        "content_sha256": identity.get("content_sha256"),
+        "status": identity.get("status"),
+        "stage": identity.get("stage"),
         "sheets": list(workbook["sheets"]),
         "formula_count": workbook["formula_count"],
         "missing_cached_values": workbook["missing_cached_values"],

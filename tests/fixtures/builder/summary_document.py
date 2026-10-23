@@ -26,7 +26,7 @@ class CycleSummary(_Strict):
 
     id: str
     # В JSON поле называется `class`.
-    cycle_class: str = Field(alias="class")
+    cycle_class: Literal["iterative_ok", "unexpected"] = Field(alias="class")
     members: int
 
 
@@ -40,10 +40,10 @@ class SummaryDocument(_Strict):
     schema_version: Literal["summary-2"]
     context_schema_version: str
     graph_schema_version: str
-    source_filename: str
-    content_sha256: str
-    status: str
-    stage: str
+    source_filename: str | None
+    content_sha256: str | None
+    status: str | None
+    stage: str | None
     sheets: list[str]
     formula_count: int
     missing_cached_values: int

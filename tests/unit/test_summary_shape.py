@@ -27,9 +27,9 @@ def _graph(**overrides) -> dict:
         "cycles": [
             {
                 "id": "c1",
-                "class": "circular",
+                "class": "unexpected",
                 "members": ["S!A1", "S!A2"],
-                "edges": [{"src": "S!A1", "dst": "S!A2"}],
+                "breakers": ["S!A1"],
             }
         ],
         "circularity_hints": [
@@ -53,7 +53,7 @@ def _context() -> dict:
             "source_filename": "from-context.xlsx",
             "content_sha256": "a" * 64,
             "status": "succeeded",
-            "stage": "published",
+            "stage": "done",
         },
         "workbook": {
             "sheets": ["Construction"],
@@ -61,7 +61,9 @@ def _context() -> dict:
             "missing_cached_values": 1,
             "unparsed_formulas": 0,
             "iterate": False,
-            "defined_names": ["Tax"],
+            "defined_names": [
+                {"name": "Tax", "formula": "Construction!$B$19", "hidden": False}
+            ],
         },
     }
 
@@ -76,7 +78,7 @@ def test_build_summary_uses_the_summary_document_shape():
     body = build_summary(_context(), _graph(), meta)
     SummaryDocument.model_validate(body)
     assert body["schema_version"] == "summary-2"
-    assert body["cycles"] == [{"id": "c1", "class": "circular", "members": 2}]
+    assert body["cycles"] == [{"id": "c1", "class": "unexpected", "members": 2}]
     assert body["circularity_hints"] == [
         {"sheet": "Construction", "row": 19, "label": "Uses of funds"}
     ]
@@ -84,6 +86,12 @@ def test_build_summary_uses_the_summary_document_shape():
     assert [body[key] for key in _IDENTITY] == [meta[key] for key in _IDENTITY]
     assert body["warnings"] == ["one warning"]
     assert body["defined_name_count"] == 1
+
+
+def test_missing_identity_fields_are_null():
+    body = build_summary(_context(), _graph(), {"job_id": "abc"})
+    SummaryDocument.model_validate(body)
+    assert [body[key] for key in _IDENTITY] == [None, None, None, None]
 
 
 def test_build_summary_falls_back_to_context_meta():
