@@ -54,6 +54,7 @@ finance_analysis = ["adapters/storage/schemas/*.json"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
   "s3: needs an S3 API (moto or MinIO)",
   "minio: needs the MinIO server binary",

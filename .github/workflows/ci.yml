@@ -68,4 +68,4 @@ jobs:
         run: lint-imports
 
       - name: pytest
-        run: pytest
+        run: python -m pytest

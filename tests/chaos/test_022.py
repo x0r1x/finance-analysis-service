@@ -470,14 +470,14 @@ async def test_08_redis_restart_keeps_operations(chaos):
     await asyncio.sleep(1.5)
     chaos.redis86.kill()
     await asyncio.sleep(0.4)
+    # После подъёма Redis задачу забирает новый worker: сценарий проверяет AOF и сверку.
+    stop_all(chaos)
     try:
         chaos.redis86.start()
         client = redis_async.Redis.from_url(chaos.redis86.url, socket_timeout=None)
         fresh = await TaskiqJobs.open(chaos.settings)
         await fresh.startup()
-        alive = [item for item in chaos.procs if item.proc.poll() is None]
-        if not alive:
-            start_worker(chaos, "aof-restart", max_async=4)
+        start_worker(chaos, "aof-restart", max_async=4)
         chaos.settings.op_stale_sec = 3
         runtime_mod.RUNTIME = WorkerRuntime(
             settings=chaos.settings,
