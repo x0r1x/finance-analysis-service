@@ -39,10 +39,12 @@ def _settings_for(url: str) -> Settings:
     raise SystemExit(f"неизвестный URL {url}")
 
 
-async def _sync(source: str, destination: str) -> None:
+async def _sync(source: str, destination: str, *, dry_run: bool, verify: bool) -> None:
     src = build_storage(_settings_for(source))
     dst = build_storage(_settings_for(destination))
-    report = await sync_stores(src, dst)
+    report = await sync_stores(src, dst, dry_run=dry_run, verify=verify)
+    if report.get("dry_run"):
+        print(f"план: {report['objects']} объектов, {report['bytes']} байт")
     print(report)
 
 
@@ -54,9 +56,11 @@ def main(argv: list[str] | None = None) -> None:
     sync = storage_sub.add_parser("sync")
     sync.add_argument("source")
     sync.add_argument("destination")
+    sync.add_argument("--dry-run", action="store_true")
+    sync.add_argument("--verify", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "storage" and args.storage_command == "sync":
-        asyncio.run(_sync(args.source, args.destination))
+        asyncio.run(_sync(args.source, args.destination, dry_run=args.dry_run, verify=args.verify))
         return
     parser.print_help()
     sys.exit(2)

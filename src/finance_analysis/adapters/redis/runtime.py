@@ -72,6 +72,25 @@ return {1, 0}
 """
 
 
+def version_at_least(version: str | None, minimum: tuple[int, int, int] = (8, 6, 5)) -> bool:
+    if not version:
+        return False
+    parts: list[int] = []
+    for piece in version.split("."):
+        digits = ""
+        for char in piece:
+            if char.isdigit():
+                digits += char
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3]) >= minimum
+
+
 def _flight_dump(value) -> str | None:
     if isinstance(value, dict):
         return json.dumps({"kind": "dict", "body": value})
@@ -120,6 +139,16 @@ class RedisRuntime:
         )
         return cls(redis_async.Redis(connection_pool=pool), settings)
 
+    async def server_version(self) -> str | None:
+        try:
+            info = await self.redis.info("server")
+        except redis_async.RedisError:
+            return None
+        version = info.get("redis_version") or info.get(b"redis_version")
+        if isinstance(version, bytes):
+            return version.decode()
+        return str(version) if version else None
+
     async def ping(self) -> bool:
         try:
             return bool(await self.redis.ping())
@@ -151,6 +180,55 @@ class RedisRuntime:
                 await asyncio.sleep(0.05)
             if not acquired:
                 raise TimeoutError(name)
+            try:
+                fence = int(await runtime.redis.incr(fence_key))
+            except redis_async.RedisError as exc:
+                await runtime.redis.eval(_RELEASE, 1, key, token)
+                raise DependencyUnavailable("Redis недоступен") from exc
+            stop = asyncio.Event()
+
+            async def _renew() -> None:
+                interval = max(ttl_ms / 3000, 0.2)
+                while not stop.is_set():
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=interval)
+                        return
+                    except TimeoutError:
+                        pass
+                    try:
+                        await runtime.redis.eval(_RENEW, 1, key, token, str(ttl_ms))
+                    except redis_async.RedisError:
+                        return
+
+            task = asyncio.create_task(_renew())
+            try:
+                yield Fence(token=token, fence=fence)
+            finally:
+                stop.set()
+                task.cancel()
+                try:
+                    await runtime.redis.eval(_RELEASE, 1, key, token)
+                except redis_async.RedisError:
+                    pass
+
+        return _ctx()
+
+    def try_lock(self, name: str, ttl_ms: int):
+        """Одна попытка захвата. None — блокировка занята, задача переставляется (§4.13.5)."""
+        runtime = self
+
+        @asynccontextmanager
+        async def _ctx():
+            key = f"fas:lock:{name}"
+            fence_key = f"fas:fence:{name}"
+            token = uuid.uuid4().hex
+            try:
+                ok = await runtime.redis.set(key, token, nx=True, px=ttl_ms)
+            except redis_async.RedisError as exc:
+                raise DependencyUnavailable("Redis недоступен") from exc
+            if not ok:
+                yield None
+                return
             try:
                 fence = int(await runtime.redis.incr(fence_key))
             except redis_async.RedisError as exc:

@@ -13,8 +13,10 @@ import anyio
 from ulid import ULID
 
 from finance_analysis.application import keys
+from finance_analysis.application.builds import index_document, rebuild_reason
 from finance_analysis.application.gc import gc_incomplete
 from finance_analysis.application.metrics import BUILDER_INCONSISTENT
+from finance_analysis.application.operations import append_event, create_op, read_op
 from finance_analysis.application.project import derive_rows, project
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.domain.book import (
@@ -203,7 +205,12 @@ class FasService:
             rel = f"a/{attempt}/projection/{dataset}.parquet"
             key = keys.projection_key(job_id, build, attempt, dataset)
             await self.store.put_if_absent(key, payload)
-            files[rel] = {"sha256": sha256_bytes(payload), "rows": count, "schema": f"{dataset}@{FAS_SCHEMA_VERSION}"}
+            files[rel] = {
+                "sha256": sha256_bytes(payload),
+                "rows": count,
+                "bytes": len(payload),
+                "schema": f"{dataset}@{FAS_SCHEMA_VERSION}",
+            }
         return files
 
     async def materialize_derived(self, job_id: str, *, glossary_version: str, projected: dict | None = None) -> str:
@@ -366,20 +373,23 @@ class FasService:
             await self.store.put_if_absent(keys.manifest_key(job_id, build), _dumps(manifest))
         except AlreadyExists:
             manifest = await self._manifest(job_id, build)
-        index = {
-            "build_key": build,
-            "created_at_utc": manifest["loaded_at"],
-            "previous_build_key": head.build_key if head else None,
-            "builder_ref": ref.as_dict(),
-            "fas_projection_version": "1",
-            "fas_schema_version": FAS_SCHEMA_VERSION,
-            "rebuild_reason": "initial" if head is None else "builder_rebuild",
-            "stats": {
-                "rows": len(tables["dim_row"]),
-                "periods": len(tables["dim_period"]),
-                "observations": len(tables["fact_observation"]),
-            },
-        }
+        previous_manifest = None
+        if head is not None:
+            try:
+                previous_manifest = await self._manifest(job_id, head.build_key)
+            except NotFound:
+                previous_manifest = None
+        reason = rebuild_reason(previous_manifest, ref, projection="1")
+        index = index_document(
+            build,
+            {**manifest, "files": {**manifest.get("files", {}), **file_map}},
+            previous=head.build_key if head else None,
+            reason=reason,
+        )
+        fresh_stats = index["stats"]
+        fresh_stats["rows"] = len(tables["dim_row"])
+        fresh_stats["periods"] = len(tables["dim_period"])
+        fresh_stats["observations"] = len(tables["fact_observation"])
         try:
             await self.store.put_if_absent(keys.build_index_key(job_id, build), _dumps(index))
         except AlreadyExists:
@@ -761,55 +771,24 @@ class FasService:
         return payload
 
     async def create_op(self, kind: str, job_id: str | None, actor: Actor, payload: dict) -> dict:
-        op_id = str(ULID())
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        body = {
-            "id": op_id,
-            "kind": kind,
-            "status": "running",
-            "job_id": job_id,
-            "actor": {"user_id": actor.user_id, "client_id": actor.client_id},
-            "created_at": now,
-            "updated_at": now,
-            "progress": 0,
-            "payload": payload,
-            "result": None,
-            "error": None,
-        }
-        await self.store.put_if_absent(keys.operation_key(op_id), _dumps(body))
-        await self.support.publish(f"fas:op:{op_id}", "running")
+        body = await create_op(self.store, kind, job_id, actor, payload)
+        await self.support.publish(f"fas:op:{body['id']}", "running")
         return body
 
     async def finish_op(self, op_id: str, status: str, **fields) -> dict:
         current = await self.get_op(op_id)
         if current["status"] in {"succeeded", "failed", "cancelled"}:
             return current
-        event = {"seq": 1, "status": status, "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), **fields}
-        try:
-            await self.store.put_if_absent(keys.operation_event_key(op_id, 1), _dumps(event))
-        except AlreadyExists:
-            pass
+        await append_event(self.store, op_id, {"status": status, **fields})
         await self.support.publish(f"fas:op:{op_id}", status)
         return await self.get_op(op_id)
 
     async def get_op(self, op_id: str) -> dict:
         check_ulid(op_id)
         try:
-            body = json.loads(await self.store.get(keys.operation_key(op_id)))
+            return await read_op(self.store, op_id)
         except NotFound:
             raise NotFound("операция не найдена") from None
-        for seq in range(1, 20):
-            meta = await self.store.stat(keys.operation_event_key(op_id, seq))
-            if meta is None:
-                break
-            event = json.loads(await self.store.get(keys.operation_event_key(op_id, seq)))
-            body["status"] = event.get("status", body["status"])
-            if "result" in event:
-                body["result"] = event["result"]
-            if "error" in event:
-                body["error"] = event["error"]
-            body["updated_at"] = event.get("at", body["updated_at"])
-        return body
 
     async def wait_op(self, op_id: str, wait_ms: int) -> dict:
         wait_ms = max(0, min(wait_ms, self.settings.operation_wait_max_ms))
@@ -825,6 +804,7 @@ class FasService:
         current = await self.get_op(op_id)
         if current["status"] in {"succeeded", "failed", "cancelled"}:
             return current
+        await self.support.cache_set(f"fas:op:{op_id}:cancel", b"1", 86_400)
         return await self.finish_op(op_id, "cancelled", result={"actor": actor.user_id})
 
     async def list_ops(self, *, kind: str | None, job_id: str | None, status: str | None) -> list[dict]:
@@ -845,6 +825,54 @@ class FasService:
                 continue
             found.append(body)
         return found
+
+    async def list_builds(self, job_id: str, *, page_size: int = 50, page_token: str | None = None) -> dict:
+        prefix = f"books/{check_job(job_id)}/_builds/"
+        records = []
+        async for item in self.store.list(prefix):
+            if not item.key.endswith(".json"):
+                continue
+            records.append(json.loads(await self.store.get(item.key)))
+        records.sort(key=lambda row: (row.get("created_at_utc") or "", row.get("build_key") or ""), reverse=True)
+        head, _token = await self._read_head(job_id)
+        current = head.build_key if head else None
+        views = []
+        for record in records:
+            view = dict(record)
+            view["current"] = record.get("build_key") == current
+            views.append(view)
+        start = 0
+        if page_token:
+            identifiers = [row.get("build_key") for row in views]
+            if page_token not in identifiers:
+                raise InvalidArgument("неизвестный page_token")
+            start = identifiers.index(page_token) + 1
+        page = views[start : start + page_size]
+        next_token = None
+        if page and start + page_size < len(views):
+            next_token = page[-1]["build_key"]
+        return {"items": page, "next_page_token": next_token}
+
+    async def get_build(self, job_id: str, build: str) -> dict:
+        try:
+            index = json.loads(await self.store.get(keys.build_index_key(job_id, build)))
+        except NotFound:
+            raise NotFound("сборка не найдена") from None
+        manifest = await self._manifest(job_id, build)
+        derived = []
+        async for item in self.store.list(f"books/{job_id}/{build}/derived/"):
+            if not item.key.endswith("/_done.json"):
+                continue
+            body = json.loads(await self.store.get(item.key))
+            derived.append({"derive_key": body.get("derive_key"), "state_seq": body.get("state_seq")})
+        analyses = []
+        async for item in self.store.list(f"books/{job_id}/{build}/results/"):
+            if item.key.endswith("/result.json") or item.key.endswith("/_done.json"):
+                analyses.append({"key": item.key})
+        head, _token = await self._read_head(job_id)
+        index = dict(index)
+        index["current"] = bool(head and head.build_key == build)
+        return {"index": index, "manifest": manifest, "derived": derived, "analyses": analyses}
 
     async def gc(self, *, now: datetime | None = None, max_age_s: int | None = None) -> dict:
         age = self.settings.gc_age_seconds() if max_age_s is None else max_age_s
@@ -1109,6 +1137,8 @@ PROBLEM_CATALOG = [
 
 TOOLS = [
     {"name": "get_book", "method": "GET", "path": "/v1/books/{job_id}"},
+    {"name": "list_builds", "method": "GET", "path": "/v1/books/{job_id}/builds"},
+    {"name": "get_build", "method": "GET", "path": "/v1/books/{job_id}/builds/{build_key}"},
     {"name": "get_series", "method": "POST", "path": "/v1/books/{job_id}/series"},
     {"name": "get_slice", "method": "POST", "path": "/v1/books/{job_id}/slice"},
     {"name": "evaluate_expression", "method": "POST", "path": "/v1/books/{job_id}/expression"},
