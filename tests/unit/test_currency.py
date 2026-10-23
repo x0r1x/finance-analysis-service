@@ -38,7 +38,9 @@ def test_dim_row_schema_has_currency_source():
 
 
 def test_no_named_currency_stays_empty():
-    assert resolve_currencies([("fact", None), ("abstract", None), ("fact", "  ")]) == [
+    assert resolve_currencies(
+        [("fact", None, "money"), ("abstract", None, None), ("fact", "  ", "money")]
+    ) == [
         (None, None),
         (None, None),
         (None, None),
@@ -47,7 +49,12 @@ def test_no_named_currency_stays_empty():
 
 def test_several_fact_currencies_do_not_fill_blanks():
     assert resolve_currencies(
-        [("fact", "EUR"), ("fact", "USD"), ("fact", None), ("abstract", "GBP")]
+        [
+            ("fact", "EUR", "money"),
+            ("fact", "USD", "money"),
+            ("fact", None, "money"),
+            ("abstract", "GBP", "money"),
+        ]
     ) == [
         ("EUR", "hints"),
         ("USD", "hints"),
@@ -56,36 +63,72 @@ def test_several_fact_currencies_do_not_fill_blanks():
     ]
 
 
-def test_single_fact_currency_fills_blanks_only():
-    assert resolve_currencies([("fact", "EUR"), ("fact", None), ("flag", None), ("abstract", "USD")]) == [
+def test_book_currency_skips_flag_rate_and_ratio():
+    assert resolve_currencies(
+        [
+            ("fact", "EUR", "money"),
+            ("fact", None, "money"),
+            ("fact", None, "price"),
+            ("fact", None, "rate"),
+            ("fact", None, "%"),
+            ("fact", None, "x"),
+            ("fact", None, "ratio"),
+            ("fact", None, "count"),
+            ("fact", None, None),
+            ("flag", None, None),
+            ("abstract", None, None),
+            ("helper", None, "rate"),
+            ("abstract", "USD", "money"),
+        ]
+    ) == [
         ("EUR", "hints"),
         ("EUR", "book_single"),
         ("EUR", "book_single"),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
         ("USD", "hints"),
     ]
 
 
 def test_packt_currency_is_gbp():
     rows = _rows("packt")
-    assert rows
-    assert {row["currency"] for row in rows} == {"GBP"}
+    assert len(rows) == 131
+    assert Counter((row["currency"], row["currency_source"]) for row in rows) == {
+        ("GBP", "hints"): 77,
+        (None, None): 54,
+    }
     facts = [row for row in rows if row["kind"] == "fact"]
-    assert {row["currency_source"] for row in facts} == {"hints", "book_single"}
-    assert all(row["currency_source"] in {"hints", "book_single"} for row in rows)
-    assert Counter(row["currency_source"] for row in facts) == {"hints": 77, "book_single": 20}
+    assert Counter((row["currency"], row["currency_source"], row["unit"]) for row in facts) == {
+        ("GBP", "hints", "money"): 77,
+        (None, None, "rate"): 12,
+        (None, None, "count"): 4,
+        (None, None, "years"): 3,
+        (None, None, None): 1,
+    }
 
 
 def test_rvi_fact_currency_is_eur_and_reference_list_stays_hints():
     rows = _rows("rvi")
+    assert len(rows) == 459
+    assert Counter((row["currency"], row["currency_source"]) for row in rows) == {
+        ("EUR", "hints"): 230,
+        (None, None): 227,
+        ("USD", "hints"): 1,
+        ("GBP", "hints"): 1,
+    }
     facts = [row for row in rows if row["kind"] == "fact"]
-    assert {row["currency"] for row in facts} == {"EUR"}
-    assert Counter(row["currency_source"] for row in facts) == {"hints": 182, "book_single": 56}
+    assert {row["currency"] for row in facts if row["currency"] is not None} == {"EUR"}
+    assert all(row["currency_source"] != "book_single" for row in rows)
     usd = next(row for row in rows if row["label"] == "US Dollar")
     gbp = next(row for row in rows if row["label"] == "Pound Sterling")
     assert usd["kind"] != "fact"
     assert usd["currency"] == "USD" and usd["currency_source"] == "hints"
     assert gbp["kind"] != "fact"
     assert gbp["currency"] == "GBP" and gbp["currency_source"] == "hints"
-    filled = [row for row in rows if row["currency_source"] == "book_single"]
-    assert filled
-    assert {row["currency"] for row in filled} == {"EUR"}

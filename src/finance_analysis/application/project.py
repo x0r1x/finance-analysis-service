@@ -164,7 +164,9 @@ def project(
                     }
                 )
 
-    resolved = resolve_currencies([(row["kind"], row.get("currency")) for row in dim_rows])
+    resolved = resolve_currencies(
+        [(row["kind"], row.get("currency"), row.get("unit")) for row in dim_rows]
+    )
     for row, (currency, source) in zip(dim_rows, resolved, strict=True):
         row["currency"] = currency
         row["currency_source"] = source

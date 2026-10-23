@@ -126,6 +126,7 @@
 > - §4.4, §5.4, §5.7, §6.2: фаза не выводится из флагов (флаги — как есть, перенос по `index` только для отображения), только `phase.set`; «первый операционный год» и тестовые периоды DSCR — по `debt_service ≠ 0`; `needs_input{kind: phase}` не выдаётся;
 > - §5.5, §5.7: одно понятие = одна строка книги, `concept.absent`, находка `missing_total_row`; куб `/slice` не суммирует несколько строк одного понятия;
 > - §5.8: валюта только из книги (`hints.currency`, `currency_source: book_single` по строкам `kind: fact`), без `unit_assumed` и валюты профиля;
+> - §5.8 (уточнение): `book_single` только у денежных fact-строк без своей валюты (`hints.unit` — `money` или `price`). Ставка, процент, коэффициент, безразмерная величина и неизвестная единица валюту книги не получают; `hints.currency` не переписывается;
 > - §6.1: новые правила `period_grain_mismatch` и `missing_total_row`; неполные периоды не корректируются; доверие кэшу Excel — известное ограничение (риск 6);
 > - §6.4: другой кейс (по селектору) — отдельная загрузка и `:compare`;
 > - §3.2, §3.3, §5.10.5: пакет вопросов книги `GET …/questions` с `candidates[]`; уверенная `inferred`-привязка применяется сама (`binding_source: inferred`), неуверенная — только после ответа; переопределение через `supersedes`, выданные результаты не переписываются;
@@ -505,7 +506,7 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
 | `period_semantics` | `model_id, build_key, state_seq:int64, derive_key, axis_id, period_id, phase, phase_year:int16, source, evidence_json:string` |
 | `bindings` | `model_id, build_key, state_seq:int64, derive_key, concept (NULL при unknown), effective_concept, is_primary:bool, matched_label_id, status, binding_key, row_key, label_path_text, source, confidence:float32, evidence_json:string, calibrator_version, glossary_version, taxonomy_version, decided_by, stale:bool, importance, updated_at_utc:timestamp(us, UTC)` |
 
-- `axis_kind` — `time|params`; ось параметров FAS синтезирует сам (§2.3). `currency_source` — `hints|book_single|null` (§5.8).
+- `axis_kind` — `time|params`; ось параметров FAS синтезирует сам (§2.3). `currency_source` — `hints|book_single|null` (§5.8): `hints` — валюта из `hints.currency` как есть; `book_single` — единственная валюта fact-строк, и только у денежной fact-строки без своей валюты (`hints.unit` = `money` или `price`); `null` — своей валюты нет и строка не денежная, мера неизвестна, либо валют книги не одна.
 - **Флаги временной оси** (`axis.id == timeline_id`) FAS отдаёт в `…/semantics` **как есть** — ключ и значение, без толкования имён. На оси с тем же `timeline_id` флаги переносятся **по `index`** (не по `col`: у Packt `Y1` временной оси `TBA` — `col 4`, на остальных осях — `col 5` или `6`), `flags_source = timeline`. Перенос служит только для отображения: ни метрики, ни правила, ни `periods:resolve` флаги не читают. Если при одном `index` у осей разные `period_key`, флаги не переносятся (`warnings[{code: timeline_mismatch}]`).
 - `period_semantics.phase` = `null`, пока нет явного решения `phase.set` (`POST …/decisions`, цель `axis_id + period_key`). Решение необязательно и переживает пересборку (ключ — `period_key`, а не `row_key`). `source = decision`.
 | `coverage` | `model_id, build_key, state_seq:int64, derive_key, glossary_version, status, importance, rows:int64, value_abs_sum:decimal128(38,6)` |
@@ -1004,9 +1005,9 @@ metrics:
 `UnitNormalizer` сравнивает `unit/currency/scale` входов. Если масштаб разный, расчёт идёт по `normalized_value`. Если разная единица (`unit`) или сошлись разные названные валюты → `needs_input{kind: unit}`.
 
 **Валюта только из книги (с 0.23):**
-1. Валюта строки берётся из `hints.currency` builder. Builder уже наследует её из подписи блока в шапке периодов, из строки единиц раздела, из ячейки Units, из метки и из формата `[$₽-419]`.
-2. Если во всей книге среди денежных строк с числами (`kind: fact`) названа ровно одна валюта, строки без валюты получают её с пометкой `currency_source: book_single`. Это не предупреждение.
-3. Если валют несколько или нет ни одной, строка остаётся без валюты (`currency = null`, `currency_source: null`).
+1. Валюта строки берётся из `hints.currency` builder. Builder уже наследует её из подписи блока в шапке периодов, из строки единиц раздела, из ячейки Units, из метки и из формата `[$₽-419]`. Такая валюта остаётся с `currency_source: hints` независимо от вида строки и единицы.
+2. Множество валют книги считается по строкам `kind: fact`, у которых `hints.currency` названа. Если такая валюта ровно одна, её получают только денежные строки с числами без своей валюты, с пометкой `currency_source: book_single`. Это не предупреждение. Денежная строка — `kind: fact` и явная денежная единица builder: `hints.unit` равен `money` или `price` (деньги за единицу, например EUR/MWh).
+3. Валюту книги не получают флаги, `abstract`, `helper` и fact-строки, которые не деньги: ставка и процент (`rate`, `%`, `percent`), коэффициент (`ratio`, `x`), счёт и безразмерная величина (`count`), срок (`years`), дата (`date`) и любой другой неденежный токен. Если мера неизвестна (`hints.unit` пуст), строка тоже не считается денежной: валюту не додумываем. У такой строки без своей валюты `currency = null`, `currency_source: null`. То же, если среди fact-строк валют несколько или нет ни одной.
 4. `needs_input{kind: unit}` возникает только при явном конфликте, когда в одном расчёте сошлись разные **названные** валюты. Строка без валюты рядом с названной в коэффициенте — не конфликт.
 5. Подсказки валюты из профиля нет (§0 п. 2).
 
