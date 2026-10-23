@@ -50,6 +50,7 @@ async def test_series_and_expression_match_excel_cache(app):
         loaded = await client.post(f"/v1/books/{JOB}:load", headers=headers)
         assert loaded.status_code == 200, loaded.text
         assert loaded.json()["job_id"] == JOB
+        assert all(item["code"] != "builder_warning" for item in loaded.json()["warnings"])
         series = await client.post(
             f"/v1/books/{JOB}/series",
             headers=headers,
@@ -112,7 +113,10 @@ async def test_rvi_loads_from_summary_not_sidecar(app):
         }
         assert body["builder_ref"]["summary_etag"].startswith('"summary-2:')
         assert body["is_latest"] is True
-        assert all(item["code"] not in {"builder_degraded", "builder_warning"} for item in body["warnings"])
+        assert all(item["code"] != "builder_degraded" for item in body["warnings"])
+        cached = [item for item in body["warnings"] if item["code"] == "builder_warning"]
+        assert cached
+        assert "missing cached values" in cached[0]["params"]["message"]
         year = await client.post(f"/v1/books/{rvi}/periods:resolve", headers=headers, json={"text": "2024"})
         assert year.status_code == 200, year.text
         assert year.json()["periods"]

@@ -270,22 +270,71 @@ async def test_breaker_states_do_not_call_network():
     assert await builder.breaker_state() == "closed"
 
 
-async def test_summary_warning_reaches_the_book(settings, redis_runtime):
+def test_captured_summary_matches_the_publication():
+    from tests.fixtures.builder.build_summary import build_summary
+
+    for alias in ("packt", "rvi"):
+        folder = BUILDER_ROOT / job_id(alias)
+        context = json.loads((folder / "context.json").read_text(encoding="utf-8"))
+        graph = json.loads((folder / "graph.json").read_text(encoding="utf-8"))
+        stored = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+        assert stored == build_summary(context, graph)
+        assert stored["warnings"] == context["warnings"]
+        assert stored["missing_cached_values"] == context["workbook"]["missing_cached_values"]
+    packt = json.loads((BUILDER_ROOT / JOB / "summary.json").read_text(encoding="utf-8"))
+    rvi = json.loads((BUILDER_ROOT / job_id("rvi") / "summary.json").read_text(encoding="utf-8"))
+    assert packt["warnings"] == []
+    assert packt["missing_cached_values"] == 0
+    assert rvi["missing_cached_values"] == 20
+    assert "missing cached values" in rvi["warnings"][0]
+
+
+async def _load(settings, redis_runtime, builder, job: str):
     from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
     from finance_analysis.adapters.storage.store import open_storage
     from finance_analysis.adapters.wren.query import WrenQuery
     from finance_analysis.application.service import FasService
     from finance_analysis.domain.book import Actor
 
-    builder = FixtureBuilder(BUILDER_ROOT)
-    builder.warnings_override[JOB] = ["20 formula cell(s) missing cached values (e.g. PF Model!M536)"]
     store = await open_storage(settings)
     service = FasService(settings, store, PyarrowParquet(), builder, WrenQuery(settings), redis_runtime)
-    await service.perform_load(JOB, actor=Actor(), fence=1)
-    view = await service.book_view(JOB, Actor(), wait_sec=5)
-    messages = [item for item in view.body["warnings"] if item["code"] == "builder_warning"]
-    assert messages
-    assert "cached values" in messages[0]["params"]["message"]
+    await service.perform_load(job, actor=Actor(), fence=1)
+    return await service.book_view(job, Actor(), wait_sec=5)
+
+
+def _builder_messages(view) -> list[dict]:
+    return [item for item in view.body["warnings"] if item["code"] == "builder_warning"]
+
+
+async def test_summary_warning_reaches_the_book(settings, redis_runtime):
+    rvi = job_id("rvi")
+    view = await _load(settings, redis_runtime, FixtureBuilder(BUILDER_ROOT), rvi)
+    messages = _builder_messages(view)
+    assert len(messages) == 1
+    assert messages[0]["params"]["message"].startswith("20 formula cell(s) missing cached values")
+    assert "missing_cached_values" not in view.body
+
+
+async def test_truncated_warning_list_still_loads(settings, redis_runtime):
+    rvi = job_id("rvi")
+    builder = FixtureBuilder(BUILDER_ROOT)
+    builder.warnings_override[rvi] = [f"Unparsed formula at PF Model!A{index}" for index in range(1, 51)]
+    view = await _load(settings, redis_runtime, builder, rvi)
+    messages = _builder_messages(view)
+    assert len(messages) == 50
+    assert all("cached values" not in item["params"]["message"] for item in messages)
+    raw = json.loads((BUILDER_ROOT / rvi / "summary.json").read_text(encoding="utf-8"))
+    assert raw["missing_cached_values"] > 0
+
+
+async def test_cached_count_without_text_does_not_warn(settings, redis_runtime):
+    rvi = job_id("rvi")
+    builder = FixtureBuilder(BUILDER_ROOT)
+    builder.warnings_override[rvi] = []
+    view = await _load(settings, redis_runtime, builder, rvi)
+    assert _builder_messages(view) == []
+    raw = json.loads((BUILDER_ROOT / rvi / "summary.json").read_text(encoding="utf-8"))
+    assert raw["missing_cached_values"] == 20
 
 
 async def test_running_status_is_not_a_cached_etag(settings, redis_runtime):

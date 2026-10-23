@@ -1,0 +1,108 @@
+{
+  "context_schema_version": "1.14.0",
+  "graph_schema_version": "1.7.0",
+  "source_filename": "packt-project-finance.xlsx",
+  "content_sha256": "d8de77e6af2da56983101b74d3099ca77a9641dd7bd89f3cb76f03425c4a5acc",
+  "status": "succeeded",
+  "stage": "done",
+  "sheets": [
+    "Input Assumptions",
+    "TBA",
+    "Construction",
+    "Operation",
+    "Amortization",
+    "Debt",
+    "P&L",
+    "CFS",
+    "Balance Sheet",
+    "Ratios"
+  ],
+  "formula_count": 2973,
+  "missing_cached_values": 0,
+  "unparsed_formulas": 0,
+  "iterate": false,
+  "defined_name_count": 0,
+  "nodes": 4806,
+  "edges": 11370,
+  "kinds": {
+    "range": 6990,
+    "ref": 1817,
+    "cross_sheet": 2563
+  },
+  "unresolved": {
+    "count": 0,
+    "ids": []
+  },
+  "external": {
+    "count": 0,
+    "ids": []
+  },
+  "dangling": {
+    "count": 0,
+    "ids": []
+  },
+  "dynamic": {
+    "count": 0,
+    "ids": []
+  },
+  "truncated": {
+    "count": 0,
+    "ids": []
+  },
+  "dangling_classes": {
+    "empty_range_member": 714,
+    "empty_ref": 4
+  },
+  "cycles": [],
+  "circularity_hints": [
+    {
+      "sheet": "Construction",
+      "row": 19,
+      "label": "Uses of funds for circularity breakdown purpose",
+      "cell_ids": [
+        "Construction!AA19",
+        "Construction!AB19",
+        "Construction!AC19",
+        "Construction!AD19",
+        "Construction!AE19",
+        "Construction!AF19",
+        "Construction!AG19",
+        "Construction!AH19",
+        "Construction!AI19",
+        "Construction!AJ19",
+        "Construction!AK19",
+        "Construction!AL19",
+        "Construction!AM19",
+        "Construction!AN19",
+        "Construction!AO19",
+        "Construction!AP19",
+        "Construction!AQ19",
+        "Construction!AR19",
+        "Construction!B19",
+        "Construction!E19",
+        "Construction!F19",
+        "Construction!G19",
+        "Construction!H19",
+        "Construction!I19",
+        "Construction!J19",
+        "Construction!K19",
+        "Construction!L19",
+        "Construction!M19",
+        "Construction!N19",
+        "Construction!O19",
+        "Construction!P19",
+        "Construction!Q19",
+        "Construction!R19",
+        "Construction!S19",
+        "Construction!T19",
+        "Construction!U19",
+        "Construction!V19",
+        "Construction!W19",
+        "Construction!X19",
+        "Construction!Y19",
+        "Construction!Z19"
+      ]
+    }
+  ],
+  "warnings": []
+}
