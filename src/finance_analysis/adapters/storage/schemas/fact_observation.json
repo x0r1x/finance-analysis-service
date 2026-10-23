@@ -1,0 +1,95 @@
+{
+  "dataset": "fact_observation",
+  "version": "1.0",
+  "title": "Значения ячеек",
+  "columns": [
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги",
+      "since": "1.0"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.0"
+    },
+    {
+      "name": "row_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Строка",
+      "since": "1.0"
+    },
+    {
+      "name": "axis_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ось",
+      "since": "1.0"
+    },
+    {
+      "name": "period_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Период",
+      "since": "1.0"
+    },
+    {
+      "name": "cell_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ячейка Sheet!A1",
+      "since": "1.0"
+    },
+    {
+      "name": "value_raw",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Строка кэша Excel",
+      "since": "1.0"
+    },
+    {
+      "name": "value",
+      "type": "float64",
+      "nullable": true,
+      "unit": "",
+      "description": "Копия float64",
+      "since": "1.0"
+    },
+    {
+      "name": "value_dec",
+      "type": "decimal128(38,10)",
+      "nullable": true,
+      "unit": "",
+      "description": "Значение DECIMAL",
+      "since": "1.0"
+    },
+    {
+      "name": "normalized_value",
+      "type": "decimal128(38,6)",
+      "nullable": true,
+      "unit": "",
+      "description": "Нормализованное значение",
+      "since": "1.0"
+    },
+    {
+      "name": "value_status",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Статус значения",
+      "since": "1.0"
+    }
+  ]
+}

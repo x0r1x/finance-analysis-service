@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.14.0",
+  "job_id": "2f180b3eec3b8557908beafa659af75dd7c2e93dab02b176f3cab1d625ee7bac",
+  "status": "succeeded",
+  "stage": "done",
+  "source_filename": "rvi-project-finance.xlsx",
+  "content_sha256": "3b9a8b47f3cf9ad506698c6cf89082472401b9c8b851ed78ba944101c35b43f2",
+  "warnings": [
+    "20 formula cell(s) missing cached values (e.g. PF Model!M536, PF Model!M537, PF Model!N537)"
+  ],
+  "questions": [],
+  "error": null,
+  "generation": 1,
+  "publisher": "030e2bc203eef42d484ceb3bd186c779d050db944f14f056307d22104b991da2",
+  "stages": {
+    "compile": "185d8e3a3103840255359b488054175782c36b3226ccf57e41577234ffe58678",
+    "layout": "89fcd204f060e7156968fc795e255b6e0a314b8dfd552f6726d086fd45121acb",
+    "graph": "f25dfb0fdde1804c4a299fdd1456d7efc0dbd762f2b1eb1bca0dd28f86e2b0e6",
+    "publish": "8e9952c451bdfd303933339241cc9be7bdecf258e59a699d91a690f36f4a8d93"
+  }
+}

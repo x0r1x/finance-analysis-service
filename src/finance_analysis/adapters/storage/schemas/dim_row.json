@@ -1,0 +1,199 @@
+{
+  "dataset": "dim_row",
+  "version": "1.0",
+  "title": "Строки книги",
+  "columns": [
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги (job_id builder), имя для RLAC",
+      "since": "1.0"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.0"
+    },
+    {
+      "name": "row_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Текущий ключ строки builder",
+      "since": "1.0"
+    },
+    {
+      "name": "binding_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Стабильный ключ привязки",
+      "since": "1.0"
+    },
+    {
+      "name": "sheet",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Лист",
+      "since": "1.0"
+    },
+    {
+      "name": "row_num",
+      "type": "int32",
+      "nullable": false,
+      "unit": "",
+      "description": "Номер строки",
+      "since": "1.0"
+    },
+    {
+      "name": "block_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Блок",
+      "since": "1.0"
+    },
+    {
+      "name": "block_kind",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Вид блока",
+      "since": "1.0"
+    },
+    {
+      "name": "label",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Подпись строки",
+      "since": "1.0"
+    },
+    {
+      "name": "parent_label",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Подпись родителя",
+      "since": "1.0"
+    },
+    {
+      "name": "label_path_json",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Путь подписей, JSON-массив",
+      "since": "1.0"
+    },
+    {
+      "name": "label_path_text",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Путь подписей текстом",
+      "since": "1.0"
+    },
+    {
+      "name": "kind",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Вид строки",
+      "since": "1.0"
+    },
+    {
+      "name": "indent",
+      "type": "int16",
+      "nullable": false,
+      "unit": "",
+      "description": "Отступ",
+      "since": "1.0"
+    },
+    {
+      "name": "hidden",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Скрытая строка",
+      "since": "1.0"
+    },
+    {
+      "name": "check_row",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Проверочная строка",
+      "since": "1.0"
+    },
+    {
+      "name": "unit",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Единица",
+      "since": "1.0"
+    },
+    {
+      "name": "unit_per",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Единица на",
+      "since": "1.0"
+    },
+    {
+      "name": "currency",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Валюта",
+      "since": "1.0"
+    },
+    {
+      "name": "currency_source",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Откуда взята валюта: hints, book_single или null",
+      "since": "1.0"
+    },
+    {
+      "name": "scale",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Масштаб",
+      "since": "1.0"
+    },
+    {
+      "name": "scale_factor",
+      "type": "int64",
+      "nullable": true,
+      "unit": "",
+      "description": "Множитель масштаба",
+      "since": "1.0"
+    },
+    {
+      "name": "has_formula",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Есть формула",
+      "since": "1.0"
+    },
+    {
+      "name": "formula",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Формула",
+      "since": "1.0"
+    }
+  ]
+}

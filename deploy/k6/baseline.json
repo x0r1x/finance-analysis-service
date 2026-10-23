@@ -1,0 +1,35 @@
+{
+  "s1": {
+    "exit_code": 0,
+    "vus": 50,
+    "duration": "60s",
+    "p95_ms": 79.4262732,
+    "avg_ms": 41.092760206907336,
+    "max_ms": 435.250906,
+    "failed_rate": 0,
+    "count": 32749,
+    "book": "packt",
+    "row_key": "Operation|10|Operation!r2",
+    "period": "Y5"
+  },
+  "s2": {
+    "exit_code": 0,
+    "vus": 16,
+    "duration": "60s",
+    "p95_ms": 380.304635,
+    "avg_ms": 209.42874769564034,
+    "max_ms": 598.113028,
+    "failed_rate": 0,
+    "count": 3716,
+    "book": "packt",
+    "row_key": "Operation|10|Operation!r2",
+    "period": "Y5"
+  },
+  "slo": {
+    "assumption_warm_p95_ms": 500,
+    "met": true,
+    "revised_warm_p95_ms": null,
+    "note": "прогон 60 с на копиях книги packt; цель §4.13.9 — тёплый p95 ≤ 500 мс; квота клиента на стенде 2000 rps",
+    "stand_rate_client_rps": 2000
+  }
+}
