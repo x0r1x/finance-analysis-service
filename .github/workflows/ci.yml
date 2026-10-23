@@ -39,25 +39,40 @@ jobs:
       - name: Memory cgroup for chaos
         run: |
           set -euo pipefail
+          prepare() {
+            local dest="$1"
+            sudo mkdir -p "$dest"
+            sudo chown -R "$(id -u):$(id -g)" "$dest"
+            if [[ -f "$dest/memory.swap.max" ]]; then
+              echo 0 | sudo tee "$dest/memory.swap.max" >/dev/null || true
+              sudo chown "$(id -u):$(id -g)" "$dest/memory.swap.max" || true
+            fi
+          }
           self="$(awk -F: '{line=$NF} END{print line}' /proc/self/cgroup)"
           base="/sys/fs/cgroup${self}"
           target="${base}/fasoom2"
-          if [[ ! -f "$target/memory.max" ]]; then
-            sudo mkdir -p "${base}/init"
-            if [[ -f "${base}/cgroup.procs" ]]; then
+          sudo mkdir -p "${base}/init" || true
+          if [[ -f "${base}/cgroup.procs" ]]; then
+            while read -r pid; do
+              echo "$pid" | sudo tee "${base}/init/cgroup.procs" >/dev/null || true
+            done < "${base}/cgroup.procs" || true
+          fi
+          echo '+memory' | sudo tee "${base}/cgroup.subtree_control" >/dev/null || true
+          prepare "$target" || true
+          if [[ ! -w "$target/memory.max" || ! -w "$target/cgroup.procs" ]]; then
+            target="/sys/fs/cgroup/fasoom2"
+            sudo mkdir -p /sys/fs/cgroup/init || true
+            if [[ -f /sys/fs/cgroup/cgroup.procs ]]; then
               while read -r pid; do
-                echo "$pid" | sudo tee "${base}/init/cgroup.procs" >/dev/null || true
-              done < "${base}/cgroup.procs"
+                echo "$pid" | sudo tee /sys/fs/cgroup/init/cgroup.procs >/dev/null || true
+              done < /sys/fs/cgroup/cgroup.procs || true
             fi
-            echo '+memory' | sudo tee "${base}/cgroup.subtree_control"
-            sudo mkdir -p "$target"
-            sudo chown -R "$(id -u):$(id -g)" "$target"
+            echo '+memory' | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null || true
+            prepare "$target"
           fi
           test -w "$target/memory.max"
           test -w "$target/cgroup.procs"
-          if [[ -f "$target/memory.swap.max" ]]; then
-            test -w "$target/memory.swap.max"
-          fi
+          FAS_TEST_OOM_CGROUP="$target" python3 tests/chaos/oom_probe.py
           echo "FAS_TEST_OOM_CGROUP=$target" >> "$GITHUB_ENV"
 
       - name: Install
