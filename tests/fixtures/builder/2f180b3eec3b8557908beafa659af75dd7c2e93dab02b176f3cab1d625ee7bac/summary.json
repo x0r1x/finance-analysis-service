@@ -1,4 +1,5 @@
 {
+  "schema_version": "summary-2",
   "context_schema_version": "1.14.0",
   "graph_schema_version": "1.7.0",
   "source_filename": "rvi-project-finance.xlsx",
