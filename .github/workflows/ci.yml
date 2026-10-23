@@ -40,36 +40,22 @@ jobs:
         run: |
           set -x
           self="$(awk -F: '{line=$NF} END{print line}' /proc/self/cgroup)"
-          base="/sys/fs/cgroup${self}"
-          target="${base}/fasoom2"
-          echo "base=$base type=$(cat "$base/cgroup.type" 2>/dev/null || true)"
-          echo "controllers=$(cat "$base/cgroup.controllers" 2>/dev/null || true)"
-          echo "subtree=$(cat "$base/cgroup.subtree_control" 2>/dev/null || true)"
-          mkdir -p "$base/init" || sudo mkdir -p "$base/init"
-          move() {
-            local pid="$1"
-            echo "$pid" > "$base/init/cgroup.procs" 2>/dev/null && return 0
-            sudo sh -c "echo $pid > '$base/init/cgroup.procs'" 2>/dev/null && return 0
-            return 1
-          }
-          for _ in 1 2 3 4 5 6 7 8; do
-            mapfile -t pids < "$base/cgroup.procs" || pids=()
-            echo "remaining=${#pids[@]}"
-            [[ ${#pids[@]} -eq 0 ]] && break
-            for pid in "${pids[@]}"; do
-              move "$pid" || echo "move failed $pid"
-            done
-          done
-          echo '+memory' > "$base/cgroup.subtree_control" 2>/dev/null \
-            || echo '+memory' | sudo tee "$base/cgroup.subtree_control" >/dev/null \
-            || echo "subtree_control failed"
-          mkdir -p "$target" || sudo mkdir -p "$target"
-          sudo chown -R "$(id -u):$(id -g)" "$target" || true
-          if [[ -f "$target/memory.swap.max" ]]; then
-            echo 0 > "$target/memory.swap.max" 2>/dev/null || sudo sh -c "echo 0 > '$target/memory.swap.max'" || true
+          unit="${self##*/}"
+          sudo systemctl set-property --runtime "$unit" OOMPolicy=continue || true
+          sudo systemctl set-property --runtime system.slice OOMPolicy=continue || true
+          sudo systemctl set-property --runtime -- -.slice OOMPolicy=continue || true
+          echo "root controllers=$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || true)"
+          echo "root subtree=$(cat /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true)"
+          if ! grep -qw memory /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; then
+            echo '+memory' | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null \
+              || echo "root memory delegate failed"
           fi
-          echo "target files:"; ls -l "$target" || true
-          FAS_TEST_OOM_CGROUP="$target" python3 tests/chaos/oom_probe.py
+          target=/sys/fs/cgroup/fasoom2
+          sudo mkdir -p "$target"
+          sudo chown -R "$(id -u):$(id -g)" "$target"
+          echo "target=$target"
+          ls -l "$target/memory.max" "$target/cgroup.procs" || true
+          FAS_TEST_OOM_CGROUP="$target" python3 -u tests/chaos/oom_probe.py
           echo "FAS_TEST_OOM_CGROUP=$target" >> "$GITHUB_ENV"
 
       - name: Install

@@ -229,10 +229,13 @@ async def test_02_sigkill_then_oom_goes_to_dlq(chaos):
     previous = limit.read_text(encoding="utf-8")
     previous_swap = swap.read_text(encoding="utf-8") if swap.is_file() else None
     try:
-        limit.write_text("268435456")
         if previous_swap is not None:
             swap.write_text("0")
-        oom = await _poison(chaos, "oom", extra={"FAS_OOM_CGROUP": str(cgroup)})
+        oom = await _poison(
+            chaos,
+            "oom",
+            extra={"FAS_OOM_CGROUP": str(cgroup), "FAS_OOM_BYTES": "268435456"},
+        )
     finally:
         limit.write_text(previous)
         if previous_swap is not None:

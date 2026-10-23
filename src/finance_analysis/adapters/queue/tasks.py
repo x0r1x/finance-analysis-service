@@ -220,28 +220,41 @@ async def _overlap(rt, op_id: str, attempt: int) -> bool:
     return False
 
 
-def _enter_cgroup(cgroup: str) -> None:
-    """Переносит текущий процесс в cgroup. На чужом sibling это может сделать только root."""
-
-    procs = Path(cgroup, "cgroup.procs")
-    pid = str(os.getpid())
+def _write_cgroup(path: Path, text: str) -> None:
+    payload = text if text.endswith("\n") else f"{text}\n"
     try:
-        procs.write_text(pid)
-    except PermissionError:
+        path.write_text(payload)
+    except OSError:
         subprocess.run(
-            ["sudo", "-n", "tee", str(procs)],
-            input=pid + "\n",
+            ["sudo", "-n", "tee", str(path)],
+            input=payload,
             text=True,
             check=True,
             stdout=subprocess.DEVNULL,
         )
 
 
+def _enter_cgroup(cgroup: str) -> None:
+    """Переносит текущий процесс в cgroup. На чужом sibling это может сделать только root."""
+
+    _write_cgroup(Path(cgroup, "cgroup.procs"), str(os.getpid()))
+
+
 def _oom() -> None:
-    cgroup = os.environ.get("FAS_OOM_CGROUP")
-    if not cgroup:
+    """Входит в cgroup и только потом ставит memory.max, чтобы OOM остался внутри него."""
+
+    raw = os.environ.get("FAS_OOM_CGROUP")
+    if not raw:
         raise RuntimeError("FAS_OOM_CGROUP не задан")
-    _enter_cgroup(cgroup)
+    cgroup = Path(raw)
+    _enter_cgroup(raw)
+    group = cgroup / "memory.oom.group"
+    if group.is_file():
+        _write_cgroup(group, "0")
+    swap = cgroup / "memory.swap.max"
+    if swap.is_file():
+        _write_cgroup(swap, "0")
+    _write_cgroup(cgroup / "memory.max", os.environ.get("FAS_OOM_BYTES") or "268435456")
     blobs: list[bytearray] = []
     while True:
         blobs.append(bytearray(8 * 1024 * 1024))
