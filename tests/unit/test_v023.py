@@ -45,6 +45,14 @@ def test_build_key_uses_job_etag_and_projection():
     assert len(left) == 16
 
 
+def test_fact_observation_keeps_schema_1_and_axis_kind():
+    path = Path("src/finance_analysis/adapters/storage/schemas/fact_observation.json")
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    names = [column["name"] for column in doc["columns"]]
+    assert doc["version"] == "1.0"
+    assert names[names.index("axis_id") + 1] == "axis_kind"
+
+
 def test_dim_period_schema_has_timeline_fields():
     path = Path("src/finance_analysis/adapters/storage/schemas/dim_period.json")
     names = [column["name"] for column in json.loads(path.read_text())["columns"]]
@@ -260,6 +268,24 @@ async def test_breaker_states_do_not_call_network():
     assert await builder.breaker_state() == "half_open"
     builder._ok()
     assert await builder.breaker_state() == "closed"
+
+
+async def test_summary_warning_reaches_the_book(settings, redis_runtime):
+    from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
+    from finance_analysis.adapters.storage.store import open_storage
+    from finance_analysis.adapters.wren.query import WrenQuery
+    from finance_analysis.application.service import FasService
+    from finance_analysis.domain.book import Actor
+
+    builder = FixtureBuilder(BUILDER_ROOT)
+    builder.warnings_override[JOB] = ["20 formula cell(s) missing cached values (e.g. PF Model!M536)"]
+    store = await open_storage(settings)
+    service = FasService(settings, store, PyarrowParquet(), builder, WrenQuery(settings), redis_runtime)
+    await service.perform_load(JOB, actor=Actor(), fence=1)
+    view = await service.book_view(JOB, Actor(), wait_sec=5)
+    messages = [item for item in view.body["warnings"] if item["code"] == "builder_warning"]
+    assert messages
+    assert "cached values" in messages[0]["params"]["message"]
 
 
 async def test_running_status_is_not_a_cached_etag(settings, redis_runtime):

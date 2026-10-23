@@ -14,6 +14,7 @@ from ulid import ULID
 
 from finance_analysis.application import keys
 from finance_analysis.application.builds import index_document, rebuild_reason
+from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.gc import gc_incomplete
 from finance_analysis.application.metrics import BUILDER_INCONSISTENT
 from finance_analysis.application.operations import append_event, create_op, read_op
@@ -51,7 +52,10 @@ from finance_analysis.domain.expression import (
 )
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.ids import ulid as check_ulid
+from finance_analysis.domain.operational_year import resolve_operational_year
 from finance_analysis.domain.periods import marker_class, split_period_key
+from finance_analysis.domain.phases import phase_target, split_phase_target
+from finance_analysis.domain.state import fold
 from finance_analysis.settings import Settings
 
 _YEAR_RANGE = re.compile(r"^(\d{4})\s*[-–—]\s*(\d{4})$")
@@ -94,6 +98,67 @@ def _json_default(value):
     raise TypeError(type(value))
 
 
+_DECISION_KINDS = {
+    "phase.set": "phase.set",
+    "concept.set": "concept.set",
+    "concept.confirm": "concept.confirmed",
+}
+
+
+def _rejected(index: int, code: str, detail: str) -> dict:
+    return {
+        "index": index,
+        "status": "rejected",
+        "record_seq": None,
+        "duplicate": False,
+        "errors": [{"code": code, "message": detail}],
+        "warnings": [],
+    }
+
+
+def _decision_targets(periods: list[dict], rows: list[dict]) -> frozenset[str]:
+    targets = {row["binding_key"] for row in rows if row.get("binding_key")}
+    for period in periods:
+        base = period.get("period_key_base") or period.get("period_id")
+        if period.get("axis_id") and base:
+            targets.add(phase_target(period["axis_id"], base))
+    return frozenset(targets)
+
+
+def _concept_taken(events: list[dict], target: str, concept: str) -> bool:
+    for other, event in fold(events).items():
+        if other == target:
+            continue
+        if event.get("type") in {"concept.set", "concept.confirmed"} and event.get("value") == concept:
+            return True
+    return False
+
+
+def _phase_order(periods: list[dict], events: list[dict], target: str, value) -> list[tuple[int, str]] | None:
+    parsed = split_phase_target(target)
+    if parsed is None or not isinstance(value, str):
+        return None
+    axis_id, base = parsed
+    current: dict[str, str] = {}
+    for other, event in fold(events).items():
+        if event.get("type") != "phase.set":
+            continue
+        found = split_phase_target(str(other))
+        if found and found[0] == axis_id and isinstance(event.get("value"), str):
+            current[found[1]] = event["value"]
+    current[base] = value
+    indexes: dict[str, int] = {}
+    for period in periods:
+        if period.get("axis_id") != axis_id:
+            continue
+        key = period.get("period_key_base") or period.get("period_id")
+        index = int(period["period_index"])
+        indexes[key] = min(indexes.get(key, index), index)
+    if base not in indexes:
+        return None
+    return [(indexes[key], phase) for key, phase in current.items() if key in indexes]
+
+
 def _builder_warnings(manifest: dict) -> list[dict]:
     warnings = []
     for message in manifest.get("builder_warnings") or []:
@@ -123,7 +188,7 @@ class FasService:
         self.builder = builder
         self.query = query
         self.support = support
-        self.guard = SemanticWriteGuard(store)
+        self.guard = SemanticWriteGuard(store, catalog=load_catalog())
         self._tasks: set[asyncio.Task] = set()
         self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
@@ -186,6 +251,16 @@ class FasService:
             "manifest": manifest,
         }
 
+    async def _dataset_rows(self, job_id: str, head: Head, dataset: str) -> list[dict]:
+        suffix = f"{dataset}.parquet"
+        if dataset in keys.PROJECTION:
+            files = (await self._manifest(job_id, head.build_key)).get("files") or {}
+        else:
+            files = (await self._done(job_id, head.build_key, head.derive_key)).get("files") or {}
+        rel = next(item for item in files if str(item).endswith("/" + suffix) or str(item).endswith(suffix))
+        raw = await self.store.get(f"books/{job_id}/{head.build_key}/{rel}")
+        return await self.parquet.read(raw)
+
     def _versions(self, glossary: str | None = None) -> Versions:
         return Versions(
             glossary=glossary or "none",
@@ -231,7 +306,14 @@ class FasService:
         ).derive(head.state_seq)
         if projected is None:
             projected = await self._projected_from_store(job_id, head.build_key)
-        derived = derive_rows(projected, state_seq=head.state_seq, derive=derive, versions=versions_dict)
+        events = await self.guard.read_all(job_id)
+        derived = derive_rows(
+            projected,
+            state_seq=head.state_seq,
+            derive=derive,
+            versions=versions_dict,
+            events=events,
+        )
         attempt = str(ULID())
         files = await self.guard.persist_derived(
             job_id=job_id,
@@ -338,7 +420,8 @@ class FasService:
             snapshot = await self._aligned_snapshot(job_id, summary.etag)
         build = build_key_for(job_id, summary.etag)
         versions = self._versions()
-        state_seq = head.state_seq if head else 0
+        events = await self.guard.read_all(job_id)
+        state_seq = int(events[-1]["seq"]) if events else (head.state_seq if head else 0)
         derive = versions.derive(state_seq)
         if head and head.build_key == build and head.derive_key == derive:
             if op_id:
@@ -399,6 +482,7 @@ class FasService:
             state_seq=state_seq,
             derive=derive,
             versions=versions.as_dict(),
+            events=events,
         )
         d_attempt = str(ULID())
         d_files = await self.guard.persist_derived(
@@ -731,18 +815,162 @@ class FasService:
         expr = {"result": _decimal_text(result), "status": "succeeded", "inputs": inputs, "literals": literals}
         return self._result_envelope(job_id, head, manifest, _expr_data(expr), citations, notes, is_latest=latest)
 
+    async def submit_decisions(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float) -> dict | Accepted:
+        ensured = await self.ensure(job_id, actor, wait_sec=min(wait_sec, self.settings.load_sync_sec))
+        if isinstance(ensured, Accepted):
+            return ensured
+        async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as fence:
+            head, token = await self._read_head(job_id)
+            if head is None:
+                raise NotFound("книга не загружена")
+            result = await self._apply_decisions(job_id, head, body, actor)
+            if result["records"]:
+                head = await self._fold_derived(job_id, head, token, fence.fence)
+            result["pending_state_seq"] = head.state_seq
+            return result
+
+    async def _apply_decisions(self, job_id: str, head: Head, body: dict, actor: Actor) -> dict:
+        items = body.get("decisions")
+        if items is None and body.get("kind"):
+            items = [body]
+        if not isinstance(items, list):
+            raise InvalidArgument("decisions должен быть списком")
+        periods = await self._dataset_rows(job_id, head, "dim_period")
+        rows = await self._dataset_rows(job_id, head, "dim_row")
+        known = _decision_targets(periods, rows)
+        events = await self.guard.read_all(job_id)
+        results = []
+        records = []
+        seen_concepts: set[str] = set()
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                results.append(_rejected(index, "schema_invalid", "элемент не объект"))
+                continue
+            kind = item.get("kind")
+            event_type = _DECISION_KINDS.get(kind)
+            if event_type is None:
+                results.append(_rejected(index, "schema_invalid", "неизвестный вид решения"))
+                continue
+            target = item.get("target")
+            if not isinstance(target, str) or not target:
+                results.append(_rejected(index, "schema_invalid", "нет цели"))
+                continue
+            concept = item.get("value") if event_type in {"concept.set", "concept.confirmed"} else None
+            if isinstance(concept, str) and concept in seen_concepts:
+                results.append(_rejected(index, "duplicate_in_batch", "понятие повторяется в пакете"))
+                continue
+            taken = False
+            if isinstance(concept, str):
+                taken = _concept_taken(events, target, concept)
+                seen_concepts.add(concept)
+            order = None
+            if event_type == "phase.set":
+                order = _phase_order(periods, events, target, item.get("value"))
+            if event_type in {"concept.set", "concept.confirmed"} and not isinstance(concept, str):
+                results.append(_rejected(index, "schema_invalid", "понятие должно быть строкой"))
+                continue
+            written = await self.guard.write_decision(
+                job_id,
+                event_type=event_type,
+                target=target,
+                value=item.get("value"),
+                actor=actor,
+                expected_seq=item.get("expected_seq"),
+                request_id=f"{actor.user_id}:{index}:{target}:{event_type}:{item.get('value')}",
+                concept=concept if isinstance(concept, str) else None,
+                known_targets=known,
+                phase_order=order,
+                concept_taken=taken,
+            )
+            if not written.accepted:
+                results.append(_rejected(index, written.code or "schema_invalid", written.detail))
+                continue
+            if isinstance(concept, str) or event_type == "phase.set":
+                events = await self.guard.read_all(job_id)
+            record = written.event or {}
+            records.append(record)
+            results.append(
+                {
+                    "index": index,
+                    "status": "accepted",
+                    "record_seq": record.get("seq"),
+                    "duplicate": written.duplicate,
+                    "errors": [],
+                    "warnings": [],
+                }
+            )
+        return {"results": results, "records": records}
+
+    async def _fold_derived(self, job_id: str, head: Head, token: str | None, fence: int) -> Head:
+        events = await self.guard.read_all(job_id)
+        state_seq = int(events[-1]["seq"]) if events else head.state_seq
+        versions = Versions(
+            glossary=head.versions.get("glossary", "none"),
+            taxonomy=head.versions.get("taxonomy", "core-1"),
+            calibrator=head.versions.get("calibrator", "none"),
+            profile=head.versions.get("profile", "p-0"),
+            embed_model=(head.versions.get("models") or {}).get("embed", ""),
+            rerank_model=(head.versions.get("models") or {}).get("rerank", ""),
+            clm_model=(head.versions.get("models") or {}).get("clm", ""),
+        )
+        derive = versions.derive(state_seq)
+        if state_seq == head.state_seq and derive == head.derive_key:
+            return head
+        projected = {
+            "dim_row": await self._dataset_rows(job_id, head, "dim_row"),
+            "dim_period": await self._dataset_rows(job_id, head, "dim_period"),
+        }
+        derived = derive_rows(
+            projected,
+            state_seq=state_seq,
+            derive=derive,
+            versions=versions.as_dict(),
+            events=events,
+        )
+        attempt = str(ULID())
+        files = await self.guard.persist_derived(
+            job_id=job_id,
+            build=head.build_key,
+            derive=derive,
+            attempt=attempt,
+            tables=derived,
+            parquet=self.parquet,
+            row_keys=frozenset(row["row_key"] for row in projected["dim_row"]),
+        )
+        done = {"derive_key": derive, "state_seq": state_seq, "attempt": attempt, "files": files}
+        try:
+            await self.store.put_if_absent(keys.derived_done(job_id, head.build_key, derive), _dumps(done))
+        except AlreadyExists:
+            pass
+        body = {**head.as_dict(), "derive_key": derive, "state_seq": state_seq, "versions": versions.as_dict()}
+        await self._publish_head(job_id, body, token, fence)
+        fresh, _token = await self._read_head(job_id)
+        return fresh or head
+
     async def resolve_periods(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float) -> dict | Accepted:
         ensured = await self.ensure(job_id, actor, wait_sec=min(wait_sec, self.settings.load_sync_sec))
         if isinstance(ensured, Accepted):
             return ensured
         head, fresh = _serve(ensured)
         text = str(body.get("text") or body.get("query") or "")
-        # TODO §5.4: после phase.set и привязки debt_service здесь будет первый период
-        # по index на временной оси, где debt_service ≠ 0. В фазе 0 привязок нет.
         if text.strip().casefold() in {"первый операционный год", "first operational year"}:
+            if head is None:
+                resolved = {
+                    "periods": [],
+                    "needs_input": [
+                        {"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}
+                    ],
+                }
+            else:
+                resolved = resolve_operational_year(
+                    await self._dataset_rows(job_id, head, "dim_period"),
+                    await self._dataset_rows(job_id, head, "period_semantics"),
+                    await self._dataset_rows(job_id, head, "bindings"),
+                    await self._dataset_rows(job_id, head, "fact_observation"),
+                    events=await self.guard.read_all(job_id),
+                )
             payload = {
-                "periods": [],
-                "needs_input": [{"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}],
+                **resolved,
                 "build_key": None if head is None else head.build_key,
                 "is_latest": None if fresh or head is None else True,
             }
@@ -1143,5 +1371,6 @@ TOOLS = [
     {"name": "get_slice", "method": "POST", "path": "/v1/books/{job_id}/slice"},
     {"name": "evaluate_expression", "method": "POST", "path": "/v1/books/{job_id}/expression"},
     {"name": "resolve_periods", "method": "POST", "path": "/v1/books/{job_id}/periods:resolve"},
+    {"name": "submit_decisions", "method": "POST", "path": "/v1/books/{job_id}/decisions"},
     {"name": "get_operation", "method": "GET", "path": "/v1/operations/{id}"},
 ]

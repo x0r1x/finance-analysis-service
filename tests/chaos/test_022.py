@@ -93,13 +93,25 @@ def stop_all(chaos) -> None:
 
 
 def _oom_cgroup() -> Path | None:
+    named = os.environ.get("FAS_TEST_OOM_CGROUP")
+    if named and (Path(named) / "memory.max").is_file():
+        return Path(named)
     if (OOM_CGROUP / "memory.max").is_file():
         return OOM_CGROUP
-    here = Path("/proc/self/cgroup").read_text(encoding="utf-8").strip().split(":")[-1]
-    parent = Path("/sys/fs/cgroup") / here.lstrip("/")
-    candidate = parent.parent / "fasoom2"
-    if (candidate / "memory.max").is_file():
-        return candidate
+    try:
+        here = Path("/proc/self/cgroup").read_text(encoding="utf-8").strip().split(":")[-1]
+    except OSError:
+        return None
+    current = Path("/sys/fs/cgroup") / here.lstrip("/")
+    for candidate in (current.parent / "fasoom2", current / "fasoom2"):
+        if (candidate / "memory.max").is_file():
+            return candidate
+        try:
+            candidate.mkdir(exist_ok=True)
+        except OSError:
+            continue
+        if (candidate / "memory.max").is_file():
+            return candidate
     return None
 
 
@@ -213,12 +225,21 @@ async def test_02_sigkill_then_oom_goes_to_dlq(chaos):
     cgroup = _oom_cgroup()
     assert cgroup is not None, "нет cgroup с memory.max"
     limit = cgroup / "memory.max"
+    swap = cgroup / "memory.swap.max"
     previous = limit.read_text(encoding="utf-8")
+    previous_swap = swap.read_text(encoding="utf-8") if swap.is_file() else None
     try:
-        limit.write_text("268435456")
-        oom = await _poison(chaos, "oom", extra={"FAS_OOM_CGROUP": str(cgroup)})
+        if previous_swap is not None:
+            swap.write_text("0")
+        oom = await _poison(
+            chaos,
+            "oom",
+            extra={"FAS_OOM_CGROUP": str(cgroup), "FAS_OOM_BYTES": "268435456"},
+        )
     finally:
         limit.write_text(previous)
+        if previous_swap is not None:
+            swap.write_text(previous_swap)
     record("2", {"sigkill": killed, "oom": oom})
 
 
@@ -458,14 +479,14 @@ async def test_08_redis_restart_keeps_operations(chaos):
     await asyncio.sleep(1.5)
     chaos.redis86.kill()
     await asyncio.sleep(0.4)
+    # После подъёма Redis задачу забирает новый worker: сценарий проверяет AOF и сверку.
+    stop_all(chaos)
     try:
         chaos.redis86.start()
         client = redis_async.Redis.from_url(chaos.redis86.url, socket_timeout=None)
         fresh = await TaskiqJobs.open(chaos.settings)
         await fresh.startup()
-        alive = [item for item in chaos.procs if item.proc.poll() is None]
-        if not alive:
-            start_worker(chaos, "aof-restart", max_async=4)
+        start_worker(chaos, "aof-restart", max_async=4)
         chaos.settings.op_stale_sec = 3
         runtime_mod.RUNTIME = WorkerRuntime(
             settings=chaos.settings,

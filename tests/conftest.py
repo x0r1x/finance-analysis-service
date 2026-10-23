@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from finance_analysis.adapters.builder.fixture import FixtureBuilder
-from finance_analysis.adapters.redis.runtime import RedisRuntime
+from finance_analysis.adapters.redis.runtime import RedisRuntime, version_at_least
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
 from finance_analysis.adapters.storage.store import S3Store, open_storage
 from finance_analysis.adapters.wren.query import WrenQuery
@@ -20,23 +20,118 @@ from finance_analysis.settings import Settings
 from tests.books import ALIASES, BUILDER_ROOT
 
 JOB = ALIASES["packt"]
-REDIS_URL = os.environ.get("FAS_TEST_REDIS", "redis://127.0.0.1:6379/15")
+REDIS_SERVER = os.environ.get("FAS_REDIS_SERVER", "/tmp/redis-src/redis-8.6.7/src/redis-server")
+REDIS_PORT = int(os.environ.get("FAS_TEST_REDIS_PORT", "6381"))
+_STARTED_URL: str | None = None
 
 
-def _redis_up() -> bool:
+def redis_url() -> str:
+    explicit = os.environ.get("FAS_TEST_REDIS")
+    if explicit:
+        return explicit
+    if _STARTED_URL:
+        return _STARTED_URL
+    return f"redis://127.0.0.1:{REDIS_PORT}/15"
+
+
+def _redis_86(version: str | None) -> bool:
+    return bool(version) and version_at_least(version, (8, 6, 5)) and not version_at_least(version, (8, 7, 0))
+
+
+def _port_open(port: int) -> bool:
     try:
-        with socket.create_connection(("127.0.0.1", 6379), timeout=0.2):
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
             return True
     except OSError:
         return False
 
 
+class _ContractRedis:
+    """Redis 8.6.x для контрактных тестов. Порт 6379 (часто 7.0.15) не используется."""
+
+    def __init__(self) -> None:
+        self.port = REDIS_PORT
+        self.directory = Path("/tmp/fas-redis-contract")
+        self.url = f"redis://127.0.0.1:{self.port}/15"
+        self.proc: subprocess.Popen | None = None
+        self.log_path = self.directory / "redis.log"
+
+    def start(self) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        if _port_open(self.port):
+            raise RuntimeError(f"порт {self.port} уже занят")
+        log = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 — живёт вместе с redis
+        self.proc = subprocess.Popen(
+            [
+                REDIS_SERVER,
+                "--port",
+                str(self.port),
+                "--bind",
+                "127.0.0.1",
+                "--dir",
+                str(self.directory),
+                "--appendonly",
+                "no",
+                "--save",
+                "",
+                "--protected-mode",
+                "yes",
+                "--daemonize",
+                "no",
+                "--logfile",
+                str(self.log_path),
+            ],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if _port_open(self.port):
+                return
+            if self.proc.poll() is not None:
+                raise RuntimeError(self.log_path.read_text(encoding="utf-8")[-2000:])
+            time.sleep(0.05)
+        raise RuntimeError("redis 8.6 не открыл порт")
+
+    def kill(self) -> None:
+        proc = self.proc
+        if proc is None or proc.poll() is not None:
+            self.proc = None
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        self.proc = None
+
+
+@pytest.fixture(scope="session")
+def redis86_url():
+    global _STARTED_URL
+    explicit = os.environ.get("FAS_TEST_REDIS")
+    if explicit:
+        _STARTED_URL = explicit
+        yield explicit
+        return
+    if not Path(REDIS_SERVER).is_file():
+        pytest.skip("нет бинарника Redis 8.6.7 (FAS_REDIS_SERVER)")
+    server = _ContractRedis()
+    server.start()
+    _STARTED_URL = server.url
+    try:
+        yield server.url
+    finally:
+        server.kill()
+
+
 @pytest.fixture
-def settings(tmp_path) -> Settings:
+def settings(tmp_path, redis86_url) -> Settings:
     return Settings(
         FAS_DATA_DIR=str(tmp_path / "data"),
         FAS_S3_PREFIX="fas",
-        FAS_REDIS_URL=REDIS_URL,
+        FAS_REDIS_URL=redis86_url,
         WREN_ENGINE_POOL=2,
         WREN_POOL_MEMORY_MB=512,
         WREN_DUCKDB_MEMORY_MB=256,
@@ -55,10 +150,13 @@ def settings(tmp_path) -> Settings:
 
 
 @pytest.fixture
-async def redis_runtime(settings):
-    if not _redis_up():
-        pytest.skip("redis недоступен")
+async def redis_runtime(settings, redis86_url):
+    del redis86_url
     runtime = RedisRuntime.connect(settings)
+    version = await runtime.server_version()
+    if not _redis_86(version):
+        await runtime.close()
+        pytest.fail(f"контрактные тесты требуют Redis 8.6.x, сейчас {version}")
     await runtime.redis.flushdb()
     yield runtime
     await runtime.redis.flushdb()
@@ -94,7 +192,7 @@ def s3_settings(tmp_path, endpoint: str, bucket: str = "fas") -> Settings:
         FAS_S3_ACCESS_KEY="minioadmin",
         FAS_S3_SECRET_KEY="minioadmin",
         FAS_S3_SSL=False,
-        FAS_REDIS_URL=REDIS_URL,
+        FAS_REDIS_URL=redis_url(),
         WREN_ENGINE_POOL=2,
         WREN_POOL_MEMORY_MB=512,
         WREN_DUCKDB_MEMORY_MB=256,

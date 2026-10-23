@@ -1,2 +1,3 @@
 taxonomy: core-1
-concepts: []
+concepts:
+  - id: debt_service

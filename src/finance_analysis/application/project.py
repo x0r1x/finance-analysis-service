@@ -21,6 +21,8 @@ from finance_analysis.domain.periods import (
     resolve_period_dates,
     split_period_key,
 )
+from finance_analysis.domain.phases import PHASES, split_phase_target
+from finance_analysis.domain.state import fold
 
 
 def _text(value: str | None) -> str | None:
@@ -154,6 +156,7 @@ def project(
                         "build_key": build,
                         "row_key": row.row_key,
                         "axis_id": series.axis_id,
+                        "axis_kind": axis.axis_kind,
                         "period_id": period.period_key,
                         "cell_id": cell_id(row.sheet, period.col, row.row),
                         "value_raw": None if raw is None else str(raw),
@@ -257,14 +260,33 @@ def _links(snapshot: WorkbookSnapshot, model_id: str, build: str) -> list[dict]:
     return out
 
 
+def _decision_maps(events: list[dict]) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
+    phases: dict[tuple[str, str], str] = {}
+    concepts: dict[str, str] = {}
+    for target, event in fold(events).items():
+        kind = event.get("type")
+        if kind == "phase.set":
+            parsed = split_phase_target(str(target))
+            value = event.get("value")
+            if parsed and isinstance(value, str) and value in PHASES:
+                phases[parsed] = value
+        elif kind in {"concept.set", "concept.confirmed"}:
+            value = event.get("value")
+            if isinstance(value, str) and value:
+                concepts[str(target)] = value
+    return phases, concepts
+
+
 def derive_rows(
     projected: dict[str, list[dict]],
     *,
     state_seq: int,
     derive: str,
     versions: dict,
+    events: list[dict] | None = None,
 ) -> dict[str, list[dict]]:
     now = datetime.now(UTC)
+    phases, concepts = _decision_maps(events or [])
     glossary = versions.get("glossary", "none")
     taxonomy = versions.get("taxonomy", "core-1")
     calibrator = versions.get("calibrator", "none")
@@ -302,21 +324,22 @@ def derive_rows(
         )
         if row["kind"] != "fact":
             continue
+        chosen = concepts.get(row["binding_key"])
         bindings.append(
             {
                 "model_id": row["model_id"],
                 "build_key": row["build_key"],
                 "state_seq": state_seq,
                 "derive_key": derive,
-                "concept": None,
-                "effective_concept": None,
-                "is_primary": False,
+                "concept": chosen,
+                "effective_concept": chosen,
+                "is_primary": chosen is not None,
                 "matched_label_id": None,
-                "status": "unknown",
+                "status": "bound" if chosen else "unknown",
                 "binding_key": row["binding_key"],
                 "row_key": row["row_key"],
                 "label_path_text": row["label_path_text"],
-                "source": "inferred",
+                "source": "confirmed" if chosen else "inferred",
                 "confidence": None,
                 "evidence_json": "{}",
                 "calibrator_version": calibrator,
@@ -328,12 +351,18 @@ def derive_rows(
                 "updated_at_utc": now,
             }
         )
-    # TODO §5.4: phase и phase_year заполняет только phase.set (фаза 2).
-    # Флаги остаются в dim_period для отображения и здесь не читаются.
+    # Фаза только из phase.set. Флаги в dim_period остаются для отображения и здесь не читаются.
     period_semantics = []
+    counted: dict[tuple[str, str], int] = {}
     for period in sorted(projected["dim_period"], key=lambda item: (item["axis_id"], item["period_index"])):
-        phase = None
+        phase = phases.get((period["axis_id"], period.get("period_key_base") or period["period_id"]))
         phase_year = None
+        source = "inferred"
+        if phase:
+            key = (period["axis_id"], phase)
+            counted[key] = counted.get(key, 0) + 1
+            phase_year = counted[key]
+            source = "decision"
         period_semantics.append(
             {
                 "model_id": period["model_id"],
@@ -344,8 +373,8 @@ def derive_rows(
                 "period_id": period["period_id"],
                 "phase": phase,
                 "phase_year": phase_year,
-                "source": "inferred",
-                "evidence_json": period["flags_json"],
+                "source": source,
+                "evidence_json": "{}",
             }
         )
     coverage_map: dict[tuple[str, str], int] = {}

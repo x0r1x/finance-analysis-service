@@ -1,4 +1,4 @@
-"""CLI фазы 0: storage sync и проверка хранилища."""
+"""CLI фазы 0: storage sync, возврат задач из DLQ."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import argparse
 import asyncio
 import sys
 
+from finance_analysis.adapters.queue.jobs import TaskiqJobs
+from finance_analysis.adapters.queue.requeue import requeue_dlq
 from finance_analysis.adapters.storage.store import build_storage
 from finance_analysis.adapters.storage.sync import sync_stores
 from finance_analysis.settings import Settings
@@ -48,6 +50,17 @@ async def _sync(source: str, destination: str, *, dry_run: bool, verify: bool) -
     print(report)
 
 
+async def _requeue(entry_id: str | None) -> None:
+    settings = Settings()
+    jobs = await TaskiqJobs.open(settings)
+    await jobs.startup()
+    try:
+        report = await requeue_dlq(jobs.redis, jobs.store, jobs.kick, entry_id=entry_id)
+    finally:
+        await jobs.shutdown()
+    print(report)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="fas")
     sub = parser.add_subparsers(dest="command")
@@ -58,9 +71,16 @@ def main(argv: list[str] | None = None) -> None:
     sync.add_argument("destination")
     sync.add_argument("--dry-run", action="store_true")
     sync.add_argument("--verify", action="store_true")
+    ops = sub.add_parser("ops")
+    ops_sub = ops.add_subparsers(dest="ops_command")
+    requeue = ops_sub.add_parser("requeue")
+    requeue.add_argument("entry_id", nargs="?")
     args = parser.parse_args(argv)
     if args.command == "storage" and args.storage_command == "sync":
         asyncio.run(_sync(args.source, args.destination, dry_run=args.dry_run, verify=args.verify))
+        return
+    if args.command == "ops" and args.ops_command == "requeue":
+        asyncio.run(_requeue(args.entry_id))
         return
     parser.print_help()
     sys.exit(2)

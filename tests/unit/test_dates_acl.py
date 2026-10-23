@@ -75,6 +75,7 @@ def test_acl_packt_and_missing_field():
     facts = {(row["row_key"], row["period_id"]): row for row in tables["fact_observation"]}
     revenue = facts[(PACKT_REVENUE_ROW, PACKT_PERIOD)]
     assert revenue["cell_id"] == PACKT_REVENUE_CELL
+    assert revenue["axis_kind"] == "time"
     assert str(revenue["value_raw"]) == PACKT_REVENUE_VALUE
     assert any(row["axis_id"] == "Input Assumptions!r5" for row in tables["fact_observation"])
     derived = derive_rows(tables, state_seq=0, derive="d", versions={})
