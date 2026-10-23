@@ -178,3 +178,34 @@ async def test_sync_roundtrip(tmp_path, minio_endpoint):
     assert second["skipped"] == 2
     assert await destination.get("books/a") == b"one"
     await destination.delete_prefix("")
+
+
+async def test_put_absent_publishes_complete_bytes(tmp_path):
+    store = LocalStore(tmp_path / "store")
+    payload = b"abc" * 1000
+    meta = await store.put_if_absent("logs/1", payload)
+    assert await store.get("logs/1") == payload
+    assert meta.size == len(payload)
+    with pytest.raises(AlreadyExists):
+        await store.put_if_absent("logs/1", b"other")
+    names = [path.name for path in (tmp_path / "store").rglob("*") if path.is_file()]
+    assert names == ["1"]
+
+
+async def test_put_absent_failure_leaves_no_object(tmp_path, monkeypatch):
+    store = LocalStore(tmp_path / "store")
+
+    def boom(fd, data):
+        raise OSError("disk")
+
+    monkeypatch.setattr(os, "write", boom)
+    with pytest.raises(OSError):
+        await store.put_if_absent("logs/1", b"hello")
+    assert not (tmp_path / "store" / "logs" / "1").exists()
+
+
+async def test_readonly_selftest_skips_writes(tmp_path):
+    store = LocalStore(tmp_path / "ro", read_only=True)
+    await store.selftest()
+    files = [path for path in (tmp_path / "ro").rglob("*") if path.is_file()]
+    assert files == []

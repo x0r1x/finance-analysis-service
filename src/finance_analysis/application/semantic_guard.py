@@ -69,16 +69,7 @@ class SemanticWriteGuard:
         )
         if not verdict.accepted:
             return WriteResult(False, code=verdict.code, detail=verdict.detail)
-        existing = await self._journal.matching(
-            job_id,
-            target=target,
-            event_type=event_type,
-            value=value,
-            request_id=request_id,
-        )
-        if existing is not None:
-            return WriteResult(True, duplicate=True, event=existing)
-        event = await self._journal._append(
+        event, duplicate = await self._journal.commit(
             job_id,
             target=target,
             event_type=event_type,
@@ -88,7 +79,7 @@ class SemanticWriteGuard:
             request_id=request_id,
             at_utc=at_utc,
         )
-        return WriteResult(True, event=event)
+        return WriteResult(True, duplicate=duplicate, event=event)
 
     def review_derived(self, tables: dict, *, row_keys: frozenset[str]) -> Verdict:
         return check_derived(tables, catalog=self._catalog, row_keys=row_keys)

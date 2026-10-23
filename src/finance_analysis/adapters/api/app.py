@@ -197,11 +197,15 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         checked = check_job(job_id)
         actor = _actor(request)
         support = await _limited(request, actor)
-        raw = await request.body()
-        cached = await _idem_begin(support, actor, "POST", "/v1/books/{job_id}:load", request, raw)
-        if cached is not None:
-            return _idem_response(cached)
+        method, route = "POST", "/v1/books/{job_id}:load"
+        raw = b""
+        pending = False
         try:
+            raw = await request.body()
+            cached = await _idem_begin(support, actor, method, route, request, raw)
+            if cached is not None:
+                return _idem_response(cached)
+            pending = _idem_key(request) is not None
             async with support.user_inflight(actor):
                 result = await _svc().ensure(
                     checked,
@@ -209,22 +213,29 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
                     wait_sec=settings.load_sync_sec,
                     prefer_async=_prefer_async(request),
                 )
+            if isinstance(result, Accepted):
+                response = JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
+                await _idem_finish(support, actor, method, route, request, raw, result.operation, 202)
+                pending = False
+                return response
+            if isinstance(result, Freshness):
+                view = await _svc().describe(checked, result.head, fresh=True)
+            else:
+                view = await _svc().describe(checked, result, fresh=False)
+            if isinstance(view, Accepted):
+                response = JSONResponse(view.operation, status_code=202, headers=_op_headers(view))
+                await _idem_finish(support, actor, method, route, request, raw, view.operation, 202)
+                pending = False
+                return response
+            await _idem_finish(support, actor, method, route, request, raw, view.body, 200)
+            pending = False
+            return view.body
+        except BaseException:
+            if pending:
+                await _idem_abort(support, actor, method, route, request, raw)
+            raise
         finally:
             app.state.inflight -= 1
-        if isinstance(result, Accepted):
-            response = JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
-            await _idem_finish(support, actor, "POST", "/v1/books/{job_id}:load", request, raw, result.operation, 202)
-            return response
-        if isinstance(result, Freshness):
-            view = await _svc().describe(checked, result.head, fresh=True)
-        else:
-            view = await _svc().describe(checked, result, fresh=False)
-        if isinstance(view, Accepted):
-            response = JSONResponse(view.operation, status_code=202, headers=_op_headers(view))
-            await _idem_finish(support, actor, "POST", "/v1/books/{job_id}:load", request, raw, view.operation, 202)
-            return response
-        await _idem_finish(support, actor, "POST", "/v1/books/{job_id}:load", request, raw, view.body, 200)
-        return view.body
 
     @app.get("/v1/books/{job_id}")
     async def get_book(job_id: str, request: Request):
@@ -244,36 +255,42 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         checked = check_job(job_id)
         actor = _actor(request)
         support = await _limited(request, actor)
-        raw = await request.body()
         route = _route_template(request)
-        cached = await _idem_begin(support, actor, "POST", route, request, raw)
-        if cached is not None:
-            app.state.inflight -= 1
-            return _idem_response(cached)
+        raw = b""
+        pending = False
         try:
-            body = await request.json() if raw else {}
-        except Exception as exc:
-            app.state.inflight -= 1
-            raise InvalidArgument("тело не JSON") from exc
-        if not isinstance(body, dict):
-            app.state.inflight -= 1
-            raise InvalidArgument("тело должно быть объектом")
-        digest = hashlib.sha256(raw or b"{}").hexdigest()
-        flight = f"{checked}:{route}:{digest}"
+            raw = await request.body()
+            cached = await _idem_begin(support, actor, "POST", route, request, raw)
+            if cached is not None:
+                return _idem_response(cached)
+            pending = _idem_key(request) is not None
+            try:
+                body = await request.json() if raw else {}
+            except Exception as exc:
+                raise InvalidArgument("тело не JSON") from exc
+            if not isinstance(body, dict):
+                raise InvalidArgument("тело должно быть объектом")
+            digest = hashlib.sha256(raw or b"{}").hexdigest()
+            flight = f"{checked}:{route}:{digest}"
 
-        async def _run():
-            async with support.user_inflight(actor):
-                return await method(checked, body, actor, wait_sec=settings.sync_deadline_ms / 1000)
+            async def _run():
+                async with support.user_inflight(actor):
+                    return await method(checked, body, actor, wait_sec=settings.sync_deadline_ms / 1000)
 
-        try:
             result = await support.singleflight(flight, _run)
+            if isinstance(result, Accepted):
+                await _idem_finish(support, actor, "POST", route, request, raw, result.operation, 202)
+                pending = False
+                return JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
+            await _idem_finish(support, actor, "POST", route, request, raw, result, 200)
+            pending = False
+            return result
+        except BaseException:
+            if pending:
+                await _idem_abort(support, actor, "POST", route, request, raw)
+            raise
         finally:
             app.state.inflight -= 1
-        if isinstance(result, Accepted):
-            await _idem_finish(support, actor, "POST", route, request, raw, result.operation, 202)
-            return JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
-        await _idem_finish(support, actor, "POST", route, request, raw, result, 200)
-        return result
 
     @app.post("/v1/books/{job_id}/series")
     async def series(job_id: str, request: Request):
@@ -317,13 +334,12 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
     async def cancel(op_id: str, request: Request):
         actor = _actor(request)
         support = await _limited(request, actor)
-        await request.body()
         try:
+            await request.body()
             async with support.user_inflight(actor):
-                body = await _svc().cancel_op(op_id, actor)
+                return await _svc().cancel_op(op_id, actor)
         finally:
             app.state.inflight -= 1
-        return body
 
     wrapped = CancelOnDisconnect(app)
     wrapped.fastapi = app
@@ -382,6 +398,17 @@ def _op_headers(result: Accepted) -> dict:
         "Location": f"/v1/operations/{op_id}",
         "Retry-After": str(result.retry_after),
     }
+
+
+def _idem_key(request: Request) -> str | None:
+    return request.headers.get("idempotency-key") or None
+
+
+async def _idem_abort(support, actor, method, route, request: Request, raw: bytes) -> None:
+    key = _idem_key(request)
+    if not key or support is None:
+        return
+    await support.idem_abort(actor, method, route, key, raw)
 
 
 async def _idem_begin(support, actor, method, route, request: Request, raw: bytes):

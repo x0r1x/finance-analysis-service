@@ -122,6 +122,9 @@ def _col_index(letters: str) -> int:
     return n
 
 
+MAX_RANGE_CELLS = 50_000
+
+
 def _col_letters(number: int) -> str:
     letters = ""
     n = number
@@ -153,12 +156,27 @@ def expand_ref(
         c2, r2 = _col_index(matched.group("b")), int(matched.group("br").lstrip("$"))
         c1, c2 = sorted((c1, c2))
         r1, r2 = sorted((r1, r2))
+        last_row = max(used_rows, 1)
+        last_col = max(used_cols, 1)
+        if r2 > last_row:
+            r2 = last_row
+            truncated = True
+        if c2 > last_col:
+            c2 = last_col
+            truncated = True
+        if r1 > r2 or c1 > c2:
+            return [], True
+        width = c2 - c1 + 1
+        room = max(MAX_RANGE_CELLS // width, 1)
+        if r2 - r1 + 1 > room:
+            r2 = r1 + room - 1
+            truncated = True
         cells = [
             f"{sheet}!{_col_letters(c)}{r}"
             for r in range(r1, r2 + 1)
             for c in range(c1, c2 + 1)
         ]
-        return cells, False
+        return cells, truncated
     matched = _COL_RANGE_RE.fullmatch(text)
     if matched:
         sheet = matched.group("sheet") or default_sheet or ""

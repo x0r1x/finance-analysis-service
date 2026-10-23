@@ -63,6 +63,10 @@ class Accepted:
     retry_after: int = 1
 
 
+class _LockTimeout(Exception):
+    """Замок книги не взят за отведённое время."""
+
+
 @dataclass
 class BookView:
     body: dict
@@ -442,17 +446,29 @@ class FasService:
             return head
         if isinstance(probe, ReportNotReady) or not isinstance(probe, Summary) or probe.status != "succeeded":
             return Freshness(head)
+        task = self.spawn(self._load_under_lock(job_id, actor, probe))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=wait_sec)
+        except TimeoutError:
+            if not task.done():
+                op = await self.create_op("book.load", job_id, actor, {})
+                self.spawn(self._attach(task, op["id"]))
+                return Accepted(op)
+            if task.cancelled():
+                raise
+            exc = task.exception()
+            if isinstance(exc, _LockTimeout):
+                return await self._defer_load(job_id, actor)
+            if exc is not None:
+                raise exc
+            return task.result()
+
+    async def _load_under_lock(self, job_id: str, actor: Actor, probe: Summary):
         try:
             async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as fence:
-                task = self.spawn(self.perform_load(job_id, actor=actor, fence=fence.fence, summary=probe))
-                try:
-                    return await asyncio.wait_for(asyncio.shield(task), timeout=wait_sec)
-                except TimeoutError:
-                    op = await self.create_op("book.load", job_id, actor, {})
-                    self.spawn(self._attach(task, op["id"]))
-                    return Accepted(op)
-        except TimeoutError:
-            return await self._defer_load(job_id, actor)
+                return await self.perform_load(job_id, actor=actor, fence=fence.fence, summary=probe)
+        except TimeoutError as exc:
+            raise _LockTimeout(job_id) from exc
 
     async def _known_etag(self, job_id: str, head: Head) -> str | None:
         try:

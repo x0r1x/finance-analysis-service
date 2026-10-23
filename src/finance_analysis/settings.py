@@ -27,8 +27,8 @@ class Settings(BaseSettings):
 
     wren_engine_pool: int = Field(default=32, alias="WREN_ENGINE_POOL")
     wren_pool_memory_mb: int = Field(default=8192, alias="WREN_POOL_MEMORY_MB")
-    wren_duckdb_memory_mb: int = Field(default=512, alias="WREN_DUCKDB_MEMORY_MB")
-    wren_duckdb_threads: int = Field(default=2, alias="WREN_DUCKDB_THREADS")
+    wren_duckdb_memory_mb: int = Field(default=512, gt=0, alias="WREN_DUCKDB_MEMORY_MB")
+    wren_duckdb_threads: int = Field(default=2, gt=0, alias="WREN_DUCKDB_THREADS")
     wren_engine_queue_max: int = Field(default=8, alias="WREN_ENGINE_QUEUE_MAX")
     wren_hot_queue: int = Field(default=3, alias="WREN_HOT_QUEUE")
     wren_engines_per_book: int = Field(default=2, alias="WREN_ENGINES_PER_BOOK")

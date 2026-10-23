@@ -140,6 +140,22 @@ async def test_idempotency_and_actor(app):
         assert first.json()["build_key"] == second.json()["build_key"]
         clash = await client.post(f"/v1/books/{JOB}:load", headers={**headers, "Idempotency-Key": "k1"}, content=b"{}")
         assert clash.status_code == 422
+        assert app.fastapi.state.inflight == 0
+        retry_headers = {"X-User-Id": "alex", "X-Client-Id": "desk", "Idempotency-Key": "broken"}
+        bad = await client.post(
+            f"/v1/books/{JOB}/series",
+            headers={**retry_headers, "Content-Type": "application/json"},
+            content=b"{",
+        )
+        assert bad.status_code == 400
+        assert app.fastapi.state.inflight == 0
+        again = await client.post(
+            f"/v1/books/{JOB}/series",
+            headers=retry_headers,
+            json={"row_keys": [PACKT_REVENUE_ROW], "periods": [PACKT_PERIOD]},
+        )
+        assert again.status_code == 200
+        assert app.fastapi.state.inflight == 0
 
 
 async def test_rate_limit_429(settings, local_service, redis_runtime):

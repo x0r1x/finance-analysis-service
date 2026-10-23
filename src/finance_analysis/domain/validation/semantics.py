@@ -68,7 +68,7 @@ def check_derived(tables: dict, *, catalog: frozenset[str], row_keys: frozenset[
                 return Verdict(False, "concept_not_in_catalog", "понятие вне каталога")
         if not row.get("is_primary"):
             continue
-        bound = next((name for name in names if name is not None), None)
+        bound = _concept(row.get("effective_concept")) or _concept(row.get("concept"))
         if bound is None:
             continue
         primaries[bound] = primaries.get(bound, 0) + 1

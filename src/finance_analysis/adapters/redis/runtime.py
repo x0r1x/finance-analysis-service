@@ -39,6 +39,17 @@ else
 end
 """
 
+_ABORT_PENDING = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return 0
+end
+if string.find(raw, '"status": "pending"', 1, true) then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
 _GCRA = """
 local now = tonumber(ARGV[1])
 local interval = tonumber(ARGV[2])
@@ -59,6 +70,37 @@ local ttl = math.ceil(burst * interval + interval)
 redis.call('SET', KEYS[1], tostring(new_tat), 'PX', ttl)
 return {1, 0}
 """
+
+
+def _flight_dump(value) -> str | None:
+    if isinstance(value, dict):
+        return json.dumps({"kind": "dict", "body": value})
+    operation = getattr(value, "operation", None)
+    if type(value).__name__ == "Accepted" and isinstance(operation, dict):
+        retry = getattr(value, "retry_after", 1)
+        return json.dumps(
+            {"kind": "accepted", "operation": operation, "retry_after": int(retry or 1)}
+        )
+    return None
+
+
+def _flight_value(raw: bytes | str):
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    kind = parsed.get("kind")
+    if kind == "dict" and isinstance(parsed.get("body"), dict):
+        return parsed["body"]
+    if kind == "accepted" and isinstance(parsed.get("operation"), dict):
+        from finance_analysis.application.service import Accepted
+
+        return Accepted(parsed["operation"], retry_after=int(parsed.get("retry_after") or 1))
+    if kind is None:
+        return parsed
+    return None
 
 
 class RedisRuntime:
@@ -227,13 +269,26 @@ class RedisRuntime:
                 raise RequestInProgress("запрос с этим ключом ещё выполняется", extra={"retry_after": 1})
             return stored
         payload = json.dumps({"hash": digest, "status": "pending"})
+        pending_ttl = max(
+            int(self.settings.lock_ttl_ms / 1000),
+            int(self.settings.load_sync_sec) + 30,
+            30,
+        )
         try:
-            ok = await self.redis.set(redis_key, payload, nx=True, ex=self.settings.idempotency_ttl)
+            ok = await self.redis.set(redis_key, payload, nx=True, ex=pending_ttl)
         except redis_async.RedisError as exc:
             raise DependencyUnavailable("Redis недоступен") from exc
         if not ok:
             return await self.idem_begin(actor, method, route, key, body)
         return None
+
+    async def idem_abort(self, actor: Actor, method: str, route: str, key: str, body: bytes) -> None:
+        del body
+        redis_key = f"fas:idem:{actor.user_id}:{actor.client_id}:{method}:{route}:{key}"
+        try:
+            await self.redis.eval(_ABORT_PENDING, 1, redis_key)
+        except redis_async.RedisError:
+            return
 
     async def singleflight(self, key: str, factory):
         """Один расчёт на ключ. При отказе Redis вызывающий считает сам."""
@@ -249,15 +304,19 @@ class RedisRuntime:
             for _ in range(200):
                 cached = await self.cache_get(result_key)
                 if cached:
-                    return json.loads(cached)
+                    loaded = _flight_value(cached)
+                    if loaded is not None:
+                        return loaded
                 await asyncio.sleep(0.05)
             return await factory()
         try:
             value = await factory()
-            try:
-                await self.redis.set(result_key, json.dumps(value, default=str), px=30_000)
-            except (TypeError, redis_async.RedisError):
-                pass
+            encoded = _flight_dump(value)
+            if encoded is not None:
+                try:
+                    await self.redis.set(result_key, encoded, px=30_000)
+                except redis_async.RedisError:
+                    pass
             return value
         finally:
             try:

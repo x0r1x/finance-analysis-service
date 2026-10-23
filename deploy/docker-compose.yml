@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     command: redis-server --appendonly yes --appendfsync everysec --maxmemory-policy noeviction
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
   api:
     build:
       context: ..
@@ -30,7 +30,7 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
       MINIO_REGION: ap-northeast-1
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
 
 volumes:
   fas-data:

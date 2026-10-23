@@ -24,12 +24,38 @@ export const options = {
   },
 };
 
+function loadReady(jobId, user) {
+  const headers = { "X-User-Id": user, "X-Client-Id": "k6" };
+  const loaded = http.post(`${base}/v1/books/${jobId}:load`, null, { headers, timeout: "180s" });
+  if (loaded.status === 200) {
+    return loaded;
+  }
+  if (loaded.status !== 202) {
+    return loaded;
+  }
+  let opId = "";
+  try {
+    opId = loaded.json("id");
+  } catch (error) {
+    return loaded;
+  }
+  const deadline = Date.now() + 120000;
+  while (Date.now() < deadline) {
+    const current = http.get(`${base}/v1/operations/${opId}?wait_ms=2000`, { headers, timeout: "30s" });
+    if (current.status === 200) {
+      const status = current.json("status");
+      if (status === "succeeded" || status === "failed") {
+        break;
+      }
+    }
+    sleep(0.5);
+  }
+  return http.get(`${base}/v1/books/${jobId}`, { headers, timeout: "60s" });
+}
+
 export function setup() {
-  const loaded = http.post(`${base}/v1/books/${job}:load`, null, {
-    headers: { "X-User-Id": "s1", "X-Client-Id": "k6" },
-    timeout: "180s",
-  });
-  check(loaded, { "load ok": (r) => r.status === 200 || r.status === 202 });
+  const loaded = loadReady(job, "s1");
+  check(loaded, { "load ok": (r) => r && r.status === 200 });
 }
 
 export default function () {

@@ -76,6 +76,25 @@ class Journal:
         if request_id:
             self._requests.setdefault(job_id, {})[str(request_id)] = event
 
+    def _duplicate_locked(
+        self,
+        job_id: str,
+        *,
+        target: str,
+        event_type: str,
+        value,
+        request_id: str,
+    ) -> dict | None:
+        if request_id and request_id in self._requests.get(job_id, {}):
+            return self._requests[job_id][request_id]
+        canon = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        found = self._values.get(job_id, {}).get((target, event_type, canon))
+        if found is None:
+            return None
+        if self._keys.get(job_id, {}).get(target) != found.get("seq"):
+            return None
+        return found
+
     async def matching(
         self,
         job_id: str,
@@ -87,10 +106,13 @@ class Journal:
     ) -> dict | None:
         async with self._lock(job_id):
             await self._sync(job_id)
-            if request_id and request_id in self._requests.get(job_id, {}):
-                return self._requests[job_id][request_id]
-            canon = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-            return self._values.get(job_id, {}).get((target, event_type, canon))
+            return self._duplicate_locked(
+                job_id,
+                target=target,
+                event_type=event_type,
+                value=value,
+                request_id=request_id,
+            )
 
     async def read_all(self, job_id: str) -> list[dict]:
         last = await self.last_seq(job_id)
@@ -99,7 +121,7 @@ class Journal:
             events.append(json.loads(await self.store.get(log_key(job_id, seq))))
         return events
 
-    async def _append(
+    async def commit(
         self,
         job_id: str,
         *,
@@ -110,44 +132,79 @@ class Journal:
         expected_seq: int | None,
         request_id: str,
         at_utc: datetime | None = None,
-    ) -> dict:
+    ) -> tuple[dict, bool]:
+        """Проверка дубля и запись под одним замком. Второй элемент — duplicate."""
+
         async with self._lock(job_id):
             while True:
                 await self._sync(job_id)
-                actual = self._keys.get(job_id, {}).get(target)
-                if actual != expected_seq:
-                    current = None
-                    if actual:
-                        current = json.loads(await self.store.get(log_key(job_id, actual)))
-                    raise BindingConflict(
-                        "номер expected_seq устарел",
-                        extra={"target": target, "actual_seq": actual, "current": current},
-                    )
-                seq = self._last.get(job_id, 0) + 1
-                event = {
-                    "seq": seq,
-                    "type": event_type,
-                    "target": target,
-                    "binding_key": target,
-                    "value": value,
-                    "actor": {"user_id": actor.user_id, "client_id": actor.client_id},
-                    "expected_seq": expected_seq,
-                    "request_id": request_id,
-                    "at_utc": (at_utc or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                }
+                existing = self._duplicate_locked(
+                    job_id,
+                    target=target,
+                    event_type=event_type,
+                    value=value,
+                    request_id=request_id,
+                )
+                if existing is not None:
+                    return existing, True
                 try:
-                    await self.store.put_if_absent(
-                        log_key(job_id, seq),
-                        json.dumps(event, ensure_ascii=False).encode(),
+                    event = await self._write_locked(
+                        job_id,
+                        target=target,
+                        event_type=event_type,
+                        value=value,
+                        actor=actor,
+                        expected_seq=expected_seq,
+                        request_id=request_id,
+                        at_utc=at_utc,
                     )
                 except AlreadyExists:
                     self._last[job_id] = 0
                     self._seen[job_id] = False
                     continue
-                self._last[job_id] = seq
-                self._keys.setdefault(job_id, {})[target] = seq
-                self._remember(job_id, event)
-                return event
+                return event, False
+
+    async def _write_locked(
+        self,
+        job_id: str,
+        *,
+        target: str,
+        event_type: str,
+        value,
+        actor: Actor,
+        expected_seq: int | None,
+        request_id: str,
+        at_utc: datetime | None,
+    ) -> dict:
+        actual = self._keys.get(job_id, {}).get(target)
+        if actual != expected_seq:
+            current = None
+            if actual:
+                current = json.loads(await self.store.get(log_key(job_id, actual)))
+            raise BindingConflict(
+                "номер expected_seq устарел",
+                extra={"target": target, "actual_seq": actual, "current": current},
+            )
+        seq = self._last.get(job_id, 0) + 1
+        event = {
+            "seq": seq,
+            "type": event_type,
+            "target": target,
+            "binding_key": target,
+            "value": value,
+            "actor": {"user_id": actor.user_id, "client_id": actor.client_id},
+            "expected_seq": expected_seq,
+            "request_id": request_id,
+            "at_utc": (at_utc or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        await self.store.put_if_absent(
+            log_key(job_id, seq),
+            json.dumps(event, ensure_ascii=False).encode(),
+        )
+        self._last[job_id] = seq
+        self._keys.setdefault(job_id, {})[target] = seq
+        self._remember(job_id, event)
+        return event
 
     async def folded(self, job_id: str) -> dict[str, dict]:
         return fold(await self.read_all(job_id))

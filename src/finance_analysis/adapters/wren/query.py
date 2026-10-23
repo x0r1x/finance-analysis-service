@@ -155,7 +155,11 @@ def build_mdl(job_id: str, paths: dict[str, str]) -> dict:
                 "name": "series_cube",
                 "baseObject": "series",
                 "measures": [
-                    {"name": "value_sum", "expression": "sum(normalized_value)", "type": "number"},
+                    {
+                        "name": "value_sum",
+                        "expression": "sum(CASE WHEN is_primary THEN normalized_value END)",
+                        "type": "number",
+                    },
                     {"name": "value_last", "expression": "max(value)", "type": "number"},
                     {"name": "cells", "expression": "count(cell_id)", "type": "number"},
                 ],
@@ -204,28 +208,27 @@ def _source(settings: Settings):
     }
 
 
+class EngineStartInterrupted(Exception):
+    """Создание движка прервано. Ожидающие запросы могут повторить попытку."""
+
+
 def _apply_limits(engine: WrenEngine, settings: Settings) -> dict:
-    notes = {"memory_limit": None, "threads": None, "set_ok": False}
     connector = engine._get_connector()
     connection = connector.connection
-    try:
-        connection.execute(f"SET memory_limit='{int(settings.wren_duckdb_memory_mb)}MB'")
-        connection.execute(f"SET threads={int(settings.wren_duckdb_threads)}")
-        for statement in (
-            "SET enable_http_metadata_cache=true",
-            "SET parquet_metadata_cache=true",
-        ):
-            try:
-                connection.execute(statement)
-            except Exception:  # noqa: BLE001, S110 — необязательный SET не должен ронять пул
-                pass
-        row = connection.execute(
-            "SELECT current_setting('memory_limit'), current_setting('threads')"
-        ).fetchone()
-        notes = {"memory_limit": row[0], "threads": int(row[1]), "set_ok": True}
-    except Exception as exc:  # noqa: BLE001 — сбой лимита записывается в notes, движок остаётся
-        notes["error"] = str(exc)
-    return notes
+    connection.execute(f"SET memory_limit='{int(settings.wren_duckdb_memory_mb)}MB'")
+    connection.execute(f"SET threads={int(settings.wren_duckdb_threads)}")
+    for statement in (
+        "SET enable_http_metadata_cache=true",
+        "SET parquet_metadata_cache=true",
+    ):
+        try:
+            connection.execute(statement)
+        except Exception:  # noqa: BLE001, S110 — необязательный SET не должен ронять пул
+            pass
+    row = connection.execute(
+        "SELECT current_setting('memory_limit'), current_setting('threads')"
+    ).fetchone()
+    return {"memory_limit": row[0], "threads": int(row[1]), "set_ok": True}
 
 
 @dataclass
@@ -310,22 +313,39 @@ class EnginePool:
                             future.set_result(slot)
                     self.cold_starts.append(time.perf_counter() - started)
                     chosen = slot
-                except Exception as exc:
-                    async with self._guard:
-                        self._inflight.pop(key, None)
-                        if future is not None and not future.done():
-                            future.set_exception(exc)
+                except BaseException as exc:
+                    task = asyncio.current_task()
+                    paused = 0
+                    if task is not None:
+                        while task.cancelling():
+                            task.uncancel()
+                            paused += 1
+                    try:
+                        async with self._guard:
+                            self._inflight.pop(key, None)
+                            if future is not None and not future.done():
+                                err = exc if isinstance(exc, Exception) else EngineStartInterrupted()
+                                future.set_exception(err)
+                                future.exception()
+                    finally:
+                        if task is not None:
+                            for _ in range(paused):
+                                task.cancel()
                     raise
             else:
-                chosen = await future
+                chosen = await asyncio.shield(future)
         chosen.waiters += 1
+        acquired = False
         try:
             await chosen.sem.acquire()
-        except Exception:
-            chosen.waiters -= 1
+            acquired = True
+            chosen.refs += 1
+        except BaseException:
+            if acquired:
+                chosen.sem.release()
             raise
-        chosen.refs += 1
-        chosen.waiters -= 1
+        finally:
+            chosen.waiters -= 1
 
         @asynccontextmanager
         async def _cm():
@@ -366,7 +386,11 @@ class WrenQuery:
             )
 
         engine = await anyio.to_thread.run_sync(_build, limiter=self._limiter)
-        notes = await anyio.to_thread.run_sync(lambda: _apply_limits(engine, self.settings))
+        try:
+            notes = await anyio.to_thread.run_sync(lambda: _apply_limits(engine, self.settings))
+        except Exception:
+            await anyio.to_thread.run_sync(engine.close)
+            raise
         self.limit_notes = notes
         return _Slot(engine=engine, mdl_json=json.dumps(mdl), limits=notes)
 

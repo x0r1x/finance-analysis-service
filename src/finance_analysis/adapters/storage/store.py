@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import os
+import threading
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,15 @@ def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("короткая запись")
+        view = view[written:]
+
+
 def _meta(key: str, data: bytes, mtime: datetime | None, etag: str | None) -> ObjMeta:
     return ObjMeta(key=key, size=len(data) if data is not None else 0, etag=etag, mtime=mtime)
 
@@ -55,6 +65,8 @@ class _StoreBase:
             raise DependencyUnavailable(_READ_ONLY)
 
     async def selftest(self) -> None:
+        if self.read_only:
+            return
         token_key = f"_meta/selftest/{check_ulid(str(__import__('ulid').ULID()))}"
         first = await self.put_if_absent(token_key, b"a")
         try:
@@ -150,16 +162,26 @@ class LocalStore(_StoreBase):
     def _put_absent_sync(self, key: str, data: bytes) -> ObjMeta:
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        token = f"{os.getpid()}.{threading.get_ident()}.{os.urandom(4).hex()}"
+        tmp = path.with_name(f".{path.name}.{token}.tmp")
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         try:
-            fd = os.open(path, flags, 0o644)
-        except FileExistsError as exc:
-            raise AlreadyExists(key) from exc
-        try:
-            os.write(fd, data)
+            _write_all(fd, data)
             os.fsync(fd)
-        finally:
+        except Exception:
             os.close(fd)
+            tmp.unlink(missing_ok=True)
+            raise
+        os.close(fd)
+        try:
+            os.link(tmp, path)
+        except FileExistsError as exc:
+            tmp.unlink(missing_ok=True)
+            raise AlreadyExists(key) from exc
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        tmp.unlink(missing_ok=True)
         return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=datetime.now(UTC))
 
     def _put_match_sync(self, key: str, data: bytes, token: str) -> ObjMeta:

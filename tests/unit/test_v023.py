@@ -24,6 +24,7 @@ from finance_analysis.domain.book import (
     build_key_for,
 )
 from finance_analysis.domain.errors import UnsupportedBuilderShape
+from finance_analysis.domain.validation.semantics import check_derived
 from finance_analysis.settings import Settings
 from tests.books import BUILDER_ROOT, job_id
 from tests.conftest import JOB
@@ -165,19 +166,22 @@ def test_concept_measure_keeps_only_primary_row():
     )})
     expression = mdl["cubes"][0]["dimensions"]
     concept = next(item for item in expression if item["name"] == "concept")
+    measure = next(item for item in mdl["cubes"][0]["measures"] if item["name"] == "value_sum")
     assert concept["expression"] == "CASE WHEN is_primary THEN effective_concept END"
+    assert measure["expression"] == "sum(CASE WHEN is_primary THEN normalized_value END)"
     import duckdb
 
     table = duckdb.sql(
-        """
-        SELECT CASE WHEN is_primary THEN effective_concept END AS concept, sum(value) AS total
-        FROM (VALUES ('revenue', true, 10), ('revenue', false, 99))
-             t(effective_concept, is_primary, value)
+        f"""
+        SELECT {concept["expression"]} AS concept, {measure["expression"]} AS total
+        FROM (VALUES ('revenue', true, 10), ('revenue', false, 99), ('other', false, 7))
+             t(effective_concept, is_primary, normalized_value)
         GROUP BY 1
         """
     ).fetchall()
-    grouped = {concept: total for concept, total in table if concept is not None}
+    grouped = {name: total for name, total in table if name is not None}
     assert grouped == {"revenue": 10}
+    assert [total for name, total in table if name is None] == [None]
 
 
 async def test_fixture_summary_etag_head_and_rebuild():
@@ -327,6 +331,17 @@ async def test_guard_rejects_and_duplicates(tmp_path):
     primary = guard.review_derived(tables, row_keys=frozenset({"row-1", "row-2"}))
     assert primary.accepted is False
     assert primary.code == "concept_already_bound"
+    remapped = check_derived(
+        {
+            "bindings": [
+                {"concept": "a", "effective_concept": "b", "is_primary": True, "row_key": "row-1"},
+                {"concept": "c", "effective_concept": "b", "is_primary": True, "row_key": "row-2"},
+            ]
+        },
+        catalog=frozenset({"a", "b", "c"}),
+        row_keys=frozenset({"row-1", "row-2"}),
+    )
+    assert remapped.code == "concept_already_bound"
     foreign = guard.review_derived(
         {"bindings": [{"concept": "other", "effective_concept": "other", "is_primary": False, "row_key": "row-1"}]},
         row_keys=frozenset({"row-1"}),

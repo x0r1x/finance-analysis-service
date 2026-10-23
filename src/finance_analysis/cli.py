@@ -14,7 +14,15 @@ from finance_analysis.settings import Settings
 def _settings_for(url: str) -> Settings:
     if url.startswith("file://"):
         path = url.removeprefix("file://")
-        return Settings(FAS_DATA_DIR=path, FAS_S3_PREFIX="")
+        return Settings(
+            FAS_DATA_DIR=path,
+            FAS_S3_PREFIX="",
+            FAS_S3_BUCKET=None,
+            FAS_S3_ENDPOINT=None,
+            FAS_S3_ACCESS_KEY=None,
+            FAS_S3_SECRET_KEY=None,
+            FAS_READ_ONLY=False,
+        )
     if url.startswith("s3://"):
         rest = url.removeprefix("s3://")
         bucket, _, prefix = rest.partition("/")
@@ -26,6 +34,7 @@ def _settings_for(url: str) -> Settings:
             FAS_S3_ACCESS_KEY=__import__("os").environ.get("FAS_S3_ACCESS_KEY"),
             FAS_S3_SECRET_KEY=__import__("os").environ.get("FAS_S3_SECRET_KEY"),
             FAS_S3_SSL=__import__("os").environ.get("FAS_S3_SSL", "true").lower() == "true",
+            FAS_READ_ONLY=False,
         )
     raise SystemExit(f"неизвестный URL {url}")
 
