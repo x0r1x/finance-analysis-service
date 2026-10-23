@@ -95,6 +95,10 @@ class LockPort(Protocol):
     async def held(self, name: str) -> bool: ...
 
 
+class JobQueuePort(Protocol):
+    async def submit(self, kind: str, payload: dict, *, queue: str, actor: Actor) -> dict: ...
+
+
 class OperationPort(Protocol):
     async def create(self, kind: str, job_id: str | None, actor: Actor, payload: dict) -> dict: ...
 

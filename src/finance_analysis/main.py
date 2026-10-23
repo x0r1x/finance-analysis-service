@@ -10,7 +10,7 @@ import uvicorn
 from finance_analysis.adapters.api.app import create_app
 from finance_analysis.adapters.builder.fixture import FixtureBuilder
 from finance_analysis.adapters.builder.http import HttpBuilder
-from finance_analysis.adapters.redis.runtime import RedisRuntime
+from finance_analysis.adapters.redis.runtime import RedisRuntime, version_at_least
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
 from finance_analysis.adapters.storage.store import open_storage
 from finance_analysis.adapters.wren.query import WrenQuery
@@ -29,6 +29,11 @@ async def assemble(settings: Settings) -> tuple[FasService, RedisRuntime]:
         from finance_analysis.domain.errors import StartupError
 
         raise StartupError("Redis не отвечает")
+    version = await support.server_version()
+    if not version_at_least(version):
+        from finance_analysis.domain.errors import StartupError
+
+        raise StartupError(f"нужен Redis 8.6.5 или новее, сейчас {version}")
     fixture = os.environ.get("FAS_FIXTURE_DIR")
     if fixture:
         builder = FixtureBuilder(Path(fixture))

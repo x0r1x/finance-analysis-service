@@ -21,6 +21,8 @@ dependencies = [
   "wrenai==0.16.0",
   "orjson>=3.10",
   "pyyaml>=6.0",
+  "taskiq>=0.13,<0.14",
+  "taskiq-redis==1.2.4",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +37,8 @@ dev = [
 [project.scripts]
 fas-api = "finance_analysis.main:main"
 fas = "finance_analysis.cli:main"
+fas-worker = "finance_analysis.adapters.queue.worker:main"
+fas-scheduler = "finance_analysis.adapters.queue.scheduler:main"
 
 [build-system]
 requires = ["setuptools>=68"]

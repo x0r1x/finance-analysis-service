@@ -30,6 +30,7 @@ from finance_analysis.domain.errors import (
     NotAcceptable,
 )
 from finance_analysis.domain.ids import actor_token
+from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.settings import Settings
 
@@ -234,6 +235,31 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
             if pending:
                 await _idem_abort(support, actor, method, route, request, raw)
             raise
+        finally:
+            app.state.inflight -= 1
+
+    @app.get("/v1/books/{job_id}/builds")
+    async def list_builds(job_id: str, request: Request, page_size: int = 50, page_token: str | None = None):
+        checked = check_job(job_id)
+        actor = _actor(request)
+        await _limited(request, actor)
+        try:
+            if page_size < 1 or page_size > 1000:
+                raise InvalidArgument("page_size должен быть от 1 до 1000")
+            async with _support().user_inflight(actor):
+                return await _svc().list_builds(checked, page_size=page_size, page_token=page_token)
+        finally:
+            app.state.inflight -= 1
+
+    @app.get("/v1/books/{job_id}/builds/{build_key}")
+    async def get_build(job_id: str, build_key: str, request: Request):
+        checked = check_job(job_id)
+        build = check_build(build_key)
+        actor = _actor(request)
+        await _limited(request, actor)
+        try:
+            async with _support().user_inflight(actor):
+                return await _svc().get_build(checked, build)
         finally:
             app.state.inflight -= 1
 
