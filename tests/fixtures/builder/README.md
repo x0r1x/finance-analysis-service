@@ -22,7 +22,7 @@
 
 `graph.json` в `artifacts` называет ещё `ir/cells.parquet`, `ir/edges.parquet` и `ir/cell_edges.parquet`. В этом дампе их нет.
 
-`summary.json` собран скриптом `build_summary.py` из `context.json` и `graph.json` этой же фикстуры. Скрипт повторяет поле `SummaryDocument` builder @ `8f0b1b9`: `warnings` копируется из `context.warnings`, `missing_cached_values` — из `workbook`. Живой checkout репозитория builder из среды, где снимался файл, был недоступен, поэтому тело не скачивалось по HTTP и не импортировало код builder. `meta.json` скрипт не читает.
+`summary.json` собран скриптом `build_summary.py` из `context.json`, `graph.json` и `meta.json` этой же фикстуры. Скрипт повторяет форму `SummaryDocument` (`summary-2`): `schema_version`, `warnings` из `context.warnings`, `missing_cached_values` и `iterate` из `workbook`, циклы как `{id, class, members}` с числом членов, подсказки как `{sheet, row, label}` без `cell_ids`. Четыре поля источника (`source_filename`, `content_sha256`, `status`, `stage`) берутся из `meta.json`, если файл есть, иначе из `context.meta`. Если выбранный источник поле не содержит, в ответе `null`. Код builder скрипт не импортирует. Адаптер FAS по-прежнему не читает `meta.json`.
 
 Фикстура отдаёт этот файл как HTTP `/summary` формы `summary-2`: strong ETag считается по байтам `context.json` и `graph.json`, `304` и `HEAD` без тела, пересборка — `409 report_not_ready`.
 
