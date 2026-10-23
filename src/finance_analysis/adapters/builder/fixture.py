@@ -1,4 +1,7 @@
-"""Книга из каталога фикстур. Эмулирует HTTP `/summary`, а не файл публикации.
+"""Книга из каталога фикстур. Эмулирует HTTP `/summary`.
+
+Если рядом с публикацией лежит `summary.json`, это тело ответа.
+Иначе тело собирается из версий схем `context.json` и `graph.json`.
 
 `GET /summary` отдаёт форму `summary-2` и strong ETag. `If-None-Match` при
 `status=succeeded` и том же ETag — `304` без тела. `HEAD` тоже без тела.
@@ -80,12 +83,22 @@ class FixtureBuilder:
             graph_mtime_ns=0,
             graph_size=len(graph_raw),
         )
-        body = {
-            "status": self.status_override.get(job_id, "succeeded"),
-            "context_schema_version": str(context_version),
-            "graph_schema_version": str(graph_version),
-            "warnings": list(self.warnings_override.get(job_id, [])),
-        }
+        summary_path = folder / "summary.json"
+        if await anyio.to_thread.run_sync(summary_path.is_file):
+            raw = await self._bytes(summary_path)
+            body = await anyio.to_thread.run_sync(json.loads, raw)
+            if not isinstance(body, dict):
+                raise UnsupportedBuilderShape("summary не объект", extra={"fields": ["summary"]})
+            body = dict(body)
+        else:
+            body = {
+                "context_schema_version": str(context_version),
+                "graph_schema_version": str(graph_version),
+                "warnings": [],
+            }
+        body["status"] = self.status_override.get(job_id, body.get("status", "succeeded"))
+        if job_id in self.warnings_override:
+            body["warnings"] = list(self.warnings_override[job_id])
         return body, tag
 
     async def summary(self, job_id: str, etag: str | None) -> Summary | NotModified | ReportNotReady:

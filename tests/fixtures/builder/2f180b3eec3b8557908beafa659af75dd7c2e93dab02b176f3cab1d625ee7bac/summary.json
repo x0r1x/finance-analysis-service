@@ -1,0 +1,86 @@
+{
+  "context_schema_version": "1.14.0",
+  "graph_schema_version": "1.7.0",
+  "source_filename": "rvi-project-finance.xlsx",
+  "content_sha256": "3b9a8b47f3cf9ad506698c6cf89082472401b9c8b851ed78ba944101c35b43f2",
+  "status": "succeeded",
+  "stage": "done",
+  "sheets": [
+    "Cover Page",
+    "Top Shortcuts",
+    "PF Model"
+  ],
+  "formula_count": 10219,
+  "missing_cached_values": 20,
+  "unparsed_formulas": 0,
+  "iterate": false,
+  "defined_name_count": 66,
+  "nodes": 11858,
+  "edges": 38852,
+  "kinds": {
+    "ref": 17652,
+    "range": 21200
+  },
+  "unresolved": {
+    "count": 0,
+    "ids": []
+  },
+  "external": {
+    "count": 0,
+    "ids": []
+  },
+  "dangling": {
+    "count": 0,
+    "ids": []
+  },
+  "dynamic": {
+    "count": 51,
+    "ids": [
+      "PF Model!L64",
+      "PF Model!L65",
+      "PF Model!L69",
+      "PF Model!L70",
+      "PF Model!L71",
+      "PF Model!L72",
+      "PF Model!L76",
+      "PF Model!L80",
+      "PF Model!L81",
+      "PF Model!L82",
+      "PF Model!L86",
+      "PF Model!L89",
+      "PF Model!L90",
+      "PF Model!L91",
+      "PF Model!L92",
+      "PF Model!L93",
+      "PF Model!L96",
+      "PF Model!L97",
+      "PF Model!L98",
+      "PF Model!L99",
+      "PF Model!L100",
+      "PF Model!L103",
+      "PF Model!L104",
+      "PF Model!L109",
+      "PF Model!L110",
+      "PF Model!L111",
+      "PF Model!L112",
+      "PF Model!L113",
+      "PF Model!L116",
+      "PF Model!L117",
+      "PF Model!L118",
+      "PF Model!L119"
+    ]
+  },
+  "truncated": {
+    "count": 0,
+    "ids": []
+  },
+  "dangling_classes": {
+    "empty_ref": 445,
+    "empty_range_member": 190
+  },
+  "cycles": [],
+  "circularity_hints": [],
+  "warnings": [
+    "20 formula cell(s) missing cached values (e.g. PF Model!M536, PF Model!M537, PF Model!N537)"
+  ]
+}

@@ -194,6 +194,8 @@ Builder для FAS всегда один — один `BUILDER_BASE_URL`, ско
 - Обязательны поля без `?`. Их нехватка → `409 unsupported_builder_shape`.
 - **Не читаются:** `header_row`, `group_key`, `cells[]`, `numeric_summary` (FAS считает профиль из `values`), `workbook.*`, `meta.*`, `context.warnings` (есть в R1), `graph.cycles`/`circularity_hints`/счётчики/`artifacts`, `role` у периодов `params`, `content_sha256`.
 
+Число `missing_cached_values` на `GET /summary` фаза 0 не читает: это счётчик R1 фазы 1 (§2.1, §6.1, §12). В фазе 0 единственный канал — текст `warnings[]`. Builder режет этот список до 50 строк, и строки `Unparsed formula at …` идут первыми, поэтому текст про кэш может отсутствовать при `missing_cached_values > 0`. Счётчик учитывает все формулы без кэша, а текст — только не помеченные как неприменимые, поэтому ненулевой счётчик бывает и без этой строки.
+
 ### 2.3 Особенности, которые закрывает ACL
 
 | Особенность | Как обрабатывает FAS |
