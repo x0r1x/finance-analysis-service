@@ -36,6 +36,14 @@
       "since": "1.0"
     },
     {
+      "name": "axis_kind",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "time или params",
+      "since": "1.0"
+    },
+    {
       "name": "period_id",
       "type": "string",
       "nullable": false,

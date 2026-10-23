@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Redis 8.6.7
+        uses: actions/cache@v4
+        with:
+          path: /tmp/redis-8.6.7
+          key: redis-8.6.7-${{ runner.os }}-v1
+
+      - name: Build Redis 8.6.7
+        run: |
+          set -euo pipefail
+          if [[ ! -x /tmp/redis-8.6.7/src/redis-server ]]; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential
+            curl -fsSL -o /tmp/redis-8.6.7.tar.gz https://github.com/redis/redis/archive/refs/tags/8.6.7.tar.gz
+            rm -rf /tmp/redis-8.6.7
+            tar -C /tmp -xzf /tmp/redis-8.6.7.tar.gz
+            libdir="$(dirname "$(gcc -print-file-name=libstdc++.so)")"
+            make -C /tmp/redis-8.6.7 -j"$(nproc)" BUILD_TLS=no LDFLAGS="-L${libdir}"
+          fi
+          /tmp/redis-8.6.7/src/redis-server --version
+          echo "FAS_REDIS_SERVER=/tmp/redis-8.6.7/src/redis-server" >> "$GITHUB_ENV"
+
+      - name: Memory cgroup for chaos
+        run: |
+          set -euo pipefail
+          self="$(awk -F: '{line=$NF} END{print line}' /proc/self/cgroup)"
+          target="/sys/fs/cgroup${self}/fasoom2"
+          mkdir -p "$target" 2>/dev/null || true
+          if [[ ! -f "$target/memory.max" ]]; then
+            sudo mkdir -p /sys/fs/cgroup/init
+            if [[ -f /sys/fs/cgroup/cgroup.procs ]]; then
+              while read -r pid; do
+                echo "$pid" | sudo tee /sys/fs/cgroup/init/cgroup.procs >/dev/null || true
+              done < /sys/fs/cgroup/cgroup.procs
+            fi
+            echo '+memory' | sudo tee /sys/fs/cgroup/cgroup.subtree_control
+            sudo mkdir -p /sys/fs/cgroup/fasoom2
+            sudo chown -R "$(id -u):$(id -g)" /sys/fs/cgroup/fasoom2
+            target="/sys/fs/cgroup/fasoom2"
+          fi
+          test -w "$target/memory.max"
+          test -w "$target/cgroup.procs"
+          echo "FAS_TEST_OOM_CGROUP=$target" >> "$GITHUB_ENV"
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check src tests
+
+      - name: import-linter
+        run: lint-imports
+
+      - name: pytest
+        run: pytest

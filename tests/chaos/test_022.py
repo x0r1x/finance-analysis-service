@@ -93,13 +93,25 @@ def stop_all(chaos) -> None:
 
 
 def _oom_cgroup() -> Path | None:
+    named = os.environ.get("FAS_TEST_OOM_CGROUP")
+    if named and (Path(named) / "memory.max").is_file():
+        return Path(named)
     if (OOM_CGROUP / "memory.max").is_file():
         return OOM_CGROUP
-    here = Path("/proc/self/cgroup").read_text(encoding="utf-8").strip().split(":")[-1]
-    parent = Path("/sys/fs/cgroup") / here.lstrip("/")
-    candidate = parent.parent / "fasoom2"
-    if (candidate / "memory.max").is_file():
-        return candidate
+    try:
+        here = Path("/proc/self/cgroup").read_text(encoding="utf-8").strip().split(":")[-1]
+    except OSError:
+        return None
+    current = Path("/sys/fs/cgroup") / here.lstrip("/")
+    for candidate in (current.parent / "fasoom2", current / "fasoom2"):
+        if (candidate / "memory.max").is_file():
+            return candidate
+        try:
+            candidate.mkdir(exist_ok=True)
+        except OSError:
+            continue
+        if (candidate / "memory.max").is_file():
+            return candidate
     return None
 
 

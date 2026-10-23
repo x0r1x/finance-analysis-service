@@ -334,6 +334,10 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
     async def periods(job_id: str, request: Request):
         return await _calc(job_id, request, _svc().resolve_periods)
 
+    @app.post("/v1/books/{job_id}/decisions")
+    async def decisions(job_id: str, request: Request):
+        return await _calc(job_id, request, _svc().submit_decisions)
+
     @app.get("/v1/operations/{op_id}")
     async def get_operation(op_id: str, request: Request, wait_ms: int = 0):
         actor = _actor(request)

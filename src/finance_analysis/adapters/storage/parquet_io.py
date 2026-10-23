@@ -146,6 +146,13 @@ def write_table(dataset: str, rows: list[dict], *, build_key: str) -> tuple[byte
     return buf.getvalue(), table.num_rows
 
 
+def read_table(payload: bytes) -> list[dict]:
+    return pq.read_table(io.BytesIO(payload)).to_pylist()
+
+
 class PyarrowParquet:
     async def write(self, dataset: str, rows: list[dict], *, build_key: str) -> tuple[bytes, int]:
         return await anyio.to_thread.run_sync(lambda: write_table(dataset, rows, build_key=build_key))
+
+    async def read(self, payload: bytes) -> list[dict]:
+        return await anyio.to_thread.run_sync(lambda: read_table(payload))

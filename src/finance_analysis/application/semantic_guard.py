@@ -9,6 +9,7 @@ from finance_analysis.application.derived_store import DerivedWrite, write_deriv
 from finance_analysis.application.journal import Journal
 from finance_analysis.domain.book import Actor
 from finance_analysis.domain.errors import SemanticRejected
+from finance_analysis.domain.phases import check_phase_order, check_phase_value
 from finance_analysis.domain.validation.semantics import (
     Verdict,
     check_derived,
@@ -59,13 +60,14 @@ class SemanticWriteGuard:
         request_id: str,
         at_utc: datetime | None = None,
         concept: str | None = None,
+        known_targets: frozenset[str] | None = None,
     ) -> WriteResult:
         verdict = check_event(
             event_type=event_type,
             target=target,
             concept=concept,
             catalog=self._catalog,
-            targets=self._targets,
+            targets=self._targets if known_targets is None else known_targets,
         )
         if not verdict.accepted:
             return WriteResult(False, code=verdict.code, detail=verdict.detail)
@@ -80,6 +82,43 @@ class SemanticWriteGuard:
             at_utc=at_utc,
         )
         return WriteResult(True, duplicate=duplicate, event=event)
+
+    async def write_decision(
+        self,
+        job_id: str,
+        *,
+        event_type: str,
+        target: str,
+        value,
+        actor: Actor,
+        expected_seq: int | None,
+        request_id: str,
+        concept: str | None = None,
+        known_targets: frozenset[str] | None = None,
+        phase_order: list[tuple[int, str]] | None = None,
+        concept_taken: bool = False,
+    ) -> WriteResult:
+        if event_type == "phase.set":
+            verdict = check_phase_value(value)
+            if not verdict.accepted:
+                return WriteResult(False, code=verdict.code, detail=verdict.detail)
+            if phase_order is not None:
+                verdict = check_phase_order(phase_order)
+                if not verdict.accepted:
+                    return WriteResult(False, code=verdict.code, detail=verdict.detail)
+        if event_type in {"concept.set", "concept.confirmed"} and concept_taken:
+            return WriteResult(False, code="supersede_required", detail="понятие уже привязано")
+        return await self.append(
+            job_id,
+            target=target,
+            event_type=event_type,
+            value=value,
+            actor=actor,
+            expected_seq=expected_seq,
+            request_id=request_id,
+            concept=concept,
+            known_targets=known_targets,
+        )
 
     def review_derived(self, tables: dict, *, row_keys: frozenset[str]) -> Verdict:
         return check_derived(tables, catalog=self._catalog, row_keys=row_keys)
