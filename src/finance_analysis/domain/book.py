@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 FAS_VERSION = "0.23.0"
-FAS_SCHEMA_VERSION = "1.1"
+FAS_SCHEMA_VERSION = "1.0"
 FAS_PROJECTION_VERSION = "1"
 FAS_DERIVE_VERSION = "1"
 SEP = "›"

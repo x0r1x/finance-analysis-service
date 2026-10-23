@@ -1,6 +1,6 @@
 {
   "dataset": "dim_row",
-  "version": "1.1",
+  "version": "1.0",
   "title": "Строки книги",
   "columns": [
     {
@@ -161,7 +161,7 @@
       "nullable": true,
       "unit": "",
       "description": "Откуда взята валюта: hints, book_single или null",
-      "since": "1.1"
+      "since": "1.0"
     },
     {
       "name": "scale",
