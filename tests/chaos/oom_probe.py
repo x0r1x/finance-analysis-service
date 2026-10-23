@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -24,8 +25,21 @@ def main() -> None:
             swap.write_text("0")
         pid = os.fork()
         if pid == 0:
+            procs = cgroup / "cgroup.procs"
+            pid_text = str(os.getpid())
             try:
-                (cgroup / "cgroup.procs").write_text(str(os.getpid()))
+                procs.write_text(pid_text)
+            except PermissionError:
+                completed = subprocess.run(
+                    ["sudo", "-n", "tee", str(procs)],
+                    check=False,
+                    input=pid_text + "\n",
+                    text=True,
+                    stdout=subprocess.DEVNULL,
+                )
+                if completed.returncode != 0:
+                    print("enter failed: sudo tee", flush=True)
+                    os._exit(2)
             except OSError as exc:
                 print(f"enter failed: {exc}", flush=True)
                 os._exit(2)

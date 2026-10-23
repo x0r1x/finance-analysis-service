@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -219,11 +220,28 @@ async def _overlap(rt, op_id: str, attempt: int) -> bool:
     return False
 
 
+def _enter_cgroup(cgroup: str) -> None:
+    """Переносит текущий процесс в cgroup. На чужом sibling это может сделать только root."""
+
+    procs = Path(cgroup, "cgroup.procs")
+    pid = str(os.getpid())
+    try:
+        procs.write_text(pid)
+    except PermissionError:
+        subprocess.run(
+            ["sudo", "-n", "tee", str(procs)],
+            input=pid + "\n",
+            text=True,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+
+
 def _oom() -> None:
     cgroup = os.environ.get("FAS_OOM_CGROUP")
     if not cgroup:
         raise RuntimeError("FAS_OOM_CGROUP не задан")
-    Path(cgroup, "cgroup.procs").write_text(str(os.getpid()))
+    _enter_cgroup(cgroup)
     blobs: list[bytearray] = []
     while True:
         blobs.append(bytearray(8 * 1024 * 1024))
