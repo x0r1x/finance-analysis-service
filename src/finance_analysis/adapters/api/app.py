@@ -10,10 +10,16 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 
 from finance_analysis.adapters.api.problems import problem_response
-from finance_analysis.application.service import Accepted
+from finance_analysis.application.service import Accepted, Freshness
 from finance_analysis.domain.book import Actor
 from finance_analysis.domain.errors import (
     DeadlineExceeded,
@@ -23,7 +29,8 @@ from finance_analysis.domain.errors import (
     InvalidId,
     NotAcceptable,
 )
-from finance_analysis.domain.ids import actor_token, job_id as check_job
+from finance_analysis.domain.ids import actor_token
+from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.settings import Settings
 
 REQUESTS = Counter("fas_http_requests_total", "HTTP-запросы", ["method", "path", "status"])
@@ -113,7 +120,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         except asyncio.CancelledError:
             handler.cancel()
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — неизвестное исключение становится 503, не 500
             response = problem_response(DependencyUnavailable(str(exc)), request_id)
         response.headers["X-Request-Id"] = request_id
         template = _route_template(request)
@@ -208,7 +215,10 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
             response = JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
             await _idem_finish(support, actor, "POST", "/v1/books/{job_id}:load", request, raw, result.operation, 202)
             return response
-        view = await _svc().book_view(checked, actor, wait_sec=0.1)
+        if isinstance(result, Freshness):
+            view = await _svc().describe(checked, result.head, fresh=True)
+        else:
+            view = await _svc().describe(checked, result, fresh=False)
         if isinstance(view, Accepted):
             response = JSONResponse(view.operation, status_code=202, headers=_op_headers(view))
             await _idem_finish(support, actor, "POST", "/v1/books/{job_id}:load", request, raw, view.operation, 202)
@@ -307,7 +317,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
     async def cancel(op_id: str, request: Request):
         actor = _actor(request)
         support = await _limited(request, actor)
-        raw = await request.body()
+        await request.body()
         try:
             async with support.user_inflight(actor):
                 body = await _svc().cancel_op(op_id, actor)

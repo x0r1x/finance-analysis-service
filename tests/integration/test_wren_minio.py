@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from wren.model.error import WrenError
 
 from finance_analysis.adapters.storage.store import S3Store, open_storage
 from finance_analysis.adapters.wren.query import WrenQuery, _apply_limits
@@ -78,9 +79,9 @@ async def test_rlac_and_unscoped_sql(local_service):
             )
         )
         assert foreign.num_rows == 0
-        with pytest.raises(Exception):
+        with pytest.raises(WrenError):
             await asyncio.to_thread(lambda: slot.engine.query("SELECT cell_id FROM series", limit=10))
-        with pytest.raises(Exception):
+        with pytest.raises(WrenError):
             await asyncio.to_thread(
                 lambda: slot.engine.query(
                     "SELECT * FROM read_parquet('missing.parquet')",
@@ -150,7 +151,7 @@ async def test_pool_memory_and_gil(local_service):
             cursor.execute("SELECT 1").fetchone()
             cursor.close()
             cursor_safe = True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — сбой cursor() только диагностический
             notes["cursor_error"] = str(exc)
         notes["cursor_safe"] = cursor_safe
         notes["semaphore"] = 1

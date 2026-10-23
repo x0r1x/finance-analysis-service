@@ -28,6 +28,22 @@
       "since": "1.0"
     },
     {
+      "name": "timeline_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Каноническая ось таймлайна",
+      "since": "1.0"
+    },
+    {
+      "name": "axis_kind",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "time или params",
+      "since": "1.0"
+    },
+    {
       "name": "period_id",
       "type": "string",
       "nullable": false,
@@ -100,19 +116,19 @@
       "since": "1.0"
     },
     {
-      "name": "group_key",
-      "type": "string",
-      "nullable": true,
-      "unit": "",
-      "description": "Группа",
-      "since": "1.0"
-    },
-    {
       "name": "flags_json",
       "type": "string",
       "nullable": true,
       "unit": "",
       "description": "Флаги периода, JSON",
+      "since": "1.0"
+    },
+    {
+      "name": "flags_source",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "own, timeline или пусто",
       "since": "1.0"
     },
     {

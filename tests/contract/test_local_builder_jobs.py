@@ -2,17 +2,16 @@
 
 Каталог не коммитится. Пример раскладки — `tests/fixtures/local-builder/{job_id}/`
 (см. `.gitignore` и `tests/fixtures/builder/README.md`).
+Проверяются только инварианты загрузки, без ожидаемых значений конкретной книги.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 import pytest
 
-from finance_analysis.adapters.builder.acl import consistency_token
 from finance_analysis.adapters.builder.fixture import FixtureBuilder
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
 from finance_analysis.adapters.storage.store import open_storage
@@ -38,27 +37,37 @@ def _jobs() -> tuple[Path, list[str]]:
     return root, ids
 
 
-async def _assert_job(service: FasService, job_id: str, root: Path) -> None:
-    folder = root / job_id
-    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
-    graph = json.loads((folder / "graph.json").read_text(encoding="utf-8"))
-    head = await service.perform_load(job_id, actor=Actor(), fence=1)
+async def _assert_job(service: FasService, job_id: str) -> None:
+    actor = Actor()
+    head = await service.perform_load(job_id, actor=actor, fence=1)
     manifest = await service._manifest(job_id, head.build_key)
     ref = manifest["builder_ref"]
-    assert ref["builder_status"] in {"succeeded", "degraded"}
-    assert ref["content_sha256"] == meta["content_sha256"]
-    assert meta.get("generation") not in (None, "")
-    assert ref["summary_etag"] == consistency_token(
-        status=meta["status"],
-        generation=meta["generation"],
-        content_sha256=meta["content_sha256"],
-        stages=meta["stages"],
-    )
-    assert ref["context_schema_version"] == str(meta["schema_version"])
-    assert ref["graph_schema_version"] == str(graph["schema_version"])
-    index = json.loads(await service.store.get(build_index_key(job_id, head.build_key)))
+    assert ref["job_id"] == job_id
+    assert ref["summary_etag"].startswith('"summary-2:')
+    assert "content_sha256" not in ref
+    assert "builder_status" not in ref
+    assert "builder_files" not in manifest
+    assert all(item.get("code") != "timeline_mismatch" for item in manifest.get("warnings") or [])
+    index = json_loads(await service.store.get(build_index_key(job_id, head.build_key)))
     assert index["stats"]["rows"] > 0
     assert index["stats"]["observations"] > 0
+    resolved = await service.resolve_periods(
+        job_id,
+        {"text": "первый операционный год"},
+        actor,
+        wait_sec=service.settings.load_sync_sec,
+    )
+    assert resolved["periods"] == []
+    assert resolved["needs_input"] == [
+        {"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}
+    ]
+    assert all(item["kind"] != "phase" for item in resolved["needs_input"])
+
+
+def json_loads(raw: bytes):
+    import json
+
+    return json.loads(raw)
 
 
 @pytest.mark.skipif(not _configured(), reason=_REASON)
@@ -74,7 +83,7 @@ async def test_local_builder_jobs_on_local_storage(settings, redis_runtime):
         redis_runtime,
     )
     for job in ids:
-        await _assert_job(service, job, root)
+        await _assert_job(service, job)
 
 
 @pytest.mark.skipif(not _configured(), reason=_REASON)
@@ -94,5 +103,5 @@ async def test_local_builder_jobs_on_minio(tmp_path, minio_endpoint, redis_runti
         redis_runtime,
     )
     for job in ids:
-        await _assert_job(service, job, root)
+        await _assert_job(service, job)
     await store.delete_prefix("")

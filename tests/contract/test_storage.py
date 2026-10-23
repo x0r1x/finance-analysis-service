@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import os
-from multiprocessing import get_context
+from multiprocessing import Queue, get_context
 
 import pytest
 
 from finance_analysis.adapters.storage.store import LocalStore, S3Store, open_storage
-from finance_analysis.domain.errors import AlreadyExists, DependencyUnavailable, InvalidId, NotFound, PreconditionFailed
+from finance_analysis.domain.errors import (
+    AlreadyExists,
+    DependencyUnavailable,
+    InvalidId,
+    NotFound,
+    PreconditionFailed,
+)
 from finance_analysis.domain.ids import profile_id
 from finance_analysis.settings import Settings
 

@@ -15,7 +15,7 @@ from wren.config import WrenConfig
 from wren.engine import WrenEngine
 from wren.model.data_source import DataSource
 
-from finance_analysis.domain.errors import BookBusy, InvalidArgument, InvalidId
+from finance_analysis.domain.errors import BookBusy, InvalidArgument
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.settings import Settings
 
@@ -163,7 +163,7 @@ def build_mdl(job_id: str, paths: dict[str, str]) -> dict:
                     {"name": "row_key", "expression": "row_key", "type": "varchar"},
                     {"name": "sheet", "expression": "sheet", "type": "varchar"},
                     {"name": "label_path", "expression": "label_path_text", "type": "varchar"},
-                    {"name": "concept", "expression": "effective_concept", "type": "varchar"},
+                    {"name": "concept", "expression": "CASE WHEN is_primary THEN effective_concept END", "type": "varchar"},
                     {"name": "period_id", "expression": "period_id", "type": "varchar"},
                     {"name": "phase", "expression": "phase", "type": "varchar"},
                     {"name": "period_marker", "expression": "period_marker", "type": "varchar"},
@@ -217,13 +217,13 @@ def _apply_limits(engine: WrenEngine, settings: Settings) -> dict:
         ):
             try:
                 connection.execute(statement)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — необязательный SET не должен ронять пул
                 pass
         row = connection.execute(
             "SELECT current_setting('memory_limit'), current_setting('threads')"
         ).fetchone()
         notes = {"memory_limit": row[0], "threads": int(row[1]), "set_ok": True}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — сбой лимита записывается в notes, движок остаётся
         notes["error"] = str(exc)
     return notes
 
@@ -371,10 +371,7 @@ class WrenQuery:
         return _Slot(engine=engine, mdl_json=json.dumps(mdl), limits=notes)
 
     async def sql(self, job_id: str, sql: str, limit: int = 5000, pin: dict | None = None) -> pa.Table:
-        try:
-            checked = check_job(job_id)
-        except InvalidId:
-            raise
+        checked = check_job(job_id)
         if not pin or "paths" not in pin:
             raise InvalidArgument("запрос без закреплённой книги не планируется")
         key = (checked, pin.get("build_key"), pin.get("derive_key"))

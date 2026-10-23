@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import anyio
@@ -14,29 +14,39 @@ from ulid import ULID
 
 from finance_analysis.application import keys
 from finance_analysis.application.gc import gc_incomplete
-from finance_analysis.application.journal import Journal
+from finance_analysis.application.metrics import BUILDER_INCONSISTENT
 from finance_analysis.application.project import derive_rows, project
+from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.domain.book import (
-    Actor,
-    BuilderRef,
     FAS_SCHEMA_VERSION,
     FAS_VERSION,
+    Actor,
+    BuilderRef,
     Head,
     NotModified,
+    ReportNotReady,
+    Summary,
     Versions,
+    WorkbookSnapshot,
     build_key_for,
+    publication_aligned,
     sha256_bytes,
+    with_links,
 )
 from finance_analysis.domain.errors import (
     AlreadyExists,
     BuilderUnstable,
-    DeadlineExceeded,
     DependencyUnavailable,
     InvalidArgument,
     NotFound,
     PreconditionFailed,
 )
-from finance_analysis.domain.expression import evaluate, literals_of, names_of, parse_expression
+from finance_analysis.domain.expression import (
+    evaluate,
+    literals_of,
+    names_of,
+    parse_expression,
+)
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.periods import marker_class, split_period_key
@@ -59,6 +69,13 @@ class BookView:
     warnings: list = field(default_factory=list)
 
 
+@dataclass
+class Freshness:
+    """Текущая сборка есть или её нет. ETag не сохранялся, свежесть неизвестна."""
+
+    head: Head | None
+
+
 def _dumps(payload: dict) -> bytes:
     return json.dumps(payload, ensure_ascii=False, default=_json_default).encode()
 
@@ -67,17 +84,17 @@ def _json_default(value):
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     raise TypeError(type(value))
 
 
 def _builder_warnings(manifest: dict) -> list[dict]:
     warnings = []
-    ref = manifest.get("builder_ref") or {}
-    if ref.get("builder_status") == "degraded":
-        warnings.append({"code": "builder_degraded", "params": {}})
     for message in manifest.get("builder_warnings") or []:
         warnings.append({"code": "builder_warning", "params": {"message": str(message)}})
+    for item in manifest.get("warnings") or []:
+        if isinstance(item, dict) and item.get("code"):
+            warnings.append(item)
     return warnings
 
 
@@ -100,7 +117,7 @@ class FasService:
         self.builder = builder
         self.query = query
         self.support = support
-        self.journal = Journal(store)
+        self.guard = SemanticWriteGuard(store)
         self._tasks: set[asyncio.Task] = set()
         self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
@@ -185,24 +202,10 @@ class FasService:
             files[rel] = {"sha256": sha256_bytes(payload), "rows": count, "schema": f"{dataset}@{FAS_SCHEMA_VERSION}"}
         return files
 
-    async def _write_derived(self, job_id: str, build: str, derive: str, attempt: str, tables: dict) -> dict:
-        files = {}
-        for dataset, rows in tables.items():
-            payload, count = await self.parquet.write(dataset, rows, build_key=build)
-            rel = f"derived/{derive}/a/{attempt}/{dataset}.parquet"
-            key = keys.derived_file(job_id, build, derive, attempt, dataset)
-            try:
-                await self.store.put_if_absent(key, payload)
-            except AlreadyExists:
-                pass
-            files[rel] = {"sha256": sha256_bytes(payload), "rows": count, "schema": f"{dataset}@{FAS_SCHEMA_VERSION}"}
-        return files
-
     async def materialize_derived(self, job_id: str, *, glossary_version: str, projected: dict | None = None) -> str:
         head, token = await self._read_head(job_id)
         if head is None:
             raise NotFound("книга не загружена")
-        versions = self._versions(glossary_version)
         # Сохраняем прочие поля головы, меняется только глоссарий и derive_key.
         versions_dict = dict(head.versions)
         versions_dict["glossary"] = glossary_version
@@ -219,7 +222,15 @@ class FasService:
             projected = await self._projected_from_store(job_id, head.build_key)
         derived = derive_rows(projected, state_seq=head.state_seq, derive=derive, versions=versions_dict)
         attempt = str(ULID())
-        files = await self._write_derived(job_id, head.build_key, derive, attempt, derived)
+        files = await self.guard.persist_derived(
+            job_id=job_id,
+            build=head.build_key,
+            derive=derive,
+            attempt=attempt,
+            tables=derived,
+            parquet=self.parquet,
+            row_keys=frozenset(row["row_key"] for row in projected["dim_row"]),
+        )
         done = {
             "derive_key": derive,
             "state_seq": head.state_seq,
@@ -237,8 +248,6 @@ class FasService:
             "versions": versions_dict,
         }
         if token:
-            if head.fence and False:
-                pass
             await self.store.put_if_match(keys.head_key(job_id), _dumps(new_head), token)
         return derive
 
@@ -261,53 +270,62 @@ class FasService:
         else:
             await self.store.put_if_match(keys.head_key(job_id), payload, token or current.token or "")
 
-    async def _consistent_snapshot(self, job_id: str):
+    async def _aligned_snapshot(self, job_id: str, etag: str) -> WorkbookSnapshot:
         for _ in range(3):
-            summary = await self.builder.summary(job_id, None)
-            if isinstance(summary, NotModified):
-                raise BuilderUnstable("summary не изменился, но загрузка запрошена без etag")
-            snapshot, context_etag, _content_hash = await self.builder.context(job_id)
-            again = await self.builder.summary(job_id, summary.etag)
-            if isinstance(again, NotModified):
-                return replace(summary, context_etag=context_etag), snapshot
-        raise BuilderUnstable("builder пересобрал книгу между summary и context")
+            context = await self.builder.context(job_id)
+            if isinstance(context, ReportNotReady):
+                continue
+            links = await self.builder.graph(job_id)
+            if isinstance(links, ReportNotReady):
+                continue
+            probed = await self.builder.head_summary(job_id, etag)
+            if not isinstance(probed, NotModified):
+                continue
+            snapshot = with_links(context, links)
+            if publication_aligned(snapshot):
+                return snapshot
+        BUILDER_INCONSISTENT.inc()
+        raise BuilderUnstable("context.json и graph.json не согласованы")
 
-    async def load_consistent(self, job_id: str, *, known_etag: str | None) -> tuple[object, object] | NotModified:
+    async def load_consistent(self, job_id: str, *, known_etag: str | None):
         summary = await self.builder.summary(job_id, known_etag)
-        if isinstance(summary, NotModified):
+        if not isinstance(summary, Summary) or summary.status != "succeeded":
             return summary
-        for _ in range(3):
-            snapshot, context_etag, _digest = await self.builder.context(job_id)
-            again = await self.builder.summary(job_id, summary.etag)
-            if isinstance(again, NotModified):
-                return replace(summary, context_etag=context_etag), snapshot
-            summary = again
-        raise BuilderUnstable("builder пересобрал книгу между summary и context")
+        snapshot = await self._aligned_snapshot(job_id, summary.etag)
+        return summary, snapshot
 
-    async def perform_load(self, job_id: str, *, actor: Actor, fence: int, op_id: str | None = None) -> Head:
+    async def perform_load(
+        self,
+        job_id: str,
+        *,
+        actor: Actor,
+        fence: int,
+        op_id: str | None = None,
+        summary: Summary | None = None,
+    ) -> Head:
         check_job(job_id)
         head, token = await self._read_head(job_id)
-        known = None
-        if head is not None:
-            manifest = await self._manifest(job_id, head.build_key)
-            known = (manifest.get("builder_ref") or {}).get("summary_etag")
-        loaded = await self.load_consistent(job_id, known_etag=known)
-        if isinstance(loaded, NotModified):
-            assert head is not None
-            if op_id:
-                await self.finish_op(op_id, "succeeded", result={"build_key": head.build_key})
-            return head
-        summary, snapshot = loaded
-        if summary.status not in {"succeeded", "degraded"}:
+        if summary is None:
+            known = None
             if head is not None:
+                manifest = await self._manifest(job_id, head.build_key)
+                known = (manifest.get("builder_ref") or {}).get("summary_etag")
+            loaded = await self.load_consistent(job_id, known_etag=known)
+            if isinstance(loaded, NotModified):
+                assert head is not None
+                if op_id:
+                    await self.finish_op(op_id, "succeeded", result={"build_key": head.build_key})
                 return head
-            raise DependencyUnavailable(f"книга в статусе {summary.status}")
-        build = build_key_for(
-            summary.content_sha256,
-            summary.context_schema_version,
-            summary.graph_schema_version,
-            summary.etag,
-        )
+            if not isinstance(loaded, tuple):
+                if head is not None:
+                    if op_id:
+                        await self.finish_op(op_id, "succeeded", result={"build_key": head.build_key})
+                    return head
+                raise NotFound("книга не загружена")
+            summary, snapshot = loaded
+        else:
+            snapshot = await self._aligned_snapshot(job_id, summary.etag)
+        build = build_key_for(job_id, summary.etag)
         versions = self._versions()
         state_seq = head.state_seq if head else 0
         derive = versions.derive(state_seq)
@@ -316,15 +334,17 @@ class FasService:
                 await self.finish_op(op_id, "succeeded", result={"build_key": build})
             return head
         attempt = str(ULID())
-        tables = await anyio.to_thread.run_sync(lambda: project(snapshot, model_id=job_id, build=build), limiter=self._cpu)
+
+        def _project():
+            return project(snapshot, model_id=job_id, build=build)
+
+        tables, projection_warnings = await anyio.to_thread.run_sync(_project, limiter=self._cpu)
         file_map = await self._write_attempt(job_id, build, attempt, tables)
         ref = BuilderRef(
             job_id=job_id,
-            content_sha256=summary.content_sha256,
+            summary_etag=summary.etag,
             context_schema_version=summary.context_schema_version,
             graph_schema_version=summary.graph_schema_version,
-            summary_etag=summary.etag,
-            builder_status=summary.status,
         )
         manifest = {
             "fas_schema_version": FAS_SCHEMA_VERSION,
@@ -332,9 +352,9 @@ class FasService:
             "builder_ref": ref.as_dict(),
             "attempt": attempt,
             "files": file_map,
-            "builder_files": {"context.json": {"etag": summary.context_etag}},
             "builder_warnings": [str(item) for item in summary.warnings],
-            "loaded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "warnings": projection_warnings,
+            "loaded_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "loader_version": FAS_VERSION,
             "fence": fence,
         }
@@ -367,7 +387,15 @@ class FasService:
             versions=versions.as_dict(),
         )
         d_attempt = str(ULID())
-        d_files = await self._write_derived(job_id, build, derive, d_attempt, derived)
+        d_files = await self.guard.persist_derived(
+            job_id=job_id,
+            build=build,
+            derive=derive,
+            attempt=d_attempt,
+            tables=derived,
+            parquet=self.parquet,
+            row_keys=frozenset(row["row_key"] for row in tables["dim_row"]),
+        )
         done = {"derive_key": derive, "state_seq": state_seq, "attempt": d_attempt, "files": d_files}
         try:
             await self.store.put_if_absent(keys.derived_done(job_id, build, derive), _dumps(done))
@@ -396,26 +424,27 @@ class FasService:
             await self.finish_op(op_id, "succeeded", result={"build_key": fresh.build_key})
         return fresh
 
-    async def ensure(self, job_id: str, actor: Actor, *, wait_sec: float, prefer_async: bool = False) -> Head | Accepted:
+    async def ensure(
+        self, job_id: str, actor: Actor, *, wait_sec: float, prefer_async: bool = False
+    ) -> Head | Accepted | Freshness:
         if self.draining:
             raise DependencyUnavailable("сервис завершает работу")
         check_job(job_id)
         if prefer_async:
             return await self._defer_load(job_id, actor)
         head, _token = await self._read_head(job_id)
+        known = None if head is None else await self._known_etag(job_id, head)
         try:
-            probe = await self.builder.summary(job_id, None if head is None else (await self._known_etag(job_id, head)))
+            probe = await self.builder.summary(job_id, known)
         except DependencyUnavailable:
-            if head is None:
-                raise
-            return head
+            return Freshness(head)
         if isinstance(probe, NotModified) and head is not None:
             return head
-        if probe.status not in {"succeeded", "degraded"} and head is not None:
-            return head
+        if isinstance(probe, ReportNotReady) or not isinstance(probe, Summary) or probe.status != "succeeded":
+            return Freshness(head)
         try:
             async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as fence:
-                task = self.spawn(self.perform_load(job_id, actor=actor, fence=fence.fence))
+                task = self.spawn(self.perform_load(job_id, actor=actor, fence=fence.fence, summary=probe))
                 try:
                     return await asyncio.wait_for(asyncio.shield(task), timeout=wait_sec)
                 except TimeoutError:
@@ -438,7 +467,7 @@ class FasService:
             current = await self.get_op(op_id)
             if current["status"] in {"queued", "running"}:
                 await self.finish_op(op_id, "succeeded", result={})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — любая ошибка фоновой задачи закрывает операцию
             await self.finish_op(op_id, "failed", error={"detail": str(exc)})
 
     async def _defer_load(self, job_id: str, actor: Actor) -> Accepted:
@@ -448,25 +477,42 @@ class FasService:
             try:
                 async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as fence:
                     await self.perform_load(job_id, actor=actor, fence=fence.fence, op_id=op["id"])
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — любая ошибка отложенной загрузки закрывает операцию
                 await self.finish_op(op["id"], "failed", error={"code": getattr(exc, "code", "failed"), "detail": str(exc)})
 
         self.spawn(_run())
         return Accepted(op)
 
     async def book_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> BookView | Accepted:
-        head = await self.ensure(job_id, actor, wait_sec=wait_sec)
-        if isinstance(head, Accepted):
-            return head
-        warnings = []
-        is_latest: bool | None = True
-        try:
-            probe = await self.builder.summary(job_id, await self._known_etag(job_id, head))
-            if not isinstance(probe, NotModified):
-                is_latest = False
-        except DependencyUnavailable:
-            is_latest = None
-            warnings.append({"code": "freshness_unknown", "params": {}})
+        ensured = await self.ensure(job_id, actor, wait_sec=wait_sec)
+        if isinstance(ensured, Accepted):
+            return ensured
+        if isinstance(ensured, Freshness):
+            return await self.describe(job_id, ensured.head, fresh=True)
+        return await self.describe(job_id, ensured, fresh=False)
+
+    async def describe(self, job_id: str, head: Head | None, *, fresh: bool) -> BookView:
+        if head is None:
+            return BookView(
+                {
+                    "job_id": job_id,
+                    "loaded": False,
+                    "builder_ref": None,
+                    "build_key": None,
+                    "state_seq": None,
+                    "derive_key": None,
+                    "profile": None,
+                    "coverage_summary": {"status": "unknown"},
+                    "build_count": 0,
+                    "active_operations": [],
+                    "versions": {},
+                    "is_latest": None,
+                    "warnings": [{"code": "freshness_unknown", "params": {}}],
+                    "mdl_version": None,
+                    "fence": None,
+                }
+            )
+        warnings = [{"code": "freshness_unknown", "params": {}}] if fresh else []
         builds = [item.key async for item in self.store.list(f"books/{job_id}/_builds")]
         manifest = await self._manifest(job_id, head.build_key)
         warnings.extend(_builder_warnings(manifest))
@@ -482,14 +528,24 @@ class FasService:
             "build_count": len([item for item in builds if item.endswith(".json")]),
             "active_operations": [],
             "versions": head.versions,
-            "is_latest": is_latest,
+            "is_latest": None if fresh else True,
             "warnings": warnings,
             "mdl_version": head.mdl_version,
             "fence": head.fence,
         }
         return BookView(body, warnings)
 
-    def _result_envelope(self, job_id: str, head: Head, manifest: dict, result_data: dict, citations: list, warnings: list | None = None) -> dict:
+    def _result_envelope(
+        self,
+        job_id: str,
+        head: Head,
+        manifest: dict,
+        result_data: dict,
+        citations: list,
+        warnings: list | None = None,
+        *,
+        is_latest: bool | None = True,
+    ) -> dict:
         return {
             "analysis_id": str(ULID()),
             "status": "succeeded",
@@ -501,7 +557,7 @@ class FasService:
                 "fas": FAS_VERSION,
                 "latest_glossary": head.versions.get("glossary"),
             },
-            "is_latest": True,
+            "is_latest": is_latest,
             "summary": None,
             "result_data": result_data,
             "tables": result_data.get("tables") or [],
@@ -525,8 +581,11 @@ class FasService:
         ensured = await self.ensure(job_id, actor, wait_sec=min(wait_sec, self.settings.load_sync_sec))
         if isinstance(ensured, Accepted):
             return ensured
+        head, fresh = _serve(ensured)
+        if head is None:
+            return _unloaded_analysis()
         where, params_note = _series_where(body)
-        table, pin = await self._query_series_table(job_id, ensured, where)
+        table, pin = await self._query_series_table(job_id, head, where)
         rows = table.to_pylist()
         citations = [_citation(row) for row in rows]
         series_rows = [
@@ -541,21 +600,26 @@ class FasService:
             }
             for row in rows
         ]
+        notes = (_freshness_warning() if fresh else []) + params_note
         return self._result_envelope(
             job_id,
-            ensured,
+            head,
             pin["manifest"],
             {"findings": [], "ratios": [], "series": series_rows, "expression": None, "impact": None},
             citations,
-            params_note,
+            notes,
+            is_latest=None if fresh else True,
         )
 
     async def slice(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float) -> dict | Accepted:
         ensured = await self.ensure(job_id, actor, wait_sec=min(wait_sec, self.settings.load_sync_sec))
         if isinstance(ensured, Accepted):
             return ensured
+        head, fresh = _serve(ensured)
+        if head is None:
+            return _unloaded_analysis()
         query = _slice_query(body)
-        pin = await self._pin(job_id, ensured)
+        pin = await self._pin(job_id, head)
         table = await self.query.cube(job_id, query, pin=pin)
         columns = list(table.column_names)
         data_rows = [[_decimal_text(value) if isinstance(value, Decimal) else value for value in row] for row in table.to_pylist()]
@@ -564,7 +628,7 @@ class FasService:
         data_rows = [[_cell(item.get(column)) for column in columns] for item in dict_rows]
         return self._result_envelope(
             job_id,
-            ensured,
+            head,
             pin["manifest"],
             {
                 "findings": [],
@@ -574,13 +638,17 @@ class FasService:
                 "impact": None,
                 "tables": [{"id": "slice", "columns": columns, "rows": data_rows}],
             },
-            [],
+            _freshness_warning() if fresh else [],
+            is_latest=None if fresh else True,
         )
 
     async def expression(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float) -> dict | Accepted:
         ensured = await self.ensure(job_id, actor, wait_sec=min(wait_sec, self.settings.load_sync_sec))
         if isinstance(ensured, Accepted):
             return ensured
+        head, fresh = _serve(ensured)
+        if head is None:
+            return _unloaded_analysis()
         text = body.get("expression")
         bindings = body.get("bindings") or {}
         if not isinstance(bindings, dict):
@@ -602,7 +670,7 @@ class FasService:
             if not isinstance(spec, dict):
                 raise InvalidArgument(f"привязка {name} должна быть объектом")
             where = _binding_where(spec)
-            table, pin = await self._query_series_table(job_id, ensured, where)
+            table, _pin = await self._query_series_table(job_id, head, where)
             rows = table.to_pylist()
             if len(rows) != 1:
                 raise InvalidArgument(f"имя {name} соответствует {len(rows)} ячейкам")
@@ -617,32 +685,52 @@ class FasService:
             inputs.append({"name": name, "cell_id": row["cell_id"], "value": _decimal_text(number), "value_status": status})
             if number is not None:
                 values[name] = Decimal(number)
-        manifest = (await self._pin(job_id, ensured))["manifest"]
+        manifest = (await self._pin(job_id, head))["manifest"]
+        notes = _freshness_warning() if fresh else []
+        latest = None if fresh else True
         if empty:
             expr = {"result": None, "status": "empty_input", "inputs": inputs, "literals": literals}
-            envelope = self._result_envelope(job_id, ensured, manifest, _expr_data(expr), citations)
-            return envelope
+            return self._result_envelope(job_id, head, manifest, _expr_data(expr), citations, notes, is_latest=latest)
         if len(units) > 1:
             expr = {"result": None, "status": "unit_mismatch", "inputs": inputs, "literals": literals}
-            return self._result_envelope(job_id, ensured, manifest, _expr_data(expr), citations)
+            return self._result_envelope(job_id, head, manifest, _expr_data(expr), citations, notes, is_latest=latest)
         if len(scales) > 1:
-            # перечитать normalized
             values = {}
             for name in used:
                 spec = bindings[name]
-                table, _pin = await self._query_series_table(job_id, ensured, _binding_where(spec))
+                table, _pin = await self._query_series_table(job_id, head, _binding_where(spec))
                 row = table.to_pylist()[0]
                 values[name] = Decimal(row["normalized_value"] or 0)
         result = evaluate(node, values)
         expr = {"result": _decimal_text(result), "status": "succeeded", "inputs": inputs, "literals": literals}
-        return self._result_envelope(job_id, ensured, manifest, _expr_data(expr), citations)
+        return self._result_envelope(job_id, head, manifest, _expr_data(expr), citations, notes, is_latest=latest)
 
     async def resolve_periods(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float) -> dict | Accepted:
         ensured = await self.ensure(job_id, actor, wait_sec=min(wait_sec, self.settings.load_sync_sec))
         if isinstance(ensured, Accepted):
             return ensured
+        head, fresh = _serve(ensured)
         text = str(body.get("text") or body.get("query") or "")
-        pin = await self._pin(job_id, ensured)
+        # TODO §5.4: после phase.set и привязки debt_service здесь будет первый период
+        # по index на временной оси, где debt_service ≠ 0. В фазе 0 привязок нет.
+        if text.strip().casefold() in {"первый операционный год", "first operational year"}:
+            payload = {
+                "periods": [],
+                "needs_input": [{"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}],
+                "build_key": None if head is None else head.build_key,
+                "is_latest": None if fresh or head is None else True,
+            }
+            if fresh:
+                payload["warnings"] = _freshness_warning()
+            return payload
+        if head is None:
+            return {
+                "periods": [],
+                "build_key": None,
+                "is_latest": None,
+                "warnings": _freshness_warning(),
+            }
+        pin = await self._pin(job_id, head)
         table = await self.query.sql(
             job_id,
             "SELECT axis_id, period_id, period_key_base, period_marker, period_start, period_end, "
@@ -651,11 +739,14 @@ class FasService:
         )
         rows = _unique_periods(table.to_pylist())
         picked = _match_periods(text, rows)
-        return {"periods": picked, "build_key": ensured.build_key, "is_latest": True}
+        payload = {"periods": picked, "build_key": head.build_key, "is_latest": None if fresh else True}
+        if fresh:
+            payload["warnings"] = _freshness_warning()
+        return payload
 
     async def create_op(self, kind: str, job_id: str | None, actor: Actor, payload: dict) -> dict:
         op_id = str(ULID())
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         body = {
             "id": op_id,
             "kind": kind,
@@ -677,7 +768,7 @@ class FasService:
         current = await self.get_op(op_id)
         if current["status"] in {"succeeded", "failed", "cancelled"}:
             return current
-        event = {"seq": 1, "status": status, "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **fields}
+        event = {"seq": 1, "status": status, "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), **fields}
         try:
             await self.store.put_if_absent(keys.operation_event_key(op_id, 1), _dumps(event))
         except AlreadyExists:
@@ -779,10 +870,44 @@ class FasService:
                 "selftest": "passed",
             },
             "redis": "ok" if redis_ok else "down",
-            "builder": "ok" if await self.builder.healthy() else "down",
+            "builder": await self.builder.breaker_state(),
             "glossary": "none",
             "draining": self.draining,
         }
+
+
+def _serve(ensured: Head | Freshness) -> tuple[Head | None, bool]:
+    if isinstance(ensured, Freshness):
+        return ensured.head, True
+    return ensured, False
+
+
+def _freshness_warning() -> list[dict]:
+    return [{"code": "freshness_unknown", "params": {}}]
+
+
+def _unloaded_analysis() -> dict:
+    return {
+        "analysis_id": str(ULID()),
+        "status": "succeeded",
+        "builder_ref": None,
+        "versions": {"fas": FAS_VERSION},
+        "is_latest": None,
+        "summary": None,
+        "result_data": {
+            "findings": [],
+            "ratios": [],
+            "series": [],
+            "expression": None,
+            "impact": None,
+            "tables": [],
+        },
+        "tables": [],
+        "charts": [],
+        "citations": [],
+        "needs_input": [],
+        "warnings": _freshness_warning(),
+    }
 
 
 def _cell(value):
@@ -918,12 +1043,6 @@ def _match_periods(text: str, rows: list[dict]) -> list[dict]:
             for row in rows
             if _year_of(row) == year and marker_class(row.get("period_marker")) == klass
         ]
-    if query.casefold() in {"первый операционный год", "first operational year"}:
-        operational = [row for row in rows if row.get("phase") == "operation"]
-        if not operational:
-            return []
-        year = _year_of(operational[0])
-        return [_period_ref(row) for row in operational if _year_of(row) == year]
     matched = _YEAR_ONLY.fullmatch(query)
     if matched:
         year = int(matched.group(1))

@@ -12,7 +12,10 @@ import pyarrow as pa
 
 from finance_analysis.domain.book import (
     Actor,
+    Changed,
+    GraphLink,
     NotModified,
+    ReportNotReady,
     Summary,
     WorkbookSnapshot,
 )
@@ -59,13 +62,15 @@ class ParquetPort(Protocol):
 
 
 class BuilderPort(Protocol):
-    async def summary(self, job_id: str, etag: str | None) -> Summary | NotModified: ...
+    async def summary(self, job_id: str, etag: str | None) -> Summary | NotModified | ReportNotReady: ...
 
-    async def context(self, job_id: str) -> tuple[WorkbookSnapshot, str | None, str]: ...
+    async def head_summary(self, job_id: str, etag: str) -> NotModified | Changed | ReportNotReady: ...
 
-    async def graph(self, job_id: str) -> tuple[WorkbookSnapshot | None, str | None]: ...
+    async def context(self, job_id: str) -> WorkbookSnapshot | ReportNotReady: ...
 
-    async def healthy(self) -> bool: ...
+    async def graph(self, job_id: str) -> tuple[GraphLink, ...] | ReportNotReady: ...
+
+    async def breaker_state(self) -> str: ...
 
 
 class SemanticQueryPort(Protocol):

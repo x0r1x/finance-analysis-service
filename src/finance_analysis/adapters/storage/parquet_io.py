@@ -5,8 +5,8 @@ from __future__ import annotations
 import io
 import json
 import re
-from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_EVEN
+from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 
@@ -81,7 +81,7 @@ def _fit(value, typ: pa.DataType):
         try:
             dec = value if isinstance(value, Decimal) else Decimal(str(value))
             dec = dec.quantize(quantum, rounding=ROUND_HALF_EVEN)
-        except Exception:
+        except (InvalidOperation, ValueError, TypeError):
             return None
         digits = len(dec.as_tuple().digits)
         if digits > typ.precision:
@@ -99,8 +99,8 @@ def _fit(value, typ: pa.DataType):
     if pa.types.is_timestamp(typ):
         if isinstance(value, datetime):
             if value.tzinfo is None:
-                return value.replace(tzinfo=timezone.utc)
-            return value.astimezone(timezone.utc)
+                return value.replace(tzinfo=UTC)
+            return value.astimezone(UTC)
         return None
     if pa.types.is_date(typ):
         if isinstance(value, datetime):
@@ -126,7 +126,7 @@ def _sort_key(dataset: str, row: dict):
 
 
 def write_table(dataset: str, rows: list[dict], *, build_key: str) -> tuple[bytes, int]:
-    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     schema = arrow_schema(dataset, build_key=build_key, created_at=created)
     ordered = sorted(rows, key=lambda row: _sort_key(dataset, row))
     columns: dict[str, list] = {field.name: [] for field in schema}

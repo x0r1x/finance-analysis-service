@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from finance_analysis.domain.ids import build_key as check_build
-from finance_analysis.domain.ids import dataset_name, derive_key as check_derive
+from finance_analysis.domain.ids import dataset_name
+from finance_analysis.domain.ids import derive_key as check_derive
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.ids import ulid as check_ulid
 

@@ -10,18 +10,6 @@ MARKER_ACTUAL = frozenset({"факт", "actual", "act", "ф"})
 MARKER_PLAN = frozenset({"план", "plan", "budget", "бюджет"})
 MARKER_ESTIMATE = frozenset({"e", "estimate", "est", "прогноз", "forecast"})
 
-PHASE_WORDS = {
-    "operation": "operation",
-    "operations": "operation",
-    "operational": "operation",
-    "эксплуатация": "operation",
-    "ops": "operation",
-    "construction": "construction",
-    "строительство": "construction",
-    "development": "development",
-    "развитие": "development",
-}
-
 _YEAR = re.compile(r"^(\d{4})$")
 _QUARTER = re.compile(r"^(\d{4})Q([1-4])$")
 _HALF = re.compile(r"^(\d{4})H([12])$")
@@ -49,38 +37,6 @@ def marker_class(marker: str | None) -> str | None:
     if token in MARKER_ESTIMATE:
         return "estimate"
     return "other"
-
-
-def _flag_on(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().casefold() not in {"", "false", "0", "no", "off"}
-    if value is None:
-        return False
-    return bool(value)
-
-
-def phase_from_flags(flags: dict | None) -> str | None:
-    """Фаза из флагов периода.
-
-    Учитываются только включённые флаги. Строковое значение вроде
-    `phase=operation` по-прежнему задаёт фазу. Ключ `operation: false`
-    фазу не включает: в реальном дампе на периоде бывают оба ключа.
-    """
-
-    if not flags:
-        return None
-    for key, value in flags.items():
-        if isinstance(value, str):
-            named = PHASE_WORDS.get(value.casefold().strip())
-            if named:
-                return named
-        if _flag_on(value):
-            named = PHASE_WORDS.get(str(key).casefold().strip())
-            if named:
-                return named
-    return None
 
 
 def _month_end(year: int, month: int) -> date:

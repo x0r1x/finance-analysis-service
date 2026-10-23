@@ -1,31 +1,50 @@
-"""Книга из каталога фикстур builder для стенда и тестов.
+"""Книга из каталога фикстур. Эмулирует HTTP `/summary`, а не файл публикации.
 
-Каталог — `meta.json` + `context.json` + `graph.json` (реальный дамп).
-`summary.json` оставлен для проектной формы из §2.
+`GET /summary` отдаёт форму `summary-2` и strong ETag. `If-None-Match` при
+`status=succeeded` и том же ETag — `304` без тела. `HEAD` тоже без тела.
+Режим пересборки — `409 {"error": "report_not_ready"}`. Статус, отличный от
+`succeeded`, при том же ETag отвечает `200`: ETag этот статус не кодирует.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
+import anyio
+
 from finance_analysis.adapters.builder.acl import (
-    is_meta_payload,
     parse_context,
-    parse_graph,
+    parse_links,
     parse_summary,
 )
-from finance_analysis.domain.book import NotModified
-from finance_analysis.domain.errors import NotFound
+from finance_analysis.adapters.builder.etag import strong_etag
+from finance_analysis.domain.book import (
+    Changed,
+    GraphLink,
+    NotModified,
+    ReportNotReady,
+    Summary,
+    WorkbookSnapshot,
+)
+from finance_analysis.domain.errors import NotFound, UnsupportedBuilderShape
 
 
 class FixtureBuilder:
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self._etag: dict[str, str] = {}
-        self._generation_delta: dict[str, int] = {}
-        self._graph_versions: dict[str, str | None] = {}
-        self.flips_left: dict[str, int] = {}
+        self.calls: list[tuple[str, str]] = []
+        self.rebuilding: set[str] = set()
+        self.status_override: dict[str, str] = {}
+        self.warnings_override: dict[str, list[str]] = {}
+        self.head_misses: dict[str, int] = {}
+        self.foreign_graph_reads: dict[str, int] = {}
+        self.foreign_graph_from: dict[str, str] = {}
+        self._forced_breaker = "closed"
+
+    async def breaker_state(self) -> str:
+        return self._forced_breaker
 
     def _dir(self, job_id: str) -> Path:
         path = self.root / job_id
@@ -33,72 +52,85 @@ class FixtureBuilder:
             raise NotFound("книга builder не найдена")
         return path
 
-    def _read(self, path: Path) -> dict:
-        return json.loads(path.read_text(encoding="utf-8"))
+    async def _bytes(self, path: Path) -> bytes:
+        if not await anyio.to_thread.run_sync(path.is_file):
+            raise NotFound("в книге нет файла публикации")
+        return await anyio.to_thread.run_sync(path.read_bytes)
 
-    def _document(self, job_id: str) -> dict:
+    async def _publication(self, job_id: str) -> tuple[dict, str]:
         folder = self._dir(job_id)
-        meta = folder / "meta.json"
-        if meta.is_file():
-            payload = self._read(meta)
-            delta = self._generation_delta.get(job_id, 0)
-            if delta:
-                payload = dict(payload)
-                payload["generation"] = int(payload.get("generation") or 0) + delta
-            return payload
-        summary = folder / "summary.json"
-        if summary.is_file():
-            return self._read(summary)
-        raise NotFound("в книге нет meta.json")
+        context_raw = await self._bytes(folder / "context.json")
+        graph_raw = await self._bytes(folder / "graph.json")
+        context = await anyio.to_thread.run_sync(json.loads, context_raw)
+        graph = await anyio.to_thread.run_sync(json.loads, graph_raw)
+        context_version = context.get("schema_version")
+        graph_version = graph.get("schema_version")
+        missing = []
+        if context_version in (None, ""):
+            missing.append("context.json.schema_version")
+        if graph_version in (None, ""):
+            missing.append("graph.json.schema_version")
+        if missing:
+            raise UnsupportedBuilderShape("в публикации не хватает версии схемы", extra={"fields": missing})
+        digest = hashlib.sha256(context_raw + b"\n" + graph_raw).hexdigest()
+        tag = strong_etag(
+            content_sha256=digest,
+            context_mtime_ns=0,
+            context_size=len(context_raw),
+            graph_mtime_ns=0,
+            graph_size=len(graph_raw),
+        )
+        body = {
+            "status": self.status_override.get(job_id, "succeeded"),
+            "context_schema_version": str(context_version),
+            "graph_schema_version": str(graph_version),
+            "warnings": list(self.warnings_override.get(job_id, [])),
+        }
+        return body, tag
 
-    def _graph_version(self, job_id: str) -> str | None:
-        if job_id in self._graph_versions:
-            return self._graph_versions[job_id]
-        path = self._dir(job_id) / "graph.json"
-        version = None
-        if path.is_file():
-            raw = self._read(path).get("schema_version")
-            version = None if raw in (None, "") else str(raw)
-        self._graph_versions[job_id] = version
-        return version
-
-    async def summary(self, job_id: str, etag: str | None):
-        payload = self._document(job_id)
-        if is_meta_payload(payload):
-            parsed = parse_summary(
-                payload,
-                etag="",
-                job_id=job_id,
-                graph_schema_version=self._graph_version(job_id),
-            )
-        else:
-            current = self._etag.get(job_id) or str(payload.get("etag") or "sum-1")
-            self._etag[job_id] = current
-            body = {key: value for key, value in payload.items() if key != "etag"}
-            parsed = parse_summary(body, etag=current, job_id=job_id)
-        if etag and etag == parsed.etag:
-            return NotModified(etag)
+    async def summary(self, job_id: str, etag: str | None) -> Summary | NotModified | ReportNotReady:
+        self.calls.append(("GET", "/summary"))
+        if job_id in self.rebuilding:
+            return ReportNotReady()
+        body, tag = await self._publication(job_id)
+        parsed = parse_summary(body, etag=tag, job_id=job_id)
+        if etag and etag == tag and parsed.status == "succeeded":
+            return NotModified(tag)
         return parsed
 
-    async def context(self, job_id: str):
-        folder = self._dir(job_id)
-        if self.flips_left.get(job_id, 0) > 0:
-            self.flips_left[job_id] -= 1
-            if (folder / "meta.json").is_file():
-                self._generation_delta[job_id] = self._generation_delta.get(job_id, 0) + 1
-            else:
-                current = self._etag.get(job_id, "sum-1")
-                self._etag[job_id] = current + "-next"
-        raw = (folder / "context.json").read_bytes()
-        snapshot = parse_context(json.loads(raw))
-        graph_path = folder / "graph.json"
-        if graph_path.is_file():
-            snapshot = parse_graph(json.loads(graph_path.read_text(encoding="utf-8")), snapshot)
-        context_etag = "ctx-1"
-        return snapshot, context_etag, raw.hex()[:64]
+    async def head_summary(self, job_id: str, etag: str) -> NotModified | Changed | ReportNotReady:
+        self.calls.append(("HEAD", "/summary"))
+        if job_id in self.rebuilding:
+            return ReportNotReady()
+        misses = self.head_misses.get(job_id, 0)
+        if misses > 0:
+            self.head_misses[job_id] = misses - 1
+            return Changed(f"{etag}:moved")
+        _body, tag = await self._publication(job_id)
+        if etag == tag:
+            return NotModified(tag)
+        return Changed(tag)
 
-    async def healthy(self) -> bool:
-        return True
+    async def context(self, job_id: str) -> WorkbookSnapshot | ReportNotReady:
+        self.calls.append(("GET", "/context.json"))
+        if job_id in self.rebuilding:
+            return ReportNotReady()
+        raw = await self._bytes(self._dir(job_id) / "context.json")
+        payload = await anyio.to_thread.run_sync(json.loads, raw)
+        return await anyio.to_thread.run_sync(parse_context, payload)
+
+    async def graph(self, job_id: str) -> tuple[GraphLink, ...] | ReportNotReady:
+        self.calls.append(("GET", "/graph.json"))
+        if job_id in self.rebuilding:
+            return ReportNotReady()
+        source = job_id
+        left = self.foreign_graph_reads.get(job_id, 0)
+        if left > 0:
+            source = self.foreign_graph_from[job_id]
+            self.foreign_graph_reads[job_id] = left - 1
+        raw = await self._bytes(self._dir(source) / "graph.json")
+        payload = await anyio.to_thread.run_sync(json.loads, raw)
+        return await anyio.to_thread.run_sync(parse_links, payload)
 
     async def aclose(self) -> None:
         return None

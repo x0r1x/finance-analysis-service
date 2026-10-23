@@ -83,3 +83,21 @@ type = "forbidden"
 source_modules = ["finance_analysis"]
 forbidden_modules = ["requests"]
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Semantic writes go through the guard"
+type = "forbidden"
+source_modules = [
+  "finance_analysis.application.service",
+  "finance_analysis.application.project",
+  "finance_analysis.application.gc",
+  "finance_analysis.adapters",
+  "finance_analysis.domain",
+  "finance_analysis.main",
+  "finance_analysis.cli",
+]
+forbidden_modules = [
+  "finance_analysis.application.journal",
+  "finance_analysis.application.derived_store",
+]
+allow_indirect_imports = true

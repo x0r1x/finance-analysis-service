@@ -7,10 +7,18 @@ from datetime import date
 
 import pytest
 
-from finance_analysis.adapters.builder.acl import parse_context, parse_graph, parse_summary
+from finance_analysis.adapters.builder.acl import (
+    parse_context,
+    parse_graph,
+    parse_summary,
+)
 from finance_analysis.application.project import derive_rows, project
 from finance_analysis.domain.errors import UnsupportedBuilderShape
-from finance_analysis.domain.periods import marker_class, phase_from_flags, resolve_period_dates, split_period_key
+from finance_analysis.domain.periods import (
+    marker_class,
+    resolve_period_dates,
+    split_period_key,
+)
 from tests.books import (
     BUILDER_ROOT,
     PACKT_PERIOD,
@@ -40,51 +48,53 @@ def test_marker_does_not_move_dates():
     assert marker_class("custom") == "other"
 
 
-def test_phase_flags_ignore_false_and_keep_string_values():
-    assert phase_from_flags({"construction": True, "operation": False}) == "construction"
-    assert phase_from_flags({"construction": False, "operation": True}) == "operation"
-    assert phase_from_flags({"phase": "operation"}) == "operation"
-    assert phase_from_flags({"beginning of construction": True}) is None
-
-
 def test_design_summary_keeps_http_etag():
     parsed = parse_summary(
         {
-            "content_sha256": "b" * 64,
-            "context_schema_version": "1",
-            "graph_schema_version": "1",
+            "context_schema_version": "1.14.0",
+            "graph_schema_version": "1.7.0",
             "status": "succeeded",
+            "warnings": [],
         },
-        etag="summary-2",
+        etag='"summary-2:abc"',
         job_id=JOB,
     )
-    assert parsed.etag == "summary-2"
-    assert parsed.context_schema_version == "1"
+    assert parsed.etag == '"summary-2:abc"'
+    assert parsed.context_schema_version == "1.14.0"
+    assert not hasattr(parsed, "context_etag")
 
 
 def test_acl_packt_and_missing_field():
     folder = BUILDER_ROOT / JOB
-    meta = json.loads((folder / "meta.json").read_text())
     graph = json.loads((folder / "graph.json").read_text())
-    parsed = parse_summary(meta, etag="ignored", job_id=JOB, graph_schema_version=graph["schema_version"])
-    assert parsed.content_sha256 == meta["content_sha256"]
-    assert parsed.context_schema_version == meta["schema_version"]
-    assert parsed.graph_schema_version == "1.7.0"
-    assert parsed.etag != "ignored"
-    assert len(parsed.etag) == 64
     context = json.loads((folder / "context.json").read_text())
     snapshot = parse_graph(graph, parse_context(context))
     assert "Input Assumptions!r5" in snapshot.axes
-    tables = project(snapshot, model_id=JOB, build="0123456789abcdef")
+    assert snapshot.axes["Input Assumptions!r5"].axis_kind == "params"
+    tables, warnings = project(snapshot, model_id=JOB, build="0123456789abcdef")
     facts = {(row["row_key"], row["period_id"]): row for row in tables["fact_observation"]}
     revenue = facts[(PACKT_REVENUE_ROW, PACKT_PERIOD)]
     assert revenue["cell_id"] == PACKT_REVENUE_CELL
     assert str(revenue["value_raw"]) == PACKT_REVENUE_VALUE
     assert any(row["axis_id"] == "Input Assumptions!r5" for row in tables["fact_observation"])
     derived = derive_rows(tables, state_seq=0, derive="d", versions={})
-    phases = {(row["axis_id"], row["period_id"]): row["phase"] for row in derived["period_semantics"]}
-    assert phases[(PACKT_PHASE_AXIS, "Y1")] == "construction"
-    assert phases[(PACKT_PHASE_AXIS, PACKT_PERIOD)] == "operation"
+    assert all(row["phase"] is None and row["phase_year"] is None for row in derived["period_semantics"])
+    y5 = [row for row in tables["dim_period"] if row["period_id"] == PACKT_PERIOD and row["axis_kind"] == "time"]
+    assert len(y5) == 9
+    tba = next(row for row in y5 if row["axis_id"] == PACKT_PHASE_AXIS)
+    flags = json.loads(tba["flags_json"])
+    assert flags
+    assert tba["flags_source"] == "own"
+    assert {row["col"] for row in y5} != {tba["col"]}
+    for row in y5:
+        assert json.loads(row["flags_json"]) == flags
+        if row["axis_id"] != PACKT_PHASE_AXIS:
+            assert row["flags_source"] == "timeline"
+    params = [row for row in tables["dim_period"] if row["axis_id"] == "Input Assumptions!r5"]
+    assert params
+    assert all(row["axis_kind"] == "params" and row["period_start"] is None and row["date_source"] == "none" for row in params)
+    assert all(item["code"] != "timeline_mismatch" for item in warnings)
+    assert "group_key" not in tables["dim_period"][0]
     broken = {
         "axes": [
             {
@@ -135,7 +145,7 @@ def test_dict_axes_still_parse_markers():
             }
         ],
     }
-    tables = project(parse_context(context), model_id=JOB, build="0123456789abcdef")
+    tables, _warnings = project(parse_context(context), model_id=JOB, build="0123456789abcdef")
     periods = {row["period_id"]: row for row in tables["dim_period"]}
     assert periods["2024"]["date_source"] == "key"
     assert periods["2024"]["period_start"] == date(2024, 1, 1)

@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
-import asyncio
 import fcntl
 import hashlib
 import os
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
 import opendal
 from opendal.exceptions import AlreadyExists as OdalExists
-from opendal.exceptions import ConditionNotMatch, NotFound as OdalNotFound
+from opendal.exceptions import ConditionNotMatch
+from opendal.exceptions import NotFound as OdalNotFound
 
 from finance_analysis.application.ports import ObjMeta
-from finance_analysis.domain.errors import AlreadyExists, DependencyUnavailable, InvalidId, NotFound, PreconditionFailed
+from finance_analysis.domain.errors import (
+    AlreadyExists,
+    DependencyUnavailable,
+    InvalidId,
+    NotFound,
+    PreconditionFailed,
+)
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.settings import Settings
 
@@ -101,7 +107,7 @@ class LocalStore(_StoreBase):
         if not path.is_file():
             return None
         data = path.read_bytes()
-        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=mtime)
 
     async def put(self, key: str, data: bytes) -> ObjMeta:
@@ -119,7 +125,7 @@ class LocalStore(_StoreBase):
     def _lock(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = path.with_name(path.name + ".lock")
-        handle = open(lock_path, "a+", encoding="utf-8")
+        handle = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115 — закрывает вызывающий после LOCK_UN
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         return handle
 
@@ -139,7 +145,7 @@ class LocalStore(_StoreBase):
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             handle.close()
-        return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=datetime.now(timezone.utc))
+        return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=datetime.now(UTC))
 
     def _put_absent_sync(self, key: str, data: bytes) -> ObjMeta:
         path = self._path(key)
@@ -154,7 +160,7 @@ class LocalStore(_StoreBase):
             os.fsync(fd)
         finally:
             os.close(fd)
-        return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=datetime.now(timezone.utc))
+        return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=datetime.now(UTC))
 
     def _put_match_sync(self, key: str, data: bytes, token: str) -> ObjMeta:
         path = self._path(key)
@@ -169,7 +175,7 @@ class LocalStore(_StoreBase):
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             handle.close()
-        return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=datetime.now(timezone.utc))
+        return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=datetime.now(UTC))
 
     async def list(self, prefix: str) -> AsyncIterator[ObjMeta]:
         safe = prefix.strip("/")
@@ -186,7 +192,7 @@ class LocalStore(_StoreBase):
             if meta is not None and (meta.is_dir or str(entry.path).endswith("/")):
                 continue
             rel = entry.path.lstrip("/")
-            if safe and not (rel == safe or rel.startswith(safe + "/") or rel.startswith(safe)):
+            if safe and not (rel == safe or rel.startswith((safe + "/", safe))):
                 # list may already be scoped
                 pass
             name = rel.rsplit("/", 1)[-1]

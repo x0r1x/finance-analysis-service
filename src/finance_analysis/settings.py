@@ -69,11 +69,10 @@ class Settings(BaseSettings):
         bucket = self.fas_s3_bucket
         key = self.fas_s3_access_key
         secret = self.fas_s3_secret_key
-        if bucket or key or secret or self.fas_s3_endpoint:
-            if not (bucket and key and secret):
-                raise ValueError(
-                    "частичная конфигурация S3: нужны FAS_S3_BUCKET, FAS_S3_ACCESS_KEY и FAS_S3_SECRET_KEY"
-                )
+        if (bucket or key or secret or self.fas_s3_endpoint) and not (bucket and key and secret):
+            raise ValueError(
+                "частичная конфигурация S3: нужны FAS_S3_BUCKET, FAS_S3_ACCESS_KEY и FAS_S3_SECRET_KEY"
+            )
         return self
 
     @property

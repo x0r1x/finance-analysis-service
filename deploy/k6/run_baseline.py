@@ -1,8 +1,8 @@
 """Прогон S1/S2 не короче 60 секунд и запись базовой линии.
 
 k6 берётся из K6_BIN или из PATH. Рабочий каталог — временный.
-Книги — копии packt: у каждой свой job_id и content_sha256, чтобы токен
-согласованности отличался.
+Книги — копии packt. Имя каталога и есть job_id, поэтому ключ сборки
+у копий разный. Адаптер sidecar публикации не читает.
 """
 
 from __future__ import annotations
@@ -42,13 +42,8 @@ def _jobs(count: int) -> list[str]:
     return jobs
 
 
-def _copy_job(source: Path, target: Path, job: str) -> None:
+def _copy_job(source: Path, target: Path) -> None:
     shutil.copytree(source, target)
-    meta_path = target / "meta.json"
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["job_id"] = job
-    meta["content_sha256"] = f"{int(job, 16):064x}"
-    meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
 
 def main() -> None:
@@ -61,7 +56,7 @@ def main() -> None:
     jobs = _jobs(16)
     source = BUILDER_ROOT / PRIMARY
     for job in jobs:
-        _copy_job(source, fixture / job, job)
+        _copy_job(source, fixture / job)
     env = os.environ.copy()
     env.update(
         {

@@ -130,3 +130,13 @@ class StartupError(FasError):
     code = "dependency_unavailable"
     status = 503
     title = "Сервис не может стартовать"
+
+
+class SemanticRejected(FasError):
+    code = "schema_invalid"
+    status = 409
+    title = "Семантическая запись отклонена"
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail, extra={"guard_code": code})
+        self.code = code

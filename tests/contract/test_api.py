@@ -8,11 +8,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from finance_analysis.adapters.api.app import create_app
-from finance_analysis.domain.book import Actor
 from finance_analysis.domain.errors import InvalidArgument
 from tests.books import (
     PACKT_PERIOD,
-    PACKT_PHASE_AXIS,
     PACKT_REVENUE_CELL,
     PACKT_REVENUE_ROW,
     PACKT_REVENUE_VALUE,
@@ -40,6 +38,7 @@ async def test_capabilities_health_metrics(app):
     assert live.status_code == 200
     assert ready.status_code == 200
     assert ready.json()["storage"]["conditional_writes"] == "flock"
+    assert ready.json()["builder"] == "closed"
     assert caps.json()["storage"]["backend"] == "local"
     assert any(tool["name"] == "get_series" for tool in caps.json()["tools"])
     assert b"fas_http_requests_total" in metrics.content or metrics.status_code == 200
@@ -79,9 +78,12 @@ async def test_series_and_expression_match_excel_cache(app):
             json={"text": "первый операционный год"},
         )
         assert resolved.status_code == 200, resolved.text
-        found = {(item["axis_id"], item["period_id"]) for item in resolved.json()["periods"]}
-        assert (PACKT_PHASE_AXIS, PACKT_PERIOD) in found
-        assert (PACKT_PHASE_AXIS, "Y1") not in found
+        resolved_body = resolved.json()
+        assert resolved_body["periods"] == []
+        assert resolved_body["needs_input"] == [
+            {"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}
+        ]
+        assert all(item["kind"] != "phase" for item in resolved_body["needs_input"])
         sliced = await client.post(
             f"/v1/books/{JOB}/slice",
             headers=headers,
@@ -95,21 +97,38 @@ async def test_series_and_expression_match_excel_cache(app):
         assert bare.status_code == 400
 
 
-async def test_rvi_warnings_on_succeeded_book(app):
+async def test_rvi_loads_from_summary_not_sidecar(app):
     rvi = job_id("rvi")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
         headers = {"X-User-Id": "alex", "X-Client-Id": "desk"}
         loaded = await client.post(f"/v1/books/{rvi}:load", headers=headers)
         assert loaded.status_code == 200, loaded.text
         body = loaded.json()
-        assert body["builder_ref"]["builder_status"] == "succeeded"
-        messages = [
-            item["params"].get("message", "")
-            for item in body["warnings"]
-            if item["code"] == "builder_warning"
-        ]
-        assert any("missing cached values" in message for message in messages)
-        assert all(item["code"] != "builder_degraded" for item in body["warnings"])
+        assert set(body["builder_ref"]) == {
+            "job_id",
+            "summary_etag",
+            "context_schema_version",
+            "graph_schema_version",
+        }
+        assert body["builder_ref"]["summary_etag"].startswith('"summary-2:')
+        assert body["is_latest"] is True
+        assert all(item["code"] not in {"builder_degraded", "builder_warning"} for item in body["warnings"])
+        year = await client.post(f"/v1/books/{rvi}/periods:resolve", headers=headers, json={"text": "2024"})
+        assert year.status_code == 200, year.text
+        assert year.json()["periods"]
+        marked = await client.post(
+            f"/v1/books/{rvi}/periods:resolve",
+            headers=headers,
+            json={"text": "факт 2024"},
+        )
+        assert marked.status_code == 200, marked.text
+        span = await client.post(
+            f"/v1/books/{rvi}/periods:resolve",
+            headers=headers,
+            json={"text": "2030-2035"},
+        )
+        assert span.status_code == 200, span.text
+        assert span.json()["periods"]
 
 
 async def test_idempotency_and_actor(app):

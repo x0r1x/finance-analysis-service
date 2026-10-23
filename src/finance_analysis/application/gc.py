@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+from finance_analysis.domain.errors import InvalidId
 from finance_analysis.domain.ids import job_id as check_job
 
 
@@ -12,12 +13,12 @@ def _age_ok(mtime: datetime | None, *, now: datetime, max_age_s: int) -> bool:
     if mtime is None:
         return False
     if mtime.tzinfo is None:
-        mtime = mtime.replace(tzinfo=timezone.utc)
+        mtime = mtime.replace(tzinfo=UTC)
     return (now - mtime).total_seconds() >= max_age_s
 
 
 async def gc_incomplete(store, *, now: datetime | None = None, max_age_s: int = 3600, is_locked=None) -> dict:
-    moment = now or datetime.now(timezone.utc)
+    moment = now or datetime.now(UTC)
     removed = 0
     kept = 0
     keys = [item.key async for item in store.list("books")]
@@ -25,7 +26,7 @@ async def gc_incomplete(store, *, now: datetime | None = None, max_age_s: int = 
     for job in jobs:
         try:
             check_job(job)
-        except Exception:
+        except InvalidId:
             continue
         if is_locked and await is_locked(job):
             continue

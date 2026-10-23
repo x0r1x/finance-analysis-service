@@ -13,7 +13,7 @@ import pytest
 from finance_analysis.adapters.builder.fixture import FixtureBuilder
 from finance_analysis.adapters.redis.runtime import RedisRuntime
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
-from finance_analysis.adapters.storage.store import LocalStore, S3Store, open_storage
+from finance_analysis.adapters.storage.store import S3Store, open_storage
 from finance_analysis.adapters.wren.query import WrenQuery
 from finance_analysis.application.service import FasService
 from finance_analysis.settings import Settings

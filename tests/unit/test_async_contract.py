@@ -35,18 +35,34 @@ def test_no_sync_clients():
     for path in ROOT.rglob("*.py"):
         for node in _calls(path):
             func = node.func
-            if isinstance(func, ast.Attribute) and func.attr == "Client":
-                if isinstance(func.value, ast.Name) and func.value.id == "httpx":
-                    banned.append((path.name, node.lineno, "httpx.Client"))
-            if isinstance(func, ast.Attribute) and func.attr == "Redis":
-                if isinstance(func.value, ast.Name) and func.value.id == "redis":
-                    banned.append((path.name, node.lineno, "redis.Redis"))
-            if isinstance(func, ast.Attribute) and func.attr == "Operator":
-                if isinstance(func.value, ast.Name) and func.value.id == "opendal":
-                    banned.append((path.name, node.lineno, "opendal.Operator"))
-            if isinstance(func, ast.Attribute) and func.attr == "sleep":
-                if isinstance(func.value, ast.Name) and func.value.id == "time":
-                    banned.append((path.name, node.lineno, "time.sleep"))
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "Client"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "httpx"
+            ):
+                banned.append((path.name, node.lineno, "httpx.Client"))
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "Redis"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "redis"
+            ):
+                banned.append((path.name, node.lineno, "redis.Redis"))
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "Operator"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "opendal"
+            ):
+                banned.append((path.name, node.lineno, "opendal.Operator"))
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "sleep"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "time"
+            ):
+                banned.append((path.name, node.lineno, "time.sleep"))
     assert banned == []
 
 

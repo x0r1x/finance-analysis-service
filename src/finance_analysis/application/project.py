@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from finance_analysis.domain.book import (
+    SnapshotAxis,
+    SnapshotPeriod,
     WorkbookSnapshot,
     binding_key,
     cell_id,
@@ -15,7 +17,6 @@ from finance_analysis.domain.book import (
 from finance_analysis.domain.periods import (
     expand_ref,
     marker_class,
-    phase_from_flags,
     resolve_period_dates,
     split_period_key,
 )
@@ -27,34 +28,43 @@ def _text(value: str | None) -> str | None:
     return str(value)
 
 
-def project(snapshot: WorkbookSnapshot, *, model_id: str, build: str) -> dict[str, list[dict]]:
+def project(
+    snapshot: WorkbookSnapshot, *, model_id: str, build: str
+) -> tuple[dict[str, list[dict]], list[dict]]:
     occurrences: Counter[tuple] = Counter()
     dim_rows: list[dict] = []
     dim_periods: list[dict] = []
     facts: list[dict] = []
     seen_periods: set[tuple[str, str]] = set()
     previous_end: dict[str, object] = {}
+    copied, warnings = _timeline_flags(snapshot.axes)
 
     for axis in snapshot.axes.values():
         for period in sorted(axis.periods, key=lambda item: item.index):
             base, marker = split_period_key(period.period_key)
-            start, end, source = resolve_period_dates(
-                base,
-                calendar_year=period.calendar_year,
-                start_date=period.start_date,
-                end_date=period.end_date,
-                previous_end=previous_end.get(axis.id),  # type: ignore[arg-type]
-            )
+            if axis.axis_kind == "params":
+                start, end, source = None, None, "none"
+            else:
+                start, end, source = resolve_period_dates(
+                    base,
+                    calendar_year=period.calendar_year,
+                    start_date=period.start_date,
+                    end_date=period.end_date,
+                    previous_end=previous_end.get(axis.id),  # type: ignore[arg-type]
+                )
             if end is not None:
                 previous_end[axis.id] = end
             if (axis.id, period.period_key) in seen_periods:
                 continue
             seen_periods.add((axis.id, period.period_key))
+            flags, flags_source = copied.get((axis.id, period.index), (period.flags, "own" if period.flags else None))
             dim_periods.append(
                 {
                     "model_id": model_id,
                     "build_key": build,
                     "axis_id": axis.id,
+                    "timeline_id": axis.timeline_id,
+                    "axis_kind": axis.axis_kind,
                     "period_id": period.period_key,
                     "period_index": period.index,
                     "col": period.col,
@@ -64,8 +74,8 @@ def project(snapshot: WorkbookSnapshot, *, model_id: str, build: str) -> dict[st
                     "period_marker": marker,
                     "marker_class": marker_class(marker),
                     "calendar_year": period.calendar_year,
-                    "group_key": period.group_key,
-                    "flags_json": __import__("json").dumps(period.flags, ensure_ascii=False, sort_keys=True),
+                    "flags_json": __import__("json").dumps(flags, ensure_ascii=False, sort_keys=True),
+                    "flags_source": flags_source,
                     "hidden": period.hidden,
                     "period_start": start,
                     "period_end": end,
@@ -157,7 +167,52 @@ def project(snapshot: WorkbookSnapshot, *, model_id: str, build: str) -> dict[st
         "dim_period": dim_periods,
         "fact_observation": facts,
         "graph_links": _links(snapshot, model_id, build),
-    }
+    }, warnings
+
+
+def _timeline_flags(
+    axes: dict[str, SnapshotAxis],
+) -> tuple[dict[tuple[str, int], tuple[dict, str | None]], list[dict]]:
+    """Флаги канонической оси копируются по index. Фаза из них не выводится (§4.4)."""
+
+    canonical: dict[str, dict[int, SnapshotPeriod]] = {}
+    for axis in axes.values():
+        if axis.timeline_id and axis.id == axis.timeline_id:
+            canonical[axis.timeline_id] = {period.index: period for period in axis.periods}
+    copied: dict[tuple[str, int], tuple[dict, str | None]] = {}
+    warnings: list[dict] = []
+    for axis in axes.values():
+        if axis.axis_kind == "params":
+            for period in axis.periods:
+                copied[(axis.id, period.index)] = ({}, None)
+            continue
+        source_axis = canonical.get(axis.timeline_id or "")
+        for period in axis.periods:
+            own = dict(period.flags)
+            if source_axis is None or axis.id == axis.timeline_id:
+                copied[(axis.id, period.index)] = (own, "own" if own else None)
+                continue
+            other = source_axis.get(period.index)
+            if other is None:
+                copied[(axis.id, period.index)] = (own, "own" if own else None)
+                continue
+            if other.period_key != period.period_key:
+                warnings.append(
+                    {
+                        "code": "timeline_mismatch",
+                        "params": {
+                            "axis_id": axis.id,
+                            "index": period.index,
+                            "period_key": period.period_key,
+                            "timeline_period_key": other.period_key,
+                        },
+                    }
+                )
+                copied[(axis.id, period.index)] = (own, "own" if own else None)
+                continue
+            flags = dict(other.flags)
+            copied[(axis.id, period.index)] = (flags, "timeline" if flags else None)
+    return copied, warnings
 
 
 def _links(snapshot: WorkbookSnapshot, model_id: str, build: str) -> list[dict]:
@@ -200,7 +255,7 @@ def derive_rows(
     derive: str,
     versions: dict,
 ) -> dict[str, list[dict]]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     glossary = versions.get("glossary", "none")
     taxonomy = versions.get("taxonomy", "core-1")
     calibrator = versions.get("calibrator", "none")
@@ -264,20 +319,12 @@ def derive_rows(
                 "updated_at_utc": now,
             }
         )
-    phases: dict[tuple[str, str], str | None] = {}
-    for period in projected["dim_period"]:
-        flags = __import__("json").loads(period["flags_json"] or "{}")
-        phases[(period["axis_id"], period["period_id"])] = phase_from_flags(flags)
-    # Нумеруем phase_year внутри фазы по оси.
-    counters: dict[tuple[str, str], int] = {}
+    # TODO §5.4: phase и phase_year заполняет только phase.set (фаза 2).
+    # Флаги остаются в dim_period для отображения и здесь не читаются.
     period_semantics = []
     for period in sorted(projected["dim_period"], key=lambda item: (item["axis_id"], item["period_index"])):
-        phase = phases[(period["axis_id"], period["period_id"])]
+        phase = None
         phase_year = None
-        if phase:
-            key = (period["axis_id"], phase)
-            counters[key] = counters.get(key, 0) + 1
-            phase_year = counters[key]
         period_semantics.append(
             {
                 "model_id": period["model_id"],

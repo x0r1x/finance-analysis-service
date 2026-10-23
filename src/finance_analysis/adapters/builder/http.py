@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
 from finance_analysis.adapters.builder.acl import (
-    is_meta_payload,
     parse_context,
-    parse_graph,
+    parse_links,
     parse_summary,
 )
-from finance_analysis.domain.book import NotModified, Summary, WorkbookSnapshot
-from finance_analysis.domain.errors import DependencyUnavailable
+from finance_analysis.domain.book import (
+    Changed,
+    GraphLink,
+    NotModified,
+    ReportNotReady,
+    Summary,
+    WorkbookSnapshot,
+)
+from finance_analysis.domain.errors import DependencyUnavailable, NotFound
 from finance_analysis.settings import Settings
 
 
@@ -27,20 +34,20 @@ class HttpBuilder:
         self._owns = client is None
         self._failures = 0
         self._open_until: datetime | None = None
-        self._graph_versions: dict[str, str] = {}
 
     async def _http(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=2.0))
         return self._client
 
-    def _breaker_open(self) -> bool:
+    async def breaker_state(self) -> str:
+        """closed, пока не было отказа. open — окно активно. half_open — окно вышло, успеха ещё нет."""
+
         if self._open_until is None:
-            return False
-        if datetime.now(timezone.utc) >= self._open_until:
-            self._open_until = None
-            return False
-        return True
+            return "closed"
+        if datetime.now(UTC) < self._open_until:
+            return "open"
+        return "half_open"
 
     def _ok(self) -> None:
         self._failures = 0
@@ -49,16 +56,12 @@ class HttpBuilder:
     def _fail(self) -> None:
         self._failures += 1
         if self._failures >= self._settings.cb_failures:
-            self._open_until = datetime.now(timezone.utc).replace(microsecond=0)
-            # CB_OPEN_SEC
-            from datetime import timedelta
-
-            self._open_until = datetime.now(timezone.utc) + timedelta(seconds=self._settings.cb_open_sec)
+            self._open_until = datetime.now(UTC) + timedelta(seconds=self._settings.cb_open_sec)
 
     async def _request(self, method: str, path: str, *, headers: dict | None = None) -> httpx.Response:
         if not self._base:
             raise DependencyUnavailable("BUILDER_BASE_URL не задан")
-        if self._breaker_open():
+        if await self.breaker_state() == "open":
             raise DependencyUnavailable("circuit breaker builder открыт")
         client = await self._http()
         last: Exception | None = None
@@ -79,78 +82,71 @@ class HttpBuilder:
             return response
         raise DependencyUnavailable(f"builder недоступен: {last}")
 
-    async def _graph_schema(self, job_id: str) -> str:
-        cached = self._graph_versions.get(job_id)
-        if cached is not None:
-            return cached
-        response = await self._request("GET", f"/v1/context-jobs/{job_id}/graph.json")
-        if response.status_code == 404:
-            self._graph_versions[job_id] = ""
-            return ""
-        response.raise_for_status()
-        version = str((response.json() or {}).get("schema_version") or "")
-        self._graph_versions[job_id] = version
-        return version
+    def _path(self, job_id: str, suffix: str) -> str:
+        return f"/v1/context-jobs/{job_id}/{suffix}"
 
-    async def summary(self, job_id: str, etag: str | None) -> Summary | NotModified:
+    async def summary(self, job_id: str, etag: str | None) -> Summary | NotModified | ReportNotReady:
         headers = {"If-None-Match": etag} if etag else None
-        head = await self._request("HEAD", f"/v1/context-jobs/{job_id}/summary", headers=headers)
-        if head.status_code == 304:
-            return NotModified(etag or "")
-        current = head.headers.get("etag")
-        response = await self._request("GET", f"/v1/context-jobs/{job_id}/summary", headers=headers)
+        response = await self._request("GET", self._path(job_id, "summary"), headers=headers)
+        return self._summary_response(response, fallback=etag)
+
+    async def head_summary(self, job_id: str, etag: str) -> NotModified | Changed | ReportNotReady:
+        response = await self._request(
+            "HEAD",
+            self._path(job_id, "summary"),
+            headers={"If-None-Match": etag},
+        )
         if response.status_code == 304:
-            return NotModified(etag or "")
-        response.raise_for_status()
-        payload = response.json()
-        if is_meta_payload(payload):
-            parsed = parse_summary(
-                payload,
-                etag="",
-                job_id=job_id,
-                graph_schema_version=await self._graph_schema(job_id),
-            )
-        else:
-            tag = response.headers.get("etag") or current or ""
-            parsed = parse_summary(payload, etag=tag, job_id=job_id)
-        if etag and etag == parsed.etag:
-            return NotModified(etag)
-        return parsed
-
-    async def context(self, job_id: str) -> tuple[WorkbookSnapshot, str | None, str]:
-        response = await self._request("GET", f"/v1/context-jobs/{job_id}/context.json")
-        response.raise_for_status()
-        snapshot = parse_context(response.json())
-        graph_response = await self._request("GET", f"/v1/context-jobs/{job_id}/graph.json")
-        if graph_response.status_code != 404:
-            graph_response.raise_for_status()
-            snapshot = parse_graph(graph_response.json(), snapshot)
-        return snapshot, response.headers.get("etag"), hashlib_sha(response.content)
-
-    async def graph(self, job_id: str) -> tuple[WorkbookSnapshot | None, str | None]:
-        response = await self._request("GET", f"/v1/context-jobs/{job_id}/graph.json")
+            return NotModified(response.headers.get("etag") or etag)
+        if response.status_code == 409 and _is_not_ready(response):
+            return ReportNotReady()
         if response.status_code == 404:
-            return None, None
+            raise NotFound("книга builder не найдена")
         response.raise_for_status()
-        snapshot = parse_graph(response.json(), parse_context({"axes": {"_": {"id": "_", "sheet": "_", "periods": []}}, "blocks": []}))
-        return snapshot, response.headers.get("etag")
+        return Changed(response.headers.get("etag") or "")
 
-    async def healthy(self) -> bool:
-        if not self._base or self._breaker_open():
-            return False
-        try:
-            client = await self._http()
-            response = await client.get(f"{self._base}/health", timeout=2.0)
-            return response.status_code < 500
-        except httpx.HTTPError:
-            return False
+    def _summary_response(self, response: httpx.Response, *, fallback: str | None) -> Summary | NotModified | ReportNotReady:
+        if response.status_code == 304:
+            return NotModified(response.headers.get("etag") or fallback or "")
+        if response.status_code == 409 and _is_not_ready(response):
+            return ReportNotReady()
+        if response.status_code == 404:
+            raise NotFound("книга builder не найдена")
+        response.raise_for_status()
+        return parse_summary(response.json(), etag=response.headers.get("etag") or fallback or "")
+
+    async def context(self, job_id: str) -> WorkbookSnapshot | ReportNotReady:
+        response = await self._request("GET", self._path(job_id, "context.json"))
+        if response.status_code == 409 and _is_not_ready(response):
+            return ReportNotReady()
+        if response.status_code == 404:
+            raise NotFound("книга builder не найдена")
+        response.raise_for_status()
+        return parse_context(response.json())
+
+    async def graph(self, job_id: str) -> tuple[GraphLink, ...] | ReportNotReady:
+        response = await self._request("GET", self._path(job_id, "graph.json"))
+        if response.status_code == 409 and _is_not_ready(response):
+            return ReportNotReady()
+        if response.status_code == 404:
+            return ()
+        response.raise_for_status()
+        return parse_links(response.json())
 
     async def aclose(self) -> None:
         if self._owns and self._client is not None:
             await self._client.aclose()
 
 
-def hashlib_sha(data: bytes) -> str:
-    import hashlib
+def _is_not_ready(response: httpx.Response) -> bool:
+    if not response.content:
+        return True
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("error") == "report_not_ready"
 
+
+def hashlib_sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()

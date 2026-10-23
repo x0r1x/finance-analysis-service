@@ -28,21 +28,13 @@ def binding_key(sheet: str, label_path: list[str], label: str, occurrence: int) 
 
 
 def build_key_for(
-    content_sha256: str,
-    context_schema_version: str,
-    graph_schema_version: str,
+    job_id: str,
     summary_etag: str,
     projection_version: str = FAS_PROJECTION_VERSION,
 ) -> str:
-    material = SEP.join(
-        [
-            content_sha256,
-            context_schema_version,
-            graph_schema_version,
-            summary_etag,
-            projection_version,
-        ]
-    )
+    """sha256(job_id › summary_etag › fas_projection_version)[:16] (§4.2)."""
+
+    material = SEP.join([job_id, summary_etag, projection_version])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
@@ -104,20 +96,16 @@ class Actor:
 @dataclass(frozen=True)
 class BuilderRef:
     job_id: str
-    content_sha256: str
+    summary_etag: str
     context_schema_version: str
     graph_schema_version: str
-    summary_etag: str
-    builder_status: str = "succeeded"
 
     def as_dict(self) -> dict:
         return {
             "job_id": self.job_id,
-            "content_sha256": self.content_sha256,
+            "summary_etag": self.summary_etag,
             "context_schema_version": self.context_schema_version,
             "graph_schema_version": self.graph_schema_version,
-            "summary_etag": self.summary_etag,
-            "builder_status": self.builder_status,
         }
 
 
@@ -189,7 +177,6 @@ class SnapshotPeriod:
     calendar_year: int | None = None
     start_date: date | None = None
     end_date: date | None = None
-    group_key: str | None = None
     flags: dict = field(default_factory=dict)
     hidden: bool = False
 
@@ -199,8 +186,8 @@ class SnapshotAxis:
     id: str
     sheet: str
     grain: str | None
-    header_row: int | None
     timeline_id: str | None
+    axis_kind: str
     periods: tuple[SnapshotPeriod, ...]
 
 
@@ -258,18 +245,53 @@ class WorkbookSnapshot:
 @dataclass(frozen=True)
 class Summary:
     etag: str
-    content_sha256: str
     context_schema_version: str
     graph_schema_version: str
     status: str
-    context_etag: str | None = None
-    graph_etag: str | None = None
     warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class NotModified:
+    """304. Тела нет, ETag тот же."""
+
     etag: str
+
+
+@dataclass(frozen=True)
+class Changed:
+    """HEAD/GET ответили другим ETag."""
+
+    etag: str
+
+
+@dataclass(frozen=True)
+class ReportNotReady:
+    """409, пока builder пересобирает публикацию."""
+
+    error: str = "report_not_ready"
+
+    def as_dict(self) -> dict:
+        return {"error": self.error}
+
+
+def with_links(snapshot: WorkbookSnapshot, links: tuple[GraphLink, ...]) -> WorkbookSnapshot:
+    return WorkbookSnapshot(
+        axes=snapshot.axes,
+        rows=snapshot.rows,
+        links=links,
+        used_range=snapshot.used_range,
+    )
+
+
+def publication_aligned(snapshot: WorkbookSnapshot) -> bool:
+    """Каждый непустой links[].row_key есть среди rows[].row_key (§4.3)."""
+
+    keys = {row.row_key for row in snapshot.rows}
+    for link in snapshot.links:
+        if link.row_key and link.row_key not in keys:
+            return False
+    return True
 
 
 def parse_decimal_text(raw: str | None):

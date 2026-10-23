@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from finance_analysis.application.keys import log_key
 from finance_analysis.domain.book import Actor
@@ -19,6 +19,8 @@ class Journal:
         self._last: dict[str, int] = {}
         self._keys: dict[str, dict[str, int]] = {}
         self._seen: dict[str, bool] = {}
+        self._values: dict[str, dict[tuple[str, str, str], dict]] = {}
+        self._requests: dict[str, dict[str, dict]] = {}
 
     def _lock(self, job_id: str) -> asyncio.Lock:
         lock = self._locks.get(job_id)
@@ -61,7 +63,34 @@ class Journal:
             target = event.get("target") or event.get("binding_key")
             if target:
                 bucket[str(target)] = int(event["seq"])
+            self._remember(job_id, event)
         self._last[job_id] = last
+
+    def _remember(self, job_id: str, event: dict) -> None:
+        target = event.get("target") or event.get("binding_key")
+        event_type = event.get("type")
+        if target and event_type:
+            canon = json.dumps(event.get("value"), ensure_ascii=False, sort_keys=True, default=str)
+            self._values.setdefault(job_id, {})[(str(target), str(event_type), canon)] = event
+        request_id = event.get("request_id")
+        if request_id:
+            self._requests.setdefault(job_id, {})[str(request_id)] = event
+
+    async def matching(
+        self,
+        job_id: str,
+        *,
+        target: str,
+        event_type: str,
+        value,
+        request_id: str,
+    ) -> dict | None:
+        async with self._lock(job_id):
+            await self._sync(job_id)
+            if request_id and request_id in self._requests.get(job_id, {}):
+                return self._requests[job_id][request_id]
+            canon = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+            return self._values.get(job_id, {}).get((target, event_type, canon))
 
     async def read_all(self, job_id: str) -> list[dict]:
         last = await self.last_seq(job_id)
@@ -70,7 +99,7 @@ class Journal:
             events.append(json.loads(await self.store.get(log_key(job_id, seq))))
         return events
 
-    async def append(
+    async def _append(
         self,
         job_id: str,
         *,
@@ -104,7 +133,7 @@ class Journal:
                     "actor": {"user_id": actor.user_id, "client_id": actor.client_id},
                     "expected_seq": expected_seq,
                     "request_id": request_id,
-                    "at_utc": (at_utc or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "at_utc": (at_utc or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
                 try:
                     await self.store.put_if_absent(
@@ -117,6 +146,7 @@ class Journal:
                     continue
                 self._last[job_id] = seq
                 self._keys.setdefault(job_id, {})[target] = seq
+                self._remember(job_id, event)
                 return event
 
     async def folded(self, job_id: str) -> dict[str, dict]:

@@ -8,21 +8,20 @@
 | `packt` | `2eca70a9acd0c7b1812adcb2e1a4aacc84092f52726d001a93b9564950e5dd5e` | `packt-project-finance.xlsx` | `succeeded`, предупреждений нет |
 | `rvi` | `2f180b3eec3b8557908beafa659af75dd7c2e93dab02b176f3cab1d625ee7bac` | `rvi-project-finance.xlsx` | `succeeded`, есть предупреждение |
 
-`packt` — модель проектного финансирования. Листы: Input Assumptions, TBA, Construction, Operation, Amortization, Debt, P&L, CFS, Balance Sheet, Ratios. 9 осей таймлайна по 40 периодов `Y1`…, 10 блоков (9 timeline и 1 params), 131 строка (97 fact). Граф: 2973 ссылки. Предупреждения `meta.warnings` пустые.
+`packt` — модель проектного финансирования. Листы: Input Assumptions, TBA, Construction, Operation, Amortization, Debt, P&L, CFS, Balance Sheet, Ratios. 9 осей таймлайна по 40 периодов `Y1`…, 10 блоков (9 timeline и 1 params), 131 строка (97 fact). Граф: 2973 ссылки.
 
-`rvi` — модель на одном листе `PF Model`. 1 ось, 5 блоков, 459 строк. Статус сборки `succeeded`, но `meta.warnings` сообщает о 20 формулах без кэшированного значения (например `PF Model!M536`). В `context.json` то же число лежит в `workbook.missing_cached_values`.
+`rvi` — модель на одном листе `PF Model`. 1 ось, 5 блоков, 459 строк. Сборка `succeeded`.
 
 Общие файлы каждой книги:
 
-- `meta.json` — статус, поколение, `content_sha256`, хэши стадий
-- `owner.json` — владелец сборки
+- `meta.json`, `owner.json` — лежат в дампе, адаптер FAS их не читает
 - `context.json`, `context.md`, `context.md.renderer`
 - `graph.json`, `graph.md`
 - `ir/graph_index.parquet`, `ir/graph_edges.parquet`
 
 `graph.json` в `artifacts` называет ещё `ir/cells.parquet`, `ir/edges.parquet` и `ir/cell_edges.parquet`. В этом дампе их нет.
 
-Согласованное чтение смотрит на `meta.json`: `status`, `generation`, `content_sha256`, `stages`. Отдельного `summary.json` и HTTP ETag `summary-2` в дампе нет.
+Фикстура эмулирует HTTP `/summary` формы `summary-2`: strong ETag считается по байтам `context.json` и `graph.json`, `304` и `HEAD` без тела, пересборка — `409 report_not_ready`. Версии схем берутся из этих двух файлов.
 
 ## Локальные книги, которые не коммитятся
 
