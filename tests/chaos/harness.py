@@ -15,6 +15,7 @@ from finance_analysis.domain.book import Actor
 from finance_analysis.settings import Settings
 
 HOLD_WORKER = str(Path(__file__).with_name("hold_worker.py"))
+ROOT = Path(__file__).resolve().parents[2]
 TERMINAL = {"succeeded", "failed", "cancelled"}
 
 
@@ -98,7 +99,7 @@ class WorkerProc:
             env=env,
             stdout=self.log,
             stderr=subprocess.STDOUT,
-            cwd="/workspace",
+            cwd=str(ROOT),
         )
 
     def wait_ready(self, timeout: float = 25) -> None:
@@ -153,7 +154,7 @@ class SchedulerProc:
             env=env,
             stdout=self.log,
             stderr=subprocess.STDOUT,
-            cwd="/workspace",
+            cwd=str(ROOT),
         )
 
     def wait_ready(self, timeout: float = 25) -> None:
