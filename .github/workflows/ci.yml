@@ -40,22 +40,24 @@ jobs:
         run: |
           set -euo pipefail
           self="$(awk -F: '{line=$NF} END{print line}' /proc/self/cgroup)"
-          target="/sys/fs/cgroup${self}/fasoom2"
-          mkdir -p "$target" 2>/dev/null || true
+          base="/sys/fs/cgroup${self}"
+          target="${base}/fasoom2"
           if [[ ! -f "$target/memory.max" ]]; then
-            sudo mkdir -p /sys/fs/cgroup/init
-            if [[ -f /sys/fs/cgroup/cgroup.procs ]]; then
+            sudo mkdir -p "${base}/init"
+            if [[ -f "${base}/cgroup.procs" ]]; then
               while read -r pid; do
-                echo "$pid" | sudo tee /sys/fs/cgroup/init/cgroup.procs >/dev/null || true
-              done < /sys/fs/cgroup/cgroup.procs
+                echo "$pid" | sudo tee "${base}/init/cgroup.procs" >/dev/null || true
+              done < "${base}/cgroup.procs"
             fi
-            echo '+memory' | sudo tee /sys/fs/cgroup/cgroup.subtree_control
-            sudo mkdir -p /sys/fs/cgroup/fasoom2
-            sudo chown -R "$(id -u):$(id -g)" /sys/fs/cgroup/fasoom2
-            target="/sys/fs/cgroup/fasoom2"
+            echo '+memory' | sudo tee "${base}/cgroup.subtree_control"
+            sudo mkdir -p "$target"
+            sudo chown -R "$(id -u):$(id -g)" "$target"
           fi
           test -w "$target/memory.max"
           test -w "$target/cgroup.procs"
+          if [[ -f "$target/memory.swap.max" ]]; then
+            test -w "$target/memory.swap.max"
+          fi
           echo "FAS_TEST_OOM_CGROUP=$target" >> "$GITHUB_ENV"
 
       - name: Install
