@@ -1,4 +1,4 @@
-"""Сценарии фазы 0: загрузка, серия, срез, выражение, периоды, операции."""
+"""Сценарии фаз 0–1: загрузка, серия, срез, выражение, периоды, операции, аудит."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import anyio
 from ulid import ULID
 
 from finance_analysis.application import keys
+from finance_analysis.application.analyses import Analyses
 from finance_analysis.application.builds import index_document, rebuild_reason
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.gc import gc_incomplete
@@ -193,6 +194,7 @@ class FasService:
         self._tasks: set[asyncio.Task] = set()
         self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
+        self.analyses = Analyses(self)
 
     def spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -1123,9 +1125,9 @@ class FasService:
         }
         return {
             "fas_version": FAS_VERSION,
-            "phase": "0",
+            "phase": "1",
             "storage": storage,
-            "rules": [],
+            "rules": self.analyses.capabilities(),
             "metrics": [],
             "concepts": [],
             "renderers": ["json"],
@@ -1352,6 +1354,7 @@ PROBLEM_CATALOG = [
     {"code": "invalid_argument", "http": 400, "retryable": False},
     {"code": "invalid_id", "http": 400, "retryable": False},
     {"code": "not_found", "http": 404, "retryable": False},
+    {"code": "no_audit", "http": 404, "retryable": False},
     {"code": "not_acceptable", "http": 406, "retryable": False},
     {"code": "binding_conflict", "http": 409, "retryable": False},
     {"code": "request_in_progress", "http": 409, "retryable": True},
@@ -1376,5 +1379,10 @@ TOOLS = [
     {"name": "evaluate_expression", "method": "POST", "path": "/v1/books/{job_id}/expression"},
     {"name": "resolve_periods", "method": "POST", "path": "/v1/books/{job_id}/periods:resolve"},
     {"name": "submit_decisions", "method": "POST", "path": "/v1/books/{job_id}/decisions"},
+    {"name": "run_analysis", "method": "POST", "path": "/v1/books/{job_id}/analyses"},
+    {"name": "list_analyses", "method": "GET", "path": "/v1/books/{job_id}/analyses"},
+    {"name": "get_analysis", "method": "GET", "path": "/v1/books/{job_id}/analyses/{analysis_id}"},
+    {"name": "list_findings", "method": "GET", "path": "/v1/books/{job_id}/findings"},
+    {"name": "explain_finding", "method": "GET", "path": "/v1/books/{job_id}/findings/{fingerprint}"},
     {"name": "get_operation", "method": "GET", "path": "/v1/operations/{id}"},
 ]

@@ -1,0 +1,143 @@
+{
+  "dataset": "run",
+  "version": "1.1",
+  "title": "Прогон анализа",
+  "columns": [
+    {
+      "name": "analysis_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор анализа (ULID)",
+      "since": "1.1"
+    },
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги (job_id builder)",
+      "since": "1.1"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.1"
+    },
+    {
+      "name": "state_seq",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Номер состояния",
+      "since": "1.1"
+    },
+    {
+      "name": "analysis_type",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Тип анализа: audit, ratios, impact, full",
+      "since": "1.1"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Статус AnalysisResult",
+      "since": "1.1"
+    },
+    {
+      "name": "glossary_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия глоссария",
+      "since": "1.1"
+    },
+    {
+      "name": "taxonomy_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия таксономии",
+      "since": "1.1"
+    },
+    {
+      "name": "calibrator_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия калибратора",
+      "since": "1.1"
+    },
+    {
+      "name": "rules_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версии правил, JSON-объект code → version",
+      "since": "1.1"
+    },
+    {
+      "name": "metrics_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия метрик",
+      "since": "1.1"
+    },
+    {
+      "name": "profile_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Профиль",
+      "since": "1.1"
+    },
+    {
+      "name": "profile_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия профиля",
+      "since": "1.1"
+    },
+    {
+      "name": "derive_key",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Ключ производного состояния",
+      "since": "1.1"
+    },
+    {
+      "name": "fas_version",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Версия FAS",
+      "since": "1.1"
+    },
+    {
+      "name": "created_at_utc",
+      "type": "timestamp(us, tz=UTC)",
+      "nullable": false,
+      "unit": "",
+      "description": "Начало прогона",
+      "since": "1.1"
+    },
+    {
+      "name": "finished_at_utc",
+      "type": "timestamp(us, tz=UTC)",
+      "nullable": true,
+      "unit": "",
+      "description": "Конец прогона",
+      "since": "1.1"
+    }
+  ]
+}

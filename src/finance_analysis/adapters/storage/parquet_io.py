@@ -122,6 +122,8 @@ def _sort_key(dataset: str, row: dict):
         return (row.get("row_key") or "",)
     if dataset == "period_semantics":
         return (row.get("axis_id") or "", row.get("period_id") or "")
+    if dataset == "findings":
+        return (row.get("code") or "", row.get("fingerprint") or "")
     return (row.get("row_key") or row.get("status") or "",)
 
 

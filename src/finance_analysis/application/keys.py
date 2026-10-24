@@ -10,6 +10,7 @@ from finance_analysis.domain.ids import ulid as check_ulid
 
 PROJECTION = {"dim_row", "dim_period", "fact_observation", "graph_links"}
 DERIVED = {"row_semantics", "period_semantics", "bindings", "coverage"}
+RESULT_FILES = {"result.json", "run.parquet", "findings.parquet"}
 
 
 def book(job_id: str) -> str:
@@ -51,6 +52,28 @@ def derived_file(job_id: str, build: str, derive: str, attempt: str, dataset: st
 
 def derived_done(job_id: str, build: str, derive: str) -> str:
     return f"{book(job_id)}/{check_build(build)}/derived/{check_derive(derive)}/_done.json"
+
+
+def result_rel(analysis_id: str, name: str) -> str:
+    """Путь файла результата относительно папки сборки (так его перечисляет result.json)."""
+
+    if name not in RESULT_FILES:
+        from finance_analysis.domain.errors import InvalidId
+
+        raise InvalidId(f"файл результата {name} вне белого списка")
+    return f"results/{check_ulid(analysis_id)}/{name}"
+
+
+def result_key(job_id: str, build: str, analysis_id: str, name: str) -> str:
+    return f"{book(job_id)}/{check_build(build)}/{result_rel(analysis_id, name)}"
+
+
+def report_index_key(job_id: str, analysis_id: str) -> str:
+    return f"{book(job_id)}/_reports/{check_ulid(analysis_id)}.json"
+
+
+def report_index_prefix(job_id: str) -> str:
+    return f"{book(job_id)}/_reports/"
 
 
 def log_key(job_id: str, seq: int) -> str:

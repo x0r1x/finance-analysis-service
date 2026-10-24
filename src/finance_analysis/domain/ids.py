@@ -13,6 +13,7 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 ACTOR_RE = re.compile(r"^[A-Za-z0-9._@:-]{1,128}$")
 DATASET_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+FINGERPRINT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _check(raw: str, pattern: re.Pattern[str], kind: str) -> str:
@@ -47,6 +48,10 @@ def concept_id(raw: str) -> str:
 
 def model_id(raw: str) -> str:
     return _check(raw, MODEL_RE, "model_id")
+
+
+def fingerprint(raw: str) -> str:
+    return _check(raw, FINGERPRINT_RE, "fingerprint")
 
 
 def dataset_name(raw: str) -> str:
