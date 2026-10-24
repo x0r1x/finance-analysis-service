@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 FAS_VERSION = "0.23.0"
-FAS_SCHEMA_VERSION = "1.0"
-FAS_PROJECTION_VERSION = "1"
+FAS_SCHEMA_VERSION = "1.1"
+FAS_PROJECTION_VERSION = "2"
 FAS_DERIVE_VERSION = "1"
 SEP = "›"
 
@@ -198,6 +198,7 @@ class SnapshotSeries:
     value_statuses: tuple[str, ...]
     normalized_values: tuple[str | None, ...]
     formula: str | None = None
+    formula_exceptions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -222,6 +223,7 @@ class SnapshotRow:
     normalized_values: tuple[str | None, ...]
     block_id: str
     block_kind: str
+    formula_exceptions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -249,6 +251,7 @@ class Summary:
     graph_schema_version: str
     status: str
     warnings: tuple[str, ...] = ()
+    counters: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

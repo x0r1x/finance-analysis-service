@@ -1,6 +1,6 @@
 {
   "dataset": "dim_row",
-  "version": "1.0",
+  "version": "1.1",
   "title": "Строки книги",
   "columns": [
     {
@@ -194,6 +194,22 @@
       "unit": "",
       "description": "Формула",
       "since": "1.0"
+    },
+    {
+      "name": "formula_exceptions_json",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Ячейки строки с другим шаблоном формулы (formula_exceptions builder по всем сериям), JSON-массив",
+      "since": "1.1"
+    },
+    {
+      "name": "formula_exceptions_truncated",
+      "type": "bool",
+      "nullable": true,
+      "unit": "",
+      "description": "builder урезал formula_exceptions до 8 ячеек хотя бы в одной серии",
+      "since": "1.1"
     }
   ]
 }

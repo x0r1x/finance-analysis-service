@@ -21,6 +21,7 @@ from finance_analysis.application.operations import append_event, create_op, rea
 from finance_analysis.application.project import derive_rows, project
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.domain.book import (
+    FAS_PROJECTION_VERSION,
     FAS_SCHEMA_VERSION,
     FAS_VERSION,
     Actor,
@@ -442,11 +443,13 @@ class FasService:
         )
         manifest = {
             "fas_schema_version": FAS_SCHEMA_VERSION,
+            "fas_projection_version": FAS_PROJECTION_VERSION,
             "build_key": build,
             "builder_ref": ref.as_dict(),
             "attempt": attempt,
             "files": file_map,
             "builder_warnings": [str(item) for item in summary.warnings],
+            "builder_counters": summary.counters,
             "warnings": projection_warnings,
             "loaded_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "loader_version": FAS_VERSION,
@@ -462,12 +465,13 @@ class FasService:
                 previous_manifest = await self._manifest(job_id, head.build_key)
             except NotFound:
                 previous_manifest = None
-        reason = rebuild_reason(previous_manifest, ref, projection="1")
+        reason = rebuild_reason(previous_manifest, ref, projection=FAS_PROJECTION_VERSION)
         index = index_document(
             build,
             {**manifest, "files": {**manifest.get("files", {}), **file_map}},
             previous=head.build_key if head else None,
             reason=reason,
+            projection=FAS_PROJECTION_VERSION,
         )
         fresh_stats = index["stats"]
         fresh_stats["rows"] = len(tables["dim_row"])

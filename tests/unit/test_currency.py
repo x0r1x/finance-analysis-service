@@ -25,13 +25,14 @@ def _rows(alias: str) -> list[dict]:
 def test_service_version_is_0_23():
     assert FAS_VERSION == "0.23.0"
     assert __version__ == "0.23.0"
-    assert FAS_SCHEMA_VERSION == "1.0"
+    # 1.1: dim_row получил formula_exceptions_* для правил фазы 1 (P6, только в конец).
+    assert FAS_SCHEMA_VERSION == "1.1"
 
 
 def test_dim_row_schema_has_currency_source():
     doc = load_schema("dim_row")
     names = [column["name"] for column in doc["columns"]]
-    assert doc["version"] == "1.0"
+    assert doc["version"] == "1.1"
     assert names[names.index("currency") + 1] == "currency_source"
     period = json.loads(Path("src/finance_analysis/adapters/storage/schemas/dim_period.json").read_text())
     assert period["version"] == "1.0"

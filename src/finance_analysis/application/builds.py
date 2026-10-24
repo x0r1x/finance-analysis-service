@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from finance_analysis.domain.book import FAS_SCHEMA_VERSION, BuilderRef
+from finance_analysis.domain.book import (
+    FAS_PROJECTION_VERSION,
+    FAS_SCHEMA_VERSION,
+    BuilderRef,
+)
 
 REASONS = {
     "initial",
@@ -35,7 +39,7 @@ def index_document(
     *,
     previous: str | None,
     reason: str,
-    projection: str = "1",
+    projection: str = FAS_PROJECTION_VERSION,
 ) -> dict:
     files = manifest.get("files") or {}
     rows = periods = observations = total = 0
