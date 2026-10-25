@@ -194,12 +194,48 @@ def test_counter_rules():
     assert codes["no_master_check"] == 0
     # Счётчик есть, а ячеек без кэша в проекции нет — одна находка книги с truncated.
     [missing] = _check("missing_cached_value", data)
-    assert missing.params == {"count": 3} and missing.truncated
+    assert missing.params == {"count": 3, "located": 0, "unlocated": 3} and missing.truncated
     [unresolved] = _check("unresolved_ref", data)
     assert unresolved.truncated and unresolved.params["count"] == 40
     assert _check("iterative_calc_enabled", AuditInput(counters={"iterate": True}))
     # Без счётчиков R1 (старая сборка) правила по ним молчат.
     assert _check("unresolved_ref", AuditInput()) == []
+
+
+def test_missing_cached_value_keeps_counter_remainder():
+    key = "S|40|S!r2"
+    data = AuditInput(
+        rows=[_row(key)],
+        periods=PERIODS,
+        facts=[_fact(key, "S!C40", "2024", None, "empty")],
+        links=_link("S!C40", "A1+B1", key, "2024"),
+        counters={"missing_cached_values": 20},
+    )
+    found = _check("missing_cached_value", data)
+    assert [item.locations[0].cell_id if item.locations else None for item in found] == ["S!C40", None]
+    assert found[1].params == {"count": 20, "located": 1, "unlocated": 19}
+    assert found[1].truncated
+    data.counters["missing_cached_values"] = 1
+    assert len(_check("missing_cached_value", data)) == 1
+
+
+def test_hardcoded_counts_uncached_formulas():
+    key = "S|41|S!r2"
+    facts = [_fact(key, f"S!{col}41", period, None, "empty") for col, period in (("C", "2024"), ("D", "2025"))]
+    facts.append(_fact(key, "S!E41", "2026@план", "5"))
+    links = _link("S!C41", "B41+1", key, "2024") + _link("S!D41", "C41+1", key, "2025")
+    [found] = _check("hardcoded_formula", AuditInput(rows=[_row(key)], periods=PERIODS, facts=facts, links=links))
+    assert found.locations[0].cell_id == "S!E41"
+
+
+def test_dangling_classes_alone_are_blank_cells_not_findings():
+    # builder: dangling_classes — ссылки на настоящие пустые ячейки, вне dangling.count.
+    blank = {"dangling": {"count": 0, "ids": []}, "dangling_classes": {"empty_ref": 445, "empty_range_member": 190}}
+    assert _check("dangling_ref", AuditInput(counters=blank)) == []
+    broken = {"dangling": {"count": 2, "ids": ["S!C1"]}, "dangling_classes": {"empty_ref": 4}}
+    [found] = _check("dangling_ref", AuditInput(counters=broken))
+    assert found.params == {"count": 2, "dangling_classes": {"empty_ref": 4}}
+    assert found.truncated
 
 
 def test_check_failure_two_conventions():

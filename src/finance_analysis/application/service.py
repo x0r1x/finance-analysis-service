@@ -14,7 +14,11 @@ from ulid import ULID
 
 from finance_analysis.application import keys
 from finance_analysis.application.analyses import Analyses
-from finance_analysis.application.builds import index_document, rebuild_reason
+from finance_analysis.application.builds import (
+    index_document,
+    projection_of,
+    rebuild_reason,
+)
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.gc import gc_incomplete
 from finance_analysis.application.metrics import BUILDER_INCONSISTENT
@@ -287,7 +291,7 @@ class FasService:
                 "sha256": sha256_bytes(payload),
                 "rows": count,
                 "bytes": len(payload),
-                "schema": f"{dataset}@{FAS_SCHEMA_VERSION}",
+                "schema": await self.parquet.schema_tag(dataset),
             }
         return files
 
@@ -402,10 +406,7 @@ class FasService:
         check_job(job_id)
         head, token = await self._read_head(job_id)
         if summary is None:
-            known = None
-            if head is not None:
-                manifest = await self._manifest(job_id, head.build_key)
-                known = (manifest.get("builder_ref") or {}).get("summary_etag")
+            known = None if head is None else await self._known_etag(job_id, head)
             loaded = await self.load_consistent(job_id, known_etag=known)
             if isinstance(loaded, NotModified):
                 assert head is not None
@@ -421,7 +422,7 @@ class FasService:
             summary, snapshot = loaded
         else:
             snapshot = await self._aligned_snapshot(job_id, summary.etag)
-        build = build_key_for(job_id, summary.etag)
+        build = build_key_for(job_id, summary.etag, FAS_PROJECTION_VERSION)
         versions = self._versions()
         events = await self.guard.read_all(job_id)
         state_seq = int(events[-1]["seq"]) if events else (head.state_seq if head else 0)
@@ -571,9 +572,17 @@ class FasService:
             raise _LockTimeout(job_id) from exc
 
     async def _known_etag(self, job_id: str, head: Head) -> str | None:
+        """ETag для `If-None-Match`. Сборка старой проекции его не получает.
+
+        Иначе builder ответит `304`, и сборка не перестроится, хотя версия
+        проекции сменилась (§4.10). Manifest без поля — проекция 1.
+        """
+
         try:
             manifest = await self._manifest(job_id, head.build_key)
         except NotFound:
+            return None
+        if projection_of(manifest) != FAS_PROJECTION_VERSION:
             return None
         return (manifest.get("builder_ref") or {}).get("summary_etag")
 

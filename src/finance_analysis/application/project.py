@@ -184,7 +184,8 @@ def project(
     }, warnings
 
 
-# builder режет formula_exceptions до 8 ячеек на серию (§2.3).
+# builder режет formula_exceptions до 8 ячеек на серию (§2.3). Ровно 8 не отличить
+# от обрезки, поэтому флаг значит «мог быть урезан»; полный список — trace builder.
 EXCEPTIONS_LIMIT = 8
 
 

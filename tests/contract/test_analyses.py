@@ -16,7 +16,9 @@ from finance_analysis.adapters.builder.fixture import FixtureBuilder
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet, load_schema
 from finance_analysis.adapters.storage.store import open_storage
 from finance_analysis.adapters.wren.query import WrenQuery
+from finance_analysis.application import service as service_module
 from finance_analysis.application.service import FasService
+from finance_analysis.domain.book import Actor
 from tests.books import BUILDER_ROOT, job_id
 from tests.conftest import JOB
 
@@ -94,6 +96,10 @@ async def test_audit_history_and_findings(app, local_service):
         assert body["chain"] and body["chain"][0]["formula"]
         assert body["trace"]["source"] == "graph_links"
 
+        bad_size = await client.get(f"/v1/books/{RVI}/findings", headers=HEADERS, params={"page_size": "abc"})
+        assert bad_size.status_code == 400, bad_size.text
+        assert bad_size.json()["code"] == "invalid_argument"
+
         unknown = await client.get(f"/v1/books/{RVI}/findings/{'0' * 40}", headers=HEADERS)
         assert unknown.status_code == 404
         bad = await client.get(f"/v1/books/{RVI}/findings/not-a-print", headers=HEADERS)
@@ -115,6 +121,14 @@ async def test_audit_history_and_findings(app, local_service):
     rows = pq.read_table(local_service.store.physical(f"books/{RVI}/{build}/results/{analysis_id}/findings.parquet")).to_pylist()
     assert {row["fingerprint"] for row in rows} == {item["fingerprint"] for item in findings}
     assert {row["analysis_id"] for row in rows} == {analysis_id}
+
+    # Строка схемы в маркерах совпадает с fas.schema в footer файла.
+    manifest = json.loads(await local_service.store.get(f"books/{RVI}/{build}/manifest.json"))
+    done = json.loads(await local_service.store.get(f"books/{RVI}/{build}/derived/{marker['derive_key']}/_done.json"))
+    for files in (manifest["files"], done["files"], marker["files"]):
+        for rel, meta in files.items():
+            footer = pq.ParquetFile(local_service.store.physical(f"books/{RVI}/{build}/{rel}")).schema_arrow.metadata
+            assert footer[b"fas.schema"].decode() == meta["schema"], rel
 
     # GC не трогает зафиксированный результат даже при нулевом возрасте.
     swept = await local_service.gc(now=datetime.now(UTC) + timedelta(days=1), max_age_s=0)
@@ -259,3 +273,41 @@ async def test_fingerprint_stable_on_rebuild_in_place(tmp_path, settings, redis_
         assert new[print_]["code"] == item["code"]
         assert new[print_]["binding_key"] == item["binding_key"]
         assert [loc["period_id"] for loc in new[print_]["locations"]] == [loc["period_id"] for loc in item["locations"]]
+
+
+async def test_projection_upgrade_rebuilds_with_same_etag(app, local_service, monkeypatch):
+    """Сборка проекции 1 при неизменном ETag builder перестраивается (§4.10)."""
+
+    monkeypatch.setattr(service_module, "FAS_PROJECTION_VERSION", "1")
+    old = await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    monkeypatch.undo()
+    # Manifest до проекции 2 не знал fas_projection_version и счётчиков R1.
+    key = f"books/{RVI}/{old.build_key}/manifest.json"
+    manifest = json.loads(await local_service.store.get(key))
+    manifest.pop("fas_projection_version")
+    manifest.pop("builder_counters")
+    await local_service.store.put(key, json.dumps(manifest).encode())
+
+    async with _client(app) as client:
+        book = await client.get(f"/v1/books/{RVI}", headers=HEADERS)
+        assert book.status_code == 200, book.text
+        assert book.json()["build_key"] != old.build_key
+        builds = await client.get(f"/v1/books/{RVI}/builds", headers=HEADERS)
+        assert builds.json()["items"][0]["rebuild_reason"] == "fas_projection_upgrade"
+        audit = await client.post(f"/v1/books/{RVI}/analyses", headers=HEADERS, json={"type": "audit"})
+        assert all(item["code"] != "builder_counters_missing" for item in audit.json()["warnings"])
+        assert any(item["code"] == "formula_inconsistent_in_row" for item in audit.json()["result_data"]["findings"])
+
+        # Аудит прошлой сборки: concept-фильтр берёт привязки той сборки, а не головы.
+        old_audit = await client.post(
+            f"/v1/books/{RVI}/analyses", headers=HEADERS, json={"type": "audit", "build_key": old.build_key}
+        )
+        assert old_audit.status_code == 200, old_audit.text
+        assert old_audit.json()["is_latest"] is False
+        assert old_audit.json()["versions"]["derive_key"] == old.derive_key
+        filtered = await client.get(
+            f"/v1/books/{RVI}/findings", headers=HEADERS, params={"build_key": old.build_key, "concept": "cfads"}
+        )
+        assert filtered.status_code == 200, filtered.text
+        assert filtered.json()["build_key"] == old.build_key
+        assert filtered.json()["items"] == []

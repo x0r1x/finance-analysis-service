@@ -26,7 +26,6 @@ from finance_analysis.application.rule_engine import (
 )
 from finance_analysis.domain.audit import AuditInput, Finding, Location
 from finance_analysis.domain.book import (
-    FAS_SCHEMA_VERSION,
     FAS_VERSION,
     Actor,
     Head,
@@ -75,6 +74,7 @@ class Target:
     build: str
     manifest: dict
     fresh: bool
+    derived: str | None = None
 
     @property
     def is_latest(self) -> bool | None:
@@ -84,7 +84,9 @@ class Target:
 
     @property
     def derive_key(self) -> str | None:
-        return self.head.derive_key if self.build == self.head.build_key else None
+        """Производное состояние этой сборки на текущем `state_seq`, если оно построено."""
+
+        return self.head.derive_key if self.build == self.head.build_key else self.derived
 
 
 def _scope(body: dict) -> tuple[dict, list[dict]]:
@@ -196,6 +198,15 @@ def _page(items: list[dict], *, key: str, page_size: int, page_token: str | None
     return page, token
 
 
+def _page_size(raw) -> int:
+    if raw in (None, ""):
+        return 50
+    try:
+        return int(str(raw))
+    except ValueError:
+        raise InvalidArgument("page_size должен быть целым числом") from None
+
+
 def _codes(raw: str | None) -> set[str] | None:
     if not raw:
         return None
@@ -232,7 +243,19 @@ class Analyses:
             manifest = await svc._manifest(job_id, build)
         except NotFound:
             raise NotFound("сборка не найдена") from None
-        return Target(head=head, build=build, manifest=manifest, fresh=fresh)
+        derived = None
+        if build != head.build_key:
+            derived = await self._derived_at(job_id, build, head.state_seq)
+        return Target(head=head, build=build, manifest=manifest, fresh=fresh, derived=derived)
+
+    async def _derived_at(self, job_id: str, build: str, state_seq: int) -> str | None:
+        async for item in self.store.list(f"books/{job_id}/{build}/derived/"):
+            if not item.key.endswith("/_done.json"):
+                continue
+            done = json.loads(await self.store.get(item.key))
+            if int(done.get("state_seq") or 0) == state_seq:
+                return done.get("derive_key")
+        return None
 
     async def _input(self, job_id: str, target: Target, needed: frozenset[str]) -> AuditInput:
         files = target.manifest.get("files") or {}
@@ -411,7 +434,7 @@ class Analyses:
                 "sha256": sha256_bytes(payload),
                 "rows": count,
                 "bytes": len(payload),
-                "schema": f"{dataset}@{FAS_SCHEMA_VERSION}",
+                "schema": await svc.parquet.schema_tag(dataset),
             }
         marker = {
             "analysis_id": analysis_id,
@@ -531,12 +554,12 @@ class Analyses:
         if severities is not None:
             items = [item for item in items if item["severity"] in severities]
         if query.get("concept"):
-            bound = await self._bound_keys(job_id, target.head, str(query["concept"]))
+            bound = await self._bound_keys(job_id, target, marker.get("derive_key"), str(query["concept"]))
             items = [item for item in items if item.get("binding_key") in bound]
         page, token = _page(
             items,
             key="fingerprint",
-            page_size=int(query.get("page_size") or 50),
+            page_size=_page_size(query.get("page_size")),
             page_token=query.get("page_token"),
         )
         return {
@@ -549,8 +572,16 @@ class Analyses:
             "warnings": [{"code": "freshness_unknown", "params": {}}] if target.fresh else [],
         }
 
-    async def _bound_keys(self, job_id: str, head: Head, concept: str) -> set[str]:
-        bindings = await self.service._dataset_rows(job_id, head, "bindings")
+    async def _bound_keys(self, job_id: str, target: Target, derive: str | None, concept: str) -> set[str]:
+        """Привязки той сборки и того состояния, на которых шёл аудит."""
+
+        if not derive:
+            raise InvalidArgument(
+                "фильтр concept: у сборки нет производного состояния на этом state_seq",
+                extra={"build_key": target.build, "state_seq": target.head.state_seq},
+            )
+        pinned = Head(build_key=target.build, state_seq=target.head.state_seq, derive_key=derive, versions={})
+        bindings = await self.service._dataset_rows(job_id, pinned, "bindings")
         return {row["binding_key"] for row in bindings if row.get("effective_concept") == concept}
 
     async def finding(self, job_id: str, print_: str, actor: Actor, query: dict, *, wait_sec: float):

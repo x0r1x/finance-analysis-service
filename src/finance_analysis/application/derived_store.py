@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from finance_analysis.application import keys
-from finance_analysis.domain.book import FAS_SCHEMA_VERSION, sha256_bytes
+from finance_analysis.domain.book import sha256_bytes
 from finance_analysis.domain.errors import AlreadyExists
 
 
@@ -41,5 +41,5 @@ async def write_derived(
             await store.put_if_absent(key, payload)
         except AlreadyExists:
             pass
-        files[rel] = {"sha256": sha256_bytes(payload), "rows": count, "schema": f"{dataset}@{FAS_SCHEMA_VERSION}"}
+        files[rel] = {"sha256": sha256_bytes(payload), "rows": count, "schema": await parquet.schema_tag(dataset)}
     return files

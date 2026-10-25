@@ -97,12 +97,15 @@ class HardcodedFormula(Rule):
                 continue
             by_axis: dict[str, list[dict]] = {}
             for fact in data.facts_by_row.get(row["row_key"], ()):
-                if fact["value_status"] in _VALUED:
-                    by_axis.setdefault(fact["axis_id"], []).append(fact)
+                by_axis.setdefault(fact["axis_id"], []).append(fact)
             for axis_id, facts in by_axis.items():
-                constants = [fact for fact in facts if fact["cell_id"] not in formulas]
-                # Строка формул — формулы хотя бы в половине ячеек со значением.
-                if not constants or 2 * len(constants) > len(facts):
+                constants = [
+                    fact for fact in facts if fact["value_status"] in _VALUED and fact["cell_id"] not in formulas
+                ]
+                # Формула без кэша остаётся формулой: в знаменателе все ячейки с формулой.
+                with_formula = sum(1 for fact in facts if fact["cell_id"] in formulas)
+                # Строка формул — формулы хотя бы в половине ячеек с формулой или значением.
+                if not constants or len(constants) > with_formula:
                     continue
                 for fact in constants:
                     findings.append(
@@ -174,7 +177,12 @@ class FormulaInconsistent(Rule):
 
 @dataclass(frozen=True)
 class CountedRefs(Rule):
-    """Ссылки из счётчиков R1 `{count, ids}`: одна находка на книгу."""
+    """Ссылки из счётчиков R1 `{count, ids}`: одна находка на книгу.
+
+    `dangling_classes` builder — ссылки на действительно пустые ячейки
+    (`empty_ref`, `empty_range_member`, вне `dangling.count`). Это не ошибка,
+    поэтому классы идут только в `params` находки по `dangling.count`.
+    """
 
     counter: str = ""
 
@@ -294,8 +302,15 @@ class MissingCachedValue(Rule):
                 )
             )
         counted = data.counters.get("missing_cached_values")
-        if not findings and isinstance(counted, int) and counted > 0:
-            findings.append(self.finding(data, params={"count": counted}, truncated=True))
+        if isinstance(counted, int) and counted > len(findings):
+            # Остаток счётчика R1 вне серий проекции — одна находка книги.
+            findings.append(
+                self.finding(
+                    data,
+                    params={"count": counted, "located": len(findings), "unlocated": counted - len(findings)},
+                    truncated=True,
+                )
+            )
         return findings
 
 

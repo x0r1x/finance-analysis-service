@@ -158,3 +158,8 @@ class PyarrowParquet:
 
     async def read(self, payload: bytes) -> list[dict]:
         return await anyio.to_thread.run_sync(lambda: read_table(payload))
+
+    async def schema_tag(self, dataset: str) -> str:
+        """`{dataset}@{версия}` из schemas/*.json: та же строка, что `fas.schema` в footer."""
+
+        return f"{dataset}@{load_schema(dataset)['version']}"
