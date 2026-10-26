@@ -1,4 +1,4 @@
-"""Сценарии фазы 0: загрузка, серия, срез, выражение, периоды, операции."""
+"""Сценарии фаз 0–1: загрузка, серия, срез, выражение, периоды, операции, аудит."""
 
 from __future__ import annotations
 
@@ -13,7 +13,12 @@ import anyio
 from ulid import ULID
 
 from finance_analysis.application import keys
-from finance_analysis.application.builds import index_document, rebuild_reason
+from finance_analysis.application.analyses import Analyses
+from finance_analysis.application.builds import (
+    index_document,
+    projection_of,
+    rebuild_reason,
+)
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.gc import gc_incomplete
 from finance_analysis.application.metrics import BUILDER_INCONSISTENT
@@ -21,6 +26,7 @@ from finance_analysis.application.operations import append_event, create_op, rea
 from finance_analysis.application.project import derive_rows, project
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.domain.book import (
+    FAS_PROJECTION_VERSION,
     FAS_SCHEMA_VERSION,
     FAS_VERSION,
     Actor,
@@ -192,6 +198,7 @@ class FasService:
         self._tasks: set[asyncio.Task] = set()
         self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
+        self.analyses = Analyses(self)
 
     def spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -284,7 +291,7 @@ class FasService:
                 "sha256": sha256_bytes(payload),
                 "rows": count,
                 "bytes": len(payload),
-                "schema": f"{dataset}@{FAS_SCHEMA_VERSION}",
+                "schema": await self.parquet.schema_tag(dataset),
             }
         return files
 
@@ -399,10 +406,7 @@ class FasService:
         check_job(job_id)
         head, token = await self._read_head(job_id)
         if summary is None:
-            known = None
-            if head is not None:
-                manifest = await self._manifest(job_id, head.build_key)
-                known = (manifest.get("builder_ref") or {}).get("summary_etag")
+            known = None if head is None else await self._known_etag(job_id, head)
             loaded = await self.load_consistent(job_id, known_etag=known)
             if isinstance(loaded, NotModified):
                 assert head is not None
@@ -418,7 +422,7 @@ class FasService:
             summary, snapshot = loaded
         else:
             snapshot = await self._aligned_snapshot(job_id, summary.etag)
-        build = build_key_for(job_id, summary.etag)
+        build = build_key_for(job_id, summary.etag, FAS_PROJECTION_VERSION)
         versions = self._versions()
         events = await self.guard.read_all(job_id)
         state_seq = int(events[-1]["seq"]) if events else (head.state_seq if head else 0)
@@ -442,11 +446,13 @@ class FasService:
         )
         manifest = {
             "fas_schema_version": FAS_SCHEMA_VERSION,
+            "fas_projection_version": FAS_PROJECTION_VERSION,
             "build_key": build,
             "builder_ref": ref.as_dict(),
             "attempt": attempt,
             "files": file_map,
             "builder_warnings": [str(item) for item in summary.warnings],
+            "builder_counters": summary.counters,
             "warnings": projection_warnings,
             "loaded_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "loader_version": FAS_VERSION,
@@ -462,12 +468,13 @@ class FasService:
                 previous_manifest = await self._manifest(job_id, head.build_key)
             except NotFound:
                 previous_manifest = None
-        reason = rebuild_reason(previous_manifest, ref, projection="1")
+        reason = rebuild_reason(previous_manifest, ref, projection=FAS_PROJECTION_VERSION)
         index = index_document(
             build,
             {**manifest, "files": {**manifest.get("files", {}), **file_map}},
             previous=head.build_key if head else None,
             reason=reason,
+            projection=FAS_PROJECTION_VERSION,
         )
         fresh_stats = index["stats"]
         fresh_stats["rows"] = len(tables["dim_row"])
@@ -565,9 +572,17 @@ class FasService:
             raise _LockTimeout(job_id) from exc
 
     async def _known_etag(self, job_id: str, head: Head) -> str | None:
+        """ETag для `If-None-Match`. Сборка старой проекции его не получает.
+
+        Иначе builder ответит `304`, и сборка не перестроится, хотя версия
+        проекции сменилась (§4.10). Manifest без поля — проекция 1.
+        """
+
         try:
             manifest = await self._manifest(job_id, head.build_key)
         except NotFound:
+            return None
+        if projection_of(manifest) != FAS_PROJECTION_VERSION:
             return None
         return (manifest.get("builder_ref") or {}).get("summary_etag")
 
@@ -1119,9 +1134,9 @@ class FasService:
         }
         return {
             "fas_version": FAS_VERSION,
-            "phase": "0",
+            "phase": "1",
             "storage": storage,
-            "rules": [],
+            "rules": self.analyses.capabilities(),
             "metrics": [],
             "concepts": [],
             "renderers": ["json"],
@@ -1348,6 +1363,7 @@ PROBLEM_CATALOG = [
     {"code": "invalid_argument", "http": 400, "retryable": False},
     {"code": "invalid_id", "http": 400, "retryable": False},
     {"code": "not_found", "http": 404, "retryable": False},
+    {"code": "no_audit", "http": 404, "retryable": False},
     {"code": "not_acceptable", "http": 406, "retryable": False},
     {"code": "binding_conflict", "http": 409, "retryable": False},
     {"code": "request_in_progress", "http": 409, "retryable": True},
@@ -1372,5 +1388,10 @@ TOOLS = [
     {"name": "evaluate_expression", "method": "POST", "path": "/v1/books/{job_id}/expression"},
     {"name": "resolve_periods", "method": "POST", "path": "/v1/books/{job_id}/periods:resolve"},
     {"name": "submit_decisions", "method": "POST", "path": "/v1/books/{job_id}/decisions"},
+    {"name": "run_analysis", "method": "POST", "path": "/v1/books/{job_id}/analyses"},
+    {"name": "list_analyses", "method": "GET", "path": "/v1/books/{job_id}/analyses"},
+    {"name": "get_analysis", "method": "GET", "path": "/v1/books/{job_id}/analyses/{analysis_id}"},
+    {"name": "list_findings", "method": "GET", "path": "/v1/books/{job_id}/findings"},
+    {"name": "explain_finding", "method": "GET", "path": "/v1/books/{job_id}/findings/{fingerprint}"},
     {"name": "get_operation", "method": "GET", "path": "/v1/operations/{id}"},
 ]

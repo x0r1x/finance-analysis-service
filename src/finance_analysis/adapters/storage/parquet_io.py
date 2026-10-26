@@ -122,6 +122,8 @@ def _sort_key(dataset: str, row: dict):
         return (row.get("row_key") or "",)
     if dataset == "period_semantics":
         return (row.get("axis_id") or "", row.get("period_id") or "")
+    if dataset == "findings":
+        return (row.get("code") or "", row.get("fingerprint") or "")
     return (row.get("row_key") or row.get("status") or "",)
 
 
@@ -156,3 +158,8 @@ class PyarrowParquet:
 
     async def read(self, payload: bytes) -> list[dict]:
         return await anyio.to_thread.run_sync(lambda: read_table(payload))
+
+    async def schema_tag(self, dataset: str) -> str:
+        """`{dataset}@{версия}` из schemas/*.json: та же строка, что `fas.schema` в footer."""
+
+        return f"{dataset}@{load_schema(dataset)['version']}"

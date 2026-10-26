@@ -1,0 +1,151 @@
+{
+  "dataset": "findings",
+  "version": "1.0",
+  "title": "Находки аудита",
+  "columns": [
+    {
+      "name": "analysis_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор анализа (ULID)",
+      "since": "1.0"
+    },
+    {
+      "name": "model_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Идентификатор книги (job_id builder)",
+      "since": "1.0"
+    },
+    {
+      "name": "build_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ сборки",
+      "since": "1.0"
+    },
+    {
+      "name": "state_seq",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Номер состояния",
+      "since": "1.0"
+    },
+    {
+      "name": "code",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Код правила",
+      "since": "1.0"
+    },
+    {
+      "name": "rule_version",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Версия правила",
+      "since": "1.0"
+    },
+    {
+      "name": "error_class",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Класс ошибки по Panko",
+      "since": "1.0"
+    },
+    {
+      "name": "severity",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Серьёзность: info, low, medium, high, critical",
+      "since": "1.0"
+    },
+    {
+      "name": "fingerprint",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "sha1(code › binding_key › period_key_base › marker › axis_ordinal)",
+      "since": "1.0"
+    },
+    {
+      "name": "binding_key",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Стабильный ключ строки",
+      "since": "1.0"
+    },
+    {
+      "name": "row_key",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Ключ строки в этой сборке",
+      "since": "1.0"
+    },
+    {
+      "name": "axis_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Ось",
+      "since": "1.0"
+    },
+    {
+      "name": "period_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Период",
+      "since": "1.0"
+    },
+    {
+      "name": "cell_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Первая ячейка находки",
+      "since": "1.0"
+    },
+    {
+      "name": "params_json",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Параметры находки, JSON-объект",
+      "since": "1.0"
+    },
+    {
+      "name": "basis_json",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Основания (FAST, ICAEW), JSON-массив",
+      "since": "1.0"
+    },
+    {
+      "name": "locations_json",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Все места находки, JSON-массив",
+      "since": "1.0"
+    },
+    {
+      "name": "truncated",
+      "type": "bool",
+      "nullable": false,
+      "unit": "",
+      "description": "Список мест урезан",
+      "since": "1.0"
+    }
+  ]
+}

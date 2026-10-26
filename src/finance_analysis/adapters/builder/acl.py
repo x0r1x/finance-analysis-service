@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from finance_analysis.domain.book import (
     GraphLink,
@@ -55,6 +55,7 @@ class SeriesIn(_In):
     value_statuses: list[Any] | None = None
     normalized_values: list[Any] | None = None
     formula: str | None = None
+    formula_exceptions: list[Any] | None = None
 
 
 class RowIn(_In):
@@ -69,6 +70,7 @@ class RowIn(_In):
     hints: dict[str, Any] | None = None
     scale_factor: int | None = None
     formula: str | None = None
+    formula_exceptions: list[Any] | None = None
     indent: int | None = None
     hidden: bool | None = None
     check_row: bool | None = None
@@ -86,11 +88,30 @@ class BlockIn(_In):
     periods: list[Any] | None = None
 
 
+class IdCountIn(_In):
+    count: int = 0
+    ids: list[Any] | None = None
+
+
+class CycleIn(_In):
+    id: str | None = None
+    cycle_class: str | None = Field(default=None, alias="class")
+    members: int | None = None
+
+
 class SummaryIn(_In):
     status: str
     context_schema_version: str
     graph_schema_version: str
     warnings: list[Any] | None = None
+    # Счётчики R1 для правил фазы 1 (§2.1). Необязательны: без них правило не срабатывает.
+    iterate: bool | None = None
+    missing_cached_values: int | None = None
+    unresolved: IdCountIn | None = None
+    external: IdCountIn | None = None
+    dangling: IdCountIn | None = None
+    dangling_classes: dict[str, int] | None = None
+    cycles: list[CycleIn] | None = None
 
 
 class LinkIn(_In):
@@ -118,6 +139,29 @@ def _fields(exc: ValidationError, path: str) -> list[str]:
     return found
 
 
+def _counters(parsed: SummaryIn) -> dict:
+    counters: dict = {
+        "iterate": parsed.iterate,
+        "missing_cached_values": parsed.missing_cached_values,
+        "dangling_classes": dict(parsed.dangling_classes or {}),
+        "cycles": [
+            {"id": item.id, "class": item.cycle_class, "members": item.members} for item in parsed.cycles or []
+        ],
+    }
+    if parsed.cycles is None:
+        counters["cycles"] = None
+    for name in ("unresolved", "external", "dangling"):
+        found = getattr(parsed, name)
+        counters[name] = None if found is None else {"count": found.count, "ids": _strings(found.ids)}
+    return counters
+
+
+def _strings(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if item is not None]
+
+
 def _warnings(raw) -> tuple[str, ...]:
     if not isinstance(raw, list):
         return ()
@@ -141,6 +185,7 @@ def parse_summary(payload: dict, *, etag: str, job_id: str | None = None) -> Sum
         graph_schema_version=parsed.graph_schema_version,
         status=parsed.status,
         warnings=_warnings(parsed.warnings),
+        counters=_counters(parsed),
     )
 
 
@@ -340,6 +385,7 @@ def _read_row(
                 value_statuses=tuple(statuses),
                 normalized_values=_seq(item.normalized_values),
                 formula=item.formula,
+                formula_exceptions=tuple(_strings(item.formula_exceptions)),
             )
         )
     label_path = tuple(str(part) for part in (parsed.label_path or []))
@@ -365,6 +411,7 @@ def _read_row(
         normalized_values=_seq(parsed.normalized_values),
         block_id=block.block_id,
         block_kind=block.kind,
+        formula_exceptions=tuple(_strings(parsed.formula_exceptions)),
     )
 
 
@@ -407,3 +454,42 @@ def parse_graph(payload: dict | None, snapshot: WorkbookSnapshot) -> WorkbookSna
     from finance_analysis.domain.book import with_links
 
     return with_links(snapshot, parse_links(payload))
+
+
+class TraceNodeIn(_In):
+    node_id: str
+    sheet: str | None = None
+    addr: str | None = None
+    row_key: str | None = None
+    period_id: str | None = None
+    node_type: str | None = None
+    formula: str | None = None
+    cached_value: str | None = None
+    depth: int = 0
+
+
+class TraceEdgeIn(_In):
+    source: str
+    target: str
+    kind: str | None = None
+    members_total: int | None = None
+    members_shown: int | None = None
+
+
+class TraceIn(_In):
+    origin: str
+    direction: str
+    depth: int
+    stopped: str | None = None
+    nodes: list[TraceNodeIn] = []
+    edges: list[TraceEdgeIn] = []
+
+
+def parse_trace(payload: dict) -> dict:
+    """R5 `GET …/graph/trace` → `{origin, direction, depth, stopped, nodes[], edges[]}`."""
+
+    try:
+        parsed = TraceIn.model_validate(payload)
+    except ValidationError as exc:
+        raise UnsupportedBuilderShape("форма trace не поддерживается", extra={"fields": _fields(exc, "trace")}) from exc
+    return parsed.model_dump()

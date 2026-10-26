@@ -21,6 +21,7 @@ from finance_analysis.adapters.builder.acl import (
     parse_context,
     parse_links,
     parse_summary,
+    parse_trace,
 )
 from finance_analysis.adapters.builder.etag import strong_etag
 from finance_analysis.domain.book import (
@@ -145,5 +146,59 @@ class FixtureBuilder:
         payload = await anyio.to_thread.run_sync(json.loads, raw)
         return await anyio.to_thread.run_sync(parse_links, payload)
 
+    async def trace(self, job_id: str, origin: str, *, direction: str, depth: int) -> dict | ReportNotReady:
+        """Обход `graph.json` как у `GET …/graph/trace` builder: ячейки, диапазон — одна ссылка."""
+
+        self.calls.append(("GET", "/graph/trace"))
+        if job_id in self.rebuilding:
+            return ReportNotReady()
+        raw = await self._bytes(self._dir(job_id) / "graph.json")
+        payload = await anyio.to_thread.run_sync(json.loads, raw)
+        return parse_trace(_walk(payload.get("links") or [], origin, direction, max(1, min(depth, 32))))
+
     async def aclose(self) -> None:
         return None
+
+
+def _walk(links: list[dict], origin: str, direction: str, depth: int) -> dict:
+    by_cell = {link["cell"]: link for link in links if link.get("cell")}
+    forward = {cell: list(link.get("refs") or []) for cell, link in by_cell.items()}
+    backward: dict[str, list[str]] = {}
+    for cell, refs in forward.items():
+        for ref in refs:
+            backward.setdefault(ref, []).append(cell)
+    step = forward if direction == "precedents" else backward
+    nodes, edges = [], []
+    seen: set[str] = set()
+    stopped = None if origin in by_cell or origin in backward else "empty"
+    queue = [(origin, 0)] if stopped is None else []
+    while queue:
+        current, level = queue.pop(0)
+        if current in seen:
+            stopped = "cycle"
+            continue
+        seen.add(current)
+        link = by_cell.get(current) or {}
+        sheet, _, addr = current.partition("!")
+        nodes.append(
+            {
+                "node_id": current,
+                "sheet": sheet or None,
+                "addr": addr or None,
+                "row_key": link.get("row_key"),
+                "period_id": link.get("period_id"),
+                "formula": link.get("formula"),
+                "depth": level,
+            }
+        )
+        if level >= depth:
+            stopped = stopped or ("depth" if step.get(current) else None)
+            continue
+        for nxt in step.get(current, ()):
+            source, target = (current, nxt) if direction == "precedents" else (nxt, current)
+            edges.append({"source": source, "target": target})
+            if nxt in seen:
+                stopped = "cycle"
+                continue
+            queue.append((nxt, level + 1))
+    return {"origin": origin, "direction": direction, "depth": depth, "stopped": stopped, "nodes": nodes, "edges": edges}

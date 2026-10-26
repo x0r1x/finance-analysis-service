@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import random
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
 
 import httpx
 
@@ -13,6 +14,7 @@ from finance_analysis.adapters.builder.acl import (
     parse_context,
     parse_links,
     parse_summary,
+    parse_trace,
 )
 from finance_analysis.domain.book import (
     Changed,
@@ -132,6 +134,16 @@ class HttpBuilder:
             return ()
         response.raise_for_status()
         return parse_links(response.json())
+
+    async def trace(self, job_id: str, origin: str, *, direction: str, depth: int) -> dict | ReportNotReady:
+        query = urlencode({"from": origin, "direction": direction, "depth": depth})
+        response = await self._request("GET", self._path(job_id, f"graph/trace?{query}"))
+        if response.status_code == 409 and _is_not_ready(response):
+            return ReportNotReady()
+        if response.status_code == 404:
+            raise NotFound("книга или ячейка builder не найдена")
+        response.raise_for_status()
+        return parse_trace(response.json())
 
     async def aclose(self) -> None:
         if self._owns and self._client is not None:

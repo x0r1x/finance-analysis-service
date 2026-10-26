@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from finance_analysis.domain.book import FAS_SCHEMA_VERSION, BuilderRef
+from finance_analysis.domain.book import (
+    FAS_PROJECTION_VERSION,
+    FAS_SCHEMA_VERSION,
+    BuilderRef,
+)
 
 REASONS = {
     "initial",
@@ -11,6 +15,12 @@ REASONS = {
     "fas_projection_upgrade",
     "manual_reload",
 }
+
+
+def projection_of(manifest: dict) -> str:
+    """Версия проекции сборки. До проекции 2 manifest её не записывал."""
+
+    return str(manifest.get("fas_projection_version") or "1")
 
 
 def rebuild_reason(previous: dict | None, ref: BuilderRef, *, projection: str) -> str:
@@ -22,7 +32,7 @@ def rebuild_reason(previous: dict | None, ref: BuilderRef, *, projection: str) -
         or prev_ref.get("graph_schema_version") != ref.graph_schema_version
     ):
         return "builder_schema_change"
-    if previous.get("fas_projection_version") not in (None, projection):
+    if projection_of(previous) != projection:
         return "fas_projection_upgrade"
     if prev_ref.get("summary_etag") != ref.summary_etag:
         return "builder_rebuild"
@@ -35,7 +45,7 @@ def index_document(
     *,
     previous: str | None,
     reason: str,
-    projection: str = "1",
+    projection: str = FAS_PROJECTION_VERSION,
 ) -> dict:
     files = manifest.get("files") or {}
     rows = periods = observations = total = 0

@@ -1,4 +1,4 @@
-"""Маршруты фазы 0."""
+"""Маршруты фаз 0–1."""
 
 from __future__ import annotations
 
@@ -277,7 +277,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
             return JSONResponse(view.operation, status_code=202, headers=_op_headers(view))
         return view.body
 
-    async def _calc(job_id: str, request: Request, method):
+    async def _calc(job_id: str, request: Request, method, *, prefer_async: bool = False):
         checked = check_job(job_id)
         actor = _actor(request)
         support = await _limited(request, actor)
@@ -296,8 +296,10 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
                 raise InvalidArgument("тело не JSON") from exc
             if not isinstance(body, dict):
                 raise InvalidArgument("тело должно быть объектом")
+            if prefer_async and _prefer_async(request):
+                body = {**body, "async": True}
             digest = hashlib.sha256(raw or b"{}").hexdigest()
-            flight = f"{checked}:{route}:{digest}"
+            flight = f"{checked}:{route}:{digest}:{body.get('async') is True}"
 
             async def _run():
                 async with support.user_inflight(actor):
@@ -337,6 +339,68 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
     @app.post("/v1/books/{job_id}/decisions")
     async def decisions(job_id: str, request: Request):
         return await _calc(job_id, request, _svc().submit_decisions)
+
+    @app.post("/v1/books/{job_id}/analyses")
+    async def run_analysis(job_id: str, request: Request):
+        return await _calc(job_id, request, _svc().analyses.run, prefer_async=True)
+
+    @app.get("/v1/books/{job_id}/analyses")
+    async def list_analyses(
+        job_id: str,
+        request: Request,
+        type: str | None = None,
+        status: str | None = None,
+        page_size: int = 50,
+        page_token: str | None = None,
+    ):
+        checked = check_job(job_id)
+        actor = _actor(request)
+        await _limited(request, actor)
+        try:
+            async with _support().user_inflight(actor):
+                return await _svc().analyses.history(
+                    checked, kind=type, status=status, page_size=page_size, page_token=page_token
+                )
+        finally:
+            app.state.inflight -= 1
+
+    @app.get("/v1/books/{job_id}/analyses/{analysis_id}")
+    async def get_analysis(job_id: str, analysis_id: str, request: Request):
+        checked = check_job(job_id)
+        actor = _actor(request)
+        await _limited(request, actor)
+        try:
+            async with _support().user_inflight(actor):
+                return await _svc().analyses.result(checked, analysis_id)
+        finally:
+            app.state.inflight -= 1
+
+    async def _findings_read(job_id: str, request: Request, read):
+        checked = check_job(job_id)
+        actor = _actor(request)
+        await _limited(request, actor)
+        try:
+            async with _support().user_inflight(actor):
+                result = await read(checked, actor, dict(request.query_params))
+        finally:
+            app.state.inflight -= 1
+        if isinstance(result, Accepted):
+            return JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
+        return result
+
+    @app.get("/v1/books/{job_id}/findings")
+    async def list_findings(job_id: str, request: Request):
+        async def read(checked, actor, query):
+            return await _svc().analyses.findings(checked, actor, query, wait_sec=settings.load_sync_sec)
+
+        return await _findings_read(job_id, request, read)
+
+    @app.get("/v1/books/{job_id}/findings/{fingerprint}")
+    async def explain_finding(job_id: str, fingerprint: str, request: Request):
+        async def read(checked, actor, query):
+            return await _svc().analyses.finding(checked, fingerprint, actor, query, wait_sec=settings.load_sync_sec)
+
+        return await _findings_read(job_id, request, read)
 
     @app.get("/v1/operations/{op_id}")
     async def get_operation(op_id: str, request: Request, wait_ms: int = 0):

@@ -119,6 +119,8 @@ def project(
                 "scale_factor": row.scale_factor,
                 "has_formula": bool(row.formula),
                 "formula": row.formula,
+                "formula_exceptions_json": __import__("json").dumps(_exceptions(row), ensure_ascii=False),
+                "formula_exceptions_truncated": _exceptions_truncated(row),
             }
         )
         series_list = list(row.series)
@@ -182,6 +184,23 @@ def project(
     }, warnings
 
 
+# builder режет formula_exceptions до 8 ячеек на серию (§2.3). Ровно 8 не отличить
+# от обрезки, поэтому флаг значит «мог быть урезан»; полный список — trace builder.
+EXCEPTIONS_LIMIT = 8
+
+
+def _exceptions(row) -> list[str]:
+    found = set(row.formula_exceptions)
+    for series in row.series:
+        found.update(series.formula_exceptions)
+    return sorted(found)
+
+
+def _exceptions_truncated(row) -> bool:
+    lists = [row.formula_exceptions, *(series.formula_exceptions for series in row.series)]
+    return any(len(items) >= EXCEPTIONS_LIMIT for items in lists)
+
+
 def _timeline_flags(
     axes: dict[str, SnapshotAxis],
 ) -> tuple[dict[tuple[str, int], tuple[dict, str | None]], list[dict]]:
@@ -236,6 +255,21 @@ def _links(snapshot: WorkbookSnapshot, model_id: str, build: str) -> list[dict]:
     out: list[dict] = []
     for link in snapshot.links:
         sheet = link.cell.split("!", 1)[0] if link.cell and "!" in link.cell else None
+        if not link.refs:
+            # Формула без ссылок (`=5*12`) тоже формула: строка связи без ref_cell.
+            out.append(
+                {
+                    "model_id": model_id,
+                    "build_key": build,
+                    "cell": link.cell,
+                    "formula": link.formula,
+                    "formula_class": link.formula_class,
+                    "ref_cell": None,
+                    "row_key": link.row_key,
+                    "period_id": link.period_id,
+                    "truncated": False,
+                }
+            )
         for ref in link.refs:
             cells, truncated = expand_ref(
                 ref,

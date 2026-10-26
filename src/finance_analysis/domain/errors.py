@@ -33,6 +33,12 @@ class NotFound(FasError):
     title = "Не найдено"
 
 
+class NoAudit(FasError):
+    code = "no_audit"
+    status = 404
+    title = "Аудита на сборке ещё не было"
+
+
 class NotAcceptable(FasError):
     code = "not_acceptable"
     status = 406
