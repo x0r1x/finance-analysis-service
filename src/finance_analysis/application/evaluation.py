@@ -47,13 +47,19 @@ def prune(document: dict, concepts: set[str]) -> dict:
     return pruned
 
 
-def covered(bindings: list[dict]) -> set[str]:
-    owners: dict[str, int] = {}
+def primaries(bindings: list[dict]) -> dict[str, str]:
+    """Понятие метрики → binding_key его единственной основной строки."""
+
+    owners: dict[str, list[str]] = {}
     for row in bindings:
         concept = row.get("effective_concept")
         if concept in METRIC_CONCEPTS and row.get("is_primary") and row.get("status") in {"bound", "bound_with_warning"}:
-            owners[concept] = owners.get(concept, 0) + 1
-    return {concept for concept, count in owners.items() if count == 1}
+            owners.setdefault(concept, []).append(row["binding_key"])
+    return {concept: keys[0] for concept, keys in owners.items() if len(keys) == 1}
+
+
+def covered(bindings: list[dict]) -> set[str]:
+    return set(primaries(bindings))
 
 
 class Evaluator:
@@ -204,9 +210,14 @@ class Evaluator:
                             "to": {"status": row.get("status"), "concept": row.get("effective_concept")},
                         }
                     )
-            lost = sorted(covered(old) - covered(new))
+            before, after = primaries(old), primaries(new)
+            lost = sorted(set(before) - set(after))
             if lost:
                 reasons.append(f"coverage_down:{job_id}")
+            # Понятие метрики на другой строке меняет входы DSCR/ICR так же, как потеря понятия.
+            moved = sorted(concept for concept in set(before) & set(after) if before[concept] != after[concept])
+            if moved:
+                reasons.append(f"primary_moved:{job_id}")
             bound = lambda items: sum(1 for r in items if r.get("status") in {"bound", "bound_with_warning"})
             books.append(
                 {
@@ -216,6 +227,9 @@ class Evaluator:
                     "delta_bound": bound(new) - bound(old),
                     "new_ambiguous": sum(1 for c in changes if c["to"]["status"] == "ambiguous"),
                     "metric_concepts_lost": lost,
+                    "metric_concepts_moved": [
+                        {"concept": c, "from": before[c], "to": after[c], "path": label.get(after[c])} for c in moved
+                    ],
                 }
             )
         report = {

@@ -16,7 +16,7 @@ from finance_analysis.domain.book import (
     parse_decimal_text,
 )
 from finance_analysis.domain.currency import resolve_currencies
-from finance_analysis.domain.mapping import assign_rows
+from finance_analysis.domain.mapping import assign_rows, verify_numeric
 from finance_analysis.domain.periods import (
     expand_ref,
     marker_class,
@@ -333,6 +333,18 @@ def _unit_map(events: list[dict]) -> dict[str, str]:
     return _by_type(events, "unit.set")
 
 
+def _values_by_row(facts: list[dict] | None) -> dict[str, dict[tuple[str, str], Decimal]]:
+    values: dict[str, dict[tuple[str, str], Decimal]] = {}
+    for fact in facts or []:
+        number = fact.get("normalized_value")
+        if number is None:
+            number = fact.get("value_dec")
+        if number is None or not fact.get("row_key"):
+            continue
+        values.setdefault(fact["row_key"], {})[(fact["axis_id"], fact["period_id"])] = Decimal(str(number))
+    return values
+
+
 def _abs_by_row(facts: list[dict] | None) -> dict[str, Decimal]:
     totals: dict[str, Decimal] = {}
     for fact in facts or []:
@@ -401,6 +413,7 @@ def derive_rows(
             evidence=evidence,
             calibrator=calibrator,
         )
+        assigned = verify_numeric(assigned, prepared, _values_by_row(facts))
     else:
         prepared = None
     row_semantics = []

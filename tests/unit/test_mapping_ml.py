@@ -131,7 +131,7 @@ async def test_pipeline_ranks_and_spends_clm_budget(tmp_path):
     assert first.nearest_example_cos is not None and first.nearest_example_cos > 0.9
     assert any("cross_book_example" in c.reasons for c in first.candidates if c.concept == "interest")
     assert set(result.embeddings) == {"a", "b"}
-    assert budget.used.get("fas:clm:job:run", 0) <= 2
+    assert budget.used.get("fas:clm:job", 0) <= 2
     assert models.clm.calls <= 1
 
 
@@ -166,3 +166,57 @@ def test_partition_holds_with_model_evidence_on_golden_books():
             if row["source"] == "inferred" and row["status"] in {"bound", "bound_with_warning"}:
                 assert json.loads(row["evidence_json"])
         assert all(count == 1 for count in owners.values())
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        _row("a", "Interest", unit="rate"),
+        _row("a", "Interest", unit="money", unit_decision="rate"),
+        _row("a", "DSCR", unit="money"),
+    ],
+)
+def test_exact_label_passes_the_same_unit_check(row):
+    assigned = assign_rows([row], [], CATALOG)
+    assert assigned["a"].status == "unknown" and assigned["a"].concept is None
+
+
+def test_model_binding_has_a_label_id():
+    item = decide(_row("a", "Free cash for lenders", unit="money"), RowEvidence(candidates=(_strong("cfads"),)), CATALOG, None)
+    assert item.matched_label == "model:cfads"
+    assert item.evidence["label"]["kind"] == "model"
+
+
+async def test_ragged_embeddings_degrade_instead_of_failing():
+    class Ragged(FakeEmbed):
+        async def embed(self, texts, *, deadline):
+            return [[1.0, 0.0, 0.0][: 2 + index % 2] for index, _text in enumerate(texts)]
+
+    rows = prepare_rows({"dim_row": [_row("a", "Free cash"), _row("b", "Other cash")]}, [], CATALOG, None)
+    pipeline = MappingPipeline(type("M", (), {"embed": Ragged(), "rerank": None, "clm": None, "llm": None})(), settings=_settings())
+    result = await pipeline.score("j", "r", rows, CATALOG, glossary_version="g", deadline=Deadline.after_ms(5000))
+    assert {"stage": "embed", "reason": "schema"} in result.degraded
+    assert result.embeddings == {}
+
+
+def test_numeric_identity_marks_rows_verified():
+    from decimal import Decimal
+
+    from finance_analysis.domain.mapping import verify_numeric
+
+    rows = [_row("c", "CFADS"), _row("d", "Debt service"), _row("r", "DSCR"), _row("i", "Interest"), _row("p", "Principal")]
+    assigned = assign_rows(rows, [], CATALOG)
+    periods = [("t", "2027"), ("t", "2028"), ("t", "2029")]
+    values = {
+        "c": dict(zip(periods, map(Decimal, ["130", "120", "110"]), strict=True)),
+        "d": dict(zip(periods, map(Decimal, ["-100", "-100", "-100"]), strict=True)),
+        "r": dict(zip(periods, map(Decimal, ["1.3", "1.2", "1.1"]), strict=True)),
+        "i": dict(zip(periods, map(Decimal, ["-60", "-60", "-60"]), strict=True)),
+        "p": dict(zip(periods, map(Decimal, ["-40", "-40", "-40"]), strict=True)),
+    }
+    checked = verify_numeric(assigned, rows, values)
+    assert checked["c"].source == "verified" and checked["d"].evidence["verified"] == ["ds_composition", "dscr_identity"]
+    assert checked["r"].source == "inferred"
+    values["c"][("t", "2028")] = Decimal(500)
+    values["c"][("t", "2029")] = Decimal(500)
+    assert verify_numeric(assigned, rows, values)["c"].source == "inferred"

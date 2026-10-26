@@ -462,7 +462,10 @@ def _abs_by_row(facts: list[dict]) -> dict[str, Decimal]:
 def labeling_input(prepared, bindings, facts, links, package, identities) -> LabelingInput:
     values: dict[str, dict[tuple[str, str], Decimal]] = defaultdict(dict)
     cell_row: dict[str, str] = {}
+    order: dict[tuple[str, str], int] = {}
     for fact in facts or []:
+        # Проекция пишет факты строки по index периода оси: первый порядок появления и есть порядок оси.
+        order.setdefault((fact["axis_id"], fact["period_id"]), len(order))
         if fact.get("cell_id"):
             cell_row[fact["cell_id"]] = fact["row_key"]
         number = fact.get("normalized_value")
@@ -483,4 +486,5 @@ def labeling_input(prepared, bindings, facts, links, package, identities) -> Lab
         bindings={row["binding_key"]: row for row in bindings},
         concepts=dict(package.concepts),
         identities=identities,
+        order=order,
     )

@@ -427,7 +427,13 @@ class GlossaryStore:
                     release = await self._activate(fresh, fresh_etag, ready["version"], source="proposal")
                 else:
                     release = {**ready, "activated": False}
+            blocked = release is not None and release.get("activated") is False
             for index, found, choice, text in chosen:
+                if choice == "accept" and blocked:
+                    # Гейт не пустил релиз: предложение остаётся открытым, решение можно повторить.
+                    found["blocked_release"] = release["version"]
+                    results.append({"index": index, "id": found["id"], "status": "open", "blocked": "glossary_regression"})
+                    continue
                 found["text"] = text
                 found["status"] = "accepted" if choice == "accept" else "rejected"
                 found["decided_at_utc"] = _now()

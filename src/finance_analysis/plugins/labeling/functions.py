@@ -79,17 +79,30 @@ def identity(data: LabelingInput) -> list[Vote]:
 
 
 def rollforward(data: LabelingInput) -> list[Vote]:
-    """Корпус open + in − out = close по строке, ссылающейся на principal → остаток долга (closing)."""
+    """Корпус close[t] = close[t−1] + приток[t] − |principal[t]| по ≥ 80 % пар периодов → остаток долга.
+
+    Притоки — прочие прецеденты строки. Если тождество не сходится по числам, LF воздерживается.
+    """
 
     principal = data.bound("principal", sources=HUMAN)
     if not principal:
         return []
     keys = _key_of(data)
+    repaid = data.values.get(principal, {})
     votes = []
     for row_key, refs in sorted(data.precedents.items()):
         if row_key == principal or principal not in refs or row_key not in refs or row_key not in keys:
             continue
-        votes.append(Vote(keys[row_key], "debt_outstanding", "+", "lf.rollforward"))
+        balance = data.values.get(row_key, {})
+        others = sorted(refs - {row_key, principal})
+        pairs = []
+        for before, now in data.consecutive(balance):
+            if now not in repaid or any(now not in data.values.get(other, {}) for other in others):
+                continue
+            inflow = sum((data.values[other][now] for other in others), Decimal(0))
+            pairs.append((balance[now], balance[before] + inflow - abs(repaid[now])))
+        if _agree(pairs):
+            votes.append(Vote(keys[row_key], "debt_outstanding", "+", "lf.rollforward"))
     return votes
 
 

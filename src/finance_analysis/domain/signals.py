@@ -49,6 +49,20 @@ class LabelingInput:
     bindings: dict[str, dict]
     concepts: dict
     identities: dict[str, list[str]] = field(default_factory=dict)
+    order: dict[tuple[str, str], int] = field(default_factory=dict)
+
+    def consecutive(self, series: dict[tuple[str, str], Decimal]) -> list[tuple[tuple[str, str], tuple[str, str]]]:
+        """Пары (предыдущий, текущий) период одной оси по порядку временной оси."""
+
+        by_axis: dict[str, list[tuple[int, tuple[str, str]]]] = defaultdict(list)
+        for period in series:
+            if period in self.order:
+                by_axis[period[0]].append((self.order[period], period))
+        pairs = []
+        for items in by_axis.values():
+            items.sort()
+            pairs.extend((items[i - 1][1], items[i][1]) for i in range(1, len(items)))
+        return pairs
 
     def bound(self, concept: str, *, sources: frozenset[str] | None = None) -> str | None:
         """row_key основной строки понятия, если она одна."""

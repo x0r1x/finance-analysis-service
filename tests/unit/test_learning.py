@@ -43,6 +43,7 @@ def _input(values, precedents, bindings, rows=None):
         bindings={item["binding_key"]: item for item in bindings},
         concepts=dict(CATALOG.concepts),
         identities=load_identities(),
+        order={period: index for index, period in enumerate(P)},
     )
 
 
@@ -64,6 +65,12 @@ def test_identity_needs_human_components_and_rollforward():
     human = _input(values, precedents, [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")])
     assert [(v.binding_key, v.concept) for v in identity(human)] == [("total", "debt_service")]
     assert [(v.binding_key, v.concept) for v in rollforward(human)] == [("bal", "debt_outstanding")]
+    cash = _input(
+        {"cash": [1, 2, 3, 4, 5], "prn": [9, 9, 9, 9, 9]},
+        {"cash": {"cash", "prn"}},
+        [_binding("prn", "principal", "confirmed")],
+    )
+    assert rollforward(cash) == []
 
 
 def test_unit_sign_votes_against():

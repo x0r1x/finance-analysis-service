@@ -36,6 +36,8 @@ class HttpEmbed:
             if not isinstance(vector, list) or not vector or not all(isinstance(x, int | float) for x in vector):
                 raise ModelDegraded("embed", "schema")
             vectors.append([float(x) for x in vector])
+        if len({len(vector) for vector in vectors}) > 1:
+            raise ModelDegraded("embed", "schema")
         return vectors
 
 

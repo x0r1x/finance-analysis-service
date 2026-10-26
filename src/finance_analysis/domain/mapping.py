@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 
 from finance_analysis.domain.calibration import (
     Calibrator,
@@ -13,6 +14,10 @@ from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.glossary import GlossaryPackage, normalize_label
 
 MATERIAL_SHARE = 0.05
+_NOT_MONEY = frozenset({"%", "percent", "rate", "ratio", "x", "count", "years", "date"})
+_MONEY = frozenset({"money", "price"})
+MODEL_LABEL = "model:"
+AGREE_SHARE = Decimal("0.8")
 _HUMAN = frozenset({"concept.set", "concept.confirmed"})
 
 
@@ -65,10 +70,10 @@ def assign_rows(
 def structure_pass(row: dict, concept, *, label: str) -> bool:
     """Стадия 4: единица, отсев %-строк и отрицательных меток понятия."""
 
-    unit = str(row.get("unit") or "").lower()
-    if concept.unit == "money" and ("%" in label or unit in {"%", "percent", "rate", "ratio", "x"}):
+    unit = str(row.get("unit_decision") or row.get("unit") or "").lower()
+    if concept.unit == "money" and ("%" in label or unit in _NOT_MONEY):
         return False
-    if concept.unit == "ratio" and unit in {"money", "price"}:
+    if concept.unit == "ratio" and unit in _MONEY:
         return False
     norm = normalize_label(label)
     return not any(normalize_label(item) in norm for item in concept.negative)
@@ -127,7 +132,10 @@ def decide(
     status = "bound_with_warning" if warnings else "bound"
     if warnings:
         evidence["warnings"] = warnings
-    return Assignment(top.concept, status, "inferred", True, None, "normal", top_p, evidence)
+    # Модельная привязка тоже попадает в индекс меток: при правке понятия её найдёт glossary.remap.
+    matched = f"{MODEL_LABEL}{top.concept}"
+    evidence["label"] = {"id": matched, "kind": "model", "text": None}
+    return Assignment(top.concept, status, "inferred", True, matched, "normal", top_p, evidence)
 
 
 def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
@@ -154,14 +162,12 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
 def lexical_hit(row: dict, glossary: GlossaryPackage):
     """Стадия 1: точная метка глоссария, если её не отсеяли % и отрицательные метки."""
 
-    hit = glossary.resolve(str(row.get("label") or ""))
+    label = str(row.get("label") or "")
+    hit = glossary.resolve(label)
     if hit is None:
         return None
-    concept = glossary.concepts[hit.concept]
-    label = normalize_label(str(row.get("label") or ""))
-    if concept.unit == "money" and "%" in str(row.get("label") or ""):
-        return None
-    if any(normalize_label(item) in label for item in concept.negative):
+    # Та же стадия 4, что у модельных кандидатов: единица (unit.set приоритетнее), % и negative.
+    if not structure_pass(row, glossary.concepts[hit.concept], label=label):
         return None
     return hit
 
@@ -183,7 +189,7 @@ def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
         confirmed = [index for index in indexes if draft[index][1].source == "confirmed"]
         if not confirmed:
             # Точная метка глоссария сильнее кандидата модели того же понятия.
-            lexical = [index for index in indexes if draft[index][1].matched_label]
+            lexical = [index for index in indexes if _lexical(draft[index][1])]
             if len(lexical) == 1:
                 confirmed = lexical
         if len(confirmed) == 1:
@@ -191,7 +197,7 @@ def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
                 if index in confirmed:
                     continue
                 row, item = draft[index]
-                if item.matched_label or item.source == "confirmed":
+                if _lexical(item) or item.source == "confirmed":
                     draft[index] = (row, replace(item, is_primary=False))
                 else:
                     draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
@@ -200,6 +206,65 @@ def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
         for index in drop:
             row, item = draft[index]
             draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
+
+
+def _lexical(item: Assignment) -> bool:
+    return bool(item.matched_label) and not str(item.matched_label).startswith(MODEL_LABEL)
+
+
+def verify_numeric(
+    assigned: dict[str, Assignment],
+    rows: list[dict],
+    values: dict[str, dict[tuple[str, str], Decimal]],
+) -> dict[str, Assignment]:
+    """Стадия 6: арифметика книги сошлась → source verified (§5.5).
+
+    cfads / |debt_service| ≈ dscr и |debt_service| ≈ |interest| + |principal| по ≥ 80 % периодов
+    с ненулевым обслуживанием долга. Меняется только source у inferred-привязок; статус и понятие — нет.
+    """
+
+    row_of = {row["binding_key"]: row["row_key"] for row in rows}
+    primary: dict[str, list[str]] = {}
+    for key, item in assigned.items():
+        if item.is_primary and item.concept and item.status in {"bound", "bound_with_warning"}:
+            primary.setdefault(item.concept, []).append(key)
+    one = {concept: keys[0] for concept, keys in primary.items() if len(keys) == 1}
+
+    def series(concept: str) -> dict[tuple[str, str], Decimal]:
+        return values.get(row_of.get(one.get(concept, ""), ""), {})
+
+    checks: list[tuple[str, tuple[str, ...]]] = []
+    if {"cfads", "debt_service", "dscr"} <= set(one):
+        cash, service, ratio = series("cfads"), series("debt_service"), series("dscr")
+        pairs = [(cash[p] / abs(service[p]), abs(ratio[p])) for p in service if service[p] != 0 and p in cash and p in ratio]
+        if _agree(pairs):
+            checks.append(("dscr_identity", ("cfads", "debt_service")))
+    if {"debt_service", "interest", "principal"} <= set(one):
+        service, interest, principal = series("debt_service"), series("interest"), series("principal")
+        pairs = [
+            (abs(service[p]), abs(interest[p]) + abs(principal[p]))
+            for p in service
+            if service[p] != 0 and p in interest and p in principal
+        ]
+        if _agree(pairs):
+            checks.append(("ds_composition", ("debt_service", "interest", "principal")))
+    out = dict(assigned)
+    for reason, concepts in checks:
+        for concept in concepts:
+            key = one[concept]
+            item = out[key]
+            if item.source not in {"inferred", "verified"}:
+                continue
+            evidence = {**item.evidence, "verified": sorted({*item.evidence.get("verified", []), reason})}
+            out[key] = replace(item, source="verified", evidence=evidence)
+    return out
+
+
+def _agree(pairs: list[tuple[Decimal, Decimal]]) -> bool:
+    if len(pairs) < 2:
+        return False
+    hits = sum(1 for left, right in pairs if abs(left - right) <= max(Decimal("0.005"), abs(right) * Decimal("0.005")))
+    return Decimal(hits) / Decimal(len(pairs)) >= AGREE_SHARE
 
 
 def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str]]:

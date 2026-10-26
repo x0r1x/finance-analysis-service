@@ -128,6 +128,13 @@ class MappingPipeline:
                 await self._knn(targets, vectors, recall, nearest_example, job_id)
             except ModelDegraded as exc:
                 result.degraded.append(exc.as_dict())
+            except ValueError:
+                # Векторы разной длины или не той размерности, что у понятий: ответ не по схеме.
+                result.degraded.append({"stage": "embed", "reason": "schema"})
+                result.embeddings.clear()
+                recall = [[] for _ in targets]
+                nearest_concept = [None for _ in targets]
+                nearest_example = [None for _ in targets]
         if not any(recall):
             # Без embed кандидаты для rerank — все понятия каталога.
             recall = [[Candidate(name) for name in concept_ids] for _ in targets]
@@ -236,7 +243,8 @@ class MappingPipeline:
 
         async def one(index, row, ranked) -> None:
             if self.budget is not None:
-                allowed = await self.budget.take(f"fas:clm:{job_id}:{run_id}", self.settings.clm_max_calls_per_book, CLM_BUDGET_TTL)
+                # Бюджет на книгу, а не на прогон: пересборки и ремапы его не обнуляют (TTL 24 ч).
+                allowed = await self.budget.take(f"fas:clm:{job_id}", self.settings.clm_max_calls_per_book, CLM_BUDGET_TTL)
                 if not allowed:
                     failures.append({"stage": "clm", "reason": "budget"})
                     return

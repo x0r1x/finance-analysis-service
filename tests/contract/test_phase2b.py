@@ -171,3 +171,35 @@ async def test_s5_slow_and_failing_model_servers_degrade(settings, redis_runtime
     assert elapsed < 30
     ready = await service.ready()
     assert ready["status"] == "ok" and ready["models"]["embed"] == "open"
+
+
+async def test_shadow_gate_blocks_metric_concept_moving_to_another_row(local_service):
+    await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    await local_service.settle()
+    state = await local_service.glossary.ensure()
+    released = await local_service.glossary.release(
+        [
+            {"op": "remove_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "CFADS"},
+            {"op": "add_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "Net Present Value (NPV)"},
+        ],
+        f"h-{state['seq']}",
+    )
+    report = await local_service.evaluator.shadow(released["version"])
+    assert report["passed"] is False
+    assert f"primary_moved:{RVI}" in report["reasons"]
+    moved = report["books"][0]["metric_concepts_moved"]
+    assert moved[0]["concept"] == "cfads" and moved[0]["path"].endswith("Net Present Value (NPV)")
+
+
+async def test_blocked_proposal_stays_open(local_service):
+    await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    await local_service.settle()
+    proposal = await local_service.glossary.add_proposal(
+        {"concept": "cfads", "kind": "alt", "lang": "en", "text": "Net Present Value (NPV)"}
+    )
+    decided = await local_service.glossary.decide_proposals([{"id": proposal["id"], "decision": "accept"}])
+    assert decided["release"]["activated"] is False
+    assert decided["shadow"]["passed"] is False
+    assert decided["results"][0]["status"] == "open"
+    again = await local_service.glossary.proposal(proposal["id"])
+    assert again["status"] == "open" and again["blocked_release"] == decided["release"]["version"]
