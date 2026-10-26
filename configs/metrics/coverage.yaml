@@ -1,0 +1,9 @@
+# DSCR и ICR. Частное считает Python Decimal, не SQL.
+metrics:
+  dscr:
+    numerator: [cfads]
+    denominator: debt_service
+  icr:
+    numerator: [ebitda, ebit]
+    denominator: interest
+tolerance: "0.005"

@@ -1,0 +1,7 @@
+concept: target_dscr
+pref:
+  en: "Target DSCR"
+  ru: "Целевой DSCR"
+definition:
+  en: "Target DSCR read from a cell of the book"
+  ru: "Целевой DSCR из ячейки книги"

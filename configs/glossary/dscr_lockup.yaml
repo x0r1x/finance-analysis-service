@@ -1,0 +1,7 @@
+concept: dscr_lockup
+pref:
+  en: "DSCR lock-up"
+  ru: "Порог блокировки DSCR"
+definition:
+  en: "Lock-up covenant read from a cell of the book"
+  ru: "Порог блокировки из ячейки книги"

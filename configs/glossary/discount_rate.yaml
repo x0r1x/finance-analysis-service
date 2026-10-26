@@ -1,0 +1,7 @@
+concept: discount_rate
+pref:
+  en: "Discount rate"
+  ru: "Ставка дисконтирования"
+definition:
+  en: "Discount rate taken from a cell of the book"
+  ru: "Ставка дисконтирования из ячейки книги"

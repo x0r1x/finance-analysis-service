@@ -120,6 +120,8 @@ class AuditInput:
     facts: list[dict] = field(default_factory=list)
     links: list[dict] = field(default_factory=list)
     counters: dict = field(default_factory=dict)
+    # Пустой список: правила коэффициентов молчат, отпечаток аудита не плывёт.
+    bindings: list[dict] = field(default_factory=list)
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:

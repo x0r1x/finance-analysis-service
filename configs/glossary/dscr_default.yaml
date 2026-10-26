@@ -1,0 +1,7 @@
+concept: dscr_default
+pref:
+  en: "DSCR default"
+  ru: "Порог дефолта DSCR"
+definition:
+  en: "Default covenant read from a cell of the book"
+  ru: "Порог дефолта из ячейки книги"

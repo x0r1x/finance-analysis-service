@@ -1,0 +1,189 @@
+"""Релизы глоссария: 428, 412, dry_run, откат, stale_parent (§12 п. 4–5)."""
+
+from __future__ import annotations
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from finance_analysis.adapters.api.app import create_app
+
+pytestmark = pytest.mark.asyncio
+
+HEADERS = {"X-User-Id": "alex", "X-Client-Id": "desk"}
+_PREF = {"op": "set_pref", "concept": "cfads", "kind": "pref", "lang": "en", "text": "Flow for debt"}
+
+
+@pytest.fixture
+def app(settings, local_service, redis_runtime):
+    return create_app(settings, service=local_service, support=redis_runtime)
+
+
+def _client(app) -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://fas")
+
+
+async def _state(client: AsyncClient) -> tuple[dict, str]:
+    response = await client.get("/v1/glossary", headers=HEADERS)
+    assert response.status_code == 200, response.text
+    return response.json(), response.headers["etag"]
+
+
+async def test_preconditions_dry_run_rollback_and_export(app, local_service):
+    async with _client(app) as client:
+        missing = await client.post("/v1/glossary/releases", headers=HEADERS, json={"ops": []})
+        assert missing.status_code == 428
+        assert missing.headers["cache-control"] == "no-store"
+
+        _body, etag = await _state(client)
+        stale = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": "h-999"},
+            json={"ops": []},
+        )
+        assert stale.status_code == 412
+        assert stale.json()["state"]["etag"] == etag
+
+        dry = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [_PREF], "dry_run": True},
+        )
+        assert dry.status_code == 200, dry.text
+        assert dry.json()["dry_run"] is True
+        assert any(item["change"] == "add" for item in dry.json()["diff"])
+        again, etag = await _state(client)
+        assert again["seq"] == 1
+
+        odd = await client.get("/v1/glossary/content", headers=HEADERS, params={"format": "md"})
+        assert odd.status_code == 406
+        assert odd.json()["formats"] == ["json", "yaml"]
+        impact = await client.get("/v1/glossary/impact", headers=HEADERS)
+        assert impact.json()["books"] == []
+
+        made = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [_PREF]},
+        )
+        assert made.status_code == 200, made.text
+        version = made.json()["version"]
+        activated = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": made.headers["etag"]},
+            json={"version": version, "status": "active"},
+        )
+        assert activated.status_code == 200, activated.text
+        changed = await client.get("/v1/glossary/content", headers=HEADERS)
+        assert changed.json()["glossaries"]["cfads"]["pref"]["en"] == "Flow for debt"
+
+        rolled = await client.post(
+            "/v1/glossary:rollback",
+            headers={**HEADERS, "If-Match": activated.headers["etag"]},
+            json={},
+        )
+        assert rolled.status_code == 200, rolled.text
+        assert rolled.json()["state"]["active"] == again["active"]
+        history = (await client.get("/v1/glossary/releases", headers=HEADERS)).json()["releases"]
+        assert any(item["version"] == again["active"] and item["status"] == "active" for item in history)
+        assert any(item["version"] == version and item["status"] == "retired" for item in history)
+        restored = await client.get("/v1/glossary/content", headers=HEADERS)
+        assert restored.json()["glossaries"]["cfads"]["pref"]["en"] == "Cash flow available for debt service"
+        patch = await local_service.glossary.export_patch()
+        assert "changes: []" in patch or patch.strip().endswith("[]")
+
+
+async def test_stale_parent_and_idempotent_release(app):
+    async with _client(app) as client:
+        _body, etag = await _state(client)
+        first = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag, "Idempotency-Key": "rel-1"},
+            json={"ops": [{"op": "add_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "alpha"}]},
+        )
+        assert first.status_code == 200, first.text
+        replay = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag, "Idempotency-Key": "rel-1"},
+            json={"ops": [{"op": "add_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "alpha"}]},
+        )
+        assert replay.status_code == 200
+        assert replay.json()["version"] == first.json()["version"]
+        state, etag = await _state(client)
+        assert state["seq"] == 2
+
+        second = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [{"op": "add_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "beta"}]},
+        )
+        assert second.status_code == 200, second.text
+        activated = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": second.headers["etag"]},
+            json={"version": first.json()["version"], "status": "active"},
+        )
+        assert activated.status_code == 200, activated.text
+        conflict = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": activated.headers["etag"]},
+            json={"version": second.json()["version"], "status": "active"},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["code"] == "stale_parent"
+
+
+async def test_admin_token_when_configured(app, settings):
+    settings.fas_admin_token = "secret"
+    async with _client(app) as client:
+        _body, etag = await _state(client)
+        denied = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [], "dry_run": True},
+        )
+        assert denied.status_code == 403
+        assert denied.json()["code"] == "admin_token_required"
+        allowed = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag, "X-Admin-Token": "secret"},
+            json={"ops": [], "dry_run": True},
+        )
+        assert allowed.status_code == 200, allowed.text
+
+
+async def test_replace_upload_and_read_routes(app):
+    async with _client(app) as client:
+        body, etag = await _state(client)
+        current = await client.get("/v1/glossary/content", headers=HEADERS)
+        assert current.status_code == 200, current.text
+        document = current.json()
+        document["glossaries"]["cfads"]["pref"]["en"] = "Replaced flow"
+        preview = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"mode": "replace", "document": document, "dry_run": True},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["dry_run"] is True
+        assert any(item["text"] == "Replaced flow" for item in preview.json()["diff"])
+        made = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"mode": "replace", "document": document},
+        )
+        assert made.status_code == 200, made.text
+        version = made.json()["version"]
+        events = await client.get("/v1/glossary/events", headers=HEADERS)
+        assert any(item.get("version") == version for item in events.json()["events"])
+        concepts = await client.get("/v1/glossary/concepts", headers=HEADERS)
+        assert "cfads" in concepts.json()["concepts"]
+        diff = await client.get(
+            "/v1/glossary/diff",
+            headers=HEADERS,
+            params={"from": body["active"], "to": version},
+        )
+        assert diff.status_code == 200, diff.text
+        assert any(item["text"] == "Replaced flow" for item in diff.json()["diff"])
+        one = await client.get(f"/v1/glossary/releases/{version}", headers=HEADERS)
+        assert one.status_code == 200, one.text
+        assert one.json()["release"]["version"] == version

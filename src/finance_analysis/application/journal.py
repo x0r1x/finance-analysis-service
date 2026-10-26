@@ -132,6 +132,8 @@ class Journal:
         expected_seq: int | None,
         request_id: str,
         at_utc: datetime | None = None,
+        binding_key: str | None = None,
+        supersedes: dict | None = None,
     ) -> tuple[dict, bool]:
         """Проверка дубля и запись под одним замком. Второй элемент — duplicate."""
 
@@ -157,6 +159,8 @@ class Journal:
                         expected_seq=expected_seq,
                         request_id=request_id,
                         at_utc=at_utc,
+                        binding_key=binding_key,
+                        supersedes=supersedes,
                     )
                 except AlreadyExists:
                     self._last[job_id] = 0
@@ -175,6 +179,8 @@ class Journal:
         expected_seq: int | None,
         request_id: str,
         at_utc: datetime | None,
+        binding_key: str | None = None,
+        supersedes: dict | None = None,
     ) -> dict:
         actual = self._keys.get(job_id, {}).get(target)
         if actual != expected_seq:
@@ -190,13 +196,15 @@ class Journal:
             "seq": seq,
             "type": event_type,
             "target": target,
-            "binding_key": target,
+            "binding_key": binding_key or target,
             "value": value,
             "actor": {"user_id": actor.user_id, "client_id": actor.client_id},
             "expected_seq": expected_seq,
             "request_id": request_id,
             "at_utc": (at_utc or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        if supersedes is not None:
+            event["supersedes"] = supersedes
         await self.store.put_if_absent(
             log_key(job_id, seq),
             json.dumps(event, ensure_ascii=False).encode(),

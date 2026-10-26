@@ -15,6 +15,7 @@ from finance_analysis.domain.book import (
     parse_decimal_text,
 )
 from finance_analysis.domain.currency import resolve_currencies
+from finance_analysis.domain.mapping import assign_rows
 from finance_analysis.domain.periods import (
     expand_ref,
     marker_class,
@@ -22,6 +23,7 @@ from finance_analysis.domain.periods import (
     split_period_key,
 )
 from finance_analysis.domain.phases import PHASES, split_phase_target
+from finance_analysis.domain.semantics import empty_series, exclusion, infer_row
 from finance_analysis.domain.state import fold
 
 
@@ -306,9 +308,32 @@ def _decision_maps(events: list[dict]) -> tuple[dict[tuple[str, str], str], dict
                 phases[parsed] = value
         elif kind in {"concept.set", "concept.confirmed"}:
             value = event.get("value")
-            if isinstance(value, str) and value:
-                concepts[str(target)] = value
+            binding = str(event.get("binding_key") or target)
+            if isinstance(value, str) and value and binding != "book":
+                concepts[binding] = value
     return phases, concepts
+
+
+def _sign_map(events: list[dict]) -> dict[str, str]:
+    signs = {}
+    for target, event in fold(events).items():
+        if event.get("type") != "sign.set" or not isinstance(event.get("value"), str):
+            continue
+        signs[str(event.get("binding_key") or target)] = event["value"]
+    return signs
+
+
+def _abs_by_row(facts: list[dict] | None) -> dict[str, Decimal]:
+    totals: dict[str, Decimal] = {}
+    for fact in facts or []:
+        number = fact.get("normalized_value")
+        if number is None:
+            number = fact.get("value_dec")
+        if number is None or not fact.get("row_key"):
+            continue
+        key = fact["row_key"]
+        totals[key] = totals.get(key, Decimal(0)) + abs(Decimal(str(number)))
+    return totals
 
 
 def derive_rows(
@@ -318,23 +343,44 @@ def derive_rows(
     derive: str,
     versions: dict,
     events: list[dict] | None = None,
+    glossary=None,
+    facts: list[dict] | None = None,
 ) -> dict[str, list[dict]]:
     now = datetime.now(UTC)
-    phases, concepts = _decision_maps(events or [])
-    glossary = versions.get("glossary", "none")
+    journal = events or []
+    phases, concepts = _decision_maps(journal)
+    glossary_version = versions.get("glossary", "none")
     taxonomy = versions.get("taxonomy", "core-1")
     calibrator = versions.get("calibrator", "none")
+    prepared = None
+    assigned = None
+    if glossary is not None:
+        signs = _sign_map(journal)
+        prepared = []
+        for row in projected["dim_row"]:
+            excluded, reason = exclusion(row, empty_series=empty_series(row["row_key"], facts))
+            inferred = infer_row(row, glossary.flows)
+            sign = signs.get(row["binding_key"], inferred["sign"])
+            prepared.append({**row, "excluded": excluded, "exclusion_reason": reason, "sign": sign, "nature": inferred["nature"], "aggregation": inferred["aggregation"]})
+        assigned = assign_rows(prepared, journal, glossary, abs_by_row={key: float(value) for key, value in _abs_by_row(facts).items()})
     row_semantics = []
     bindings = []
-    for row in projected["dim_row"]:
-        excluded = row["kind"] in {"helper", "flag", "index"} or row["hidden"] or row["check_row"]
-        reason = None
-        if row["kind"] in {"helper", "flag", "index"}:
-            reason = row["kind"]
-        elif row["hidden"]:
-            reason = "hidden"
-        elif row["check_row"]:
-            reason = "check_row"
+    rows = prepared if prepared is not None else projected["dim_row"]
+    for row in rows:
+        if prepared is None:
+            excluded = row["kind"] in {"helper", "flag", "index"} or row["hidden"] or row["check_row"]
+            reason = None
+            if row["kind"] in {"helper", "flag", "index"}:
+                reason = row["kind"]
+            elif row["hidden"]:
+                reason = "hidden"
+            elif row["check_row"]:
+                reason = "check_row"
+            sign = nature = aggregation = None
+        else:
+            excluded = row["excluded"]
+            reason = row["exclusion_reason"]
+            sign, nature, aggregation = row["sign"], row["nature"], row["aggregation"]
         row_semantics.append(
             {
                 "model_id": row["model_id"],
@@ -343,9 +389,9 @@ def derive_rows(
                 "derive_key": derive,
                 "binding_key": row["binding_key"],
                 "row_key": row["row_key"],
-                "sign": None,
-                "nature": None,
-                "aggregation": None,
+                "sign": sign,
+                "nature": nature,
+                "aggregation": aggregation,
                 "period_position": None,
                 "excluded": excluded,
                 "exclusion_reason": reason,
@@ -358,30 +404,37 @@ def derive_rows(
         )
         if row["kind"] != "fact":
             continue
-        chosen = concepts.get(row["binding_key"])
+        if assigned is None:
+            chosen = concepts.get(row["binding_key"])
+            concept, status, source = chosen, "bound" if chosen else "unknown", "confirmed" if chosen else "inferred"
+            primary, label, importance = chosen is not None, None, "normal"
+        else:
+            item = assigned[row["binding_key"]]
+            concept, status, source = item.concept, item.status, item.source
+            primary, label, importance = item.is_primary, item.matched_label, item.importance
         bindings.append(
             {
                 "model_id": row["model_id"],
                 "build_key": row["build_key"],
                 "state_seq": state_seq,
                 "derive_key": derive,
-                "concept": chosen,
-                "effective_concept": chosen,
-                "is_primary": chosen is not None,
-                "matched_label_id": None,
-                "status": "bound" if chosen else "unknown",
+                "concept": concept,
+                "effective_concept": concept,
+                "is_primary": primary,
+                "matched_label_id": label,
+                "status": status,
                 "binding_key": row["binding_key"],
                 "row_key": row["row_key"],
                 "label_path_text": row["label_path_text"],
-                "source": "confirmed" if chosen else "inferred",
+                "source": source,
                 "confidence": None,
                 "evidence_json": "{}",
                 "calibrator_version": calibrator,
-                "glossary_version": glossary,
+                "glossary_version": glossary_version,
                 "taxonomy_version": taxonomy,
                 "decided_by": None,
                 "stale": False,
-                "importance": "normal",
+                "importance": importance,
                 "updated_at_utc": now,
             }
         )
@@ -411,23 +464,24 @@ def derive_rows(
                 "evidence_json": "{}",
             }
         )
-    coverage_map: dict[tuple[str, str], int] = {}
+    coverage_map: dict[tuple[str, str], list] = {}
     for binding in bindings:
         key = (binding["status"], binding["importance"])
-        coverage_map[key] = coverage_map.get(key, 0) + 1
+        coverage_map.setdefault(key, []).append(binding["row_key"])
+    amounts = _abs_by_row(facts) if facts is not None else {}
     coverage = [
         {
             "model_id": projected["dim_row"][0]["model_id"] if projected["dim_row"] else "",
             "build_key": build_of(projected),
             "state_seq": state_seq,
             "derive_key": derive,
-            "glossary_version": glossary,
+            "glossary_version": glossary_version,
             "status": status,
             "importance": importance,
-            "rows": count,
-            "value_abs_sum": Decimal(0),
+            "rows": len(keys),
+            "value_abs_sum": sum((amounts.get(key, Decimal(0)) for key in keys), Decimal(0)) if facts is not None else Decimal(0),
         }
-        for (status, importance), count in sorted(coverage_map.items())
+        for (status, importance), keys in sorted(coverage_map.items())
     ]
     return {
         "row_semantics": row_semantics,

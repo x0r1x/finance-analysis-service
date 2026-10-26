@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from finance_analysis.application.builds import (
 )
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.gc import gc_incomplete
+from finance_analysis.application.glossary_store import GlossaryStore
 from finance_analysis.application.metrics import BUILDER_INCONSISTENT
 from finance_analysis.application.operations import append_event, create_op, read_op
 from finance_analysis.application.project import derive_rows, project
@@ -29,6 +31,7 @@ from finance_analysis.domain.book import (
     FAS_PROJECTION_VERSION,
     FAS_SCHEMA_VERSION,
     FAS_VERSION,
+    SEP,
     Actor,
     BuilderRef,
     Head,
@@ -56,6 +59,7 @@ from finance_analysis.domain.expression import (
     names_of,
     parse_expression,
 )
+from finance_analysis.domain.glossary_release import package_of
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.operational_year import resolve_operational_year
@@ -108,7 +112,15 @@ _DECISION_KINDS = {
     "phase.set": "phase.set",
     "concept.set": "concept.set",
     "concept.confirm": "concept.confirmed",
+    "concept.reject": "concept.rejected",
+    "concept.ignore": "concept.ignored",
+    "concept.absent": "concept.absent",
+    "sign.set": "sign.set",
+    "unit.set": "unit.set",
+    "profile.set": "profile.set",
 }
+_BOOK_KINDS = frozenset({"concept.absent", "profile.set"})
+_CONCEPT_VALUE = frozenset({"concept.set", "concept.confirmed", "concept.rejected", "concept.absent"})
 
 
 def _rejected(index: int, code: str, detail: str) -> dict:
@@ -133,7 +145,8 @@ def _decision_targets(periods: list[dict], rows: list[dict]) -> frozenset[str]:
 
 def _concept_taken(events: list[dict], target: str, concept: str) -> bool:
     for other, event in fold(events).items():
-        if other == target:
+        binding = str(event.get("binding_key") or other)
+        if binding == target:
             continue
         if event.get("type") in {"concept.set", "concept.confirmed"} and event.get("value") == concept:
             return True
@@ -194,10 +207,15 @@ class FasService:
         self.builder = builder
         self.query = query
         self.support = support
-        self.guard = SemanticWriteGuard(store, catalog=load_catalog())
+        self.catalog = load_catalog()
+        self.guard = SemanticWriteGuard(store, catalog=self.catalog.ids)
+        self.glossary = GlossaryStore(store, support, lock_ttl_ms=settings.lock_ttl_ms)
+        self.fold_runs = 0
+        self._fold_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
         self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
+        self.glossary_seen = ""
         self.analyses = Analyses(self)
 
     def spawn(self, coro) -> asyncio.Task:
@@ -268,6 +286,38 @@ class FasService:
         raw = await self.store.get(f"books/{job_id}/{head.build_key}/{rel}")
         return await self.parquet.read(raw)
 
+    async def _versions_for(self, head: Head | None, events: list[dict]) -> Versions:
+        current_g = head.versions.get("glossary", "none") if head else "none"
+        current_p = head.versions.get("profile", "p-0") if head else "p-0"
+        base = self._versions(None if current_g == "none" else current_g)
+        return Versions(
+            glossary=base.glossary,
+            taxonomy=base.taxonomy,
+            calibrator=base.calibrator,
+            profile=await self._profile_version(events, current_p),
+            embed_model=base.embed_model,
+            rerank_model=base.rerank_model,
+            clm_model=base.clm_model,
+        )
+
+    async def _profile_version(self, events: list[dict], current: str) -> str:
+        chosen = None
+        for event in fold(events).values():
+            if event.get("type") == "profile.set" and isinstance(event.get("value"), str):
+                chosen = event["value"]
+        if not chosen:
+            return current
+        ref = await self.glossary.profile_ref(chosen)
+        return ref or current
+
+    async def _package_for(self, version: str):
+        if not version or version == "none" or not str(version).startswith("g-"):
+            return self.catalog
+        try:
+            return package_of(await self.glossary.document(version))
+        except NotFound:
+            return self.catalog
+
     def _versions(self, glossary: str | None = None) -> Versions:
         return Versions(
             glossary=glossary or "none",
@@ -320,6 +370,8 @@ class FasService:
             derive=derive,
             versions=versions_dict,
             events=events,
+            glossary=await self._package_for(glossary_version),
+            facts=None if projected is None else projected.get("fact_observation"),
         )
         attempt = str(ULID())
         files = await self.guard.persist_derived(
@@ -423,8 +475,8 @@ class FasService:
         else:
             snapshot = await self._aligned_snapshot(job_id, summary.etag)
         build = build_key_for(job_id, summary.etag, FAS_PROJECTION_VERSION)
-        versions = self._versions()
         events = await self.guard.read_all(job_id)
+        versions = await self._versions_for(head, events)
         state_seq = int(events[-1]["seq"]) if events else (head.state_seq if head else 0)
         derive = versions.derive(state_seq)
         if head and head.build_key == build and head.derive_key == derive:
@@ -490,6 +542,8 @@ class FasService:
             derive=derive,
             versions=versions.as_dict(),
             events=events,
+            glossary=await self._package_for(versions.glossary),
+            facts=tables.get("fact_observation"),
         )
         d_attempt = str(ULID())
         d_files = await self.guard.persist_derived(
@@ -506,6 +560,7 @@ class FasService:
             await self.store.put_if_absent(keys.derived_done(job_id, build, derive), _dumps(done))
         except AlreadyExists:
             pass
+        await self.glossary.note_bindings(job_id, derived["bindings"])
         body = {
             "build_key": build,
             "state_seq": state_seq,
@@ -608,13 +663,23 @@ class FasService:
         self.spawn(_run())
         return Accepted(op)
 
-    async def book_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> BookView | Accepted:
+    async def book_view(
+        self,
+        job_id: str,
+        actor: Actor,
+        *,
+        wait_sec: float,
+        min_state_seq: int | None = None,
+    ) -> BookView | Accepted:
         ensured = await self.ensure(job_id, actor, wait_sec=wait_sec)
         if isinstance(ensured, Accepted):
             return ensured
-        if isinstance(ensured, Freshness):
-            return await self.describe(job_id, ensured.head, fresh=True)
-        return await self.describe(job_id, ensured, fresh=False)
+        fresh = isinstance(ensured, Freshness)
+        head = ensured.head if fresh else ensured
+        if min_state_seq is not None and (head is None or head.state_seq < min_state_seq):
+            op = await self.create_op("book.read", job_id, actor, {"min_state_seq": min_state_seq})
+            return Accepted(op)
+        return await self.describe(job_id, head, fresh=fresh)
 
     async def describe(self, job_id: str, head: Head | None, *, fresh: bool) -> BookView:
         if head is None:
@@ -658,7 +723,28 @@ class FasService:
             "mdl_version": head.mdl_version,
             "fence": head.fence,
         }
+        body.update(await self._coverage_public(job_id, head))
         return BookView(body, warnings)
+
+    async def _coverage_public(self, job_id: str, head: Head) -> dict:
+        try:
+            bindings = await self._dataset_rows(job_id, head, "bindings")
+        except (NotFound, StopIteration):
+            bindings = []
+        counts: dict[str, int] = {}
+        critical_unknown = 0
+        for row in bindings:
+            status = str(row.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+            if status == "unknown" and row.get("importance") == "critical":
+                critical_unknown += 1
+        # shortcut: глубина critical/component не обходится, covered = 1 пока нет critical
+        covered = 1.0 if critical_unknown == 0 else 0.0
+        return {
+            "row_coverage": counts,
+            "critical_path": {"covered": covered},
+            "critical_unknown": critical_unknown,
+        }
 
     def _result_envelope(
         self,
@@ -830,19 +916,44 @@ class FasService:
         expr = {"result": _decimal_text(result), "status": "succeeded", "inputs": inputs, "literals": literals}
         return self._result_envelope(job_id, head, manifest, _expr_data(expr), citations, notes, is_latest=latest)
 
-    async def submit_decisions(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float) -> dict | Accepted:
+    async def submit_decisions(
+        self,
+        job_id: str,
+        body: dict,
+        actor: Actor,
+        *,
+        wait_sec: float,
+        if_match: str | None = None,
+    ) -> dict | Accepted:
         ensured = await self.ensure(job_id, actor, wait_sec=min(wait_sec, self.settings.load_sync_sec))
         if isinstance(ensured, Accepted):
             return ensured
-        async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as fence:
+        async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms):
+            head, _token = await self._read_head(job_id)
+            if head is None:
+                raise NotFound("книга не загружена")
+            if if_match:
+                token_h = if_match.strip().strip('"')
+                if token_h != f"s-{head.state_seq}":
+                    raise PreconditionFailed(
+                        "If-Match не совпал",
+                        extra={"state_seq": head.state_seq, "etag": f"s-{head.state_seq}"},
+                    )
+            result = await self._apply_decisions(job_id, head, body, actor)
+            pending = bool(result["records"])
+        if pending:
+            head = await self._fold_coalesced(job_id)
+        result["pending_state_seq"] = head.state_seq
+        return result
+
+    async def _fold_coalesced(self, job_id: str) -> Head:
+        lock = self._fold_locks.setdefault(job_id, asyncio.Lock())
+        await asyncio.sleep(0)
+        async with lock, self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as held:
             head, token = await self._read_head(job_id)
             if head is None:
                 raise NotFound("книга не загружена")
-            result = await self._apply_decisions(job_id, head, body, actor)
-            if result["records"]:
-                head = await self._fold_derived(job_id, head, token, fence.fence)
-            result["pending_state_seq"] = head.state_seq
-            return result
+            return await self._fold_derived(job_id, head, token, held.fence)
 
     async def _apply_decisions(self, job_id: str, head: Head, body: dict, actor: Actor) -> dict:
         items = body.get("decisions")
@@ -867,23 +978,29 @@ class FasService:
                 results.append(_rejected(index, "schema_invalid", "неизвестный вид решения"))
                 continue
             target = item.get("target")
+            if event_type in _BOOK_KINDS and (not isinstance(target, str) or not target):
+                target = "book"
             if not isinstance(target, str) or not target:
                 results.append(_rejected(index, "schema_invalid", "нет цели"))
                 continue
-            concept = item.get("value") if event_type in {"concept.set", "concept.confirmed"} else None
-            if isinstance(concept, str) and concept in seen_concepts:
+            concept = item.get("value") if event_type in _CONCEPT_VALUE else None
+            if event_type in _CONCEPT_VALUE and not isinstance(concept, str):
+                results.append(_rejected(index, "schema_invalid", "понятие должно быть строкой"))
+                continue
+            if event_type == "sign.set" and item.get("value") not in {"inflow", "outflow"}:
+                results.append(_rejected(index, "schema_invalid", "знак должен быть inflow или outflow"))
+                continue
+            if isinstance(concept, str) and concept in seen_concepts and event_type in {"concept.set", "concept.confirmed"}:
                 results.append(_rejected(index, "duplicate_in_batch", "понятие повторяется в пакете"))
                 continue
             taken = False
-            if isinstance(concept, str):
+            if isinstance(concept, str) and event_type in {"concept.set", "concept.confirmed"}:
                 taken = _concept_taken(events, target, concept)
                 seen_concepts.add(concept)
             order = None
             if event_type == "phase.set":
                 order = _phase_order(periods, events, target, item.get("value"))
-            if event_type in {"concept.set", "concept.confirmed"} and not isinstance(concept, str):
-                results.append(_rejected(index, "schema_invalid", "понятие должно быть строкой"))
-                continue
+            supersedes = item.get("supersedes") if isinstance(item.get("supersedes"), dict) else None
             written = await self.guard.write_decision(
                 job_id,
                 event_type=event_type,
@@ -893,9 +1010,11 @@ class FasService:
                 expected_seq=item.get("expected_seq"),
                 request_id=f"{actor.user_id}:{index}:{target}:{event_type}:{item.get('value')}",
                 concept=concept if isinstance(concept, str) else None,
-                known_targets=known,
+                known_targets=known | {"book"} if event_type in _BOOK_KINDS else known,
                 phase_order=order,
                 concept_taken=taken,
+                binding_key=None if target == "book" else target,
+                supersedes=supersedes,
             )
             if not written.accepted:
                 results.append(_rejected(index, written.code or "schema_invalid", written.detail))
@@ -919,15 +1038,7 @@ class FasService:
     async def _fold_derived(self, job_id: str, head: Head, token: str | None, fence: int) -> Head:
         events = await self.guard.read_all(job_id)
         state_seq = int(events[-1]["seq"]) if events else head.state_seq
-        versions = Versions(
-            glossary=head.versions.get("glossary", "none"),
-            taxonomy=head.versions.get("taxonomy", "core-1"),
-            calibrator=head.versions.get("calibrator", "none"),
-            profile=head.versions.get("profile", "p-0"),
-            embed_model=(head.versions.get("models") or {}).get("embed", ""),
-            rerank_model=(head.versions.get("models") or {}).get("rerank", ""),
-            clm_model=(head.versions.get("models") or {}).get("clm", ""),
-        )
+        versions = await self._versions_for(head, events)
         derive = versions.derive(state_seq)
         if state_seq == head.state_seq and derive == head.derive_key:
             return head
@@ -935,12 +1046,15 @@ class FasService:
             "dim_row": await self._dataset_rows(job_id, head, "dim_row"),
             "dim_period": await self._dataset_rows(job_id, head, "dim_period"),
         }
+        facts = await self._dataset_rows(job_id, head, "fact_observation")
         derived = derive_rows(
             projected,
             state_seq=state_seq,
             derive=derive,
             versions=versions.as_dict(),
             events=events,
+            glossary=await self._package_for(versions.glossary),
+            facts=facts,
         )
         attempt = str(ULID())
         files = await self.guard.persist_derived(
@@ -959,6 +1073,8 @@ class FasService:
             pass
         body = {**head.as_dict(), "derive_key": derive, "state_seq": state_seq, "versions": versions.as_dict()}
         await self._publish_head(job_id, body, token, fence)
+        await self.glossary.note_bindings(job_id, derived["bindings"])
+        self.fold_runs += 1
         fresh, _token = await self._read_head(job_id)
         return fresh or head
 
@@ -1125,6 +1241,150 @@ class FasService:
 
         return await gc_incomplete(self.store, now=now, max_age_s=age, is_locked=locked)
 
+    async def list_decisions(self, job_id: str, *, page_size: int = 50, page_token: str | None = None) -> dict:
+        if page_size < 1 or page_size > 1000:
+            raise InvalidArgument("page_size должен быть от 1 до 1000")
+        events = await self.guard.read_all(job_id)
+        start = int(page_token) if page_token else 0
+        page = events[start : start + page_size]
+        nxt = str(start + page_size) if start + page_size < len(events) else None
+        return {"items": page, "next_page_token": nxt}
+
+    async def _head_ready(self, job_id: str, actor: Actor, wait_sec: float) -> Head | Accepted:
+        ensured = await self.ensure(job_id, actor, wait_sec=min(wait_sec, self.settings.load_sync_sec))
+        if isinstance(ensured, Accepted):
+            return ensured
+        head = ensured.head if isinstance(ensured, Freshness) else ensured
+        if head is None:
+            raise NotFound("книга не загружена")
+        return head
+
+    async def _rows_or_accepted(self, job_id: str, head: Head, dataset: str, actor: Actor, kind: str):
+        try:
+            return await self._dataset_rows(job_id, head, dataset)
+        except (NotFound, StopIteration):
+            op = await self.create_op(kind, job_id, actor, {"dataset": dataset})
+            return Accepted(op)
+
+    async def semantics_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
+        head = await self._head_ready(job_id, actor, wait_sec)
+        if isinstance(head, Accepted):
+            return head
+        rows = await self._rows_or_accepted(job_id, head, "row_semantics", actor, "semantics")
+        if isinstance(rows, Accepted):
+            return rows
+        periods = await self._dataset_rows(job_id, head, "dim_period")
+        try:
+            semantics = await self._dataset_rows(job_id, head, "period_semantics")
+        except (NotFound, StopIteration):
+            semantics = []
+        phase_of = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics}
+        return {
+            "build_key": head.build_key,
+            "rows": rows,
+            "periods": [
+                {
+                    "axis_id": row["axis_id"],
+                    "period_id": row["period_id"],
+                    "marker_class": row.get("marker_class"),
+                    "phase": phase_of.get((row["axis_id"], row["period_id"])),
+                }
+                for row in periods
+            ],
+        }
+
+    async def mapping_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
+        head = await self._head_ready(job_id, actor, wait_sec)
+        if isinstance(head, Accepted):
+            return head
+        rows = await self._rows_or_accepted(job_id, head, "bindings", actor, "mapping")
+        if isinstance(rows, Accepted):
+            return rows
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row["status"]] = counts.get(row["status"], 0) + 1
+        return {"build_key": head.build_key, "rows": rows, "counts": counts}
+
+    async def questions_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
+        mapped = await self.mapping_view(job_id, actor, wait_sec=wait_sec)
+        if isinstance(mapped, Accepted):
+            return mapped
+        questions = []
+        for row in mapped["rows"]:
+            if row.get("status") != "unknown" or row.get("source") == "confirmed":
+                continue
+            kind, subject, scope = "concept", row["binding_key"], job_id
+            digest = hashlib.sha1(SEP.join([kind, subject, scope]).encode()).hexdigest()
+            questions.append(
+                {
+                    "question_id": digest,
+                    "kind": kind,
+                    "subject": subject,
+                    "scope": scope,
+                    "reason": "concept_unknown",
+                    "candidates": [],
+                }
+            )
+        return {"questions": questions[:], "build_key": mapped["build_key"]}
+
+    async def coverage_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
+        head = await self._head_ready(job_id, actor, wait_sec)
+        if isinstance(head, Accepted):
+            return head
+        rows = await self._rows_or_accepted(job_id, head, "coverage", actor, "coverage")
+        if isinstance(rows, Accepted):
+            return rows
+        public = await self._coverage_public(job_id, head)
+        return {"build_key": head.build_key, "rows": rows, **public}
+
+    async def infer_mapping(self, job_id: str, actor: Actor) -> Accepted:
+        op = await self.create_op("mapping.infer", job_id, actor, {})
+        self.spawn(self._infer_mapping(op["id"], job_id))
+        return Accepted(op)
+
+    async def _infer_mapping(self, op_id: str, job_id: str) -> None:
+        try:
+            async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as held:
+                head, token = await self._read_head(job_id)
+                if head is None:
+                    await self.finish_op(op_id, "failed", error={"detail": "книга не загружена"})
+                    return
+                fresh = await self._fold_derived(job_id, head, token, held.fence)
+            await self.finish_op(
+                op_id,
+                "succeeded",
+                result={"build_key": fresh.build_key, "derive_key": fresh.derive_key},
+            )
+        except Exception as exc:  # noqa: BLE001 — любая ошибка прогона закрывает операцию
+            await self.finish_op(op_id, "failed", error={"detail": str(exc)})
+
+    async def catch_glossary(self, version: str) -> bool:
+        if _glossary_seq(version) <= _glossary_seq(self.glossary_seen):
+            return False
+        await self.remap_glossary()
+        self.glossary_seen = version
+        return True
+
+    async def remap_glossary(self) -> dict:
+        state = await self.glossary.ensure()
+        version = state["active"]
+        package_of(await self.glossary.document(version))
+        changed = []
+        for job_id in await self.glossary.jobs():
+            async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as held:
+                head, token = await self._read_head(job_id)
+                if head is None:
+                    continue
+                pinned = {**head.as_dict(), "versions": {**head.versions, "glossary": version}}
+                await self._publish_head(job_id, pinned, token, held.fence)
+                head, token = await self._read_head(job_id)
+                if head is None:
+                    continue
+                await self._fold_derived(job_id, head, token, held.fence)
+            changed.append(job_id)
+        self.glossary_seen = version
+        return {"jobs": changed, "glossary": version}
+
     def capabilities(self) -> dict:
         storage = {
             "backend": self.store.backend,
@@ -1134,11 +1394,11 @@ class FasService:
         }
         return {
             "fas_version": FAS_VERSION,
-            "phase": "1",
+            "phase": "2",
             "storage": storage,
             "rules": self.analyses.capabilities(),
-            "metrics": [],
-            "concepts": [],
+            "metrics": ["dscr", "icr"],
+            "concepts": sorted(self.catalog.ids),
             "renderers": ["json"],
             "problems": PROBLEM_CATALOG,
             "tools": TOOLS,
@@ -1158,9 +1418,16 @@ class FasService:
             },
             "redis": "ok" if redis_ok else "down",
             "builder": await self.builder.breaker_state(),
-            "glossary": "none",
+            "glossary": (await self.glossary.peek() or {}).get("active") or "none",
             "draining": self.draining,
         }
+
+
+def _glossary_seq(version: str) -> int:
+    if not version.startswith("g-"):
+        return 0
+    number = version[2:].split(":", 1)[0]
+    return int(number) if number.isdigit() else 0
 
 
 def _serve(ensured: Head | Freshness) -> tuple[Head | None, bool]:
@@ -1369,7 +1636,11 @@ PROBLEM_CATALOG = [
     {"code": "request_in_progress", "http": 409, "retryable": True},
     {"code": "unsupported_builder_shape", "http": 409, "retryable": False},
     {"code": "builder_unstable", "http": 409, "retryable": False},
+    {"code": "precondition_required", "http": 428, "retryable": False},
     {"code": "precondition_failed", "http": 412, "retryable": False},
+    {"code": "admin_token_required", "http": 403, "retryable": False},
+    {"code": "stale_parent", "http": 409, "retryable": False},
+    {"code": "proposal_decided", "http": 409, "retryable": False},
     {"code": "idempotency_key_reused", "http": 422, "retryable": False},
     {"code": "rate_limited", "http": 429, "retryable": True},
     {"code": "book_busy", "http": 429, "retryable": True},

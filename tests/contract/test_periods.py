@@ -21,8 +21,24 @@ async def _binding(service, job: str, label: str) -> str:
 
 
 async def test_first_operational_year_on_packt_and_rvi(local_service):
-    unbound = await local_service.resolve_periods(
+    # «Debt service» — точная pref, привязка ставится без решения человека.
+    packt = await local_service.resolve_periods(JOB, {"text": "первый операционный год"}, Actor(), wait_sec=60)
+    assert packt["basis"] == "nonzero_debt_service"
+    assert packt["needs_input"] == []
+    assert packt["periods"][0]["axis_id"] == "TBA!r2"
+    assert packt["periods"][0]["period_id"] == "Y5"
+    assert packt["periods"][0]["period_key"] == "Y5"
+
+    packt_key = await _binding(local_service, JOB, "Debt service")
+    await _decide(
+        local_service,
         JOB,
+        [{"kind": "concept.set", "target": packt_key, "value": "debt_service", "expected_seq": None}],
+    )
+
+    rvi = job_id("rvi")
+    unbound = await local_service.resolve_periods(
+        rvi,
         {"text": "первый операционный год"},
         Actor(),
         wait_sec=60,
@@ -31,21 +47,6 @@ async def test_first_operational_year_on_packt_and_rvi(local_service):
         {"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}
     ]
     assert all(item["kind"] != "phase" for item in unbound["needs_input"])
-
-    packt_key = await _binding(local_service, JOB, "Debt service")
-    await _decide(
-        local_service,
-        JOB,
-        [{"kind": "concept.set", "target": packt_key, "value": "debt_service", "expected_seq": None}],
-    )
-    packt = await local_service.resolve_periods(JOB, {"text": "первый операционный год"}, Actor(), wait_sec=30)
-    assert packt["basis"] == "nonzero_debt_service"
-    assert packt["needs_input"] == []
-    assert packt["periods"][0]["axis_id"] == "TBA!r2"
-    assert packt["periods"][0]["period_id"] == "Y5"
-    assert packt["periods"][0]["period_key"] == "Y5"
-
-    rvi = job_id("rvi")
     rvi_key = await _binding(local_service, rvi, "Total debt service")
     await _decide(
         local_service,

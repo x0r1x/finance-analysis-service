@@ -23,4 +23,6 @@ def problem_response(exc: FasError, request_id: str) -> JSONResponse:
     headers = {"X-Request-Id": request_id}
     if exc.retryable:
         headers["Retry-After"] = str(exc.extra.get("retry_after", 1))
+    if exc.status == 428:
+        headers["Cache-Control"] = "no-store"
     return JSONResponse(body, status_code=exc.status, media_type="application/problem+json", headers=headers)

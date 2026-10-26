@@ -1,0 +1,22 @@
+{
+  "dataset": "ratios",
+  "version": "1.0",
+  "title": "Коэффициенты покрытия",
+  "columns": [
+    {"name": "analysis_id", "type": "string", "nullable": false, "unit": "", "description": "Анализ", "since": "1.0"},
+    {"name": "model_id", "type": "string", "nullable": false, "unit": "", "description": "Книга", "since": "1.0"},
+    {"name": "build_key", "type": "string", "nullable": false, "unit": "", "description": "Сборка", "since": "1.0"},
+    {"name": "state_seq", "type": "int64", "nullable": false, "unit": "", "description": "Номер состояния", "since": "1.0"},
+    {"name": "glossary_version", "type": "string", "nullable": true, "unit": "", "description": "Глоссарий", "since": "1.0"},
+    {"name": "metric", "type": "string", "nullable": false, "unit": "", "description": "Метрика", "since": "1.0"},
+    {"name": "axis_id", "type": "string", "nullable": false, "unit": "", "description": "Ось", "since": "1.0"},
+    {"name": "period_id", "type": "string", "nullable": false, "unit": "", "description": "Период", "since": "1.0"},
+    {"name": "period_key_base", "type": "string", "nullable": true, "unit": "", "description": "База периода", "since": "1.0"},
+    {"name": "period_marker", "type": "string", "nullable": true, "unit": "", "description": "Маркер", "since": "1.0"},
+    {"name": "value", "type": "decimal128(38,10)", "nullable": true, "unit": "", "description": "Значение", "since": "1.0"},
+    {"name": "value_f", "type": "float64", "nullable": true, "unit": "", "description": "Значение float", "since": "1.0"},
+    {"name": "status", "type": "string", "nullable": false, "unit": "", "description": "Статус", "since": "1.0"},
+    {"name": "reason", "type": "string", "nullable": true, "unit": "", "description": "Причина", "since": "1.0"},
+    {"name": "inputs_json", "type": "string", "nullable": true, "unit": "", "description": "Входы", "since": "1.0"}
+  ]
+}

@@ -1,3 +1,58 @@
 taxonomy: core-1
 concepts:
-  - id: debt_service
+  cfads:
+    kind: measure
+    unit: money
+    expected_sign: inflow
+    expects_formula: true
+    related: [dscr, llcr, plcr]
+  debt_service:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+    composition: [interest, principal]
+    validation:
+      not_all_zero: true
+  interest:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+  principal:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+  debt_outstanding:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  ebitda:
+    kind: measure
+    unit: money
+  ebit:
+    kind: measure
+    unit: money
+  capex:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+    prefer: aggregate
+  discount_rate:
+    kind: parameter
+    unit: ratio
+    validation:
+      range: ["0", "0.30"]
+  dscr_lockup:
+    kind: parameter
+    unit: ratio
+    validation:
+      range: ["1.0", "2.0"]
+  dscr_default:
+    kind: parameter
+    unit: ratio
+  target_dscr:
+    kind: parameter
+    unit: ratio
+  dscr:
+    kind: ratio
+    unit: ratio
+    plausible: [0.8, 5.0]

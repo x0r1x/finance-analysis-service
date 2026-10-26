@@ -287,6 +287,23 @@ class RedisRuntime:
         except redis_async.RedisError:
             return
 
+    async def messages(self, channel: str):
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe(channel)
+        try:
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if not message or message.get("type") != "message":
+                    await asyncio.sleep(0.2)
+                    continue
+                data = message.get("data")
+                if isinstance(data, bytes):
+                    data = data.decode()
+                if isinstance(data, str):
+                    yield data
+        finally:
+            await pubsub.aclose()
+
     async def rate_limit(self, actor: Actor) -> None:
         now_ms = int(time.time() * 1000)
         checks: list[tuple[str, float, int]] = []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -43,6 +44,15 @@ async def assemble(settings: Settings) -> tuple[FasService, RedisRuntime]:
     return service, support
 
 
+async def _watch_glossary(service, support) -> None:
+    cached = await support.cache_get("fas:glossary:version")
+    if cached:
+        text = cached.decode() if isinstance(cached, bytes) else str(cached)
+        await service.catch_glossary(text)
+    async for version in support.messages("fas:glossary:changed"):
+        await service.catch_glossary(version)
+
+
 def main() -> None:
     settings = load_settings()
     asgi = create_app(settings)
@@ -59,7 +69,13 @@ def main() -> None:
         _app.state.support = support
         _app.state.settings = settings
         _app.state.inflight = 0
+        watch = asyncio.create_task(_watch_glossary(service, support))
         yield
+        watch.cancel()
+        try:
+            await watch
+        except asyncio.CancelledError:
+            pass
         service.draining = True
         await support.close()
         await service.builder.aclose()

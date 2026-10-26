@@ -10,6 +10,7 @@ from finance_analysis.adapters.queue.jobs import TaskiqJobs
 from finance_analysis.adapters.queue.requeue import requeue_dlq
 from finance_analysis.adapters.storage.store import build_storage
 from finance_analysis.adapters.storage.sync import sync_stores
+from finance_analysis.application.glossary_store import GlossaryStore
 from finance_analysis.settings import Settings
 
 
@@ -50,6 +51,12 @@ async def _sync(source: str, destination: str, *, dry_run: bool, verify: bool) -
     print(report)
 
 
+async def _export() -> None:
+    settings = Settings()
+    store = build_storage(settings)
+    print(await GlossaryStore(store).export_patch(), end="")
+
+
 async def _requeue(entry_id: str | None) -> None:
     settings = Settings()
     jobs = await TaskiqJobs.open(settings)
@@ -71,6 +78,10 @@ def main(argv: list[str] | None = None) -> None:
     sync.add_argument("destination")
     sync.add_argument("--dry-run", action="store_true")
     sync.add_argument("--verify", action="store_true")
+    glossary = sub.add_parser("glossary")
+    glossary_sub = glossary.add_subparsers(dest="glossary_command")
+    export = glossary_sub.add_parser("export")
+    export.add_argument("--since", action="store_true")
     ops = sub.add_parser("ops")
     ops_sub = ops.add_subparsers(dest="ops_command")
     requeue = ops_sub.add_parser("requeue")
@@ -78,6 +89,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.command == "storage" and args.storage_command == "sync":
         asyncio.run(_sync(args.source, args.destination, dry_run=args.dry_run, verify=args.verify))
+        return
+    if args.command == "glossary" and args.glossary_command == "export":
+        asyncio.run(_export())
         return
     if args.command == "ops" and args.ops_command == "requeue":
         asyncio.run(_requeue(args.entry_id))
