@@ -41,11 +41,15 @@ class RatioMismatch(Rule):
         model = _primary(data, "dscr")
         if model is None or _primary(data, "cfads") is None or _primary(data, "debt_service") is None:
             return []
-        phases = {
-            (row["axis_id"], row["period_id"]): row.get("phase")
-            for row in data.periods
-            if row.get("phase")
-        }
+        phases = {}
+        for row in data.periods:
+            phase = row.get("phase")
+            if not phase:
+                continue
+            phases[(row["axis_id"], row["period_id"])] = phase
+            base = row.get("period_key_base")
+            if base:
+                phases[(row["axis_id"], base)] = phase
         result = coverage_ratio(
             metric="dscr",
             facts=data.facts,
@@ -116,15 +120,19 @@ def _ancestors(parents: dict[str, set[str]], row_key: str) -> set[str]:
 class MarkerMix(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         markers_of = _marker_of(data)
-        by_row: dict[str, set[str]] = {}
+        by_formula: dict[tuple[str, str], set[str]] = {}
+        owners: dict[tuple[str, str], str] = {}
         for link in data.links:
             row_key = link.get("row_key")
             marker = markers_of.get(link.get("ref_cell"))
-            if row_key and marker:
-                by_row.setdefault(row_key, set()).add(marker)
+            if not row_key or not marker:
+                continue
+            key = (row_key, str(link.get("cell") or ""))
+            by_formula.setdefault(key, set()).add(marker)
+            owners[key] = row_key
         return [
-            self.finding(data, row_key=row_key, params={"markers": sorted(markers)})
-            for row_key, markers in by_row.items()
+            self.finding(data, row_key=owners[key], params={"markers": sorted(markers)})
+            for key, markers in by_formula.items()
             if len(markers) > 1
         ]
 

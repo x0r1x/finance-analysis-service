@@ -125,6 +125,79 @@ def test_replace_upload_reads_and_profile_list(tmp_path):
     asyncio.run(run())
 
 
+def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.glossary_store import GlossaryStore
+    from finance_analysis.application.journal import Journal
+    from finance_analysis.domain.book import Actor
+    from finance_analysis.domain.errors import InvalidArgument
+    from finance_analysis.domain.mapping import _decisions
+    from finance_analysis.domain.state import fold
+
+    async def run():
+        store = LocalStore(tmp_path)
+        journal = Journal(store)
+        actor = Actor(user_id="alex", client_id="desk")
+        job = "a" * 64
+        await journal.commit(
+            job,
+            target="row",
+            event_type="sign.set",
+            value="outflow",
+            actor=actor,
+            expected_seq=None,
+            request_id="sign",
+            binding_key="row",
+        )
+        await journal.commit(
+            job,
+            target="row",
+            event_type="concept.set",
+            value="cfads",
+            actor=actor,
+            expected_seq=1,
+            request_id="concept",
+            binding_key="row",
+        )
+        await journal.commit(
+            job,
+            target="book",
+            event_type="concept.absent",
+            value="capex",
+            actor=actor,
+            expected_seq=None,
+            request_id="absent",
+        )
+        await journal.commit(
+            job,
+            target="book",
+            event_type="profile.set",
+            value="bank",
+            actor=actor,
+            expected_seq=3,
+            request_id="profile",
+        )
+        events = await journal.read_all(job)
+        kinds = {event["type"] for event in fold(events).values()}
+        assert {"sign.set", "concept.set", "concept.absent", "profile.set"} <= kinds
+        _human, _ignored, absent = _decisions(events)
+        assert "capex" in absent
+
+        gloss = GlossaryStore(store)
+        head = await gloss.ensure()
+        proposal = await gloss.add_proposal({"concept": "missing", "kind": "alt", "lang": "en", "text": "nope"})
+        try:
+            await gloss.decide_proposals([{"id": proposal["id"], "decision": "accept"}])
+        except InvalidArgument:
+            pass
+        else:
+            raise AssertionError("чужое понятие должно отказать")
+        assert (await gloss.proposal(proposal["id"]))["status"] == "open"
+        assert head["active"]
+
+    asyncio.run(run())
+
+
 def test_catch_glossary_remaps_a_newer_version_once():
     from finance_analysis.application.service import FasService
 
@@ -139,7 +212,7 @@ def test_catch_glossary_remaps_a_newer_version_once():
     async def run():
         stub = Stub()
         assert await stub.catch_glossary("g-0001:aaa")
-        assert not await stub.catch_glossary("g-0001:bbb")
+        assert not await stub.catch_glossary("g-0001:aaa")
         assert await stub.catch_glossary("g-0002:ccc")
         assert stub.calls == 2
 

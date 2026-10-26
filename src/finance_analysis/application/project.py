@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -299,10 +300,11 @@ def _links(snapshot: WorkbookSnapshot, model_id: str, build: str) -> list[dict]:
 def _decision_maps(events: list[dict]) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
     phases: dict[tuple[str, str], str] = {}
     concepts: dict[str, str] = {}
-    for target, event in fold(events).items():
+    for event in fold(events).values():
         kind = event.get("type")
+        target = str(event.get("target") or "")
         if kind == "phase.set":
-            parsed = split_phase_target(str(target))
+            parsed = split_phase_target(target)
             value = event.get("value")
             if parsed and isinstance(value, str) and value in PHASES:
                 phases[parsed] = value
@@ -314,13 +316,21 @@ def _decision_maps(events: list[dict]) -> tuple[dict[tuple[str, str], str], dict
     return phases, concepts
 
 
-def _sign_map(events: list[dict]) -> dict[str, str]:
-    signs = {}
-    for target, event in fold(events).items():
-        if event.get("type") != "sign.set" or not isinstance(event.get("value"), str):
+def _by_type(events: list[dict], kind: str) -> dict[str, str]:
+    found = {}
+    for event in fold(events).values():
+        if event.get("type") != kind or not isinstance(event.get("value"), str):
             continue
-        signs[str(event.get("binding_key") or target)] = event["value"]
-    return signs
+        found[str(event.get("binding_key") or event.get("target") or "")] = event["value"]
+    return found
+
+
+def _sign_map(events: list[dict]) -> dict[str, str]:
+    return _by_type(events, "sign.set")
+
+
+def _unit_map(events: list[dict]) -> dict[str, str]:
+    return _by_type(events, "unit.set")
 
 
 def _abs_by_row(facts: list[dict] | None) -> dict[str, Decimal]:
@@ -356,12 +366,13 @@ def derive_rows(
     assigned = None
     if glossary is not None:
         signs = _sign_map(journal)
+        units = _unit_map(journal)
         prepared = []
         for row in projected["dim_row"]:
             excluded, reason = exclusion(row, empty_series=empty_series(row["row_key"], facts))
             inferred = infer_row(row, glossary.flows)
             sign = signs.get(row["binding_key"], inferred["sign"])
-            prepared.append({**row, "excluded": excluded, "exclusion_reason": reason, "sign": sign, "nature": inferred["nature"], "aggregation": inferred["aggregation"]})
+            prepared.append({**row, "excluded": excluded, "exclusion_reason": reason, "sign": sign, "nature": inferred["nature"], "aggregation": inferred["aggregation"], "unit_decision": units.get(row["binding_key"])})
         assigned = assign_rows(prepared, journal, glossary, abs_by_row={key: float(value) for key, value in _abs_by_row(facts).items()})
     row_semantics = []
     bindings = []
@@ -381,6 +392,10 @@ def derive_rows(
             excluded = row["excluded"]
             reason = row["exclusion_reason"]
             sign, nature, aggregation = row["sign"], row["nature"], row["aggregation"]
+        evidence = {}
+        decided_unit = row.get("unit_decision")
+        if isinstance(decided_unit, str) and decided_unit:
+            evidence["unit"] = decided_unit
         row_semantics.append(
             {
                 "model_id": row["model_id"],
@@ -398,7 +413,7 @@ def derive_rows(
                 "is_check": row["check_row"],
                 "source": "inferred",
                 "confidence": None,
-                "evidence_json": "{}",
+                "evidence_json": json.dumps(evidence, ensure_ascii=False),
                 "stale": False,
             }
         )

@@ -159,10 +159,10 @@ def _phase_order(periods: list[dict], events: list[dict], target: str, value) ->
         return None
     axis_id, base = parsed
     current: dict[str, str] = {}
-    for other, event in fold(events).items():
+    for event in fold(events).values():
         if event.get("type") != "phase.set":
             continue
-        found = split_phase_target(str(other))
+        found = split_phase_target(str(event.get("target") or ""))
         if found and found[0] == axis_id and isinstance(event.get("value"), str):
             current[found[1]] = event["value"]
     current[base] = value
@@ -286,8 +286,24 @@ class FasService:
         raw = await self.store.get(f"books/{job_id}/{head.build_key}/{rel}")
         return await self.parquet.read(raw)
 
+    async def _use_active_catalog(self) -> None:
+        state = await self.glossary.peek()
+        version = (state or {}).get("active")
+        ids = self.catalog.ids
+        if version and str(version).startswith("g-"):
+            try:
+                ids = package_of(await self.glossary.document(version)).ids
+            except NotFound:
+                pass
+        self.guard._catalog = frozenset(ids)
+
     async def _versions_for(self, head: Head | None, events: list[dict]) -> Versions:
         current_g = head.versions.get("glossary", "none") if head else "none"
+        if current_g in (None, "", "none"):
+            state = await self.glossary.peek()
+            active = (state or {}).get("active")
+            if active:
+                current_g = active
         current_p = head.versions.get("profile", "p-0") if head else "p-0"
         base = self._versions(None if current_g == "none" else current_g)
         return Versions(
@@ -968,6 +984,8 @@ class FasService:
         results = []
         records = []
         seen_concepts: set[str] = set()
+        followed: dict[str, int] = {}
+        await self._use_active_catalog()
         for index, item in enumerate(items):
             if not isinstance(item, dict):
                 results.append(_rejected(index, "schema_invalid", "элемент не объект"))
@@ -1001,13 +1019,14 @@ class FasService:
             if event_type == "phase.set":
                 order = _phase_order(periods, events, target, item.get("value"))
             supersedes = item.get("supersedes") if isinstance(item.get("supersedes"), dict) else None
+            expected = followed[target] if target in followed else item.get("expected_seq")
             written = await self.guard.write_decision(
                 job_id,
                 event_type=event_type,
                 target=target,
                 value=item.get("value"),
                 actor=actor,
-                expected_seq=item.get("expected_seq"),
+                expected_seq=expected,
                 request_id=f"{actor.user_id}:{index}:{target}:{event_type}:{item.get('value')}",
                 concept=concept if isinstance(concept, str) else None,
                 known_targets=known | {"book"} if event_type in _BOOK_KINDS else known,
@@ -1022,6 +1041,8 @@ class FasService:
             if isinstance(concept, str) or event_type == "phase.set":
                 events = await self.guard.read_all(job_id)
             record = written.event or {}
+            if isinstance(record.get("seq"), int):
+                followed[target] = record["seq"]
             records.append(record)
             results.append(
                 {
@@ -1036,6 +1057,7 @@ class FasService:
         return {"results": results, "records": records}
 
     async def _fold_derived(self, job_id: str, head: Head, token: str | None, fence: int) -> Head:
+        await self._use_active_catalog()
         events = await self.guard.read_all(job_id)
         state_seq = int(events[-1]["seq"]) if events else head.state_seq
         versions = await self._versions_for(head, events)
@@ -1359,7 +1381,7 @@ class FasService:
             await self.finish_op(op_id, "failed", error={"detail": str(exc)})
 
     async def catch_glossary(self, version: str) -> bool:
-        if _glossary_seq(version) <= _glossary_seq(self.glossary_seen):
+        if not version or version == self.glossary_seen:
             return False
         await self.remap_glossary()
         self.glossary_seen = version

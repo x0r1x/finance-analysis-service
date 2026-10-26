@@ -218,3 +218,59 @@ def test_unmapped_walks_up_to_dscr_and_icr():
         links=[{"row_key": "i", "ref_cell": "U"}, {"row_key": "r", "ref_cell": "I"}],
     )
     assert UNMAPPED_IN_METRIC_CHAIN.check(interest)[0].severity == "high"
+
+
+def test_marked_period_stays_until_the_profile_picks_one():
+    bindings = [_binding("cfads", "c"), _binding("debt_service", "d")]
+    period = {**_period("2024@факт"), "period_key_base": "2024", "marker_class": "actual"}
+    facts = [
+        {**_fact("c", "10"), "period_id": "2024@факт"},
+        {**_fact("d", "4"), "period_id": "2024@факт"},
+    ]
+    kept = coverage_ratio(
+        metric="dscr",
+        facts=facts,
+        bindings=bindings,
+        periods=[period],
+        period_phase={("Sheet!r1", "2024@факт"): "operation"},
+        explicit_phases=True,
+    )
+    assert kept["rows"][0]["value"] == Decimal("2.5000000000")
+    dropped = coverage_ratio(
+        metric="dscr",
+        facts=facts,
+        bindings=bindings,
+        periods=[period],
+        period_phase={("Sheet!r1", "2024@факт"): "operation"},
+        explicit_phases=True,
+        marker_class="plan",
+    )
+    assert dropped["rows"] == []
+
+
+def test_construction_phase_is_not_a_dscr_mismatch():
+    bindings = [_binding("cfads", "c"), _binding("debt_service", "d"), _binding("dscr", "m")]
+    built = {**_period("q"), "phase": "construction"}
+    data = AuditInput(
+        rows=[{"row_key": "m", "binding_key": "m"}],
+        periods=[built],
+        facts=[_fact("c", "10", "q"), _fact("d", "4", "q"), _fact("m", "9", "q")],
+        bindings=bindings,
+    )
+    assert RATIO_MISMATCH.check(data) == []
+
+
+def test_two_formulas_on_one_row_are_not_one_mix():
+    data = AuditInput(
+        rows=[{"row_key": "s", "binding_key": "s"}],
+        periods=[_period("p", "actual"), _period("q", "plan")],
+        facts=[
+            {**_fact("a", "1", "p"), "cell_id": "A"},
+            {**_fact("b", "1", "q"), "cell_id": "B"},
+        ],
+        links=[
+            {"row_key": "s", "cell": "S!C1", "ref_cell": "A"},
+            {"row_key": "s", "cell": "S!D1", "ref_cell": "B"},
+        ],
+    )
+    assert MARKER_MIX.check(data) == []

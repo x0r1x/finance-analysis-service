@@ -25,6 +25,7 @@ def coverage_ratio(
     period_phase: dict[tuple[str, str], str | None],
     explicit_phases: bool,
     sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
 ) -> dict:
     from finance_analysis.domain.coverage import is_coverage_test_period
 
@@ -93,10 +94,11 @@ def coverage_ratio(
             continue
         den = denominator[key]
         payment = _payment(den, sign_convention)
-        phase = period_phase.get((axis, period.get("period_key_base") or period_id))
+        phase = period_phase.get((axis, period_id))
+        if phase is None:
+            phase = period_phase.get((axis, period.get("period_key_base") or period_id))
         marker = period.get("marker_class")
-        # shortcut: любой маркер вне окна, пока профиль не выбирает actual или plan
-        if marker:
+        if marker_class and marker and marker != marker_class:
             continue
         if metric == "dscr" and not is_coverage_test_period(
             debt_service_nonzero=payment != 0,

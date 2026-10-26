@@ -306,6 +306,7 @@ class GlossaryStore:
             items, etag = await self._proposals()
             accepted_ops = []
             results = []
+            chosen = []
             for index, item in enumerate(decisions):
                 if not isinstance(item, dict):
                     raise InvalidArgument("элемент решения не объект")
@@ -317,17 +318,13 @@ class GlossaryStore:
                 choice = item.get("decision")
                 if choice not in {"accept", "reject"}:
                     raise InvalidArgument("decision: accept или reject")
-                if isinstance(item.get("text"), str) and item["text"]:
-                    found["text"] = item["text"]
-                found["status"] = "accepted" if choice == "accept" else "rejected"
-                found["decided_at_utc"] = _now()
+                text = item["text"] if isinstance(item.get("text"), str) and item["text"] else found["text"]
+                chosen.append((index, found, choice, text))
                 if choice == "accept":
                     op = "set_pref" if found["kind"] == "pref" else "add_label"
                     accepted_ops.append(
-                        {"op": op, "concept": found["concept"], "kind": found["kind"], "lang": found["lang"], "text": found["text"]}
+                        {"op": op, "concept": found["concept"], "kind": found["kind"], "lang": found["lang"], "text": text}
                     )
-                results.append({"index": index, "id": found["id"], "status": found["status"]})
-            await self._write_json(PROPOSALS, {"items": items}, etag)
             release = None
             if accepted_ops:
                 head, head_etag = await self._ensure_locked()
@@ -339,6 +336,12 @@ class GlossaryStore:
                 )
                 fresh, fresh_etag = await self._read()
                 release = await self._activate(fresh, fresh_etag, ready["version"], source="proposal")
+            for index, found, choice, text in chosen:
+                found["text"] = text
+                found["status"] = "accepted" if choice == "accept" else "rejected"
+                found["decided_at_utc"] = _now()
+                results.append({"index": index, "id": found["id"], "status": found["status"]})
+            await self._write_json(PROPOSALS, {"items": items}, etag)
         return {"results": results, "release": release}
 
     async def note_bindings(self, job_id: str, bindings: list[dict]) -> None:
@@ -362,15 +365,19 @@ class GlossaryStore:
             await self._write_json(INDEX, index, etag)
 
     async def jobs(self) -> list[str]:
+        found = set()
         try:
             index = json.loads(await self.store.get(INDEX))
         except NotFound:
-            return []
-        found = set()
+            index = {}
         for rows in (index.get("labels") or {}).values():
             for row in rows:
                 if row.get("job_id"):
                     found.add(row["job_id"])
+        async for item in self.store.list("books/"):
+            parts = item.key.split("/")
+            if len(parts) == 3 and parts[0] == "books" and parts[2] == "_head.json":
+                found.add(parts[1])
         return sorted(found)
 
     async def _active_document(self) -> dict:
@@ -456,7 +463,8 @@ class GlossaryStore:
             updated["previous"] = head["active"]
             updated["active"] = version
         await self._write_head(updated, etag)
-        await self._notify(version)
+        if activate:
+            await self._notify(version)
         return {"version": version, "status": release["status"], "diff": diff, "state": state_of(updated), "etag": f"h-{seq}"}
 
     async def _activate(self, head: dict, etag: str | None, version: str, *, source: str = "activate") -> dict:

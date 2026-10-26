@@ -77,6 +77,22 @@ def _decimal_text(value) -> str | None:
     return text
 
 
+def _pinned(target) -> Head:
+    derive = target.head.derive_key if target.build == target.head.build_key else target.derived
+    if not derive:
+        raise NotFound("производное состояние сборки не найдено")
+    if target.build == target.head.build_key:
+        return target.head
+    return Head(
+        build_key=target.build,
+        state_seq=target.head.state_seq,
+        derive_key=derive,
+        versions=target.head.versions,
+        mdl_version=target.head.mdl_version,
+        fence=target.head.fence,
+    )
+
+
 @dataclass(frozen=True)
 class Target:
     head: Head
@@ -345,12 +361,26 @@ class Analyses:
         for row in dim_rows:
             raw = row.get("formula_exceptions_json")
             row["formula_exceptions"] = json.loads(raw) if raw else []
+        periods = await rows("dim_period")
+        bindings: list[dict] = []
+        try:
+            pinned = _pinned(target)
+            bindings = await self.service._dataset_rows(job_id, pinned, "bindings")
+            semantics = await self.service._dataset_rows(job_id, pinned, "period_semantics")
+        except (NotFound, StopIteration):
+            semantics = []
+        phases = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics if row.get("phase")}
+        for period in periods:
+            phase = phases.get((period["axis_id"], period["period_id"]))
+            if phase:
+                period["phase"] = phase
         return AuditInput(
             rows=dim_rows,
-            periods=await rows("dim_period"),
+            periods=periods,
             facts=await rows("fact_observation"),
             links=await rows("graph_links") if "links" in needed else [],
             counters=dict(target.manifest.get("builder_counters") or {}),
+            bindings=bindings,
         )
 
     async def run(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
@@ -416,11 +446,12 @@ class Analyses:
         started = _now()
         svc = self.service
         head = target.head
-        bindings = await svc._dataset_rows(job_id, head, "bindings")
-        facts = await svc._dataset_rows(job_id, head, "fact_observation")
-        periods = await svc._dataset_rows(job_id, head, "dim_period")
+        pinned = _pinned(target)
+        bindings = await svc._dataset_rows(job_id, pinned, "bindings")
+        facts = await svc._dataset_rows(job_id, pinned, "fact_observation")
+        periods = await svc._dataset_rows(job_id, pinned, "dim_period")
         try:
-            semantics = await svc._dataset_rows(job_id, head, "period_semantics")
+            semantics = await svc._dataset_rows(job_id, pinned, "period_semantics")
         except (NotFound, StopIteration):
             semantics = []
         phase_of = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics}
@@ -429,6 +460,7 @@ class Analyses:
         profile_id = profile.split("@", 1)[0] if "@" in profile else None
         body = await svc.glossary.profile_body(profile_id) if profile_id else None
         convention = (body or {}).get("sign_convention") or "outflow_negative"
+        chosen_marker = (body or {}).get("marker_class")
         computed = []
         needs = []
         warnings = []
@@ -441,6 +473,7 @@ class Analyses:
                 period_phase=phase_of,
                 explicit_phases=explicit,
                 sign_convention=convention,
+                marker_class=chosen_marker,
             )
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
