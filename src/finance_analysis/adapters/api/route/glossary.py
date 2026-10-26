@@ -86,7 +86,13 @@ def register(app, settings, *, svc, write, read) -> None:
     async def glossary_transition(request: Request):
         async def run(gloss, body, match):
             _admin(request)
-            result = await gloss.transition(body.get("version"), str(body.get("status") or ""), match)
+            result = await gloss.transition(
+                body.get("version"),
+                str(body.get("status") or ""),
+                match,
+                force=bool(body.get("force")),
+                reason=body.get("reason"),
+            )
             await svc().remap_glossary()
             return result
 
@@ -107,8 +113,8 @@ def register(app, settings, *, svc, write, read) -> None:
         return await write(request, lambda gloss, body, _match: gloss.add_proposal(body))
 
     @app.get("/v1/glossary/proposals")
-    async def glossary_proposals(request: Request):
-        return await read(request, lambda _who: svc().glossary.proposals())
+    async def glossary_proposals(request: Request, status: str | None = None, order_by: str | None = None):
+        return await read(request, lambda _who: svc().glossary.proposals(status=status, order_by=order_by))
 
     @app.get("/v1/glossary/proposals/{proposal_id}")
     async def glossary_proposal(proposal_id: str, request: Request):
@@ -119,7 +125,8 @@ def register(app, settings, *, svc, write, read) -> None:
         async def run(gloss, body, _match):
             _admin(request)
             result = await gloss.decide_proposals(body.get("decisions") or [])
-            if result.get("release"):
+            await svc().learning.proposals_rejected(result.pop("rejected", []))
+            if (result.get("release") or {}).get("status") == "active":
                 await svc().remap_glossary()
             return result
 

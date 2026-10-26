@@ -11,9 +11,12 @@ import uvicorn
 from finance_analysis.adapters.api.app import create_app
 from finance_analysis.adapters.builder.fixture import FixtureBuilder
 from finance_analysis.adapters.builder.http import HttpBuilder
+from finance_analysis.adapters.ml.cluster import HdbscanCluster
+from finance_analysis.adapters.ml.http import build_models, close_models
 from finance_analysis.adapters.redis.runtime import RedisRuntime, version_at_least
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
 from finance_analysis.adapters.storage.store import open_storage
+from finance_analysis.adapters.vector.numpy_index import NumpyIndex
 from finance_analysis.adapters.wren.query import WrenQuery
 from finance_analysis.application.service import FasService
 from finance_analysis.settings import Settings, load_settings
@@ -40,7 +43,17 @@ async def assemble(settings: Settings) -> tuple[FasService, RedisRuntime]:
         builder = FixtureBuilder(Path(fixture))
     else:
         builder = HttpBuilder(settings)
-    service = FasService(settings, store, PyarrowParquet(), builder, WrenQuery(settings), support)
+    service = FasService(
+        settings,
+        store,
+        PyarrowParquet(),
+        builder,
+        WrenQuery(settings),
+        support,
+        models=build_models(settings),
+        vector_index=NumpyIndex(),
+        cluster=HdbscanCluster(),
+    )
     return service, support
 
 
@@ -77,6 +90,8 @@ def main() -> None:
         except asyncio.CancelledError:
             pass
         service.draining = True
+        await service.settle()
+        await close_models(service.models)
         await support.close()
         await service.builder.aclose()
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -20,12 +22,18 @@ from finance_analysis.application.builds import (
     projection_of,
     rebuild_reason,
 )
-from finance_analysis.application.catalog import load_catalog
+from finance_analysis.application.calibrators import CalibratorStore
+from finance_analysis.application.catalog import load_catalog, load_identities
+from finance_analysis.application.evaluation import Evaluator
+from finance_analysis.application.examples import ExampleStore
 from finance_analysis.application.gc import gc_incomplete
 from finance_analysis.application.glossary_store import GlossaryStore
+from finance_analysis.application.learning import Learning
+from finance_analysis.application.mapping_pipeline import MappingPipeline
 from finance_analysis.application.metrics import BUILDER_INCONSISTENT
 from finance_analysis.application.operations import append_event, create_op, read_op
-from finance_analysis.application.project import derive_rows, project
+from finance_analysis.application.ports import Models
+from finance_analysis.application.project import derive_rows, prepare_rows, project
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.domain.book import (
     FAS_PROJECTION_VERSION,
@@ -45,6 +53,7 @@ from finance_analysis.domain.book import (
     sha256_bytes,
     with_links,
 )
+from finance_analysis.domain.deadline import bind_request_deadline, effective
 from finance_analysis.domain.errors import (
     AlreadyExists,
     BuilderUnstable,
@@ -68,6 +77,7 @@ from finance_analysis.domain.phases import phase_target, split_phase_target
 from finance_analysis.domain.state import fold
 from finance_analysis.settings import Settings
 
+LOG = logging.getLogger("fas.service")
 _YEAR_RANGE = re.compile(r"^(\d{4})\s*[-–—]\s*(\d{4})$")
 _MARKED_YEAR = re.compile(r"^(факт|план|прогноз|actual|plan|estimate)\s+(\d{4})$", re.IGNORECASE)
 _YEAR_ONLY = re.compile(r"^(\d{4})$")
@@ -200,7 +210,19 @@ def _decimal_text(value) -> str | None:
 
 
 class FasService:
-    def __init__(self, settings: Settings, store, parquet, builder, query, support) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        store,
+        parquet,
+        builder,
+        query,
+        support,
+        *,
+        models: Models | None = None,
+        vector_index=None,
+        cluster=None,
+    ) -> None:
         self.settings = settings
         self.store = store
         self.parquet = parquet
@@ -217,9 +239,22 @@ class FasService:
         self.draining = False
         self.glossary_seen = ""
         self.analyses = Analyses(self)
+        self.models = models or Models()
+        self.examples = ExampleStore(
+            store, parquet, vector_index, model=settings.embed_model if self.models.embed else "", refresh_sec=settings.examples_refresh_sec
+        )
+        self.calibrators = CalibratorStore(store)
+        self.pipeline = MappingPipeline(self.models, self.examples, support, settings=settings)
+        self.learning = Learning(store, parquet, self.glossary, self.examples, self.models, cluster, settings)
+        self.identities = load_identities()
+        self.evaluator = Evaluator(self)
+        self.glossary.gate = self.evaluator.shadow
 
     def spawn(self, coro) -> asyncio.Task:
-        task = asyncio.create_task(coro)
+        # Фоновая работа не наследует дедлайн запроса, который её запустил.
+        context = contextvars.copy_context()
+        context.run(bind_request_deadline, None)
+        task = asyncio.create_task(coro, context=context)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
@@ -305,6 +340,7 @@ class FasService:
             if active:
                 current_g = active
         current_p = head.versions.get("profile", "p-0") if head else "p-0"
+        await self.calibrators.active()
         base = self._versions(None if current_g == "none" else current_g)
         return Versions(
             glossary=base.glossary,
@@ -337,6 +373,7 @@ class FasService:
     def _versions(self, glossary: str | None = None) -> Versions:
         return Versions(
             glossary=glossary or "none",
+            calibrator=self.calibrators.version,
             embed_model=self.settings.embed_model,
             rerank_model=self.settings.rerank_model,
             clm_model=self.settings.clm_model,
@@ -380,14 +417,15 @@ class FasService:
         if projected is None:
             projected = await self._projected_from_store(job_id, head.build_key)
         events = await self.guard.read_all(job_id)
-        derived = derive_rows(
+        derived = await self._derive(
+            job_id,
             projected,
             state_seq=head.state_seq,
             derive=derive,
             versions=versions_dict,
             events=events,
-            glossary=await self._package_for(glossary_version),
-            facts=None if projected is None else projected.get("fact_observation"),
+            facts=projected.get("fact_observation"),
+            links=projected.get("graph_links"),
         )
         attempt = str(ULID())
         files = await self.guard.persist_derived(
@@ -418,6 +456,86 @@ class FasService:
         if token:
             await self.store.put_if_match(keys.head_key(job_id), _dumps(new_head), token)
         return derive
+
+    async def _derive(
+        self,
+        job_id: str,
+        projected: dict,
+        *,
+        state_seq: int,
+        derive: str,
+        versions: dict,
+        events: list[dict],
+        facts: list[dict] | None,
+        links: list[dict] | None,
+    ) -> dict[str, list[dict]]:
+        """Привязка книги: правила + стадии моделей (§5.5). Сбор сигналов и unknown-строк — в фоне."""
+
+        package = await self._package_for(versions.get("glossary", "none"))
+        calibrator = await self.calibrators.active()
+        prepared = prepare_rows(projected, events, package, facts)
+        scored = None
+        if self.pipeline.enabled:
+            scored = await self.pipeline.score(
+                job_id,
+                derive,
+                prepared,
+                package,
+                glossary_version=versions.get("glossary", "none"),
+                deadline=effective(self.settings.mapping_deadline_ms),
+                skip=_human_keys(events),
+                calibrator=calibrator,
+            )
+        derived = derive_rows(
+            projected,
+            state_seq=state_seq,
+            derive=derive,
+            versions=versions,
+            events=events,
+            glossary=package,
+            facts=facts,
+            evidence=None if scored is None else scored.evidence,
+            calibrator=calibrator,
+            prepared=prepared,
+        )
+        nearest = {}
+        if scored is not None:
+            for key, found in scored.evidence.items():
+                ranked = sorted((c for c in found.candidates if c.recall_cos is not None), key=lambda c: -(c.recall_cos or 0))
+                nearest[key] = ranked[0].concept if ranked else None
+        self.spawn(
+            self._after_derive(
+                job_id,
+                prepared=prepared,
+                bindings=derived["bindings"],
+                facts=facts or [],
+                links=links or [],
+                embeddings={} if scored is None else scored.embeddings,
+                nearest=nearest,
+                package=package,
+                versions=versions,
+                events=events,
+            )
+        )
+        return derived
+
+    async def _after_derive(self, job_id: str, *, versions: dict, events: list[dict], **kwargs) -> None:
+        try:
+            await self.learning.after_derive(
+                job_id,
+                glossary_version=versions.get("glossary", "none"),
+                profile=_profile_id(events),
+                identities=self.identities,
+                **kwargs,
+            )
+        except Exception:
+            LOG.exception("after_derive %s", job_id)
+
+    async def settle(self) -> None:
+        """Дождаться фоновых задач (тесты, drain)."""
+
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
     async def _projected_from_store(self, job_id: str, build: str) -> dict[str, list[dict]]:
         """Повторная материализация derived читает уже записанные строки проекции через pyarrow в адаптере нет.
@@ -552,14 +670,15 @@ class FasService:
             await self.store.put_if_absent(keys.build_index_key(job_id, build), _dumps(index))
         except AlreadyExists:
             pass
-        derived = derive_rows(
+        derived = await self._derive(
+            job_id,
             tables,
             state_seq=state_seq,
             derive=derive,
             versions=versions.as_dict(),
             events=events,
-            glossary=await self._package_for(versions.glossary),
             facts=tables.get("fact_observation"),
+            links=tables.get("graph_links"),
         )
         d_attempt = str(ULID())
         d_files = await self.guard.persist_derived(
@@ -958,9 +1077,34 @@ class FasService:
             result = await self._apply_decisions(job_id, head, body, actor)
             pending = bool(result["records"])
         if pending:
+            self.spawn(self._record_decisions(job_id, head, list(result["records"])))
             head = await self._fold_coalesced(job_id)
         result["pending_state_seq"] = head.state_seq
         return result
+
+    async def _record_decisions(self, job_id: str, head: Head, records: list[dict]) -> None:
+        """Решения людей → сигналы S и examples/ по привязкам той сборки, на которой решали (§4.5)."""
+
+        try:
+            rows = {row["binding_key"]: row for row in await self._dataset_rows(job_id, head, "dim_row")}
+            try:
+                bindings = {row["binding_key"]: row for row in await self._dataset_rows(job_id, head, "bindings")}
+            except (NotFound, StopIteration):
+                bindings = {}
+            events = await self.guard.read_all(job_id)
+            version = head.versions.get("glossary", "none")
+            await self.learning.record_decisions(
+                job_id,
+                records,
+                rows=rows,
+                bindings=bindings,
+                events=events,
+                profile=_profile_id(events),
+                glossary_version=version,
+                package=await self._package_for(version),
+            )
+        except Exception:
+            LOG.exception("record_decisions %s", job_id)
 
     async def _fold_coalesced(self, job_id: str) -> Head:
         lock = self._fold_locks.setdefault(job_id, asyncio.Lock())
@@ -1070,14 +1214,19 @@ class FasService:
             "dim_period": await self._dataset_rows(job_id, head, "dim_period"),
         }
         facts = await self._dataset_rows(job_id, head, "fact_observation")
-        derived = derive_rows(
+        try:
+            links = await self._dataset_rows(job_id, head, "graph_links")
+        except (NotFound, StopIteration):
+            links = []
+        derived = await self._derive(
+            job_id,
             projected,
             state_seq=state_seq,
             derive=derive,
             versions=versions.as_dict(),
             events=events,
-            glossary=await self._package_for(versions.glossary),
             facts=facts,
+            links=links,
         )
         attempt = str(ULID())
         files = await self.guard.persist_derived(
@@ -1333,19 +1482,27 @@ class FasService:
         if isinstance(mapped, Accepted):
             return mapped
         questions = []
+        limit = self.settings.question_max_candidates
         for row in mapped["rows"]:
-            if row.get("status") != "unknown" or row.get("source") == "confirmed":
+            if row.get("status") not in {"unknown", "ambiguous"} or row.get("source") == "confirmed":
                 continue
             kind, subject, scope = "concept", row["binding_key"], job_id
             digest = hashlib.sha1(SEP.join([kind, subject, scope]).encode()).hexdigest()
+            evidence = json.loads(row.get("evidence_json") or "{}")
+            # Кандидаты только из этой книги и только по признакам конвейера (§5.10.5 п. 2).
+            candidates = [
+                {"concept": item["concept"], "score": item.get("p"), "reasons": item.get("reasons") or []}
+                for item in evidence.get("candidates") or []
+                if item.get("structure_pass", True)
+            ][:limit]
             questions.append(
                 {
                     "question_id": digest,
                     "kind": kind,
                     "subject": subject,
                     "scope": scope,
-                    "reason": "concept_unknown",
-                    "candidates": [],
+                    "reason": "ambiguous" if row.get("status") == "ambiguous" else "concept_unknown",
+                    "candidates": candidates,
                 }
             )
         return {"questions": questions[:], "build_key": mapped["build_key"]}
@@ -1417,7 +1574,7 @@ class FasService:
         }
         return {
             "fas_version": FAS_VERSION,
-            "phase": "2",
+            "phase": "2b",
             "storage": storage,
             "rules": self.analyses.capabilities(),
             "metrics": ["dscr", "icr"],
@@ -1426,6 +1583,15 @@ class FasService:
             "problems": PROBLEM_CATALOG,
             "tools": TOOLS,
         }
+
+    def model_states(self) -> dict[str, str]:
+        """Состояние circuit breaker каждого сервера модели (информационно, на готовность не влияет)."""
+
+        out = {}
+        for name in ("embed", "rerank", "clm", "llm"):
+            endpoint = getattr(getattr(self.models, name), "endpoint", None)
+            out[name] = "absent" if endpoint is None else endpoint.breaker.state()
+        return out
 
     async def ready(self) -> dict:
         redis_ok = await self.support.ping()
@@ -1441,9 +1607,29 @@ class FasService:
             },
             "redis": "ok" if redis_ok else "down",
             "builder": await self.builder.breaker_state(),
+            "models": self.model_states(),
+            "calibrator": self.calibrators.version,
             "glossary": (await self.glossary.peek() or {}).get("active") or "none",
             "draining": self.draining,
         }
+
+
+def _human_keys(events: list[dict]) -> frozenset[str]:
+    found = set()
+    for event in fold(events).values():
+        if event.get("type") in {"concept.set", "concept.confirmed", "concept.ignored"}:
+            key = str(event.get("binding_key") or event.get("target") or "")
+            if key and key != "book":
+                found.add(key)
+    return frozenset(found)
+
+
+def _profile_id(events: list[dict]) -> str | None:
+    chosen = None
+    for event in fold(events).values():
+        if event.get("type") == "profile.set" and isinstance(event.get("value"), str):
+            chosen = event["value"]
+    return chosen
 
 
 def _glossary_seq(version: str) -> int:
@@ -1664,6 +1850,7 @@ PROBLEM_CATALOG = [
     {"code": "admin_token_required", "http": 403, "retryable": False},
     {"code": "stale_parent", "http": 409, "retryable": False},
     {"code": "proposal_decided", "http": 409, "retryable": False},
+    {"code": "glossary_regression", "http": 409, "retryable": False},
     {"code": "idempotency_key_reused", "http": 422, "retryable": False},
     {"code": "rate_limited", "http": 429, "retryable": True},
     {"code": "book_busy", "http": 429, "retryable": True},

@@ -21,6 +21,11 @@ from prometheus_client import (
 from finance_analysis.adapters.api.problems import problem_response
 from finance_analysis.application.service import Accepted, Freshness
 from finance_analysis.domain.book import FAS_VERSION, Actor
+from finance_analysis.domain.deadline import (
+    Deadline,
+    bind_request_deadline,
+    reset_request_deadline,
+)
 from finance_analysis.domain.errors import (
     DeadlineExceeded,
     DependencyUnavailable,
@@ -104,10 +109,21 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
                 NotAcceptable("допустим application/json", extra={"formats": ["json"]}),
                 request_id,
             )
-        handler = asyncio.create_task(call_next(request))
+        synchronous = not any(path.startswith(prefix) for prefix in _SYNC_SKIP) and ":load" not in path
+        limit_ms = settings.sync_deadline_ms
+        raw_deadline = request.headers.get("x-fas-deadline-ms")
+        explicit = bool(raw_deadline and raw_deadline.strip().isdigit())
+        if explicit:
+            limit_ms = max(1, min(int(raw_deadline.strip()), limit_ms))
+        # Дедлайн передаётся стадиям моделей (§4.13.4); у асинхронных маршрутов — только явный.
+        bound = bind_request_deadline(Deadline.after_ms(limit_ms) if synchronous or explicit else None)
         try:
-            if not any(path.startswith(prefix) for prefix in _SYNC_SKIP) and ":load" not in path:
-                response = await asyncio.wait_for(handler, timeout=settings.sync_deadline_ms / 1000)
+            handler = asyncio.create_task(call_next(request))
+        finally:
+            reset_request_deadline(bound)
+        try:
+            if synchronous:
+                response = await asyncio.wait_for(handler, timeout=limit_ms / 1000)
             else:
                 response = await handler
         except TimeoutError:
