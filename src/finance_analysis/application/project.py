@@ -379,14 +379,7 @@ def derive_rows(
     rows = prepared if prepared is not None else projected["dim_row"]
     for row in rows:
         if prepared is None:
-            excluded = row["kind"] in {"helper", "flag", "index"} or row["hidden"] or row["check_row"]
-            reason = None
-            if row["kind"] in {"helper", "flag", "index"}:
-                reason = row["kind"]
-            elif row["hidden"]:
-                reason = "hidden"
-            elif row["check_row"]:
-                reason = "check_row"
+            excluded, reason = exclusion(row, empty_series=False)
             sign = nature = aggregation = None
         else:
             excluded = row["excluded"]

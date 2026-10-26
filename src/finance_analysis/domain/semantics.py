@@ -8,12 +8,12 @@ _EXCLUDED_KINDS = frozenset({"helper", "flag", "index"})
 
 
 def exclusion(row: dict, *, empty_series: bool) -> tuple[bool, str | None]:
+    if row.get("check_row"):
+        return True, "check_row"
     if row.get("kind") in _EXCLUDED_KINDS:
         return True, row["kind"]
     if row.get("hidden"):
         return True, "hidden"
-    if row.get("check_row"):
-        return True, "check_row"
     if empty_series:
         return True, "empty_series"
     return False, None

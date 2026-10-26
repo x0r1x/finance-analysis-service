@@ -5,7 +5,7 @@ from finance_analysis.domain.semantics import exclusion
 
 
 def test_check_row_is_excluded_and_plan_marker_is_plan():
-    excluded, reason = exclusion({"kind": "fact", "hidden": False, "check_row": True}, empty_series=False)
+    excluded, reason = exclusion({"kind": "flag", "hidden": False, "check_row": True}, empty_series=False)
     assert excluded is True
     assert reason == "check_row"
     assert marker_class("план") == "plan"
