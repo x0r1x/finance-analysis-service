@@ -155,8 +155,18 @@ def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
             event_type="concept.set",
             value="cfads",
             actor=actor,
-            expected_seq=1,
+            expected_seq=None,
             request_id="concept",
+            binding_key="row",
+        )
+        await journal.commit(
+            job,
+            target="row",
+            event_type="unit.set",
+            value="money",
+            actor=actor,
+            expected_seq=None,
+            request_id="unit",
             binding_key="row",
         )
         await journal.commit(
@@ -174,12 +184,12 @@ def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
             event_type="profile.set",
             value="bank",
             actor=actor,
-            expected_seq=3,
+            expected_seq=None,
             request_id="profile",
         )
         events = await journal.read_all(job)
         kinds = {event["type"] for event in fold(events).values()}
-        assert {"sign.set", "concept.set", "concept.absent", "profile.set"} <= kinds
+        assert {"sign.set", "concept.set", "unit.set", "concept.absent", "profile.set"} <= kinds
         _human, _ignored, absent = _decisions(events)
         assert "capex" in absent
 

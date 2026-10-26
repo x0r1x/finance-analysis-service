@@ -984,7 +984,7 @@ class FasService:
         results = []
         records = []
         seen_concepts: set[str] = set()
-        followed: dict[str, int] = {}
+        followed: dict[tuple[str, str], int] = {}
         await self._use_active_catalog()
         for index, item in enumerate(items):
             if not isinstance(item, dict):
@@ -1019,7 +1019,8 @@ class FasService:
             if event_type == "phase.set":
                 order = _phase_order(periods, events, target, item.get("value"))
             supersedes = item.get("supersedes") if isinstance(item.get("supersedes"), dict) else None
-            expected = followed[target] if target in followed else item.get("expected_seq")
+            slot = (target, event_type)
+            expected = followed[slot] if slot in followed else item.get("expected_seq")
             written = await self.guard.write_decision(
                 job_id,
                 event_type=event_type,
@@ -1042,7 +1043,7 @@ class FasService:
                 events = await self.guard.read_all(job_id)
             record = written.event or {}
             if isinstance(record.get("seq"), int):
-                followed[target] = record["seq"]
+                followed[slot] = record["seq"]
             records.append(record)
             results.append(
                 {
