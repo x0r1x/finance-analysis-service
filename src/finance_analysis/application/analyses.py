@@ -29,10 +29,12 @@ from finance_analysis.domain.book import (
     FAS_VERSION,
     Actor,
     Head,
+    ReportNotReady,
     sha256_bytes,
 )
 from finance_analysis.domain.errors import (
     AlreadyExists,
+    DependencyUnavailable,
     InvalidArgument,
     NoAudit,
     NotFound,
@@ -43,8 +45,13 @@ from finance_analysis.domain.ids import ulid as check_ulid
 
 # Типы из §3.2 и фаза, в которой они появляются (§12).
 LATER_TYPES = {"ratios": 2, "impact": 4, "full": 4}
-SCOPE_KEYS = frozenset({"sheets", "row_keys", "axis_id"})
+# `scope` из §3.2: списки и одиночные значения.
+SCOPE_LISTS = ("sheets", "row_keys", "markers", "concepts")
+SCOPE_TEXT = ("axis_id", "period_from", "period_to")
 COUNTER_RULES_INPUT = "counters"
+TRACE_CELLS = 4
+TRACE_DEPTH = 8
+TRACE_DEPTH_MAX = 32
 
 
 def _now() -> datetime:
@@ -89,40 +96,105 @@ class Target:
         return self.head.derive_key if self.build == self.head.build_key else self.derived
 
 
-def _scope(body: dict) -> tuple[dict, list[dict]]:
+def _scope(body: dict) -> dict:
     raw = body.get("scope") or {}
     if not isinstance(raw, dict):
         raise InvalidArgument("scope должен быть объектом")
-    ignored = sorted(set(raw) - SCOPE_KEYS)
-    scope = {key: raw[key] for key in SCOPE_KEYS if raw.get(key)}
-    for key in ("sheets", "row_keys"):
-        if key in scope and not (isinstance(scope[key], list) and all(isinstance(item, str) for item in scope[key])):
+    unknown = sorted(set(raw) - set(SCOPE_LISTS) - set(SCOPE_TEXT))
+    if unknown:
+        raise InvalidArgument("неизвестные поля scope", extra={"fields": unknown, "supported": [*SCOPE_LISTS, *SCOPE_TEXT]})
+    scope: dict = {}
+    for key in SCOPE_LISTS:
+        value = raw.get(key)
+        if value in (None, []):
+            continue
+        if not (isinstance(value, list) and all(isinstance(item, str) for item in value)):
             raise InvalidArgument(f"scope.{key} должен быть списком строк")
-    if "axis_id" in scope and not isinstance(scope["axis_id"], str):
-        raise InvalidArgument("scope.axis_id должен быть строкой")
-    warnings = [{"code": "scope_ignored", "params": {"fields": ignored}}] if ignored else []
-    return scope, warnings
+        scope[key] = set(value)
+    for key in SCOPE_TEXT:
+        value = raw.get(key)
+        if value in (None, ""):
+            continue
+        if not isinstance(value, str):
+            raise InvalidArgument(f"scope.{key} должен быть строкой")
+        scope[key] = value
+    return scope
 
 
-def _in_scope(finding: Finding, scope: dict) -> bool:
+class _Periods:
+    """Периоды проекции для среза: порядок на оси и маркеры."""
+
+    def __init__(self, periods: list[dict]) -> None:
+        self.by_id = {(item["axis_id"], item["period_id"]): item for item in periods}
+        self.keys: dict[str, dict[str, list[int]]] = {}
+        for item in periods:
+            index = int(item.get("period_index") or 0)
+            names = self.keys.setdefault(item["axis_id"], {})
+            for name in {item["period_id"], item.get("period_key_base")}:
+                if name:
+                    names.setdefault(name, []).append(index)
+
+    def index(self, axis_id: str, period_id: str) -> int | None:
+        found = self.by_id.get((axis_id, period_id))
+        return None if found is None else int(found.get("period_index") or 0)
+
+    def bound(self, axis_id: str, name: str, *, upper: bool) -> int | None:
+        indexes = self.keys.get(axis_id, {}).get(name)
+        if not indexes:
+            return None
+        return max(indexes) if upper else min(indexes)
+
+
+def _in_scope(finding: Finding, scope: dict, data: AuditInput, bound: set[str]) -> bool:
+    """Находка в срезе, если хоть одно её место проходит все условия `scope`.
+
+    Находка уровня книги (циклы без мест, счётчики R1, `no_master_check`)
+    от среза не зависит. Место без периода не проходит условия по периоду.
+    """
+
     if not scope:
         return True
     located = [item for item in finding.locations if item.row_key or item.cell_id]
     if not located:
-        # Находка уровня книги (циклы, счётчики R1) от среза не зависит.
         return True
-    for location in located:
-        sheet = (location.cell_id or "").split("!", 1)[0] if location.cell_id else None
-        if not sheet and location.row_key:
-            sheet = location.row_key.split("|", 1)[0]
-        if scope.get("sheets") and sheet not in scope["sheets"]:
-            continue
-        if scope.get("row_keys") and location.row_key not in scope["row_keys"]:
-            continue
-        if scope.get("axis_id") and location.axis_id != scope["axis_id"]:
-            continue
+    periods = _Periods(data.periods)
+    return any(_location_in_scope(item, scope, data, periods, bound) for item in located)
+
+
+def _location_in_scope(location: Location, scope: dict, data: AuditInput, periods: _Periods, bound: set[str]) -> bool:
+    sheet = location.cell_id.split("!", 1)[0] if location.cell_id else None
+    if not sheet and location.row_key:
+        sheet = location.row_key.split("|", 1)[0]
+    if "sheets" in scope and sheet not in scope["sheets"]:
+        return False
+    if "row_keys" in scope and location.row_key not in scope["row_keys"]:
+        return False
+    if "axis_id" in scope and location.axis_id != scope["axis_id"]:
+        return False
+    if "concepts" in scope:
+        row = data.rows_by_key.get(location.row_key or "") or {}
+        if row.get("binding_key") not in bound:
+            return False
+    if not ({"period_from", "period_to", "markers"} & set(scope)):
         return True
-    return False
+    if location.axis_id is None or location.period_id is None:
+        return False
+    index = periods.index(location.axis_id, location.period_id)
+    if index is None:
+        return False
+    if "period_from" in scope:
+        low = periods.bound(location.axis_id, scope["period_from"], upper=False)
+        if low is None or index < low:
+            return False
+    if "period_to" in scope:
+        high = periods.bound(location.axis_id, scope["period_to"], upper=True)
+        if high is None or index > high:
+            return False
+    if "markers" in scope:
+        period = periods.by_id.get((location.axis_id, location.period_id)) or {}
+        if not {period.get("period_marker"), period.get("marker_class")} & scope["markers"]:
+            return False
+    return True
 
 
 def _citation(data: AuditInput, location: Location) -> dict | None:
@@ -293,7 +365,8 @@ class Analyses:
         if body.get("render") not in (None, "json"):
             raise InvalidArgument("render=md появится вместе с отчётами (фаза 4)", extra={"supported": ["json"]})
         rules = select_rules(self.rules, body.get("rules"))
-        scope, notes = _scope(body)
+        scope = _scope(body)
+        notes: list[dict] = []
         target = await self._target(job_id, actor, body.get("build_key"), wait_sec=wait_sec)
         if isinstance(target, Accepted):
             return target
@@ -342,7 +415,10 @@ class Analyses:
         needed = requirements(rules)
         data = await self._input(job_id, target, needed)
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
-        findings = [item for item in found if _in_scope(item, scope)]
+        bound: set[str] = set()
+        if "concepts" in scope:
+            bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
+        findings = [item for item in found if _in_scope(item, scope, data, bound)]
         warnings = list(notes)
         if target.fresh:
             warnings.insert(0, {"code": "freshness_unknown", "params": {}})
@@ -554,7 +630,7 @@ class Analyses:
         if severities is not None:
             items = [item for item in items if item["severity"] in severities]
         if query.get("concept"):
-            bound = await self._bound_keys(job_id, target, marker.get("derive_key"), str(query["concept"]))
+            bound = await self._bound_keys(job_id, target, marker.get("derive_key"), {str(query["concept"])})
             items = [item for item in items if item.get("binding_key") in bound]
         page, token = _page(
             items,
@@ -572,17 +648,17 @@ class Analyses:
             "warnings": [{"code": "freshness_unknown", "params": {}}] if target.fresh else [],
         }
 
-    async def _bound_keys(self, job_id: str, target: Target, derive: str | None, concept: str) -> set[str]:
+    async def _bound_keys(self, job_id: str, target: Target, derive: str | None, concepts: set[str]) -> set[str]:
         """Привязки той сборки и того состояния, на которых шёл аудит."""
 
         if not derive:
             raise InvalidArgument(
-                "фильтр concept: у сборки нет производного состояния на этом state_seq",
+                "фильтр по понятиям: у сборки нет производного состояния на этом state_seq",
                 extra={"build_key": target.build, "state_seq": target.head.state_seq},
             )
         pinned = Head(build_key=target.build, state_seq=target.head.state_seq, derive_key=derive, versions={})
         bindings = await self.service._dataset_rows(job_id, pinned, "bindings")
-        return {row["binding_key"] for row in bindings if row.get("effective_concept") == concept}
+        return {row["binding_key"] for row in bindings if row.get("effective_concept") in concepts}
 
     async def finding(self, job_id: str, print_: str, actor: Actor, query: dict, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
@@ -601,6 +677,11 @@ class Analyses:
         data = await self._input(job_id, target, frozenset({"links"}))
         rule = self.rules.get(found["code"])
         locations = [Location(**item) for item in found["locations"]]
+        direction = query.get("direction") or "precedents"
+        if direction not in {"precedents", "dependents"}:
+            raise InvalidArgument("direction: precedents или dependents")
+        depth = _trace_depth(query.get("depth"), found)
+        trace = await self._trace(job_id, target, data, locations, direction=direction, depth=depth)
         return {
             "finding": found,
             "analysis_id": marker["analysis_id"],
@@ -614,10 +695,69 @@ class Analyses:
                 "params": found.get("params") or {},
             },
             "citations": [item for item in (_citation(data, location) for location in locations) if item],
-            "chain": [_chain(data, location) for location in locations if location.cell_id],
-            # Глубокая цепочка — trace builder (R5), в фазе 1 не запрашивается.
-            "trace": {"source": "graph_links", "depth": 1, "builder_trace": None},
+            "trace": trace,
         }
+
+    async def _trace(self, job_id, target: Target, data: AuditInput, locations, *, direction: str, depth: int) -> dict:
+        """Цепочка ячеек находки — trace builder (R5, §2.1), кэш Redis по `summary_etag`.
+
+        Если builder не отвечает или публикация пересобирается, цепочка строится
+        на один уровень по `graph_links` сборки и помечается `source: graph_links`.
+        """
+
+        origins = [item.cell_id for item in locations if item.cell_id][:TRACE_CELLS]
+        etag = (target.manifest.get("builder_ref") or {}).get("summary_etag") or target.build
+        items = []
+        try:
+            for origin in origins:
+                found = await self._builder_trace(job_id, etag, origin, direction, depth)
+                if found is None:
+                    raise DependencyUnavailable("builder пересобирает публикацию")
+                items.append(found)
+        except (DependencyUnavailable, NotFound) as exc:
+            return {
+                "source": "graph_links",
+                "direction": "precedents",
+                "depth": 1,
+                "items": [_chain(data, Location(origin, None, None, None)) for origin in origins],
+                "warnings": [{"code": "trace_unavailable", "params": {"detail": str(exc)}}],
+                "truncated": len(locations) > len(origins),
+            }
+        return {
+            "source": "builder",
+            "direction": direction,
+            "depth": depth,
+            "items": items,
+            "warnings": [],
+            "truncated": len(locations) > len(origins),
+        }
+
+    async def _builder_trace(self, job_id: str, etag: str, origin: str, direction: str, depth: int) -> dict | None:
+        svc = self.service
+        digest = sha256_bytes(f"{etag}|{origin}|{direction}|{depth}".encode())[:32]
+        key = f"fas:trace:{job_id}:{digest}"
+        cached = await svc.support.cache_get(key)
+        if cached:
+            return json.loads(cached)
+        found = await svc.builder.trace(job_id, origin, direction=direction, depth=depth)
+        if isinstance(found, ReportNotReady):
+            return None
+        await svc.support.cache_set(key, _dumps(found), svc.settings.etag_ttl)
+        return found
+
+
+def _trace_depth(raw, finding: dict) -> int:
+    if raw in (None, ""):
+        # Цикл обходится целиком: глубина не меньше числа его ячеек.
+        members = (finding.get("params") or {}).get("members")
+        return min(TRACE_DEPTH_MAX, max(TRACE_DEPTH, int(members or 0) + 1))
+    try:
+        depth = int(str(raw))
+    except ValueError:
+        raise InvalidArgument("depth должен быть целым числом") from None
+    if depth < 1 or depth > TRACE_DEPTH_MAX:
+        raise InvalidArgument(f"depth должен быть от 1 до {TRACE_DEPTH_MAX}")
+    return depth
 
 
 def _chain(data: AuditInput, location: Location) -> dict:

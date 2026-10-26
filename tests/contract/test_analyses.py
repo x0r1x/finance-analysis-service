@@ -93,8 +93,24 @@ async def test_audit_history_and_findings(app, local_service):
         body = detail.json()
         assert body["finding"] == target
         assert body["rule"]["code"] == "formula_inconsistent_in_row"
-        assert body["chain"] and body["chain"][0]["formula"]
-        assert body["trace"]["source"] == "graph_links"
+        trace = body["trace"]
+        assert trace["source"] == "builder"
+        assert trace["direction"] == "precedents" and trace["depth"] == 8
+        first_cell = target["locations"][0]["cell_id"]
+        assert trace["items"][0]["origin"] == first_cell
+        assert trace["items"][0]["nodes"][0]["node_id"] == first_cell
+        assert trace["items"][0]["edges"]
+        calls = local_service.builder.calls.count(("GET", "/graph/trace"))
+        again = await client.get(
+            f"/v1/books/{RVI}/findings/{target['fingerprint']}", headers=HEADERS, params={"depth": 2}
+        )
+        assert max(node["depth"] for node in again.json()["trace"]["items"][0]["nodes"]) <= 2
+        cached = await client.get(f"/v1/books/{RVI}/findings/{target['fingerprint']}", headers=HEADERS)
+        assert cached.json()["trace"] == trace
+        # Повтор с той же глубиной — из кэша Redis по summary_etag, без нового вызова builder.
+        assert local_service.builder.calls.count(("GET", "/graph/trace")) == calls + len(again.json()["trace"]["items"])
+        bad_depth = await client.get(f"/v1/books/{RVI}/findings/{target['fingerprint']}", headers=HEADERS, params={"depth": 99})
+        assert bad_depth.status_code == 400
 
         bad_size = await client.get(f"/v1/books/{RVI}/findings", headers=HEADERS, params={"page_size": "abc"})
         assert bad_size.status_code == 400, bad_size.text
@@ -148,7 +164,7 @@ async def test_audit_arguments_and_async(app):
         narrow = await client.post(
             f"/v1/books/{JOB}/analyses",
             headers=HEADERS,
-            json={"type": "audit", "rules": ["no_master_check", "long_formula"], "scope": {"sheets": ["Debt"], "markers": ["план"]}},
+            json={"type": "audit", "rules": ["no_master_check", "long_formula"], "scope": {"sheets": ["Debt"]}},
         )
         assert narrow.status_code == 200, narrow.text
         body = narrow.json()
@@ -159,7 +175,9 @@ async def test_audit_arguments_and_async(app):
             for item in body["result_data"]["findings"]
             for location in item["locations"]
         )
-        assert {"code": "scope_ignored", "params": {"fields": ["markers"]}} in body["warnings"]
+        odd = await client.post(f"/v1/books/{JOB}/analyses", headers=HEADERS, json={"type": "audit", "scope": {"phase": "x"}})
+        assert odd.status_code == 400
+        assert odd.json()["fields"] == ["phase"]
 
         deferred = await client.post(
             f"/v1/books/{JOB}/analyses",
@@ -311,3 +329,61 @@ async def test_projection_upgrade_rebuilds_with_same_etag(app, local_service, mo
         assert filtered.status_code == 200, filtered.text
         assert filtered.json()["build_key"] == old.build_key
         assert filtered.json()["items"] == []
+
+
+async def test_scope_periods_concepts_and_trace_fallback(app, local_service):
+    async with _client(app) as client:
+        full = await client.post(f"/v1/books/{RVI}/analyses", headers=HEADERS, json={"type": "audit"})
+        findings = full.json()["result_data"]["findings"]
+        missing = [item for item in findings if item["code"] == "missing_cached_value" and item["locations"]]
+        axis_id = missing[0]["locations"][0]["axis_id"]
+        period_id = missing[0]["locations"][0]["period_id"]
+        expected = {
+            item["fingerprint"]
+            for item in missing
+            if (item["locations"][0]["axis_id"], item["locations"][0]["period_id"]) == (axis_id, period_id)
+        }
+        narrowed = await client.post(
+            f"/v1/books/{RVI}/analyses",
+            headers=HEADERS,
+            json={
+                "type": "audit",
+                "rules": ["missing_cached_value"],
+                "scope": {"axis_id": axis_id, "period_from": period_id, "period_to": period_id},
+            },
+        )
+        assert narrowed.status_code == 200, narrowed.text
+        located = {item["fingerprint"] for item in narrowed.json()["result_data"]["findings"] if item["locations"]}
+        assert located == expected
+        marked = await client.post(
+            f"/v1/books/{RVI}/analyses",
+            headers=HEADERS,
+            json={"type": "audit", "rules": ["missing_cached_value"], "scope": {"markers": ["план"]}},
+        )
+        # В RVI нет периодов с маркером: из находок со ссылкой на ячейку не остаётся ни одной.
+        assert all(not item["locations"] for item in marked.json()["result_data"]["findings"])
+
+        head = (await local_service._read_head(RVI))[0]
+        facts = {row["binding_key"] for row in await local_service._dataset_rows(RVI, head, "bindings")}
+        chosen = next(item for item in findings if item["binding_key"] in facts)
+        decided = await client.post(
+            f"/v1/books/{RVI}/decisions",
+            headers=HEADERS,
+            json={"decisions": [{"kind": "concept.set", "target": chosen["binding_key"], "value": "debt_service"}]},
+        )
+        assert decided.status_code == 200, decided.text
+        bound = await client.post(
+            f"/v1/books/{RVI}/analyses", headers=HEADERS, json={"type": "audit", "scope": {"concepts": ["debt_service"]}}
+        )
+        assert bound.status_code == 200, bound.text
+        kept = [item for item in bound.json()["result_data"]["findings"] if item["locations"]]
+        assert kept and {item["binding_key"] for item in kept} == {chosen["binding_key"]}
+
+        # Builder пересобирает публикацию — цепочка на один уровень по graph_links.
+        local_service.builder.rebuilding.add(RVI)
+        target = kept[0]["fingerprint"]
+        detail = await client.get(f"/v1/books/{RVI}/findings/{target}", headers=HEADERS, params={"depth": 3})
+        local_service.builder.rebuilding.discard(RVI)
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["trace"]["source"] == "graph_links"
+        assert detail.json()["trace"]["warnings"][0]["code"] == "trace_unavailable"

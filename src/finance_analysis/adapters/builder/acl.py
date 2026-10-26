@@ -454,3 +454,42 @@ def parse_graph(payload: dict | None, snapshot: WorkbookSnapshot) -> WorkbookSna
     from finance_analysis.domain.book import with_links
 
     return with_links(snapshot, parse_links(payload))
+
+
+class TraceNodeIn(_In):
+    node_id: str
+    sheet: str | None = None
+    addr: str | None = None
+    row_key: str | None = None
+    period_id: str | None = None
+    node_type: str | None = None
+    formula: str | None = None
+    cached_value: str | None = None
+    depth: int = 0
+
+
+class TraceEdgeIn(_In):
+    source: str
+    target: str
+    kind: str | None = None
+    members_total: int | None = None
+    members_shown: int | None = None
+
+
+class TraceIn(_In):
+    origin: str
+    direction: str
+    depth: int
+    stopped: str | None = None
+    nodes: list[TraceNodeIn] = []
+    edges: list[TraceEdgeIn] = []
+
+
+def parse_trace(payload: dict) -> dict:
+    """R5 `GET …/graph/trace` → `{origin, direction, depth, stopped, nodes[], edges[]}`."""
+
+    try:
+        parsed = TraceIn.model_validate(payload)
+    except ValidationError as exc:
+        raise UnsupportedBuilderShape("форма trace не поддерживается", extra={"fields": _fields(exc, "trace")}) from exc
+    return parsed.model_dump()

@@ -1,6 +1,6 @@
 """Реестр правил и прогон аудита (§6.1, §8 Strategy + Registry).
 
-Встроенные правила — `plugins/rules/phase1.py`. Сторонние пакеты добавляют
+Встроенные правила — `plugins/rules`. Сторонние пакеты добавляют
 свои через entry points группы `finance_analysis.rules`: объект — правило
 или кортеж правил. Код правила уникален, встроенное правило не заменяется.
 """
@@ -11,7 +11,7 @@ from importlib.metadata import entry_points
 
 from finance_analysis.domain.audit import AuditInput, Finding, Rule, severity_rank
 from finance_analysis.domain.errors import InvalidArgument
-from finance_analysis.plugins.rules.phase1 import RULES
+from finance_analysis.plugins.rules import RULES
 
 ENTRY_GROUP = "finance_analysis.rules"
 

@@ -23,7 +23,7 @@ from finance_analysis.application.rule_engine import (
 from finance_analysis.domain.audit import AuditInput, axis_ordinals, fingerprint
 from finance_analysis.domain.book import with_links
 from finance_analysis.domain.errors import InvalidArgument
-from finance_analysis.domain.formulas import analyze, top_level_comparison
+from finance_analysis.domain.formulas import analyze
 from tests.books import BUILDER_ROOT, job_id
 
 # Правила фазы 1 по таблице §6.1.
@@ -115,9 +115,6 @@ def test_formula_facts():
     assert analyze("=NPV(Rate,B1:B9)").functions == {"NPV"}
     assert analyze("=XNPV(Rate,B1:B9,C1:C9)").functions == {"XNPV"}
     assert analyze("=A:A+3:3").operands == 2
-    assert top_level_comparison("=R[-27]C[0]-R[-15]C[0]<0.01")
-    assert not top_level_comparison("=IF(A1<>0,1,0)")
-    assert not top_level_comparison('=Check_balance_sheet&"<"')
 
 
 def test_fingerprint_and_axis_ordinal():
@@ -144,9 +141,12 @@ def test_hardcoded_formula_flags_constant_in_formula_row():
     assert [item.locations[0].cell_id for item in found] == ["S!C10"]
     assert found[0].binding_key == "bk-S-10"
     assert found[0].fingerprint == fingerprint("hardcoded_formula", "bk-S-10", "2024", "", "0")
-    # Формулы меньше чем в половине ячеек — это строка входов, не строка формул.
-    inputs = AuditInput(rows=data.rows, periods=PERIODS, facts=data.facts, links=_link("S!E10", "D10+1", key, "2026@план"))
-    assert _check("hardcoded_formula", inputs) == []
+    assert found[0].params["formula_class"] == "same_period"
+    # Без formula_class на оси строка — не строка формул.
+    assert _check("hardcoded_formula", AuditInput(rows=data.rows, periods=PERIODS, facts=data.facts)) == []
+    # Ячейка из formula_exceptions — формула другого шаблона, не константа.
+    excepted = AuditInput(rows=[_row(key, formula_exceptions=["S!C10"])], periods=PERIODS, facts=data.facts, links=data.links)
+    assert _check("hardcoded_formula", excepted) == []
 
 
 def test_literal_severity_rises_when_literal_changes_along_row():
@@ -238,7 +238,7 @@ def test_dangling_classes_alone_are_blank_cells_not_findings():
     assert found.truncated
 
 
-def test_check_failure_two_conventions():
+def test_check_failure_is_nonzero_on_check_row():
     flag = "S|20|S!r2"
     comparison = "S|21|S!r2"
     data = AuditInput(
@@ -257,11 +257,54 @@ def test_check_failure_two_conventions():
         ],
     )
     found = {item.locations[0].cell_id: item for item in _check("check_failure", data)}
-    assert set(found) == {"S!D20", "S!D21"}
-    assert found["S!D20"].params["convention"] == "error_flag"
-    assert found["S!D21"].params["convention"] == "comparison"
+    # §6.1: сбой — ненулевое значение, как бы проверка ни была записана.
+    assert set(found) == {"S!D20", "S!C21"}
     assert found["S!D20"].severity == "critical"
+    assert found["S!C21"].params == {"nonzero_cells": 1, "label": "row 21"}
     assert _check("no_master_check", AuditInput(rows=[_row("S|1|S!r2")]))[0].severity == "info"
+
+
+def test_external_ref_reads_graph_refs_and_counter():
+    key = "S|50|S!r2"
+    data = AuditInput(
+        rows=[_row(key)],
+        periods=PERIODS,
+        facts=[_fact(key, "S!C50", "2024", "1"), _fact(key, "S!D50", "2025", "1")],
+        links=_link("S!C50", "[1]Rates!B2*2", key, "2024", refs=("[1]Rates!B2",))
+        + _link("S!D50", "[Prices.xlsx]Sheet1!A1:A3", key, "2025", refs=("[Prices.xlsx]Sheet1!A1:A3", "S!A1")),
+        counters={"external": {"count": 4, "ids": ["S!C50", "S!D50", "T!A1"]}},
+    )
+    graph, rest = _check("external_ref", data)
+    assert [item.cell_id for item in graph.locations] == ["S!C50", "S!D50"]
+    assert graph.params["refs"] == ["[1]Rates!B2", "[Prices.xlsx]Sheet1!A1:A3"]
+    assert graph.binding_key == "bk-S-50"
+    assert rest.params == {"count": 4, "located": 2, "unlocated": 2}
+    assert [item.cell_id for item in rest.locations] == ["T!A1"] and rest.truncated
+    data.counters["external"]["count"] = 2
+    assert len(_check("external_ref", data)) == 1
+
+
+def test_unexpected_cycle_locates_members_in_graph():
+    key = "S|60|S!r2"
+    links = (
+        _link("S!C60", "D60+1", key, "2024", refs=("S!D60",))
+        + _link("S!D60", "C60*0.5", key, "2025", refs=("S!C60",))
+        + _link("S!E60", "E60", key, "2026@план", refs=("S!E60",))
+    )
+    data = AuditInput(
+        rows=[_row(key)],
+        periods=PERIODS,
+        links=links,
+        counters={
+            "iterate": False,
+            "cycles": [{"id": "c1", "class": "unexpected", "members": 2}, {"id": "c2", "class": "unexpected", "members": 3}],
+        },
+    )
+    assert data.cycles == [("S!E60",), ("S!C60", "S!D60")]
+    first, second = _check("unexpected_cycle", data)
+    assert [item.cell_id for item in first.locations] == ["S!C60", "S!D60"]
+    assert first.params["located"] is True
+    assert second.locations == () and second.params["located"] is False
 
 
 def test_text_rules_group_by_row_and_axis():
@@ -309,7 +352,9 @@ def test_golden_books_audit():
     rvi_data = _golden("rvi")
     rvi = Counter(item.code for item in run_rules(rules, rvi_data))
     # Проверки обеих книг сходятся; в RVI 20 формул без кэша — как в счётчике R1.
-    assert packt["check_failure"] == rvi["check_failure"] == 0
+    # Проверки Packt записаны сравнением (`=A-B<0.01`, TRUE = 1): по §6.1 это ненулевое значение.
+    assert packt["check_failure"] == 2
+    assert rvi["check_failure"] == 0
     assert packt["no_master_check"] == rvi["no_master_check"] == 0
     assert rvi["missing_cached_value"] == rvi_data.counters["missing_cached_values"] == 20
     assert rvi["offset_indirect_used"] > 0
@@ -325,3 +370,66 @@ def test_summary_counters_and_exceptions_reach_projection():
     rows = {row["row_key"]: row for row in data.rows}
     assert rows["PF Model|13|PF Model!r11"]["formula_exceptions"] == ["PF Model!G13"]
     assert rows["PF Model|13|PF Model!r11"]["formula_exceptions_truncated"] is False
+
+
+def test_scope_periods_and_markers():
+    from finance_analysis.application.analyses import _in_scope, _scope
+
+    key = "S|70|S!r2"
+    periods = [dict(item, period_index=index, marker_class="plan" if item["period_marker"] else None) for index, item in enumerate(PERIODS)]
+    data = AuditInput(
+        rows=[_row(key)],
+        periods=periods,
+        facts=[_fact(key, "S!C70", "2024", "1"), _fact(key, "S!E70", "2026@план", "1")],
+    )
+    rule = select_rules(load_rules(), ["hardcoded_formula"])[0]
+    early = rule.finding(data, locations=[data.placed("S!C70")], row_key=key, axis_id="S!r2", period_id="2024")
+    planned = rule.finding(data, locations=[data.placed("S!E70")], row_key=key, axis_id="S!r2", period_id="2026@план")
+    book = rule.finding(data)
+
+    def kept(scope: dict) -> list:
+        parsed = _scope({"scope": scope})
+        return [item for item in (early, planned, book) if _in_scope(item, parsed, data, set())]
+
+    assert kept({"period_from": "2025"}) == [planned, book]
+    assert kept({"period_to": "2025"}) == [early, book]
+    # Маркер совпадает и по тексту, и по классу.
+    assert kept({"markers": ["план"]}) == kept({"markers": ["plan"]}) == [planned, book]
+    assert kept({"period_from": "1999"}) == [book]
+    with pytest.raises(InvalidArgument):
+        _scope({"scope": {"markers": "план"}})
+
+
+async def test_http_trace_reads_r5():
+    import httpx
+
+    from finance_analysis.adapters.builder.http import HttpBuilder
+    from finance_analysis.domain.book import ReportNotReady
+    from finance_analysis.settings import Settings
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        if request.url.params["from"] == "PF Model!M537":
+            return httpx.Response(409, json={"error": "report_not_ready", "detail": "rebuild"})
+        return httpx.Response(
+            200,
+            json={
+                "origin": "PF Model!AA172",
+                "direction": "precedents",
+                "depth": 2,
+                "stopped": None,
+                "nodes": [{"node_id": "PF Model!AA172", "depth": 0, "formula_template": "x"}],
+                "edges": [{"source": "PF Model!AA172", "target": "PF Model!Z172", "kind": "ref"}],
+            },
+        )
+
+    builder = HttpBuilder(Settings(BUILDER_BASE_URL="http://builder"), client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    job = job_id("rvi")
+    found = await builder.trace(job, "PF Model!AA172", direction="precedents", depth=2)
+    assert seen[0].path == f"/v1/context-jobs/{job}/graph/trace"
+    assert dict(seen[0].params) == {"from": "PF Model!AA172", "direction": "precedents", "depth": "2"}
+    assert found["edges"][0]["target"] == "PF Model!Z172"
+    assert "formula_template" not in found["nodes"][0]
+    assert isinstance(await builder.trace(job, "PF Model!M537", direction="precedents", depth=2), ReportNotReady)

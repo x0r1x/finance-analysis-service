@@ -100,25 +100,3 @@ def analyze(formula: str | None) -> FormulaFacts:
         chars=len(text),
     )
 
-
-_STRING = re.compile(r'"(?:[^"]|"")*"')
-_COMPARISON = re.compile(r"<>|<=|>=|<|>|=")
-
-
-def top_level_comparison(formula: str | None) -> bool:
-    """Формула целиком — сравнение (`=A1-B1<0.01`): результат TRUE/FALSE.
-
-    Сравнение внутри функции (`=IF(A1<>0,1,0)`) не считается.
-    """
-
-    text = _STRING.sub('""', (formula or "").lstrip("="))
-    depth = 0
-    outer = []
-    for char in text:
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-        elif depth == 0:
-            outer.append(char)
-    return bool(_COMPARISON.search("".join(outer)))

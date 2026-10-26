@@ -16,6 +16,10 @@ from finance_analysis.domain.book import SEP
 from finance_analysis.domain.periods import split_period_key
 
 SEVERITIES = ("info", "low", "medium", "high", "critical")
+# Наборы входов правила (`Rule.requires`): планировщик грузит только их.
+ROWS = frozenset({"rows", "periods", "facts"})
+ROWS_LINKS = ROWS | {"links"}
+ROWS_COUNTERS = ROWS | {"counters"}
 ERROR_CLASSES = frozenset({"mechanical", "logic", "omission", "quantitative", "qualitative"})
 LOCATIONS_MAX = 32
 
@@ -159,6 +163,13 @@ class AuditInput:
         }
 
     @cached_property
+    def cycles(self) -> list[tuple[str, ...]]:
+        """Сильно связные компоненты графа формул: ячейки циклов, по возрастанию."""
+
+        edges = {cell: [ref for ref in link.refs if ref in self.link_cells] for cell, link in self.link_cells.items()}
+        return strongly_connected(edges)
+
+    @cached_property
     def ordinals(self) -> dict[str, int]:
         return axis_ordinals([period["axis_id"] for period in self.periods])
 
@@ -252,3 +263,73 @@ class Rule:
             truncated=truncated or len(located) > LOCATIONS_MAX,
             basis=self.basis,
         )
+
+
+def strongly_connected(edges: dict[str, list[str]]) -> list[tuple[str, ...]]:
+    """Тарьян без рекурсии. Компонента — цикл, если в ней ≥ 2 ячеек или петля."""
+
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    found: list[tuple[str, ...]] = []
+    counter = 0
+    for root in sorted(edges):
+        if root in index:
+            continue
+        work = [(root, iter(edges.get(root, ())))]
+        index[root] = low[root] = counter
+        counter += 1
+        stack.append(root)
+        on_stack.add(root)
+        while work:
+            node, children = work[-1]
+            advanced = False
+            for child in children:
+                if child not in index:
+                    index[child] = low[child] = counter
+                    counter += 1
+                    stack.append(child)
+                    on_stack.add(child)
+                    work.append((child, iter(edges.get(child, ()))))
+                    advanced = True
+                    break
+                if child in on_stack:
+                    low[node] = min(low[node], index[child])
+            if advanced:
+                continue
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                low[parent] = min(low[parent], low[node])
+            if low[node] == index[node]:
+                members = []
+                while True:
+                    item = stack.pop()
+                    on_stack.discard(item)
+                    members.append(item)
+                    if item == node:
+                        break
+                if len(members) > 1 or node in edges.get(node, ()):
+                    found.append(tuple(sorted(members)))
+    return sorted(found, key=lambda item: (len(item), item))
+
+
+def group_cells(locations: Iterable[Location]) -> dict[tuple, list[Location]]:
+    """Ячейки по (строка, ось). Ячейка вне строк книги — своя группа."""
+
+    grouped: dict[tuple, list[Location]] = {}
+    for location in locations:
+        if location.row_key is None:
+            key: tuple = ("cell", location.cell_id)
+        else:
+            key = ("row", location.row_key, location.axis_id)
+        grouped.setdefault(key, []).append(location)
+    return grouped
+
+
+def grouped_finding(rule: Rule, data: AuditInput, key: tuple, cells: list[Location], **kwargs) -> Finding:
+    ordered = sorted(cells, key=lambda item: item.cell_id or "")
+    if key[0] == "cell":
+        return rule.finding(data, locations=ordered, subject=f"cell:{key[1]}", **kwargs)
+    return rule.finding(data, locations=ordered, row_key=key[1], axis_id=key[2], **kwargs)
