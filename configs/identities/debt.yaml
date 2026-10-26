@@ -1,0 +1,3 @@
+# Тождества для lf.identity (§5.11.1): левая часть = сумма правых, слагаемые привязаны людьми.
+identities:
+  debt_service: [interest, principal]

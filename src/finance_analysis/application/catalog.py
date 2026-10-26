@@ -55,3 +55,17 @@ def load_catalog(path: Path | None = None) -> GlossaryPackage:
         document["glossaries"],
         document["dictionaries"],
     )
+
+
+def load_identities(path: Path | None = None) -> dict[str, list[str]]:
+    """Тождества для lf.identity из configs/identities/*.yaml (§5.11.1)."""
+
+    folder = path or catalog_file().parent.parent / "identities"
+    found: dict[str, list[str]] = {}
+    if not folder.is_dir():
+        return found
+    for file in sorted(folder.glob("*.yaml")):
+        document = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+        for left, parts in (document.get("identities") or {}).items():
+            found[check_concept_id(str(left))] = [check_concept_id(str(part)) for part in parts]
+    return found

@@ -17,7 +17,7 @@ from taskiq.kicker import AsyncKicker
 from finance_analysis.adapters.queue import runtime as runtime_mod
 from finance_analysis.adapters.queue.fairness import complete as fair_complete
 from finance_analysis.adapters.queue.isolated import run_isolated
-from finance_analysis.adapters.queue.names import DLQ, INTERACTIVE, MAINTENANCE
+from finance_analysis.adapters.queue.names import BATCH, DLQ, INTERACTIVE, MAINTENANCE
 from finance_analysis.adapters.queue.retry import full_jitter
 from finance_analysis.application.gc import gc_incomplete
 from finance_analysis.application.operations import append_event, is_terminal, read_op
@@ -35,9 +35,12 @@ def _rt():
     return runtime_mod.RUNTIME
 
 
-def register_tasks(broker, *, schedules: bool, cron: str) -> None:
+def register_tasks(broker, *, schedules: bool, cron: str, settings=None) -> None:
+    from finance_analysis.adapters.queue.learning_tasks import register_learning
+
     broker.register_task(run_operation, task_name=RUN_TASK)
     labels = {"queue_name": MAINTENANCE}
+    register_learning(broker, schedules=schedules, settings=settings, batch=BATCH, maintenance=MAINTENANCE)
     if schedules:
         broker.register_task(gc_builds, task_name=GC_TASK, schedule=[{"cron": cron}], **labels)
         broker.register_task(

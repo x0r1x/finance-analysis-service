@@ -43,7 +43,7 @@ def build_broker(
     broker.add_middlewares(
         FasRetryMiddleware(settings=settings, schedule_source=schedule, on_exhausted=exhausted)
     )
-    register_tasks(broker, schedules=schedules, cron=settings.gc_cron)
+    register_tasks(broker, schedules=schedules, cron=settings.gc_cron, settings=settings)
     return broker
 
 
