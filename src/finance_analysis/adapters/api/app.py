@@ -264,13 +264,15 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
             app.state.inflight -= 1
 
     @app.get("/v1/books/{job_id}")
-    async def get_book(job_id: str, request: Request):
+    async def get_book(job_id: str, request: Request, min_state_seq: int | None = None):
         checked = check_job(job_id)
         actor = _actor(request)
         await _limited(request, actor)
         try:
             async with _support().user_inflight(actor):
-                view = await _svc().book_view(checked, actor, wait_sec=settings.load_sync_sec)
+                view = await _svc().book_view(
+                    checked, actor, wait_sec=settings.load_sync_sec, min_state_seq=min_state_seq,
+                )
         finally:
             app.state.inflight -= 1
         if isinstance(view, Accepted):
@@ -338,7 +340,12 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
 
     @app.post("/v1/books/{job_id}/decisions")
     async def decisions(job_id: str, request: Request):
-        return await _calc(job_id, request, _svc().submit_decisions)
+        header = request.headers.get("if-match")
+
+        async def method(checked, body, actor, *, wait_sec: float):
+            return await _svc().submit_decisions(checked, body, actor, wait_sec=wait_sec, if_match=header)
+
+        return await _calc(job_id, request, method)
 
     @app.post("/v1/books/{job_id}/analyses")
     async def run_analysis(job_id: str, request: Request):
@@ -434,6 +441,10 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
                 return await _svc().cancel_op(op_id, actor)
         finally:
             app.state.inflight -= 1
+
+    from finance_analysis.adapters.api.route import register as register_routes
+
+    register_routes(app, settings, actor=_actor, limited=_limited, svc=_svc, support=_support)
 
     wrapped = CancelOnDisconnect(app)
     wrapped.fastapi = app

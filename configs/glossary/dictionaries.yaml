@@ -1,0 +1,8 @@
+# Тот же набор, что MARKER_* в domain/periods.py. Домен файл не читает.
+flows:
+  inflow: [приток, поступление, inflow, receipt, receipts]
+  outflow: [отток, выплата, платеж, outflow, payment, payments]
+markers:
+  actual: [факт, actual, a, act, ф]
+  plan: [план, plan, budget, b, бюджет]
+  estimate: [e, ожид, expected, estimate, est, прогноз, forecast]

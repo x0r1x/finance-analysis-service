@@ -1,0 +1,10 @@
+concept: interest
+pref:
+  en: "Interest"
+  ru: "Проценты"
+alt:
+  en: ["interest expense"]
+  ru: ["процентные платежи"]
+definition:
+  en: "Scheduled interest"
+  ru: "Плановые проценты"

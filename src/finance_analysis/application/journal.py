@@ -12,6 +12,10 @@ from finance_analysis.domain.errors import AlreadyExists, BindingConflict, NotFo
 from finance_analysis.domain.state import fold
 
 
+def _slot(event_type: str, target: str) -> str:
+    return f"{event_type}\x1f{target}"
+
+
 class Journal:
     def __init__(self, store) -> None:
         self.store = store
@@ -62,7 +66,7 @@ class Journal:
             event = json.loads(raw)
             target = event.get("target") or event.get("binding_key")
             if target:
-                bucket[str(target)] = int(event["seq"])
+                bucket[_slot(event.get("type") or "", str(target))] = int(event["seq"])
             self._remember(job_id, event)
         self._last[job_id] = last
 
@@ -91,7 +95,7 @@ class Journal:
         found = self._values.get(job_id, {}).get((target, event_type, canon))
         if found is None:
             return None
-        if self._keys.get(job_id, {}).get(target) != found.get("seq"):
+        if self._keys.get(job_id, {}).get(_slot(event_type, target)) != found.get("seq"):
             return None
         return found
 
@@ -132,6 +136,8 @@ class Journal:
         expected_seq: int | None,
         request_id: str,
         at_utc: datetime | None = None,
+        binding_key: str | None = None,
+        supersedes: dict | None = None,
     ) -> tuple[dict, bool]:
         """Проверка дубля и запись под одним замком. Второй элемент — duplicate."""
 
@@ -157,6 +163,8 @@ class Journal:
                         expected_seq=expected_seq,
                         request_id=request_id,
                         at_utc=at_utc,
+                        binding_key=binding_key,
+                        supersedes=supersedes,
                     )
                 except AlreadyExists:
                     self._last[job_id] = 0
@@ -175,8 +183,10 @@ class Journal:
         expected_seq: int | None,
         request_id: str,
         at_utc: datetime | None,
+        binding_key: str | None = None,
+        supersedes: dict | None = None,
     ) -> dict:
-        actual = self._keys.get(job_id, {}).get(target)
+        actual = self._keys.get(job_id, {}).get(_slot(event_type, target))
         if actual != expected_seq:
             current = None
             if actual:
@@ -190,19 +200,21 @@ class Journal:
             "seq": seq,
             "type": event_type,
             "target": target,
-            "binding_key": target,
+            "binding_key": binding_key or target,
             "value": value,
             "actor": {"user_id": actor.user_id, "client_id": actor.client_id},
             "expected_seq": expected_seq,
             "request_id": request_id,
             "at_utc": (at_utc or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        if supersedes is not None:
+            event["supersedes"] = supersedes
         await self.store.put_if_absent(
             log_key(job_id, seq),
             json.dumps(event, ensure_ascii=False).encode(),
         )
         self._last[job_id] = seq
-        self._keys.setdefault(job_id, {})[target] = seq
+        self._keys.setdefault(job_id, {})[_slot(event_type, target)] = seq
         self._remember(job_id, event)
         return event
 

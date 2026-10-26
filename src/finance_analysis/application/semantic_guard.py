@@ -61,6 +61,8 @@ class SemanticWriteGuard:
         at_utc: datetime | None = None,
         concept: str | None = None,
         known_targets: frozenset[str] | None = None,
+        binding_key: str | None = None,
+        supersedes: dict | None = None,
     ) -> WriteResult:
         verdict = check_event(
             event_type=event_type,
@@ -80,6 +82,8 @@ class SemanticWriteGuard:
             expected_seq=expected_seq,
             request_id=request_id,
             at_utc=at_utc,
+            binding_key=binding_key,
+            supersedes=supersedes,
         )
         return WriteResult(True, duplicate=duplicate, event=event)
 
@@ -97,6 +101,8 @@ class SemanticWriteGuard:
         known_targets: frozenset[str] | None = None,
         phase_order: list[tuple[int, str]] | None = None,
         concept_taken: bool = False,
+        binding_key: str | None = None,
+        supersedes: dict | None = None,
     ) -> WriteResult:
         if event_type == "phase.set":
             verdict = check_phase_value(value)
@@ -106,7 +112,7 @@ class SemanticWriteGuard:
                 verdict = check_phase_order(phase_order)
                 if not verdict.accepted:
                     return WriteResult(False, code=verdict.code, detail=verdict.detail)
-        if event_type in {"concept.set", "concept.confirmed"} and concept_taken:
+        if event_type in {"concept.set", "concept.confirmed"} and concept_taken and not supersedes:
             return WriteResult(False, code="supersede_required", detail="понятие уже привязано")
         return await self.append(
             job_id,
@@ -118,6 +124,8 @@ class SemanticWriteGuard:
             request_id=request_id,
             concept=concept,
             known_targets=known_targets,
+            binding_key=binding_key,
+            supersedes=supersedes,
         )
 
     def review_derived(self, tables: dict, *, row_keys: frozenset[str]) -> Verdict:

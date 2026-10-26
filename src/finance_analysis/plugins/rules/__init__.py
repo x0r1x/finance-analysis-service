@@ -16,6 +16,11 @@ from finance_analysis.plugins.rules.formulas import (
     NESTED_IF,
     OFFSET_INDIRECT_USED,
 )
+from finance_analysis.plugins.rules.ratios import (
+    MARKER_MIX,
+    RATIO_MISMATCH,
+    UNMAPPED_IN_METRIC_CHAIN,
+)
 from finance_analysis.plugins.rules.refs import (
     DANGLING_REF,
     EXTERNAL_REF,
@@ -40,6 +45,9 @@ RULES = (
     EXCEL_NPV_USED,
     NESTED_IF,
     LONG_FORMULA,
+    RATIO_MISMATCH,
+    MARKER_MIX,
+    UNMAPPED_IN_METRIC_CHAIN,
 )
 
 __all__ = ["RULES"]

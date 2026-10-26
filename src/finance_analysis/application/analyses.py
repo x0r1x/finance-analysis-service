@@ -42,9 +42,11 @@ from finance_analysis.domain.errors import (
 from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
 from finance_analysis.domain.ids import ulid as check_ulid
+from finance_analysis.domain.metrics import coverage_ratio
 
-# Типы из §3.2 и фаза, в которой они появляются (§12).
-LATER_TYPES = {"ratios": 2, "impact": 4, "full": 4}
+# Типы из §3.2 и фаза, в которой они появляются (§12). ratios — эта фаза.
+LATER_TYPES = {"impact": 4, "full": 4}
+RATIO_METRICS = ("dscr", "icr")
 # `scope` из §3.2: списки и одиночные значения.
 SCOPE_LISTS = ("sheets", "row_keys", "markers", "concepts")
 SCOPE_TEXT = ("axis_id", "period_from", "period_to")
@@ -73,6 +75,22 @@ def _decimal_text(value) -> str | None:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text
+
+
+def _pinned(target) -> Head:
+    derive = target.head.derive_key if target.build == target.head.build_key else target.derived
+    if not derive:
+        raise NotFound("производное состояние сборки не найдено")
+    if target.build == target.head.build_key:
+        return target.head
+    return Head(
+        build_key=target.build,
+        state_seq=target.head.state_seq,
+        derive_key=derive,
+        versions=target.head.versions,
+        mdl_version=target.head.mdl_version,
+        fence=target.head.fence,
+    )
 
 
 @dataclass(frozen=True)
@@ -343,18 +361,34 @@ class Analyses:
         for row in dim_rows:
             raw = row.get("formula_exceptions_json")
             row["formula_exceptions"] = json.loads(raw) if raw else []
+        periods = await rows("dim_period")
+        bindings: list[dict] = []
+        try:
+            pinned = _pinned(target)
+            bindings = await self.service._dataset_rows(job_id, pinned, "bindings")
+            semantics = await self.service._dataset_rows(job_id, pinned, "period_semantics")
+        except (NotFound, StopIteration):
+            semantics = []
+        phases = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics if row.get("phase")}
+        for period in periods:
+            phase = phases.get((period["axis_id"], period["period_id"]))
+            if phase:
+                period["phase"] = phase
         return AuditInput(
             rows=dim_rows,
-            periods=await rows("dim_period"),
+            periods=periods,
             facts=await rows("fact_observation"),
             links=await rows("graph_links") if "links" in needed else [],
             counters=dict(target.manifest.get("builder_counters") or {}),
+            bindings=bindings,
         )
 
     async def run(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
 
         kind = body.get("type")
+        if kind == "ratios":
+            return await self._ratios(job_id, body, actor, wait_sec=wait_sec)
         if kind in LATER_TYPES:
             raise InvalidArgument(
                 f"type={kind} появится в фазе {LATER_TYPES[kind]}",
@@ -380,11 +414,186 @@ class Analyses:
         except TimeoutError:
             return await self._defer(job_id, actor, analysis_id, work)
 
-    async def _defer(self, job_id: str, actor: Actor, analysis_id: str, work: asyncio.Task):
+    async def _ratios(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
+        from finance_analysis.application.service import Accepted
+
+        metrics = body.get("metrics")
+        if not isinstance(metrics, list) or not metrics:
+            raise InvalidArgument("нужен список metrics", extra={"supported": list(RATIO_METRICS)})
+        unknown = [item for item in metrics if item not in RATIO_METRICS]
+        if unknown:
+            raise InvalidArgument("неизвестная метрика", extra={"supported": list(RATIO_METRICS), "metrics": unknown})
+        target = await self._target(job_id, actor, body.get("build_key"), wait_sec=wait_sec)
+        if isinstance(target, Accepted):
+            return target
+        analysis_id = str(ULID())
+        work = self.service.spawn(self._execute_ratios(job_id, target, analysis_id, list(metrics), actor))
+        wide = False
+        try:
+            periods = await self.service._dataset_rows(job_id, target.head, "dim_period")
+            wide = len(periods) > self.service.settings.sync_max_periods
+        except (NotFound, StopIteration):
+            wide = False
+        if body.get("async") is True or wide:
+            return await self._defer(job_id, actor, analysis_id, work, kind="ratios")
+        budget = max(0.1, min(wait_sec, self.service.settings.sync_deadline_ms / 1000) * 0.8)
+        try:
+            return await asyncio.wait_for(asyncio.shield(work), timeout=budget)
+        except TimeoutError:
+            return await self._defer(job_id, actor, analysis_id, work, kind="ratios")
+
+    async def _execute_ratios(self, job_id: str, target: Target, analysis_id: str, metrics: list[str], actor: Actor) -> dict:
+        started = _now()
+        svc = self.service
+        head = target.head
+        pinned = _pinned(target)
+        bindings = await svc._dataset_rows(job_id, pinned, "bindings")
+        facts = await svc._dataset_rows(job_id, pinned, "fact_observation")
+        periods = await svc._dataset_rows(job_id, pinned, "dim_period")
+        try:
+            semantics = await svc._dataset_rows(job_id, pinned, "period_semantics")
+        except (NotFound, StopIteration):
+            semantics = []
+        phase_of = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics}
+        explicit = any(phase_of.values())
+        profile = head.versions.get("profile") or ""
+        profile_id = profile.split("@", 1)[0] if "@" in profile else None
+        body = await svc.glossary.profile_body(profile_id) if profile_id else None
+        convention = (body or {}).get("sign_convention") or "outflow_negative"
+        chosen_marker = (body or {}).get("marker_class")
+        computed = []
+        needs = []
+        warnings = []
+        for metric in metrics:
+            result = coverage_ratio(
+                metric=metric,
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                period_phase=phase_of,
+                explicit_phases=explicit,
+                sign_convention=convention,
+                marker_class=chosen_marker,
+            )
+            needs.extend(result["needs_input"])
+            warnings.extend(result["warnings"])
+            for row in result["rows"]:
+                computed.append({**row, "metric": metric})
+        text_rows = []
+        for row in computed:
+            value = row.get("value")
+            text_rows.append({**row, "value": _decimal_text(value), "value_f": None if value is None else float(value)})
+        envelope = {
+            "analysis_id": analysis_id,
+            "status": "succeeded",
+            "builder_ref": target.manifest.get("builder_ref"),
+            "versions": {**head.versions, "fas": FAS_VERSION, "state_seq": head.state_seq, "derive_key": target.derive_key},
+            "build_key": target.build,
+            "is_latest": target.is_latest,
+            "summary": {"code": "ratios_completed", "params": {"rows": len(computed)}, "text": None},
+            "result_data": {"findings": [], "ratios": text_rows, "series": [], "expression": None, "impact": None},
+            "tables": [],
+            "charts": [],
+            "citations": [],
+            "needs_input": needs,
+            "warnings": warnings,
+        }
+        stored = []
+        for row in computed:
+            value = row.get("value")
+            stored.append(
+                {
+                    "analysis_id": analysis_id,
+                    "model_id": job_id,
+                    "build_key": target.build,
+                    "state_seq": head.state_seq,
+                    "glossary_version": head.versions.get("glossary"),
+                    "metric": row["metric"],
+                    "axis_id": row["axis_id"],
+                    "period_id": row["period_id"],
+                    "period_key_base": row.get("period_key_base"),
+                    "period_marker": row.get("period_marker"),
+                    "value": value,
+                    "value_f": None if value is None else float(value),
+                    "status": row["status"],
+                    "reason": row.get("reason"),
+                    "inputs_json": json.dumps({"metric": row["metric"]}, sort_keys=True),
+                }
+            )
+        await self._save_tables(job_id, target, analysis_id, "ratios", {"ratios": stored}, envelope, actor, started)
+        return envelope
+
+    async def _save_tables(self, job_id, target: Target, analysis_id, kind, tables, envelope, actor, started) -> None:
+        svc = self.service
+        head = target.head
+        finished = _now()
+        run_row = {
+            "analysis_id": analysis_id,
+            "model_id": job_id,
+            "build_key": target.build,
+            "state_seq": head.state_seq,
+            "analysis_type": kind,
+            "status": envelope["status"],
+            "glossary_version": head.versions.get("glossary"),
+            "taxonomy_version": head.versions.get("taxonomy"),
+            "calibrator_version": head.versions.get("calibrator"),
+            "rules_version": "{}",
+            "metrics_version": kind,
+            "profile_id": head.versions.get("profile"),
+            "profile_version": head.versions.get("profile"),
+            "derive_key": target.derive_key,
+            "fas_version": FAS_VERSION,
+            "created_at_utc": started,
+            "finished_at_utc": finished,
+        }
+        files = {}
+        for dataset, rows in {**tables, "run": [run_row]}.items():
+            payload, count = await svc.parquet.write(dataset, rows, build_key=target.build)
+            name = f"{dataset}.parquet"
+            await self.store.put_if_absent(keys.result_key(job_id, target.build, analysis_id, name), payload)
+            files[keys.result_rel(analysis_id, name)] = {
+                "sha256": sha256_bytes(payload),
+                "rows": count,
+                "bytes": len(payload),
+                "schema": await svc.parquet.schema_tag(dataset),
+            }
+        marker = {
+            "analysis_id": analysis_id,
+            "analysis_type": kind,
+            "status": envelope["status"],
+            "build_key": target.build,
+            "state_seq": head.state_seq,
+            "derive_key": target.derive_key,
+            "created_at_utc": _stamp(started),
+            "finished_at_utc": _stamp(finished),
+            "files": files,
+            "result": envelope,
+        }
+        await self.store.put_if_absent(keys.result_key(job_id, target.build, analysis_id, "result.json"), _dumps(marker))
+        index = {
+            "analysis_id": analysis_id,
+            "analysis_type": kind,
+            "status": envelope["status"],
+            "build_key": target.build,
+            "state_seq": head.state_seq,
+            "derive_key": target.derive_key,
+            "issued_at": _stamp(finished),
+            "created_at_utc": _stamp(started),
+            "finding_count": 0,
+            "rules": [],
+            "actor": {"user_id": actor.user_id, "client_id": actor.client_id},
+            "revoked": False,
+        }
+        try:
+            await self.store.put_if_absent(keys.report_index_key(job_id, analysis_id), _dumps(index))
+        except AlreadyExists:
+            pass
+
+    async def _defer(self, job_id: str, actor: Actor, analysis_id: str, work: asyncio.Task, *, kind: str = "audit"):
         from finance_analysis.application.service import Accepted
 
         svc = self.service
-        op = await svc.create_op("analysis", job_id, actor, {"analysis_id": analysis_id, "type": "audit"})
+        op = await svc.create_op("analysis", job_id, actor, {"analysis_id": analysis_id, "type": kind})
 
         async def _finish() -> None:
             try:

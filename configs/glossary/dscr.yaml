@@ -1,0 +1,10 @@
+concept: dscr
+pref:
+  en: "Debt service coverage ratio"
+  ru: "Коэффициент покрытия долга"
+alt:
+  en: ["DSCR"]
+  ru: ["DSCR"]
+definition:
+  en: "CFADS divided by scheduled debt service"
+  ru: "CFADS, делённый на плановое обслуживание долга"

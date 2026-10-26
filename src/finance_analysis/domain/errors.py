@@ -70,10 +70,34 @@ class BuilderUnstable(FasError):
     title = "Builder пересобрал книгу во время загрузки"
 
 
+class PreconditionRequired(FasError):
+    code = "precondition_required"
+    status = 428
+    title = "Нужен If-Match"
+
+
 class PreconditionFailed(FasError):
     code = "precondition_failed"
     status = 412
     title = "Предусловие не выполнено"
+
+
+class Forbidden(FasError):
+    code = "admin_token_required"
+    status = 403
+    title = "Нужен токен администратора"
+
+
+class StaleParent(FasError):
+    code = "stale_parent"
+    status = 409
+    title = "Родитель релиза устарел"
+
+
+class ProposalDecided(FasError):
+    code = "proposal_decided"
+    status = 409
+    title = "Предложение уже решено"
 
 
 class IdempotencyReused(FasError):

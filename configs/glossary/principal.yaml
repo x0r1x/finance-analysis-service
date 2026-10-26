@@ -1,0 +1,10 @@
+concept: principal
+pref:
+  en: "Principal repayment"
+  ru: "Погашение основного долга"
+alt:
+  en: ["principal"]
+  ru: ["погашение долга"]
+definition:
+  en: "Scheduled principal repayment"
+  ru: "Плановое погашение основного долга"

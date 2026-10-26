@@ -6,9 +6,10 @@ import calendar
 import re
 from datetime import date, timedelta
 
-MARKER_ACTUAL = frozenset({"факт", "actual", "act", "ф"})
-MARKER_PLAN = frozenset({"план", "plan", "budget", "бюджет"})
-MARKER_ESTIMATE = frozenset({"e", "estimate", "est", "прогноз", "forecast"})
+# Те же токены, что configs/glossary/dictionaries.yaml. Домен не читает файл.
+MARKER_ACTUAL = frozenset({"факт", "actual", "a", "act", "ф"})
+MARKER_PLAN = frozenset({"план", "plan", "budget", "b", "бюджет"})
+MARKER_ESTIMATE = frozenset({"e", "ожид", "expected", "estimate", "est", "прогноз", "forecast"})
 
 _YEAR = re.compile(r"^(\d{4})$")
 _QUARTER = re.compile(r"^(\d{4})Q([1-4])$")

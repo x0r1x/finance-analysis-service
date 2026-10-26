@@ -10,7 +10,7 @@ from finance_analysis.domain.ids import ulid as check_ulid
 
 PROJECTION = {"dim_row", "dim_period", "fact_observation", "graph_links"}
 DERIVED = {"row_semantics", "period_semantics", "bindings", "coverage"}
-RESULT_FILES = {"result.json", "run.parquet", "findings.parquet"}
+RESULT_FILES = {"result.json", "run.parquet", "findings.parquet", "ratios.parquet"}
 
 
 def book(job_id: str) -> str:

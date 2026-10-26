@@ -80,10 +80,10 @@ async def test_series_and_expression_match_excel_cache(app):
         )
         assert resolved.status_code == 200, resolved.text
         resolved_body = resolved.json()
-        assert resolved_body["periods"] == []
-        assert resolved_body["needs_input"] == [
-            {"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}
-        ]
+        assert resolved_body["needs_input"] == []
+        assert resolved_body["periods"][0]["period_id"] == "Y5"
+        assert resolved_body["periods"][0]["basis"] == "nonzero_debt_service"
+        assert resolved_body["periods"][0]["reason"] == "no_calendar_anchor"
         assert all(item["kind"] != "phase" for item in resolved_body["needs_input"])
         sliced = await client.post(
             f"/v1/books/{JOB}/slice",

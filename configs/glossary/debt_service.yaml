@@ -1,0 +1,10 @@
+concept: debt_service
+pref:
+  en: "Debt service"
+  ru: "Обслуживание долга"
+alt:
+  en: ["scheduled debt service"]
+  ru: ["платежи по долгу"]
+definition:
+  en: "Scheduled interest and scheduled principal"
+  ru: "Плановые проценты и плановое погашение"
