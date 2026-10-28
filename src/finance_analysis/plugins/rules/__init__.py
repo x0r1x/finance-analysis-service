@@ -1,6 +1,12 @@
-"""Правила аудита фазы 1 (§6.1): формулы, ссылки, циклы, проверки."""
+"""Правила аудита (§6.1): фаза 1 — формулы, ссылки, циклы, проверки; фаза 2 — граф,
+строки, единицы, периоды, корпус, знак; фаза 3 — коэффициенты."""
 
 from finance_analysis.plugins.rules.checks import CHECK_FAILURE, NO_MASTER_CHECK
+from finance_analysis.plugins.rules.coverage import (
+    MISSING_TOTAL_ROW,
+    PERIOD_GRAIN_MISMATCH,
+    SCULPTING_DEVIATION,
+)
 from finance_analysis.plugins.rules.cycles import (
     ITERATIVE_CALC_ENABLED,
     ITERATIVE_CYCLE_WITHOUT_ITERATE,
@@ -26,6 +32,23 @@ from finance_analysis.plugins.rules.refs import (
     EXTERNAL_REF,
     UNRESOLVED_REF,
 )
+from finance_analysis.plugins.rules.structure import (
+    CROSS_SHEET_INCONSISTENCY,
+    DAISY_CHAIN,
+    DUPLICATE_LABEL,
+    FORMULA_CLASS_MISMATCH,
+    HARDCODED_VALUE_IN_FORMULA_ROW,
+    HIDDEN_USED_IN_CALC,
+    MISSING_UNIT,
+    PARTIAL_RANGE_REFERENCE,
+    PERIOD_GAP,
+    ROLLFORWARD_BREAK,
+    ROW_TOTAL_IN_LOGIC,
+    SCALE_MISMATCH,
+    SIGN_ANOMALY,
+    SIGN_CONVENTION_MIXED,
+    UNIT_MISMATCH,
+)
 
 # Порядок — как в таблице §6.1.
 RULES = (
@@ -45,8 +68,26 @@ RULES = (
     EXCEL_NPV_USED,
     NESTED_IF,
     LONG_FORMULA,
+    DAISY_CHAIN,
+    PARTIAL_RANGE_REFERENCE,
+    ROW_TOTAL_IN_LOGIC,
+    HIDDEN_USED_IN_CALC,
+    DUPLICATE_LABEL,
+    MISSING_UNIT,
+    HARDCODED_VALUE_IN_FORMULA_ROW,
+    SCALE_MISMATCH,
+    UNIT_MISMATCH,
+    PERIOD_GAP,
+    ROLLFORWARD_BREAK,
+    SIGN_ANOMALY,
+    SIGN_CONVENTION_MIXED,
+    CROSS_SHEET_INCONSISTENCY,
+    FORMULA_CLASS_MISMATCH,
     RATIO_MISMATCH,
+    SCULPTING_DEVIATION,
     MARKER_MIX,
+    PERIOD_GRAIN_MISMATCH,
+    MISSING_TOTAL_ROW,
     UNMAPPED_IN_METRIC_CHAIN,
 )
 

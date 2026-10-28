@@ -207,6 +207,16 @@ class GlossaryStore:
         names = sorted(str(name) for name in (document.get("concepts") or {}))
         return {"concepts": names, "state": state_of(await self.ensure())}
 
+    async def composition(self, version: str | None) -> dict[str, tuple[str, ...]]:
+        """Состав понятий (`composition`, §5.1) релиза, с которым построено состояние книги."""
+
+        try:
+            document = await self._document(version) if version else await self._active_document()
+        except NotFound:
+            document = await self._active_document()
+        concepts = package_of(document).concepts
+        return {name: concept.composition for name, concept in concepts.items() if concept.composition}
+
     async def list_profiles(self) -> dict:
         found = []
         async for item in self.store.list("profiles/"):
