@@ -32,6 +32,16 @@ from finance_analysis.domain.book import (
     ReportNotReady,
     sha256_bytes,
 )
+from finance_analysis.domain.cover_metrics import (
+    BASES,
+    DIRECTIONS,
+    LOAN_LIFE,
+    METRIC_INPUTS,
+    REDUCED,
+    adscr,
+    dscr_reductions,
+    loan_life_ratio,
+)
 from finance_analysis.domain.errors import (
     AlreadyExists,
     DependencyUnavailable,
@@ -42,11 +52,18 @@ from finance_analysis.domain.errors import (
 from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
 from finance_analysis.domain.ids import ulid as check_ulid
+from finance_analysis.domain.mapping import absent_in_journal
 from finance_analysis.domain.metrics import coverage_ratio
+from finance_analysis.plugins.rules.coverage import (
+    MISSING_TOTAL_ROW,
+    PERIOD_GRAIN_MISMATCH,
+)
 
 # Типы из §3.2 и фаза, в которой они появляются (§12). ratios — эта фаза.
 LATER_TYPES = {"impact": 4, "full": 4}
-RATIO_METRICS = ("dscr", "icr")
+RATIO_METRICS = ("dscr", "icr", "adscr", "dscr_min", "dscr_avg", "llcr", "plcr")
+# Поля строки метрики, которые уходят в `inputs_json` результата.
+RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs")
 # `scope` из §3.2: списки и одиночные значения.
 SCOPE_LISTS = ("sheets", "row_keys", "markers", "concepts")
 SCOPE_TEXT = ("axis_id", "period_from", "period_to")
@@ -336,6 +353,8 @@ class Analyses:
         derived = None
         if build != head.build_key:
             derived = await self._derived_at(job_id, build, head.state_seq)
+            if derived is None and head.derive_key:
+                derived = await svc.derive_for_build(job_id, head, build)
         return Target(head=head, build=build, manifest=manifest, fresh=fresh, derived=derived)
 
     async def _derived_at(self, job_id: str, build: str, state_seq: int) -> str | None:
@@ -363,10 +382,13 @@ class Analyses:
             row["formula_exceptions"] = json.loads(raw) if raw else []
         periods = await rows("dim_period")
         bindings: list[dict] = []
+        row_semantics: list[dict] = []
         try:
             pinned = _pinned(target)
             bindings = await self.service._dataset_rows(job_id, pinned, "bindings")
             semantics = await self.service._dataset_rows(job_id, pinned, "period_semantics")
+            if "semantics" in needed:
+                row_semantics = await self.service._dataset_rows(job_id, pinned, "row_semantics")
         except (NotFound, StopIteration):
             semantics = []
         phases = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics if row.get("phase")}
@@ -381,7 +403,24 @@ class Analyses:
             links=await rows("graph_links") if "links" in needed else [],
             counters=dict(target.manifest.get("builder_counters") or {}),
             bindings=bindings,
+            semantics=row_semantics,
+            composition=await self.service.glossary.composition(target.head.versions.get("glossary")),
+            profile=await self._profile(target.head),
+            absent=await self._absent(job_id, target),
         )
+
+    async def _absent(self, job_id: str, target: Target) -> frozenset[str]:
+        """`concept.absent` журнала на закреплённом `state_seq` (ключ — книга и понятие, §5.10.5)."""
+
+        events = await self.service.guard.read_all(job_id)
+        return absent_in_journal([event for event in events if int(event["seq"]) <= target.head.state_seq])
+
+    async def _profile(self, head: Head) -> dict:
+        """Тело профиля книги: знак, маркер, варианты ADSCR и LLCR (§5.7)."""
+
+        profile = head.versions.get("profile") or ""
+        profile_id = profile.split("@", 1)[0] if "@" in profile else None
+        return (await self.service.glossary.profile_body(profile_id) if profile_id else None) or {}
 
     async def run(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
@@ -442,10 +481,10 @@ class Analyses:
         except TimeoutError:
             return await self._defer(job_id, actor, analysis_id, work, kind="ratios")
 
-    async def _execute_ratios(self, job_id: str, target: Target, analysis_id: str, metrics: list[str], actor: Actor) -> dict:
-        started = _now()
+    async def compute_metrics(self, job_id: str, target: Target, metrics: list[str]) -> dict:
+        """Строки метрик на закреплённой сборке и состоянии; общий код `ratios` и `:compare`."""
+
         svc = self.service
-        head = target.head
         pinned = _pinned(target)
         bindings = await svc._dataset_rows(job_id, pinned, "bindings")
         facts = await svc._dataset_rows(job_id, pinned, "fact_observation")
@@ -456,33 +495,63 @@ class Analyses:
             semantics = []
         phase_of = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics}
         explicit = any(phase_of.values())
-        profile = head.versions.get("profile") or ""
-        profile_id = profile.split("@", 1)[0] if "@" in profile else None
-        body = await svc.glossary.profile_body(profile_id) if profile_id else None
-        convention = (body or {}).get("sign_convention") or "outflow_negative"
-        chosen_marker = (body or {}).get("marker_class")
+        body = await self._profile(target.head)
+        direction = body.get("adscr_direction") or "lookback"
+        basis = body.get("llcr_basis") or "period_end"
+        if direction not in DIRECTIONS or basis not in BASES:
+            raise InvalidArgument(
+                "профиль: adscr_direction или llcr_basis вне списка",
+                extra={"directions": list(DIRECTIONS), "bases": list(BASES)},
+            )
+        common = {
+            "facts": facts,
+            "bindings": bindings,
+            "periods": periods,
+            "period_phase": phase_of,
+            "explicit_phases": explicit,
+            "sign_convention": body.get("sign_convention") or "outflow_negative",
+            "marker_class": body.get("marker_class"),
+            "absent": await self._absent(job_id, target),
+        }
         computed = []
         needs = []
         warnings = []
         for metric in metrics:
-            result = coverage_ratio(
-                metric=metric,
-                facts=facts,
-                bindings=bindings,
-                periods=periods,
-                period_phase=phase_of,
-                explicit_phases=explicit,
-                sign_convention=convention,
-                marker_class=chosen_marker,
-            )
+            if metric in LOAN_LIFE:
+                result = loan_life_ratio(metric, basis=basis, **common)
+            elif metric in REDUCED:
+                result = dscr_reductions(metric, **common)
+            elif metric == "adscr":
+                result = adscr(direction=direction, **common)
+            else:
+                result = coverage_ratio(metric=metric, **common)
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
-            for row in result["rows"]:
-                computed.append({**row, "metric": metric})
+            computed.extend({**row, "metric": metric} for row in result["rows"])
+        return {
+            "rows": computed,
+            "needs_input": needs,
+            "warnings": warnings,
+            "bindings": bindings,
+            "facts": facts,
+            "periods": periods,
+            "phase_of": phase_of,
+            "profile": body,
+            "absent": common["absent"],
+        }
+
+    async def _execute_ratios(self, job_id: str, target: Target, analysis_id: str, metrics: list[str], actor: Actor) -> dict:
+        started = _now()
+        head = target.head
+        got = await self.compute_metrics(job_id, target, metrics)
+        computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows = []
         for row in computed:
             value = row.get("value")
             text_rows.append({**row, "value": _decimal_text(value), "value_f": None if value is None else float(value)})
+        attached = await self._metric_findings(
+            job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
+        )
         envelope = {
             "analysis_id": analysis_id,
             "status": "succeeded",
@@ -491,7 +560,13 @@ class Analyses:
             "build_key": target.build,
             "is_latest": target.is_latest,
             "summary": {"code": "ratios_completed", "params": {"rows": len(computed)}, "text": None},
-            "result_data": {"findings": [], "ratios": text_rows, "series": [], "expression": None, "impact": None},
+            "result_data": {
+                "findings": [item.as_dict(target.manifest.get("builder_ref")) for item in attached],
+                "ratios": text_rows,
+                "series": [],
+                "expression": None,
+                "impact": None,
+            },
             "tables": [],
             "charts": [],
             "citations": [],
@@ -517,11 +592,47 @@ class Analyses:
                     "value_f": None if value is None else float(value),
                     "status": row["status"],
                     "reason": row.get("reason"),
-                    "inputs_json": json.dumps({"metric": row["metric"]}, sort_keys=True),
+                    "variant": row.get("variant"),
+                    "inputs_json": json.dumps(
+                        {"metric": row["metric"], **{name: row[name] for name in RATIO_EXTRAS if row.get(name) is not None}},
+                        sort_keys=True,
+                    ),
                 }
             )
         await self._save_tables(job_id, target, analysis_id, "ratios", {"ratios": stored}, envelope, actor, started)
         return envelope
+
+    async def _metric_findings(
+        self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent
+    ) -> list[Finding]:
+        """Находки, которые прикрепляются к результату метрики (§6.2): статус метрики они не меняют.
+
+        `period_grain_mismatch` — к метрикам семейства DSCR; `missing_total_row` —
+        если понятие, нужное запрошенной метрике, отмечено `concept.absent`.
+        """
+
+        wanted = set(metrics)
+        rules = []
+        if wanted & set(METRIC_INPUTS["debt_service"]):
+            rules.append(PERIOD_GRAIN_MISMATCH)
+        absent_needed = {concept for concept, users in METRIC_INPUTS.items() if wanted & set(users)}
+        if absent_needed:
+            rules.append(MISSING_TOTAL_ROW)
+        if not rules:
+            return []
+        dim_rows = await self.service._dataset_rows(job_id, _pinned(target), "dim_row")
+        staged = [{**period, "phase": phase_of.get((period["axis_id"], period["period_id"]))} for period in periods]
+        data = AuditInput(
+            rows=dim_rows,
+            periods=staged,
+            facts=facts,
+            bindings=bindings,
+            composition=await self.service.glossary.composition(target.head.versions.get("glossary")),
+            profile=profile or {},
+            absent=absent,
+        )
+        found = run_rules(rules, data)
+        return [item for item in found if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]
 
     async def _save_tables(self, job_id, target: Target, analysis_id, kind, tables, envelope, actor, started) -> None:
         svc = self.service

@@ -24,6 +24,7 @@ from finance_analysis.application.builds import (
 )
 from finance_analysis.application.calibrators import CalibratorStore
 from finance_analysis.application.catalog import load_catalog, load_identities
+from finance_analysis.application.compare import Comparisons
 from finance_analysis.application.evaluation import Evaluator
 from finance_analysis.application.examples import ExampleStore
 from finance_analysis.application.gc import gc_incomplete
@@ -239,6 +240,7 @@ class FasService:
         self.draining = False
         self.glossary_seen = ""
         self.analyses = Analyses(self)
+        self.compare = Comparisons(self.analyses)
         self.models = models or Models()
         self.examples = ExampleStore(
             store, parquet, vector_index, model=settings.embed_model if self.models.embed else "", refresh_sec=settings.examples_refresh_sec
@@ -457,6 +459,57 @@ class FasService:
             await self.store.put_if_match(keys.head_key(job_id), _dumps(new_head), token)
         return derive
 
+    async def derive_for_build(self, job_id: str, head: Head, build: str) -> str:
+        """Производное состояние прошлой сборки на текущем `state_seq` (§3.2 «Выбор сборки»).
+
+        Подтверждения хранятся по `binding_key`, поэтому журнал книги
+        применяется к строкам той сборки. `derive_key` от сборки не зависит:
+        папка `derived/{derive_key}` пишется в каталог прошлой сборки,
+        `_head.json` не меняется.
+        """
+
+        past = Head(
+            build_key=build,
+            state_seq=head.state_seq,
+            derive_key=head.derive_key,
+            versions=head.versions,
+            mdl_version=head.mdl_version,
+            fence=head.fence,
+        )
+        projected = {
+            "dim_row": await self._dataset_rows(job_id, past, "dim_row"),
+            "dim_period": await self._dataset_rows(job_id, past, "dim_period"),
+        }
+        facts = await self._dataset_rows(job_id, past, "fact_observation")
+        events = [event for event in await self.guard.read_all(job_id) if int(event["seq"]) <= head.state_seq]
+        derived = await self._derive(
+            job_id,
+            projected,
+            state_seq=head.state_seq,
+            derive=head.derive_key,
+            versions=dict(head.versions),
+            events=events,
+            facts=facts,
+            links=None,
+            learn=False,
+        )
+        attempt = str(ULID())
+        files = await self.guard.persist_derived(
+            job_id=job_id,
+            build=build,
+            derive=head.derive_key,
+            attempt=attempt,
+            tables=derived,
+            parquet=self.parquet,
+            row_keys=frozenset(row["row_key"] for row in projected["dim_row"]),
+        )
+        done = {"derive_key": head.derive_key, "state_seq": head.state_seq, "attempt": attempt, "files": files}
+        try:
+            await self.store.put_if_absent(keys.derived_done(job_id, build, head.derive_key), _dumps(done))
+        except AlreadyExists:
+            pass
+        return head.derive_key
+
     async def _derive(
         self,
         job_id: str,
@@ -468,8 +521,12 @@ class FasService:
         events: list[dict],
         facts: list[dict] | None,
         links: list[dict] | None,
+        learn: bool = True,
     ) -> dict[str, list[dict]]:
-        """Привязка книги: правила + стадии моделей (§5.5). Сбор сигналов и unknown-строк — в фоне."""
+        """Привязка книги: правила + стадии моделей (§5.5). Сбор сигналов и unknown-строк — в фоне.
+
+        `learn=False` — свёртка на прошлой сборке: сигналы этой сборки уже собраны при её загрузке.
+        """
 
         package = await self._package_for(versions.get("glossary", "none"))
         calibrator = await self.calibrators.active()
@@ -498,6 +555,8 @@ class FasService:
             calibrator=calibrator,
             prepared=prepared,
         )
+        if not learn:
+            return derived
         nearest = {}
         if scored is not None:
             for key, found in scored.evidence.items():
@@ -1574,7 +1633,7 @@ class FasService:
         }
         return {
             "fas_version": FAS_VERSION,
-            "phase": "2b",
+            "phase": "3",
             "storage": storage,
             "rules": self.analyses.capabilities(),
             "metrics": ["dscr", "icr"],
@@ -1874,5 +1933,6 @@ TOOLS = [
     {"name": "get_analysis", "method": "GET", "path": "/v1/books/{job_id}/analyses/{analysis_id}"},
     {"name": "list_findings", "method": "GET", "path": "/v1/books/{job_id}/findings"},
     {"name": "explain_finding", "method": "GET", "path": "/v1/books/{job_id}/findings/{fingerprint}"},
+    {"name": "compare", "method": "POST", "path": "/v1/books/{job_id}:compare"},
     {"name": "get_operation", "method": "GET", "path": "/v1/operations/{id}"},
 ]
