@@ -14,6 +14,7 @@ from finance_analysis.application.catalog import load_git_document
 from finance_analysis.domain.book import canonical_json, sha256_bytes
 from finance_analysis.domain.errors import (
     AlreadyExists,
+    GlossaryRegression,
     InvalidArgument,
     NotFound,
     PreconditionFailed,
@@ -29,6 +30,7 @@ from finance_analysis.domain.glossary_release import (
     version_for,
 )
 from finance_analysis.domain.ids import profile_id as check_profile
+from finance_analysis.domain.mapping import label_id
 
 HEAD = "glossary/_head.json"
 PROPOSALS = "glossary/proposals.json"
@@ -36,6 +38,8 @@ INDEX = "glossary/_label_index.json"
 _PROFILE_FIELDS = frozenset({"sign_convention", "marker_class"})
 _SIGNS = frozenset({"outflow_negative", "outflow_positive"})
 _MARKERS = frozenset({None, "actual", "plan"})
+PROPOSAL_TYPES = frozenset({"synonym_of", "new_concept_under", "not_a_concept", "book_local"})
+_ORIGIN = {"git_base": "base_git", "auto": "auto"}
 
 
 def _dumps(payload: dict) -> bytes:
@@ -76,6 +80,8 @@ class GlossaryStore:
         self.support = support
         self.lock_ttl_ms = lock_ttl_ms
         self._lock = asyncio.Lock()
+        # Shadow-гейт (§5.11.3): async (version) -> отчёт с passed. Ставит composition root.
+        self.gate = None
 
     async def peek(self) -> dict | None:
         head, _etag = await self._read()
@@ -118,15 +124,47 @@ class GlossaryStore:
                 return {"dry_run": True, "diff": diff, "state": state_of(head)}
             return await self._commit(head, etag, updated, ops, parent=parent, source=source, diff=diff, activate=False)
 
-    async def transition(self, version: str | None, status: str, if_match: str | None) -> dict:
+    async def transition(
+        self,
+        version: str | None,
+        status: str,
+        if_match: str | None,
+        *,
+        force: bool = False,
+        reason: str | None = None,
+    ) -> dict:
         if status != "active":
             raise InvalidArgument("переход только в active")
         if not version:
             raise InvalidArgument("нужна version")
+        if force and not (isinstance(reason, str) and reason.strip()):
+            raise InvalidArgument("force требует reason")
         async with self._lock:
             head, etag = await self._ensure_locked()
             self._match(head, if_match)
-            return await self._activate(head, etag, version)
+            report = None
+            if version != head.get("previous"):
+                report = await self._shadow(version)
+                if report is not None and not report.get("passed") and not force:
+                    raise GlossaryRegression(
+                        "доля ложных привязок выросла или покрытие упало",
+                        extra={"version": version, "shadow": _shadow_summary(report)},
+                    )
+            result = await self._activate(head, etag, version, forced={"reason": reason} if force else None)
+            if report is not None:
+                result["shadow"] = _shadow_summary(report)
+            return result
+
+    async def _shadow(self, version: str) -> dict | None:
+        if self.gate is None:
+            return None
+        return await self.gate(version)
+
+    async def shadow_report(self, version: str) -> dict:
+        try:
+            return json.loads(await self.store.get(f"glossary/releases/{version}/shadow.json"))
+        except NotFound:
+            raise NotFound("shadow-отчёта нет") from None
 
     async def rollback(self, if_match: str | None) -> dict:
         async with self._lock:
@@ -142,7 +180,12 @@ class GlossaryStore:
         return {"releases": state_of(head)["history"], "state": state_of(head)}
 
     async def release_view(self, version: str) -> dict:
-        return {"release": await self._release_record(version), "state": state_of(await self.ensure())}
+        record = await self._release_record(version)
+        try:
+            shadow = _shadow_summary(await self.shadow_report(version))
+        except NotFound:
+            shadow = None
+        return {"release": record, "shadow": shadow, "state": state_of(await self.ensure())}
 
     async def events(self) -> dict:
         rows = []
@@ -195,6 +238,7 @@ class GlossaryStore:
 
     async def labels(self, query: str) -> dict:
         document = await self._active_document()
+        provenance = await self._active_provenance()
         needle = normalize_label(query)
         found = []
         for concept, glossary in (document.get("glossaries") or {}).items():
@@ -207,8 +251,20 @@ class GlossaryStore:
                     for text in texts:
                         if needle and needle not in normalize_label(str(text)):
                             continue
-                        found.append({"concept": concept, "kind": kind, "lang": lang, "text": text})
+                        ident = label_id(concept, kind, str(text))
+                        found.append(
+                            {"concept": concept, "kind": kind, "lang": lang, "text": text, "id": ident, "provenance": provenance.get(ident)}
+                        )
         return {"labels": found}
+
+    async def _active_provenance(self) -> dict:
+        head, _etag = await self._read()
+        if head is None:
+            return {}
+        try:
+            return dict((await self._release_record(head["active"])).get("provenance") or {})
+        except NotFound:
+            return {}
 
     async def impact(self) -> dict:
         # shortcut: книги не сканируются, влияние пустое до отдельного индекса читателей
@@ -267,30 +323,58 @@ class GlossaryStore:
         return current["body"]
 
     async def add_proposal(self, body: dict) -> dict:
+        """Предложение в очередь ревью (§5.10.4). Открытое с тем же ключом обновляется, а не дублируется."""
+
+        if not isinstance(body, dict):
+            raise InvalidArgument("предложение должно быть объектом")
+        kind_of = body.get("type") or "synonym_of"
+        if kind_of not in PROPOSAL_TYPES:
+            raise InvalidArgument("type: synonym_of, new_concept_under, not_a_concept или book_local")
         concept = body.get("concept")
-        kind = body.get("kind")
+        kind = body.get("kind") or ("alt" if kind_of == "synonym_of" else None)
         lang = body.get("lang")
         text = body.get("text")
-        if kind not in {"pref", "alt", "hidden"} or not isinstance(concept, str) or not isinstance(lang, str) or not isinstance(text, str):
+        if kind_of == "synonym_of" and (
+            kind not in {"pref", "alt", "hidden"} or not isinstance(concept, str) or not isinstance(lang, str) or not isinstance(text, str)
+        ):
             raise InvalidArgument("предложение: concept, kind, lang, text")
-        proposal = {
-            "id": str(ULID()),
-            "status": "open",
-            "concept": concept,
-            "kind": kind,
-            "lang": lang,
-            "text": text,
-            "created_at_utc": _now(),
-        }
+        if kind_of != "synonym_of" and not isinstance(text, str):
+            raise InvalidArgument("предложение: нужен text")
+        dedupe = body.get("cluster_id") or "|".join([kind_of, str(concept), str(kind), str(lang), normalize_label(str(text))])
         async with self._lock:
             items, etag = await self._proposals()
+            current = next(
+                (item for item in items.values() if item.get("status") == "open" and item.get("dedupe") == dedupe),
+                None,
+            )
+            proposal = {
+                "id": current["id"] if current else str(ULID()),
+                "status": "open",
+                "type": kind_of,
+                "concept": concept,
+                "kind": kind,
+                "lang": lang,
+                "text": text,
+                "origin": str(body.get("origin") or "api"),
+                "dedupe": dedupe,
+                "created_at_utc": current["created_at_utc"] if current else _now(),
+                "updated_at_utc": _now(),
+            }
+            for extra in ("cluster_id", "labels", "draft", "clm", "impact", "evidence", "books", "broader", "examples"):
+                if extra in body:
+                    proposal[extra] = body[extra]
             items[proposal["id"]] = proposal
             await self._write_json(PROPOSALS, {"items": items}, etag)
         return proposal
 
-    async def proposals(self) -> dict:
+    async def proposals(self, *, status: str | None = None, order_by: str | None = None) -> dict:
         items, _etag = await self._proposals()
-        return {"proposals": list(items.values())}
+        rows = [item for item in items.values() if status is None or item.get("status") == status]
+        if order_by == "impact":
+            rows.sort(key=lambda item: (-float(item.get("impact") or 0.0), item["id"]))
+        else:
+            rows.sort(key=lambda item: item["id"])
+        return {"proposals": rows}
 
     async def proposal(self, proposal_id: str) -> dict:
         items, _etag = await self._proposals()
@@ -319,30 +403,48 @@ class GlossaryStore:
                 if choice not in {"accept", "reject"}:
                     raise InvalidArgument("decision: accept или reject")
                 text = item["text"] if isinstance(item.get("text"), str) and item["text"] else found["text"]
+                concept = item["concept"] if isinstance(item.get("concept"), str) and item["concept"] else found.get("concept")
                 chosen.append((index, found, choice, text))
                 if choice == "accept":
-                    op = "set_pref" if found["kind"] == "pref" else "add_label"
-                    accepted_ops.append(
-                        {"op": op, "concept": found["concept"], "kind": found["kind"], "lang": found["lang"], "text": text}
-                    )
+                    accepted_ops.append(_proposal_op({**found, "concept": concept}, text))
             release = None
+            shadow = None
             if accepted_ops:
                 head, head_etag = await self._ensure_locked()
                 document = await self._document(head["active"])
                 updated = apply_ops(document, accepted_ops)
                 diff = label_diff(document, updated)
+                origin = "auto" if all(found.get("origin") == "auto" for _i, found, c, _t in chosen if c == "accept") else "review"
                 ready = await self._commit(
                     head, head_etag, updated, accepted_ops, parent=head["active"], source="proposal", diff=diff, activate=False,
+                    origin=origin, proposals=[found["id"] for _i, found, c, _t in chosen if c == "accept"],
                 )
-                fresh, fresh_etag = await self._read()
-                release = await self._activate(fresh, fresh_etag, ready["version"], source="proposal")
+                report = await self._shadow(ready["version"])
+                if report is not None:
+                    shadow = _shadow_summary(report)
+                if report is None or report.get("passed"):
+                    fresh, fresh_etag = await self._read()
+                    release = await self._activate(fresh, fresh_etag, ready["version"], source="proposal")
+                else:
+                    release = {**ready, "activated": False}
+            blocked = release is not None and release.get("activated") is False
             for index, found, choice, text in chosen:
+                if choice == "accept" and blocked:
+                    # Гейт не пустил релиз: предложение остаётся открытым, решение можно повторить.
+                    found["blocked_release"] = release["version"]
+                    results.append({"index": index, "id": found["id"], "status": "open", "blocked": "glossary_regression"})
+                    continue
                 found["text"] = text
                 found["status"] = "accepted" if choice == "accept" else "rejected"
                 found["decided_at_utc"] = _now()
                 results.append({"index": index, "id": found["id"], "status": found["status"]})
             await self._write_json(PROPOSALS, {"items": items}, etag)
-        return {"results": results, "release": release}
+        return {
+            "results": results,
+            "release": release,
+            "shadow": shadow,
+            "rejected": [found for _i, found, choice, _t in chosen if choice == "reject"],
+        }
 
     async def note_bindings(self, job_id: str, bindings: list[dict]) -> None:
         async with self._lock:
@@ -405,6 +507,9 @@ class GlossaryStore:
             "source": "git_base",
             "status": "active",
             "seq": 1,
+            "provenance": provenance_of(
+                label_diff({"glossaries": {}}, document), {}, origin="base_git", seq=1, version=version, proposals=None
+            ),
         }
         await self._put_release(version, release, document)
         await self._event(1, {"type": "release", "version": version, "source": "git_base"})
@@ -434,9 +539,15 @@ class GlossaryStore:
         source: str,
         diff: list,
         activate: bool,
+        origin: str | None = None,
+        proposals: list[str] | None = None,
     ) -> dict:
         seq = int(head["seq"]) + 1
         version = version_for(seq, document)
+        try:
+            inherited = dict((await self._release_record(parent)).get("provenance") or {})
+        except NotFound:
+            inherited = {}
         release = {
             "version": version,
             "parent_version": parent,
@@ -445,6 +556,9 @@ class GlossaryStore:
             "source": source,
             "status": "active" if activate else "ready",
             "seq": seq,
+            "provenance": provenance_of(
+                diff, inherited, origin=origin or _ORIGIN.get(source, "review"), seq=seq, version=version, proposals=proposals
+            ),
         }
         await self._put_release(version, release, document)
         await self._event(seq, {"type": "release", "version": version, "source": source})
@@ -467,7 +581,9 @@ class GlossaryStore:
             await self._notify(version)
         return {"version": version, "status": release["status"], "diff": diff, "state": state_of(updated), "etag": f"h-{seq}"}
 
-    async def _activate(self, head: dict, etag: str | None, version: str, *, source: str = "activate") -> dict:
+    async def _activate(
+        self, head: dict, etag: str | None, version: str, *, source: str = "activate", forced: dict | None = None
+    ) -> dict:
         record = await self._release_record(version)
         parent = record.get("parent_version")
         rollback = version == head.get("previous")
@@ -494,7 +610,11 @@ class GlossaryStore:
             "fence": int(head.get("fence") or 0) + 1,
             "history": history,
         }
-        await self._event(seq, {"type": source, "version": version})
+        event = {"type": source, "version": version}
+        if forced:
+            event["force"] = True
+            event["reason"] = forced.get("reason")
+        await self._event(seq, event)
         await self._write_head(updated, etag)
         await self._notify(version)
         return {"version": version, "status": "active", "state": state_of(updated), "etag": f"h-{seq}"}
@@ -601,6 +721,44 @@ class GlossaryStore:
                 await self.store.put_if_match(key, data, meta.etag)
         else:
             await self.store.put_if_match(key, data, etag)
+
+
+def provenance_of(
+    diff: list[dict], inherited: dict, *, origin: str, seq: int, version: str, proposals: list[str] | None
+) -> dict:
+    """Провенанс меток (§5.11.3): родитель ⊕ diff. Удалённые метки уходят, добавленные получают origin."""
+
+    out = dict(inherited)
+    for change in diff:
+        ident = label_id(change["concept"], change["kind"], change["text"])
+        if change["change"] == "remove":
+            out.pop(ident, None)
+            continue
+        out[ident] = {
+            "origin": origin,
+            "event_seq": seq,
+            "proposal_id": (proposals or [None])[0] if proposals and len(proposals) == 1 else None,
+            "proposals": list(proposals or []),
+            "promoted_in": version,
+        }
+    return out
+
+
+def _proposal_op(found: dict, text: str) -> dict:
+    kind_of = found.get("type") or "synonym_of"
+    if kind_of == "synonym_of":
+        op = "set_pref" if found["kind"] == "pref" else "add_label"
+        return {"op": op, "concept": found["concept"], "kind": found["kind"], "lang": found["lang"], "text": text}
+    if kind_of == "not_a_concept" and isinstance(found.get("concept"), str):
+        return {"op": "add_negative", "concept": found["concept"], "text": text}
+    raise InvalidArgument(
+        "новое понятие и метки профиля принимаются только релизом администратора",
+        extra={"id": found["id"], "type": kind_of},
+    )
+
+
+def _shadow_summary(report: dict) -> dict:
+    return {key: report.get(key) for key in ("passed", "reasons", "eval", "books", "path")}
 
 
 def git_base_sha() -> str:

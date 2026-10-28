@@ -19,6 +19,7 @@ from finance_analysis.domain.book import (
     Summary,
     WorkbookSnapshot,
 )
+from finance_analysis.domain.deadline import Deadline
 
 
 @dataclass(frozen=True)
@@ -117,3 +118,56 @@ class OperationPort(Protocol):
     async def wait(self, op_id: str, wait_ms: int) -> dict: ...
 
     async def list(self, *, kind: str | None, job_id: str | None, status: str | None) -> AsyncIterator[dict]: ...
+
+
+# --- модели (§10.3) и векторы (§10.4). Отказ стадии — ModelDegraded, анализ не падает. ---
+
+
+class EmbedPort(Protocol):
+    model: str
+
+    async def embed(self, texts: list[str], *, deadline: Deadline) -> list[list[float]]: ...
+
+
+class RerankPort(Protocol):
+    model: str
+
+    async def rerank(self, query: str, documents: list[str], *, deadline: Deadline, top_n: int) -> list[tuple[int, float]]: ...
+
+
+class ChoiceModelPort(Protocol):
+    model: str
+
+    async def choose(self, state: str, questions: dict, *, deadline: Deadline) -> dict[str, dict]: ...
+
+
+class LlmPort(Protocol):
+    model: str
+
+    async def complete(self, messages: list[dict], *, deadline: Deadline, max_tokens: int = 800) -> str: ...
+
+
+class VectorIndexPort(Protocol):
+    async def replace(self, vectors: list[list[float]], payloads: list[dict]) -> None: ...
+
+    async def search(self, vectors: list[list[float]], k: int) -> list[list[tuple[float, dict]]]: ...
+
+    async def size(self) -> int: ...
+
+
+class ClusterPort(Protocol):
+    async def cluster(self, vectors: list[list[float]], *, min_cluster_size: int) -> list[int]: ...
+
+
+class BudgetPort(Protocol):
+    async def take(self, key: str, limit: int, ttl: int) -> bool: ...
+
+
+@dataclass
+class Models:
+    """Серверы моделей, каких нет — None; конвейер деградирует до lexical + structure + numeric."""
+
+    embed: EmbedPort | None = None
+    rerank: RerankPort | None = None
+    clm: ChoiceModelPort | None = None
+    llm: LlmPort | None = None

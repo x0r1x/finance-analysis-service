@@ -12,6 +12,7 @@ from finance_analysis.adapters.storage.store import open_storage
 from finance_analysis.adapters.wren.query import WrenQuery
 from finance_analysis.application.service import FasService
 from finance_analysis.domain.book import Actor
+from finance_analysis.domain.errors import GlossaryRegression
 from tests.books import BUILDER_ROOT, job_id
 from tests.conftest import JOB
 from tests.contract.test_analyses import _insert_row_on_every_sheet
@@ -62,7 +63,13 @@ async def test_label_removal_drops_only_inferred(local_service):
         [{"op": "remove_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "CFADS"}],
         f"h-{state['seq']}",
     )
-    await local_service.glossary.transition(released["version"], "active", released["etag"])
+    # Снятие метки CFADS теряет понятие метрики в книге: shadow-гейт блокирует без force (§5.11.3).
+    with pytest.raises(GlossaryRegression) as blocked:
+        await local_service.glossary.transition(released["version"], "active", released["etag"])
+    assert any(reason.startswith("coverage_down:") for reason in blocked.value.extra["shadow"]["reasons"])
+    await local_service.glossary.transition(
+        released["version"], "active", released["etag"], force=True, reason="тест ремапа после снятия метки"
+    )
     await local_service.remap_glossary()
     fresh = (await local_service._read_head(RVI))[0]
     bindings = await local_service._dataset_rows(RVI, fresh, "bindings")

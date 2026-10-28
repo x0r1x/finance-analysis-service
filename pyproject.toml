@@ -23,6 +23,8 @@ dependencies = [
   "pyyaml>=6.0",
   "taskiq>=0.13,<0.14",
   "taskiq-redis==1.2.4",
+  "scikit-learn>=1.5",
+  "numpy>=2.0",
 ]
 
 [project.optional-dependencies]

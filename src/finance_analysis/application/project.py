@@ -16,7 +16,7 @@ from finance_analysis.domain.book import (
     parse_decimal_text,
 )
 from finance_analysis.domain.currency import resolve_currencies
-from finance_analysis.domain.mapping import assign_rows
+from finance_analysis.domain.mapping import assign_rows, verify_numeric
 from finance_analysis.domain.periods import (
     expand_ref,
     marker_class,
@@ -333,6 +333,18 @@ def _unit_map(events: list[dict]) -> dict[str, str]:
     return _by_type(events, "unit.set")
 
 
+def _values_by_row(facts: list[dict] | None) -> dict[str, dict[tuple[str, str], Decimal]]:
+    values: dict[str, dict[tuple[str, str], Decimal]] = {}
+    for fact in facts or []:
+        number = fact.get("normalized_value")
+        if number is None:
+            number = fact.get("value_dec")
+        if number is None or not fact.get("row_key"):
+            continue
+        values.setdefault(fact["row_key"], {})[(fact["axis_id"], fact["period_id"])] = Decimal(str(number))
+    return values
+
+
 def _abs_by_row(facts: list[dict] | None) -> dict[str, Decimal]:
     totals: dict[str, Decimal] = {}
     for fact in facts or []:
@@ -346,6 +358,30 @@ def _abs_by_row(facts: list[dict] | None) -> dict[str, Decimal]:
     return totals
 
 
+def prepare_rows(projected: dict[str, list[dict]], events: list[dict], glossary, facts: list[dict] | None) -> list[dict]:
+    """Строки с исключением, знаком, природой и единицей из журнала — вход конвейера привязки."""
+
+    signs = _sign_map(events)
+    units = _unit_map(events)
+    prepared = []
+    for row in projected["dim_row"]:
+        excluded, reason = exclusion(row, empty_series=empty_series(row["row_key"], facts))
+        inferred = infer_row(row, glossary.flows)
+        sign = signs.get(row["binding_key"], inferred["sign"])
+        prepared.append(
+            {
+                **row,
+                "excluded": excluded,
+                "exclusion_reason": reason,
+                "sign": sign,
+                "nature": inferred["nature"],
+                "aggregation": inferred["aggregation"],
+                "unit_decision": units.get(row["binding_key"]),
+            }
+        )
+    return prepared
+
+
 def derive_rows(
     projected: dict[str, list[dict]],
     *,
@@ -355,25 +391,31 @@ def derive_rows(
     events: list[dict] | None = None,
     glossary=None,
     facts: list[dict] | None = None,
+    evidence: dict | None = None,
+    calibrator=None,
+    prepared: list[dict] | None = None,
 ) -> dict[str, list[dict]]:
     now = datetime.now(UTC)
     journal = events or []
     phases, concepts = _decision_maps(journal)
     glossary_version = versions.get("glossary", "none")
     taxonomy = versions.get("taxonomy", "core-1")
-    calibrator = versions.get("calibrator", "none")
-    prepared = None
+    calibrator_version = versions.get("calibrator", "none")
     assigned = None
     if glossary is not None:
-        signs = _sign_map(journal)
-        units = _unit_map(journal)
-        prepared = []
-        for row in projected["dim_row"]:
-            excluded, reason = exclusion(row, empty_series=empty_series(row["row_key"], facts))
-            inferred = infer_row(row, glossary.flows)
-            sign = signs.get(row["binding_key"], inferred["sign"])
-            prepared.append({**row, "excluded": excluded, "exclusion_reason": reason, "sign": sign, "nature": inferred["nature"], "aggregation": inferred["aggregation"], "unit_decision": units.get(row["binding_key"])})
-        assigned = assign_rows(prepared, journal, glossary, abs_by_row={key: float(value) for key, value in _abs_by_row(facts).items()})
+        if prepared is None:
+            prepared = prepare_rows(projected, journal, glossary, facts)
+        assigned = assign_rows(
+            prepared,
+            journal,
+            glossary,
+            abs_by_row={key: float(value) for key, value in _abs_by_row(facts).items()},
+            evidence=evidence,
+            calibrator=calibrator,
+        )
+        assigned = verify_numeric(assigned, prepared, _values_by_row(facts))
+    else:
+        prepared = None
     row_semantics = []
     bindings = []
     rows = prepared if prepared is not None else projected["dim_row"]
@@ -416,10 +458,12 @@ def derive_rows(
             chosen = concepts.get(row["binding_key"])
             concept, status, source = chosen, "bound" if chosen else "unknown", "confirmed" if chosen else "inferred"
             primary, label, importance = chosen is not None, None, "normal"
+            confidence, binding_evidence = None, {}
         else:
             item = assigned[row["binding_key"]]
             concept, status, source = item.concept, item.status, item.source
             primary, label, importance = item.is_primary, item.matched_label, item.importance
+            confidence, binding_evidence = item.confidence, item.evidence
         bindings.append(
             {
                 "model_id": row["model_id"],
@@ -435,9 +479,9 @@ def derive_rows(
                 "row_key": row["row_key"],
                 "label_path_text": row["label_path_text"],
                 "source": source,
-                "confidence": None,
-                "evidence_json": "{}",
-                "calibrator_version": calibrator,
+                "confidence": None if confidence is None else float(confidence),
+                "evidence_json": json.dumps(binding_evidence, ensure_ascii=False, sort_keys=True),
+                "calibrator_version": calibrator_version,
                 "glossary_version": glossary_version,
                 "taxonomy_version": taxonomy,
                 "decided_by": None,

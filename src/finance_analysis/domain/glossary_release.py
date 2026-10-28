@@ -57,6 +57,16 @@ def apply_ops(document: dict, ops: list[dict]) -> dict:
                 bucket.pop(lang, None)
             else:
                 raise InvalidArgument(f"метки нет: {text}")
+        elif kind == "add_negative":
+            text = op.get("text")
+            if not isinstance(text, str) or not text:
+                raise InvalidArgument("у отрицательной метки нужен text")
+            values = glossary.get("negative") or []
+            if isinstance(values, str):
+                values = [values]
+            if text not in values:
+                values.append(text)
+            glossary["negative"] = values
         else:
             raise InvalidArgument(f"неизвестный op {kind}")
     package_of(updated)

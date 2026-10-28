@@ -1,0 +1,119 @@
+{
+  "dataset": "examples",
+  "version": "1.0",
+  "title": "Кросс-книжные примеры подтверждённых привязок (§4.5)",
+  "columns": [
+    {
+      "name": "example_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "ULID примера",
+      "since": "1.0"
+    },
+    {
+      "name": "job_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Книга",
+      "since": "1.0"
+    },
+    {
+      "name": "binding_key",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Ключ привязки",
+      "since": "1.0"
+    },
+    {
+      "name": "seq",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Номер записи журнала книги",
+      "since": "1.0"
+    },
+    {
+      "name": "kind",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "confirmed, set, rejected или superseded",
+      "since": "1.0"
+    },
+    {
+      "name": "concept",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Понятие",
+      "since": "1.0"
+    },
+    {
+      "name": "path_text",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Лист › путь › метка",
+      "since": "1.0"
+    },
+    {
+      "name": "label_norm",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Нормализованная метка",
+      "since": "1.0"
+    },
+    {
+      "name": "embed_model",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Модель эмбеддинга, пусто без неё",
+      "since": "1.0"
+    },
+    {
+      "name": "embedding_f32",
+      "type": "binary",
+      "nullable": true,
+      "unit": "",
+      "description": "Вектор float32 little-endian",
+      "since": "1.0"
+    },
+    {
+      "name": "candidates_json",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Кандидаты и признаки на момент решения",
+      "since": "1.0"
+    },
+    {
+      "name": "profile_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Профиль книги",
+      "since": "1.0"
+    },
+    {
+      "name": "glossary_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия глоссария",
+      "since": "1.0"
+    },
+    {
+      "name": "at_utc",
+      "type": "timestamp(us, tz=UTC)",
+      "nullable": false,
+      "unit": "",
+      "description": "Время записи",
+      "since": "1.0"
+    }
+  ]
+}

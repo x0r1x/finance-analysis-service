@@ -1,0 +1,127 @@
+{
+  "dataset": "signals",
+  "version": "1.0",
+  "title": "Сигналы обучения глоссария (§5.11.1)",
+  "columns": [
+    {
+      "name": "signal_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "ULID сигнала",
+      "since": "1.0"
+    },
+    {
+      "name": "job_id",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Книга",
+      "since": "1.0"
+    },
+    {
+      "name": "profile_id",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Профиль",
+      "since": "1.0"
+    },
+    {
+      "name": "binding_key",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Ключ привязки",
+      "since": "1.0"
+    },
+    {
+      "name": "label_norm",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Нормализованная метка",
+      "since": "1.0"
+    },
+    {
+      "name": "label_text",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Метка как в книге",
+      "since": "1.0"
+    },
+    {
+      "name": "lang",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Язык метки",
+      "since": "1.0"
+    },
+    {
+      "name": "concept",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Понятие",
+      "since": "1.0"
+    },
+    {
+      "name": "polarity",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "+ или −",
+      "since": "1.0"
+    },
+    {
+      "name": "kind",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Вид сигнала",
+      "since": "1.0"
+    },
+    {
+      "name": "weight",
+      "type": "float64",
+      "nullable": false,
+      "unit": "",
+      "description": "Вес",
+      "since": "1.0"
+    },
+    {
+      "name": "actor",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Кто",
+      "since": "1.0"
+    },
+    {
+      "name": "evidence_ref",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Ссылка на запись журнала или предложение",
+      "since": "1.0"
+    },
+    {
+      "name": "glossary_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Версия глоссария",
+      "since": "1.0"
+    },
+    {
+      "name": "at_utc",
+      "type": "timestamp(us, tz=UTC)",
+      "nullable": false,
+      "unit": "",
+      "description": "Время сигнала",
+      "since": "1.0"
+    }
+  ]
+}

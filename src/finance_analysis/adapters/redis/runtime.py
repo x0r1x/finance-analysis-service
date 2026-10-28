@@ -385,6 +385,19 @@ class RedisRuntime:
         except redis_async.RedisError:
             return
 
+    async def take(self, key: str, limit: int, ttl: int) -> bool:
+        """Атомарный счётчик бюджета (CLM на книгу, §4.13.4): INCR + TTL при первом взятии."""
+
+        try:
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.incr(key)
+                pipe.expire(key, ttl, nx=True)
+                used, _expire = await pipe.execute()
+        except redis_async.RedisError:
+            # Без Redis бюджет не проверить: CLM не вызываем, строка остаётся ambiguous.
+            return False
+        return int(used) <= limit
+
     async def singleflight(self, key: str, factory):
         """Один расчёт на ключ. При отказе Redis вызывающий считает сам."""
 

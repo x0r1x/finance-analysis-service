@@ -1,0 +1,127 @@
+{
+  "dataset": "candidates",
+  "version": "1.0",
+  "title": "Кандидаты glossary_mine (§5.11.3)",
+  "columns": [
+    {
+      "name": "label_norm",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Нормализованная метка",
+      "since": "1.0"
+    },
+    {
+      "name": "label_text",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Метка",
+      "since": "1.0"
+    },
+    {
+      "name": "lang",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Язык",
+      "since": "1.0"
+    },
+    {
+      "name": "concept",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Понятие",
+      "since": "1.0"
+    },
+    {
+      "name": "scope",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "global или profile:{id}",
+      "since": "1.0"
+    },
+    {
+      "name": "label_kind",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "alt или hidden",
+      "since": "1.0"
+    },
+    {
+      "name": "books",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Независимых книг «за»",
+      "since": "1.0"
+    },
+    {
+      "name": "profiles",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Профилей «за»",
+      "since": "1.0"
+    },
+    {
+      "name": "confirmations",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "Людей с сигналом S «за»",
+      "since": "1.0"
+    },
+    {
+      "name": "lf_for",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "LF за",
+      "since": "1.0"
+    },
+    {
+      "name": "lf_against",
+      "type": "int64",
+      "nullable": false,
+      "unit": "",
+      "description": "LF против",
+      "since": "1.0"
+    },
+    {
+      "name": "p_weak",
+      "type": "float64",
+      "nullable": true,
+      "unit": "",
+      "description": "Вероятность по модели меток",
+      "since": "1.0"
+    },
+    {
+      "name": "conflicts_json",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Конфликты",
+      "since": "1.0"
+    },
+    {
+      "name": "decision",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "auto, review или hold",
+      "since": "1.0"
+    },
+    {
+      "name": "applied",
+      "type": "string",
+      "nullable": false,
+      "unit": "",
+      "description": "Что сделано в режиме предложений",
+      "since": "1.0"
+    }
+  ]
+}

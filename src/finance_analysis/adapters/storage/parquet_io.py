@@ -39,6 +39,8 @@ def _arrow_type(spec: str) -> pa.DataType:
         return pa.float64()
     if spec == "date32":
         return pa.date32()
+    if spec == "binary":
+        return pa.binary()
     if spec == "timestamp(us, tz=UTC)":
         return pa.timestamp("us", tz="UTC")
     matched = _DECIMAL.fullmatch(spec)
@@ -102,6 +104,8 @@ def _fit(value, typ: pa.DataType):
                 return value.replace(tzinfo=UTC)
             return value.astimezone(UTC)
         return None
+    if pa.types.is_binary(typ):
+        return bytes(value) if isinstance(value, bytes | bytearray | memoryview) else None
     if pa.types.is_date(typ):
         if isinstance(value, datetime):
             return value.date()

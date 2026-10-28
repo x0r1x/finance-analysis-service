@@ -50,7 +50,7 @@ async def serve(
         broker.add_middlewares(
             FasRetryMiddleware(settings=settings, schedule_source=schedule, on_exhausted=fail_exhausted)
         )
-        register_tasks(broker, schedules=False, cron=settings.gc_cron)
+        register_tasks(broker, schedules=False, cron=settings.gc_cron, settings=settings)
     store = await open_storage(settings)
     runtime_mod.RUNTIME = WorkerRuntime(
         settings=settings,

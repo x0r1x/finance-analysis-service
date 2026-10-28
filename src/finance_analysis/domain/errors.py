@@ -170,3 +170,21 @@ class SemanticRejected(FasError):
     def __init__(self, code: str, detail: str) -> None:
         super().__init__(detail, extra={"guard_code": code})
         self.code = code
+
+
+class GlossaryRegression(FasError):
+    code = "glossary_regression"
+    status = 409
+    title = "Shadow-проверка релиза нашла регресс"
+
+
+class ModelDegraded(Exception):
+    """Стадия модели пропущена: цепь открыта, таймаут, нет остатка дедлайна или ответ не по схеме."""
+
+    def __init__(self, stage: str, reason: str) -> None:
+        super().__init__(f"{stage}: {reason}")
+        self.stage = stage
+        self.reason = reason
+
+    def as_dict(self) -> dict:
+        return {"stage": self.stage, "reason": self.reason}
