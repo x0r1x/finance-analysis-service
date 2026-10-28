@@ -267,6 +267,12 @@ def _agree(pairs: list[tuple[Decimal, Decimal]]) -> bool:
     return Decimal(hits) / Decimal(len(pairs)) >= AGREE_SHARE
 
 
+def absent_in_journal(events: list[dict]) -> frozenset[str]:
+    """Понятия с действующей записью `concept.absent` в журнале книги (§5.10.5)."""
+
+    return frozenset(_decisions(events)[2])
+
+
 def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str]]:
     from finance_analysis.domain.state import fold
 

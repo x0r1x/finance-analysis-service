@@ -1,6 +1,6 @@
 {
   "dataset": "ratios",
-  "version": "1.0",
+  "version": "1.1",
   "title": "Коэффициенты покрытия",
   "columns": [
     {"name": "analysis_id", "type": "string", "nullable": false, "unit": "", "description": "Анализ", "since": "1.0"},
@@ -10,13 +10,14 @@
     {"name": "glossary_version", "type": "string", "nullable": true, "unit": "", "description": "Глоссарий", "since": "1.0"},
     {"name": "metric", "type": "string", "nullable": false, "unit": "", "description": "Метрика", "since": "1.0"},
     {"name": "axis_id", "type": "string", "nullable": false, "unit": "", "description": "Ось", "since": "1.0"},
-    {"name": "period_id", "type": "string", "nullable": false, "unit": "", "description": "Период", "since": "1.0"},
+    {"name": "period_id", "type": "string", "nullable": true, "unit": "", "description": "Период; пусто у свёрток по оси (dscr_avg)", "since": "1.0"},
     {"name": "period_key_base", "type": "string", "nullable": true, "unit": "", "description": "База периода", "since": "1.0"},
     {"name": "period_marker", "type": "string", "nullable": true, "unit": "", "description": "Маркер", "since": "1.0"},
     {"name": "value", "type": "decimal128(38,10)", "nullable": true, "unit": "", "description": "Значение", "since": "1.0"},
     {"name": "value_f", "type": "float64", "nullable": true, "unit": "", "description": "Значение float", "since": "1.0"},
     {"name": "status", "type": "string", "nullable": false, "unit": "", "description": "Статус", "since": "1.0"},
     {"name": "reason", "type": "string", "nullable": true, "unit": "", "description": "Причина", "since": "1.0"},
+    {"name": "variant", "type": "string", "nullable": true, "unit": "", "description": "Вариант свёртки: mean_of_ratios | ratio_of_sums", "since": "1.1"},
     {"name": "inputs_json", "type": "string", "nullable": true, "unit": "", "description": "Входы", "since": "1.0"}
   ]
 }

@@ -1,4 +1,10 @@
-"""DSCR и ICR (§5.7). Частное считает Decimal, не DuckDB."""
+"""Коэффициенты покрытия (§5.7). Частное, окна и NPV считает Decimal, не DuckDB.
+
+Периоды строк разных осей сопоставляются через `timeline_id` + `period_index`
+(§5.7, инвариант основной строки): CFADS на листе CFS и обслуживание долга на
+листе Debt одной шкалы — один период. Строка результата лежит на оси
+знаменателя.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,8 @@ from decimal import Decimal, localcontext
 MONEY = Decimal("0.000001")
 RATIO = Decimal("0.0000000001")
 _BOUND = frozenset({"bound", "bound_with_warning"})
+# Источники привязки от человека: только они отменяют `concept.absent` (§5.10.5).
+HUMAN_SOURCES = frozenset({"confirmed", "profile"})
 
 
 def quantize_ratio(value: Decimal) -> Decimal:
@@ -26,10 +34,17 @@ def coverage_ratio(
     explicit_phases: bool,
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
 ) -> dict:
+    """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
+
+    Такое понятие не берётся из автоматической привязки, только из явного
+    `concept.set` человека, который отменяет отметку.
+    """
+
     from finance_analysis.domain.coverage import is_coverage_test_period
 
-    primaries = _primaries(bindings)
+    primaries = _primaries(bindings, absent)
     if metric == "dscr":
         needed = ("cfads", "debt_service")
     elif metric == "icr":
@@ -67,14 +82,9 @@ def coverage_ratio(
             "warnings": warnings,
             "status": "needs_input",
         }
-    absent = {
-        row.get("effective_concept")
-        for row in bindings
-        if row.get("source") == "confirmed" and row.get("status") == "unknown"
-    }
     if missing:
         subject = missing[0]
-        reason = "absent_in_book" if subject in absent else "concept_unknown"
+        reason = "absent_in_book" if subject in absent_concepts(bindings, absent) else "concept_unknown"
         return {
             "metric": metric,
             "rows": [],
@@ -83,12 +93,16 @@ def coverage_ratio(
             "status": "missing_input",
         }
     denominator_name = "debt_service" if metric == "dscr" else "interest"
-    numerator = _sums(facts, primaries[numerator_name])
-    denominator = _sums(facts, primaries[denominator_name])
+    aligned = aligned_keys(periods)
+    numerator = _sums(facts, primaries[numerator_name], aligned)
+    denominator = _sums(facts, primaries[denominator_name], aligned)
+    home = _axes_of(facts, primaries[denominator_name])
     rows = []
     for period in periods:
         axis, period_id = period["axis_id"], period["period_id"]
-        key = (axis, period_id)
+        if axis not in home:
+            continue
+        key = aligned.get((axis, period_id), (axis, period_id))
         # shortcut: период без числителя или знаменателя пропускается, ноль вместо факта не подставляется
         if key not in denominator or key not in numerator:
             continue
@@ -118,12 +132,28 @@ def coverage_ratio(
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
-def _primaries(bindings: list[dict]) -> dict[str, dict]:
+def _primaries(bindings: list[dict], absent: frozenset[str] = frozenset()) -> dict[str, dict]:
     found = {}
     for row in bindings:
-        if row.get("is_primary") and row.get("status") in _BOUND and row.get("effective_concept"):
-            found[row["effective_concept"]] = row
+        concept = row.get("effective_concept")
+        if not (row.get("is_primary") and row.get("status") in _BOUND and concept):
+            continue
+        if concept in absent and row.get("source") not in HUMAN_SOURCES:
+            continue
+        found[concept] = row
     return found
+
+
+def absent_concepts(bindings: list[dict], absent: frozenset[str] = frozenset()) -> set[str]:
+    """`concept.absent` из журнала и строки, которые человек снял с отсутствующего понятия."""
+
+    marked = {
+        row.get("effective_concept")
+        for row in bindings
+        if row.get("source") == "confirmed" and row.get("status") == "unknown" and row.get("effective_concept")
+    }
+    restored = {concept for concept, row in _primaries(bindings).items() if row.get("source") in HUMAN_SOURCES}
+    return (marked | set(absent)) - restored
 
 
 def _groups(bindings: list[dict]) -> dict[str, list[dict]]:
@@ -134,9 +164,26 @@ def _groups(bindings: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
-def _sums(facts: list[dict], binding: dict) -> dict[tuple[str, str], Decimal]:
-    totals: dict[tuple[str, str], Decimal] = {}
+def aligned_keys(periods: list[dict]) -> dict[tuple[str, str], tuple]:
+    """(axis_id, period_id) → ключ шкалы: (`timeline_id`, `period_index`), иначе свой."""
+
+    found = {}
+    for period in periods:
+        timeline = period.get("timeline_id")
+        index = period.get("period_index")
+        if timeline and index is not None:
+            found[(period["axis_id"], period["period_id"])] = (timeline, int(index))
+    return found
+
+
+def _axes_of(facts: list[dict], binding: dict) -> set[str]:
+    return {fact["axis_id"] for fact in facts if fact.get("row_key") == binding["row_key"]}
+
+
+def _sums(facts: list[dict], binding: dict, aligned: dict | None = None) -> dict[tuple, Decimal]:
+    totals: dict[tuple, Decimal] = {}
     row_key = binding["row_key"]
+    aligned = aligned or {}
     for fact in facts:
         if fact.get("row_key") != row_key:
             continue
@@ -145,7 +192,8 @@ def _sums(facts: list[dict], binding: dict) -> dict[tuple[str, str], Decimal]:
             number = fact.get("value_dec")
         if number is None:
             continue
-        key = (fact["axis_id"], fact["period_id"])
+        own = (fact["axis_id"], fact["period_id"])
+        key = aligned.get(own, own)
         totals[key] = totals.get(key, Decimal(0)) + Decimal(number)
     return totals
 

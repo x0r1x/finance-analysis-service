@@ -1,4 +1,4 @@
-"""DSCR и ICR на книге RVI (§12 п. 1–2)."""
+"""DSCR, ICR и их свёртки на книге RVI (§12 фазы 2–3)."""
 
 from __future__ import annotations
 
@@ -102,3 +102,62 @@ async def test_rvi_dscr_quotient_and_icr(local_service):
     icr = await _ratios(local_service, ["icr"])
     assert any(item["code"] == "icr_numerator" for item in icr["warnings"])
     assert any(row.get("value") is not None for row in icr["result_data"]["ratios"])
+
+
+def _first_value(facts: list[dict], row_key: str) -> Decimal:
+    ordered = sorted((fact for fact in facts if fact.get("row_key") == row_key), key=lambda fact: fact["period_id"])
+    return Decimal(str(ordered[0]["normalized_value"]))
+
+
+async def test_rvi_min_and_average_dscr_match_the_model_summary(local_service):
+    """Re-performance (§12 фаза 3): min и среднее DSCR FAS = сводка Live-кейса книги."""
+
+    await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    debt = await _row(local_service, "Total debt service")
+    decided = await local_service.submit_decisions(
+        RVI,
+        {"decisions": [{"kind": "concept.set", "target": debt["binding_key"], "value": "debt_service", "expected_seq": None}]},
+        Actor(),
+        wait_sec=60,
+    )
+    assert decided["results"][0]["status"] == "accepted", decided
+    got = await _ratios(local_service, ["dscr_min", "dscr_avg", "llcr", "adscr"])
+    rows = got["result_data"]["ratios"]
+    head = (await local_service._read_head(RVI))[0]
+    facts = await local_service._dataset_rows(RVI, head, "fact_observation")
+    lowest = next(row for row in rows if row["metric"] == "dscr_min")
+    model_min = _first_value(facts, (await _row(local_service, "Minimum Debt Service Coverage Ratio (DSCR)"))["row_key"])
+    assert abs(Decimal(lowest["value"]) - model_min) <= Decimal("0.005")
+    mean = next(row for row in rows if row["metric"] == "dscr_avg" and row["variant"] == "mean_of_ratios")
+    model_avg = _first_value(facts, (await _row(local_service, "Average Debt Service Coverage Ratio (DSCR)"))["row_key"])
+    assert abs(Decimal(mean["value"]) - model_avg) <= Decimal("0.005")
+    assert any(row["metric"] == "dscr_avg" and row["variant"] == "ratio_of_sums" for row in rows)
+    # Годовая книга: ADSCR не отдаётся; LLCR без ставки и остатка долга — missing_input, а не число.
+    assert any(item["code"] == "adscr_not_applicable" for item in got["warnings"])
+    assert not any(row["metric"] in {"adscr", "llcr"} for row in rows)
+    assert any(item["kind"] == "concept" and item["subject"] in {"debt_outstanding", "discount_rate"} for item in got["needs_input"])
+
+
+async def test_concept_absent_gives_absent_in_book_and_missing_total_row(local_service):
+    """`concept.absent` (§5.10.5): FAS не переспрашивает, метрика — missing_input, находка missing_total_row."""
+
+    await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    debt = await _row(local_service, "Total debt service")
+    decided = await local_service.submit_decisions(
+        RVI,
+        {
+            "decisions": [
+                {"kind": "concept.set", "target": debt["binding_key"], "value": "debt_service", "expected_seq": None},
+                {"kind": "concept.absent", "target": "book", "value": "debt_outstanding", "expected_seq": None},
+            ]
+        },
+        Actor(),
+        wait_sec=60,
+    )
+    assert [item["status"] for item in decided["results"]] == ["accepted", "accepted"], decided
+    got = await _ratios(local_service, ["llcr"])
+    assert got["needs_input"] == [{"kind": "concept", "reason": "absent_in_book", "subject": "debt_outstanding"}]
+    assert got["result_data"]["ratios"] == []
+    missing = [item for item in got["result_data"]["findings"] if item["code"] == "missing_total_row"]
+    assert [item["params"]["concept"] for item in missing] == ["debt_outstanding"]
+    assert "llcr" in missing[0]["params"]["needed_by"]
