@@ -93,17 +93,22 @@ def register(app, settings, *, svc, write, read) -> None:
                 force=bool(body.get("force")),
                 reason=body.get("reason"),
             )
-            await svc().remap_glossary()
+            await svc().begin_remap()
             return result
 
         return await write(request, run)
+
+    @app.get("/v1/glossary/stats")
+    async def glossary_stats(request: Request, to: str | None = None, profile_id: str | None = None):
+        start = request.query_params.get("from")
+        return await read(request, lambda _who: svc().glossary_stats(start=start, end=to, profile_id=profile_id))
 
     @app.post("/v1/glossary:rollback")
     async def glossary_rollback(request: Request):
         async def run(gloss, _body, match):
             _admin(request)
             result = await gloss.rollback(match)
-            await svc().remap_glossary()
+            await svc().begin_remap()
             return result
 
         return await write(request, run)
@@ -127,7 +132,7 @@ def register(app, settings, *, svc, write, read) -> None:
             result = await gloss.decide_proposals(body.get("decisions") or [])
             await svc().learning.proposals_rejected(result.pop("rejected", []))
             if (result.get("release") or {}).get("status") == "active":
-                await svc().remap_glossary()
+                await svc().begin_remap()
             return result
 
         return await write(request, run)

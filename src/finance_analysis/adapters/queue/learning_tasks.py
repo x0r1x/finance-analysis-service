@@ -5,15 +5,22 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+from finance_analysis.adapters.builder.fixture import FixtureBuilder
+from finance_analysis.adapters.builder.http import HttpBuilder
 from finance_analysis.adapters.ml.cluster import HdbscanCluster
 from finance_analysis.adapters.ml.http import build_models
 from finance_analysis.adapters.queue import runtime as runtime_mod
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
 from finance_analysis.adapters.vector.numpy_index import NumpyIndex
+from finance_analysis.adapters.wren.query import WrenQuery
 from finance_analysis.application.calibrators import CalibratorStore
 from finance_analysis.application.examples import ExampleStore
 from finance_analysis.application.glossary_store import GlossaryStore
 from finance_analysis.application.learning import Learning
+from finance_analysis.application.service import FasService
 from finance_analysis.domain.glossary_release import package_of
 
 CLUSTER_TASK = "fas.cluster_unmapped"
@@ -22,6 +29,7 @@ COMPACT_TASK = "fas.compact_learning"
 RECALIBRATE_TASK = "fas.recalibrate"
 
 _CACHE: dict = {}
+_SERVICE: dict = {}
 
 
 def _learning() -> tuple[Learning, GlossaryStore, CalibratorStore]:
@@ -55,10 +63,38 @@ async def cluster_unmapped() -> dict:
     return await learning.cluster_unmapped(package)
 
 
+async def _mine_service() -> FasService:
+    """Ночной mine идёт через FasService: там shadow-гейт и ремап. Хранилище и замки — те же, что у воркера."""
+
+    rt = runtime_mod.RUNTIME
+    if rt is None:
+        raise RuntimeError("worker runtime не привязан")
+    cached = _SERVICE.get(id(rt))
+    if cached:
+        return cached
+    settings = rt.settings
+    fixture = os.environ.get("FAS_FIXTURE_DIR")
+    builder = FixtureBuilder(Path(fixture)) if fixture else HttpBuilder(settings)
+    service = FasService(
+        settings,
+        rt.store,
+        PyarrowParquet(),
+        builder,
+        WrenQuery(settings),
+        rt.locks,
+        models=build_models(settings),
+        vector_index=NumpyIndex(),
+        cluster=HdbscanCluster(),
+    )
+    _SERVICE.clear()
+    _SERVICE[id(rt)] = service
+    return service
+
+
 async def glossary_mine() -> dict:
-    learning, glossary, _cal = _learning()
-    package, document = await _active(glossary)
-    return await learning.mine(package, document)
+    service = await _mine_service()
+    package, document = await _active(service.glossary)
+    return await service.learning.mine(package, document)
 
 
 async def compact_learning() -> dict:

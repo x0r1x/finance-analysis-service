@@ -94,6 +94,18 @@ class StaleParent(FasError):
     title = "Родитель релиза устарел"
 
 
+class InvalidTransition(FasError):
+    code = "invalid_transition"
+    status = 409
+    title = "Недопустимый переход релиза"
+
+
+class GlossaryBusy(FasError):
+    code = "glossary_busy"
+    status = 409
+    title = "Ремап глоссария уже идёт"
+
+
 class ProposalDecided(FasError):
     code = "proposal_decided"
     status = 409

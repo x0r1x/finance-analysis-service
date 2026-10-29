@@ -70,6 +70,37 @@ class GlossaryPackage:
         return self.concepts[concept].pref.get(lang)
 
 
+def with_profile(package: GlossaryPackage, document: dict, profile_id: str | None) -> GlossaryPackage:
+    """Метки `glossaries[concept].scoped[profile]` бьют глобальные только у этой книги."""
+
+    if not profile_id:
+        return package
+    overlay = dict(package._by_norm)
+    for concept, glossary in (document.get("glossaries") or {}).items():
+        scoped = (glossary.get("scoped") or {}).get(profile_id) if isinstance(glossary, dict) else None
+        if not isinstance(scoped, dict):
+            continue
+        for kind in ("alt", "hidden"):
+            bucket = scoped.get(kind) or {}
+            if not isinstance(bucket, dict):
+                continue
+            for texts in bucket.values():
+                items = [texts] if isinstance(texts, str) else list(texts or [])
+                for text in items:
+                    if not isinstance(text, str) or not text:
+                        continue
+                    norm = normalize_label(text)
+                    if norm:
+                        overlay[norm] = LabelHit(str(concept), kind, text)
+    return GlossaryPackage(
+        taxonomy=package.taxonomy,
+        concepts=package.concepts,
+        flows=package.flows,
+        markers=package.markers,
+        _by_norm=MappingProxyType(overlay),
+    )
+
+
 def build_package(document: dict, glossaries: Mapping[str, dict], dictionaries: dict) -> GlossaryPackage:
     raw = document.get("concepts")
     if not isinstance(raw, dict) or not raw:

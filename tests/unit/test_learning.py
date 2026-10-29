@@ -94,7 +94,8 @@ def test_lexical_relation_and_mine_decisions():
     conflict = mine([*strong, s("d", "u3", "-", "human.rejected")], owned={}, negatives={}, known_labels={})
     assert conflict[0]["decision"] == "review" and "negative_signal" in conflict[0]["conflicts"]
     same_profile = mine([s("a", "u1", profile="p"), s("b", "u2", profile="p"), s("c", "u3", profile="p")], owned={}, negatives={}, known_labels={})
-    assert same_profile[0]["books"] == 1 and same_profile[0]["decision"] == "review"
+    assert same_profile[0]["books"] == 1 and same_profile[0]["decision"] == "auto"
+    assert same_profile[0]["scope"].startswith("profile:")
     model_only = mine([s("a", None, kind="model.inferred")], owned={}, negatives={}, known_labels={})
     assert model_only == []
 

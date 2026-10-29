@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import anyio
@@ -31,7 +31,12 @@ from finance_analysis.application.gc import gc_incomplete
 from finance_analysis.application.glossary_store import GlossaryStore
 from finance_analysis.application.learning import Learning
 from finance_analysis.application.mapping_pipeline import MappingPipeline
-from finance_analysis.application.metrics import BUILDER_INCONSISTENT
+from finance_analysis.application.metrics import (
+    BUILDER_INCONSISTENT,
+    GLOSSARY_AUTO_ROLLBACK,
+    GLOSSARY_REVIEW_OPEN,
+    GLOSSARY_UNKNOWN_SHARE,
+)
 from finance_analysis.application.operations import append_event, create_op, read_op
 from finance_analysis.application.ports import Models
 from finance_analysis.application.project import derive_rows, prepare_rows, project
@@ -54,6 +59,7 @@ from finance_analysis.domain.book import (
     sha256_bytes,
     with_links,
 )
+from finance_analysis.domain.calibration import Calibrator
 from finance_analysis.domain.deadline import bind_request_deadline, effective
 from finance_analysis.domain.errors import (
     AlreadyExists,
@@ -69,12 +75,18 @@ from finance_analysis.domain.expression import (
     names_of,
     parse_expression,
 )
-from finance_analysis.domain.glossary_release import package_of
+from finance_analysis.domain.glossary import normalize_label, with_profile
+from finance_analysis.domain.glossary_release import (
+    glossary_for_job,
+    package_of,
+    summarize_stats,
+)
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.operational_year import resolve_operational_year
 from finance_analysis.domain.periods import marker_class, split_period_key
 from finance_analysis.domain.phases import phase_target, split_phase_target
+from finance_analysis.domain.signals import lf_accuracy
 from finance_analysis.domain.state import fold
 from finance_analysis.settings import Settings
 
@@ -251,6 +263,10 @@ class FasService:
         self.identities = load_identities()
         self.evaluator = Evaluator(self)
         self.glossary.gate = self.evaluator.shadow
+        self.glossary.canary_share = settings.glossary_canary_share
+        self.learning.calibrators = self.calibrators
+        self.learning.recal_gate = self._calibrator_ok
+        self.learning.on_release = self.begin_remap
 
     def spawn(self, coro) -> asyncio.Task:
         # Фоновая работа не наследует дедлайн запроса, который её запустил.
@@ -334,13 +350,13 @@ class FasService:
                 pass
         self.guard._catalog = frozenset(ids)
 
-    async def _versions_for(self, head: Head | None, events: list[dict]) -> Versions:
+    async def _versions_for(self, head: Head | None, events: list[dict], job_id: str | None = None) -> Versions:
         current_g = head.versions.get("glossary", "none") if head else "none"
         if current_g in (None, "", "none"):
             state = await self.glossary.peek()
-            active = (state or {}).get("active")
-            if active:
-                current_g = active
+            chosen = glossary_for_job(state, job_id) if state and job_id else (state or {}).get("active")
+            if chosen:
+                current_g = chosen
         current_p = head.versions.get("profile", "p-0") if head else "p-0"
         await self.calibrators.active()
         base = self._versions(None if current_g == "none" else current_g)
@@ -371,6 +387,16 @@ class FasService:
             return package_of(await self.glossary.document(version))
         except NotFound:
             return self.catalog
+
+    async def _book_package(self, version: str, events: list[dict]):
+        package = await self._package_for(version)
+        profile = _profile_name(events)
+        if not profile or not str(version or "").startswith("g-"):
+            return package
+        try:
+            return with_profile(package, await self.glossary.document(version), profile)
+        except NotFound:
+            return package
 
     def _versions(self, glossary: str | None = None) -> Versions:
         return Versions(
@@ -528,7 +554,7 @@ class FasService:
         `learn=False` — свёртка на прошлой сборке: сигналы этой сборки уже собраны при её загрузке.
         """
 
-        package = await self._package_for(versions.get("glossary", "none"))
+        package = await self._book_package(versions.get("glossary", "none"), events)
         calibrator = await self.calibrators.active()
         prepared = prepare_rows(projected, events, package, facts)
         scored = None
@@ -669,7 +695,7 @@ class FasService:
             snapshot = await self._aligned_snapshot(job_id, summary.etag)
         build = build_key_for(job_id, summary.etag, FAS_PROJECTION_VERSION)
         events = await self.guard.read_all(job_id)
-        versions = await self._versions_for(head, events)
+        versions = await self._versions_for(head, events, job_id)
         state_seq = int(events[-1]["seq"]) if events else (head.state_seq if head else 0)
         derive = versions.derive(state_seq)
         if head and head.build_key == build and head.derive_key == derive:
@@ -1160,7 +1186,7 @@ class FasService:
                 events=events,
                 profile=_profile_id(events),
                 glossary_version=version,
-                package=await self._package_for(version),
+                package=await self._book_package(version, events),
             )
         except Exception:
             LOG.exception("record_decisions %s", job_id)
@@ -1264,7 +1290,7 @@ class FasService:
         await self._use_active_catalog()
         events = await self.guard.read_all(job_id)
         state_seq = int(events[-1]["seq"]) if events else head.state_seq
-        versions = await self._versions_for(head, events)
+        versions = await self._versions_for(head, events, job_id)
         derive = versions.derive(state_seq)
         if state_seq == head.state_seq and derive == head.derive_key:
             return head
@@ -1604,25 +1630,206 @@ class FasService:
         self.glossary_seen = version
         return True
 
-    async def remap_glossary(self) -> dict:
+    async def remap_glossary(self, *, limit: int | None = None, cursor: str | None = None) -> dict:
+        """Без limit проходит все книги. С limit отдаёт хвост в remaining, курсор — последняя изменённая."""
+
         state = await self.glossary.ensure()
-        version = state["active"]
-        package_of(await self.glossary.document(version))
+        package_of(await self.glossary.document(state["active"]))
+        jobs = await self.glossary.jobs()
+        if cursor:
+            jobs = [job for job in jobs if job > cursor]
         changed = []
-        for job_id in await self.glossary.jobs():
+        remaining = []
+        for job_id in jobs:
+            if limit is not None and len(changed) >= limit:
+                remaining.append(job_id)
+                continue
+            target = glossary_for_job(state, job_id)
             async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as held:
                 head, token = await self._read_head(job_id)
-                if head is None:
+                if head is None or head.versions.get("glossary") == target:
                     continue
-                pinned = {**head.as_dict(), "versions": {**head.versions, "glossary": version}}
+                pinned = {**head.as_dict(), "versions": {**head.versions, "glossary": target}}
                 await self._publish_head(job_id, pinned, token, held.fence)
                 head, token = await self._read_head(job_id)
                 if head is None:
                     continue
                 await self._fold_derived(job_id, head, token, held.fence)
             changed.append(job_id)
-        self.glossary_seen = version
-        return {"jobs": changed, "glossary": version}
+        self.glossary_seen = state["active"]
+        return {"jobs": changed, "remaining": remaining, "glossary": state["active"], "cursor": changed[-1] if changed else cursor}
+
+    async def begin_remap(self) -> dict:
+        running = await self.list_ops(kind="glossary.remap", job_id=None, status="running")
+        if running:
+            return {"operation": running[0], "jobs": [], "remaining": None, "busy": True}
+        op = await self.create_op("glossary.remap", None, Actor(user_id="system"), {})
+        try:
+            batch = await self.remap_glossary(limit=self.settings.remap_batch_books)
+        except Exception as exc:
+            await self.finish_op(op["id"], "failed", error={"detail": str(exc)})
+            raise
+        if not batch["remaining"]:
+            await self.finish_op(op["id"], "succeeded", result={"jobs": batch["jobs"], "glossary": batch["glossary"]})
+            return {**batch, "operation": op["id"], "busy": False}
+        await append_event(
+            self.store,
+            op["id"],
+            {"result": {"cursor": batch["cursor"], "remaining": len(batch["remaining"])}},
+        )
+        self.spawn(self._remap_rest(op["id"]))
+        return {**batch, "operation": op["id"], "busy": False}
+
+    async def _remap_rest(self, op_id: str) -> None:
+        try:
+            while True:
+                current = await self.get_op(op_id)
+                if current["status"] != "running":
+                    return
+                rate = self.settings.remap_books_per_min
+                if rate > 0:
+                    await asyncio.sleep(self.settings.remap_batch_books / rate * 60)
+                cursor = (current.get("result") or {}).get("cursor")
+                batch = await self.remap_glossary(limit=self.settings.remap_batch_books, cursor=cursor)
+                if not batch["remaining"]:
+                    # Курсор не возвращается назад: релиз посередине батча оставлял ранние книги на старой цели.
+                    await self.remap_glossary()
+                    await self.finish_op(op_id, "succeeded", result={"jobs": batch["jobs"], "glossary": batch["glossary"]})
+                    return
+                await append_event(
+                    self.store, op_id, {"result": {"cursor": batch["cursor"], "remaining": len(batch["remaining"])}}
+                )
+        except Exception as exc:  # noqa: BLE001 — хвост ремапа закрывает операцию
+            await self.finish_op(op_id, "failed", error={"detail": str(exc)})
+
+    async def _calibrator_ok(self, body: dict) -> bool:
+        state = await self.glossary.peek()
+        package = self.catalog
+        if state and state.get("active"):
+            try:
+                package = package_of(await self.glossary.document(state["active"]))
+            except NotFound:
+                pass
+        before = (await self.evaluator.run(package)).get("summary") or {}
+        after = (await self.evaluator.run(package, calibrator=Calibrator.of(body))).get("summary") or {}
+        old, new = before.get("false_binding_rate"), after.get("false_binding_rate")
+        return new is not None and (old is None or new <= old)
+
+    async def glossary_stats(self, *, start: str | None, end: str | None, profile_id: str | None) -> dict:
+        for value in (start, end):
+            if value and not _day(value):
+                raise InvalidArgument("from и to: YYYY-MM-DD")
+        coverage = [
+            row
+            for row in await self._stats_coverage()
+            if _stat_keep(row, start, end, profile_id)
+        ]
+        proposals = (await self.glossary.proposals())["proposals"]
+        auto_labels, auto_rejected = await self._auto_label_counts()
+        body = summarize_stats(
+            coverage=coverage,
+            proposals=proposals,
+            auto_labels=auto_labels,
+            auto_rejected=auto_rejected,
+            shadow=await self._last_shadow(),
+            lf_accuracy=lf_accuracy(await self.learning.signals.rows()),
+        )
+        months = body["unknown_by_month"]
+        if not start and not end and not profile_id and months:
+            GLOSSARY_UNKNOWN_SHARE.set(list(months.values())[-1] or 0)
+        if body["auto"]["rollback_rate"] is not None:
+            GLOSSARY_AUTO_ROLLBACK.set(body["auto"]["rollback_rate"])
+        GLOSSARY_REVIEW_OPEN.set(body["review"]["open"])
+        return body
+
+    async def _stats_coverage(self) -> list[dict]:
+        rows = []
+        async for item in self.store.list("books/"):
+            parts = item.key.split("/")
+            if len(parts) != 3 or parts[2] != "_head.json":
+                continue
+            job_id = parts[1]
+            head = json.loads(await self.store.get(item.key))
+            month = await self._first_month(job_id)
+            profile = str((head.get("versions") or {}).get("profile") or "").split("@", 1)[0]
+            if profile == "p-0":
+                profile = ""
+            build, derive = head.get("build_key"), head.get("derive_key")
+            if not build or not derive:
+                continue
+            try:
+                done = json.loads(await self.store.get(keys.derived_done(job_id, build, derive)))
+            except NotFound:
+                continue
+            files = done.get("files") or {}
+            names = list(files)
+            rel = next((name for name in names if str(name).endswith("coverage.parquet")), None)
+            if rel is None:
+                continue
+            for row in await self.parquet.read(await self.store.get(f"books/{job_id}/{build}/{rel}")):
+                rows.append({"month": month, "profile": profile, "status": row.get("status"), "rows": row.get("rows")})
+        return rows
+
+    async def _first_month(self, job_id: str) -> str:
+        earliest = ""
+        async for item in self.store.list(f"books/{job_id}/_builds/"):
+            if not item.key.endswith(".json"):
+                continue
+            body = json.loads(await self.store.get(item.key))
+            stamp = str(body.get("created_at_utc") or "")
+            if stamp and (not earliest or stamp < earliest):
+                earliest = stamp
+        return earliest[:7]
+
+    async def _auto_label_counts(self) -> tuple[int, int]:
+        head = await self.glossary.peek()
+        if not head:
+            return 0, 0
+        when = {}
+        async for item in self.store.list("glossary/events/"):
+            if not item.key.endswith(".json"):
+                continue
+            event = json.loads(await self.store.get(item.key))
+            if event.get("type") == "release" and event.get("version"):
+                when[event["version"]] = event.get("at_utc") or ""
+        labels = []
+        seen: set[str] = set()
+        for item in head.get("history") or []:
+            version = item.get("version")
+            if item.get("source") != "auto" or not version or version in seen:
+                continue
+            seen.add(version)
+            try:
+                record = json.loads(await self.store.get(f"glossary/releases/{item['version']}/release.json"))
+            except NotFound:
+                continue
+            for change in record.get("ops") or []:
+                if change.get("op") == "add_label" and change.get("text"):
+                    labels.append((normalize_label(change["text"]).strip(), when.get(item["version"]) or ""))
+        rejected = 0
+        signals = await self.learning.signals.rows()
+        for norm, at in labels:
+            if not at:
+                continue
+            start = datetime.strptime(at[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
+            end = start + timedelta(days=30)
+            for row in signals:
+                if row.get("polarity") != "-" or row.get("kind") != "human.rejected" or row.get("at_utc") is None:
+                    continue
+                label = normalize_label(row.get("label_text") or row.get("label_norm") or "").strip()
+                if label == norm and start <= _aware(row["at_utc"]) <= end:
+                    rejected += 1
+                    break
+        return len(labels), rejected
+
+    async def _last_shadow(self) -> dict | None:
+        key = None
+        async for item in self.store.list("glossary/releases/"):
+            if item.key.endswith("/shadow.json") and (key is None or item.key > key):
+                key = item.key
+        if key is None:
+            return None
+        return json.loads(await self.store.get(key))
 
     def capabilities(self) -> dict:
         storage = {
@@ -1689,6 +1896,39 @@ def _profile_id(events: list[dict]) -> str | None:
         if event.get("type") == "profile.set" and isinstance(event.get("value"), str):
             chosen = event["value"]
     return chosen
+
+
+def _profile_name(events: list[dict]) -> str | None:
+    raw = _profile_id(events)
+    if not isinstance(raw, str) or not raw:
+        return None
+    name = raw.split("@", 1)[0]
+    if not name or name == "p-0":
+        return None
+    return name
+
+
+def _day(value: str) -> bool:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def _stat_keep(row: dict, start: str | None, end: str | None, profile_id: str | None) -> bool:
+    if profile_id and row.get("profile") != profile_id:
+        return False
+    month = str(row.get("month") or "")
+    if start and month and month < start[:7]:
+        return False
+    return not (end and month and month > end[:7])
+
+
+def _aware(value) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return datetime.strptime(str(value)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
 
 
 def _glossary_seq(version: str) -> int:
@@ -1910,6 +2150,8 @@ PROBLEM_CATALOG = [
     {"code": "stale_parent", "http": 409, "retryable": False},
     {"code": "proposal_decided", "http": 409, "retryable": False},
     {"code": "glossary_regression", "http": 409, "retryable": False},
+    {"code": "invalid_transition", "http": 409, "retryable": False},
+    {"code": "glossary_busy", "http": 409, "retryable": False},
     {"code": "idempotency_key_reused", "http": 422, "retryable": False},
     {"code": "rate_limited", "http": 429, "retryable": True},
     {"code": "book_busy", "http": 429, "retryable": True},

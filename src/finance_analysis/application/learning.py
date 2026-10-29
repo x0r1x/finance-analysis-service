@@ -1,7 +1,7 @@
 """Рост глоссария из потока книг (§5.10.4, §5.11): сигналы, unmapped/, кластеры, предложения, glossary_mine.
 
-Ни LLM, ни CLM, ни glossary_mine не публикуют релиз: их выход — предложения в очередь ревью.
-Фаза 2b работает только в режиме предложений: `auto` тоже становится предложением (origin=auto).
+По умолчанию glossary_mine только пишет предложения. При GLOSSARY_AUTO_PROMOTE=true метка профиля
+или глобальный alt без конфликта идёт в один релиз и останавливается на canary.
 """
 
 from __future__ import annotations
@@ -15,15 +15,26 @@ from decimal import Decimal
 
 from ulid import ULID
 
+from finance_analysis.application import keys
 from finance_analysis.application.examples import (
     AppendOnlyParquet,
     pack_vector,
     unpack_vector,
 )
+from finance_analysis.application.mapping_pipeline import few_shot_state
 from finance_analysis.domain.deadline import Deadline
-from finance_analysis.domain.errors import ModelDegraded
+from finance_analysis.domain.errors import (
+    GlossaryRegression,
+    InvalidArgument,
+    ModelDegraded,
+    NotFound,
+    PreconditionFailed,
+    StaleParent,
+)
 from finance_analysis.domain.glossary import normalize_label
+from finance_analysis.domain.glossary_release import canary_verdict, label_diff
 from finance_analysis.domain.signals import (
+    STRONG_AGAINST,
     WEIGHTS,
     LabelingInput,
     MineThresholds,
@@ -379,6 +390,7 @@ class Learning:
             criteria[f"new_concept_under:{broader}"] = f"Новое понятие внутри {broader}"
         question = {"type": {"type": "choice", "instructions": "Что это за метка?", "criteria": criteria}}
         state = f"Метки кластера: {'; '.join(text for text, _c in texts.most_common(8))}"
+        state = await self._with_shots(label, state)
         try:
             answer = (await self.models.clm.choose(state, question, deadline=Deadline.after_ms(self.settings.clm_timeout_sec * 1000)))["type"]
         except ModelDegraded:
@@ -392,52 +404,212 @@ class Learning:
     # --- glossary_mine (Taskiq, ночью, только режим предложений) -------------------------
 
     async def mine(self, package, document: dict) -> dict:
+        head = await self.glossary.ensure()
+        documents = [document]
+        if head.get("canary"):
+            try:
+                documents.append(await self.glossary.document(head["canary"]))
+            except NotFound:
+                pass
+        owned, negatives, known = _glossary_labels(package, documents)
         signals = await self.signals.rows()
-        owned: dict[str, str] = {}
-        negatives: dict[str, set[str]] = {}
-        known: dict[str, list[str]] = {}
-        for concept_id, concept in package.concepts.items():
-            negatives[concept_id] = set(concept.negative)
-            glossary = (document.get("glossaries") or {}).get(concept_id) or {}
-            texts = list(concept.pref.values())
-            for kind in ("alt", "hidden"):
-                for values in (glossary.get(kind) or {}).values():
-                    texts.extend([values] if isinstance(values, str) else list(values or []))
-            known[concept_id] = texts
-            for text in texts:
-                owned[normalize_label(text).strip()] = concept_id
         accuracy = lf_accuracy(signals)
         thresholds = MineThresholds(
             min_books=self.settings.glossary_auto_min_books,
             min_confirmations=self.settings.glossary_auto_min_confirmations,
         )
         rows = mine(signals, owned=owned, negatives=negatives, known_labels=known, lf_accuracy=accuracy, thresholds=thresholds)
-        proposals = 0
+        auto_rows: list[dict] = []
+        propose_rows: list[dict] = []
+        allow_auto = bool(self.settings.glossary_auto_promote) and not head.get("canary")
         for row in rows:
-            applied = "none"
-            if row["decision"] in {"auto", "review"} and row.get("label_text"):
-                await self.glossary.add_proposal(
-                    {
-                        "type": "synonym_of",
-                        "concept": row["concept"],
-                        "kind": row["label_kind"],
-                        "lang": row.get("lang") or lang_of(row["label_text"]),
-                        "text": row["label_text"],
-                        "origin": "auto" if row["decision"] == "auto" else "mine",
-                        "books": row["books"],
-                        "impact": float(row["books"]) * float(row.get("p_weak") or 0.0),
-                        "evidence": {key: row[key] for key in ("books", "profiles", "confirmations", "lf_for", "lf_against", "p_weak", "conflicts", "scope")},
-                    }
-                )
-                applied = "proposal"
-                proposals += 1
-            row["applied"] = applied
+            row["applied"] = "none"
+            scope = auto_scope(row) if allow_auto and row["decision"] == "auto" else None
+            if scope and row.get("label_text"):
+                row["_scope"] = scope
+                auto_rows.append(row)
+            elif row["decision"] in {"auto", "review"} and row.get("label_text"):
+                propose_rows.append(row)
+        promoted = False
+        if auto_rows:
+            ops = []
+            for row in auto_rows:
+                op = {
+                    "op": "add_label",
+                    "concept": row["concept"],
+                    "kind": row["label_kind"],
+                    "lang": row.get("lang") or lang_of(row["label_text"]),
+                    "text": row["label_text"],
+                }
+                if row["_scope"] != "global":
+                    op["scope"] = row["_scope"]
+                ops.append(op)
+            try:
+                ready = await self.glossary.release(ops, f"h-{head['seq']}", source="auto")
+                await self.glossary.transition(ready["version"], "canary", ready["etag"])
+                promoted = True
+                for row in auto_rows:
+                    row["applied"] = "release"
+            except (GlossaryRegression, StaleParent, PreconditionFailed):
+                propose_rows.extend(auto_rows)
+        proposals = 0
+        for row in propose_rows:
+            await self._propose(row)
+            row["applied"] = "proposal"
+            proposals += 1
+        for row in rows:
+            row.pop("_scope", None)
             row["conflicts_json"] = json.dumps(row.pop("conflicts"), ensure_ascii=False)
         run = str(ULID())
         if rows:
             payload, _count = await self.parquet.write("candidates", rows, build_key="")
             await self.store.put_if_absent(f"glossary/candidates/{run}.parquet", payload)
-        return {"run": run, "candidates": len(rows), "proposals": proposals, "lf_accuracy": accuracy, "mode": "proposals"}
+        canary = await self._advance_canary()
+        recal = await self._recalibrate_if_due()
+        hook = getattr(self, "on_release", None)
+        if hook and (promoted or canary.get("canary") in {"promote", "reject"}):
+            await hook()
+        return {
+            "run": run,
+            "candidates": len(rows),
+            "proposals": proposals,
+            "lf_accuracy": accuracy,
+            "mode": "canary" if promoted else "proposals",
+            "canary": canary.get("canary"),
+            "recalibrate": recal.get("recalibrate"),
+        }
+
+    async def _propose(self, row: dict) -> None:
+        await self.glossary.add_proposal(
+            {
+                "type": "synonym_of",
+                "concept": row["concept"],
+                "kind": row["label_kind"],
+                "lang": row.get("lang") or lang_of(row["label_text"]),
+                "text": row["label_text"],
+                "origin": "auto" if row["decision"] == "auto" else "mine",
+                "books": row["books"],
+                "impact": float(row["books"]) * float(row.get("p_weak") or 0.0),
+                "evidence": {key: row[key] for key in ("books", "profiles", "confirmations", "lf_for", "lf_against", "p_weak", "conflicts", "scope")},
+            }
+        )
+
+    async def _with_shots(self, label: str, state: str) -> str:
+        embed = self.models.embed
+        if embed is None:
+            return state
+        try:
+            vectors = await embed.embed([label], deadline=Deadline.after_ms(self.settings.clm_timeout_sec * 1000))
+            found = await self.examples.search(vectors, self.settings.knn_k)
+        except ModelDegraded:
+            return state
+        hits = found[0] if found else []
+        return few_shot_state(state, hits, self.settings.knn_k)
+
+    async def _advance_canary(self) -> dict:
+        head = await self.glossary.peek()
+        if not head or not head.get("canary") or not head.get("canary_since"):
+            return {}
+        since = datetime.strptime(head["canary_since"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        books, rows = await self._canary_volume(head["canary"])
+        etag = f"h-{head['seq']}"
+        try:
+            if books > 0 and await self._canary_rejected(head, since):
+                await self.glossary.transition(head["canary"], "rejected", etag, reason="canary_regression")
+                return {"canary": "reject"}
+            verdict = canary_verdict(
+                since,
+                books,
+                rows,
+                datetime.now(UTC),
+                hours=self.settings.glossary_canary_hours,
+                min_books=self.settings.glossary_canary_min_books,
+                min_rows=self.settings.glossary_canary_min_rows,
+                max_hours=self.settings.glossary_canary_max_hours,
+            )
+            if verdict == "promote":
+                await self.glossary.transition(head["canary"], "active", etag)
+                return {"canary": "promote"}
+        except (GlossaryRegression, StaleParent, PreconditionFailed):
+            return {"canary": "wait"}
+        return {"canary": "wait"}
+
+    async def _canary_rejected(self, head: dict, since: datetime) -> bool:
+        added = set()
+        for change in label_diff(await self.glossary.document(head["active"]), await self.glossary.document(head["canary"])):
+            if change.get("change") == "add" and change.get("text"):
+                added.add(normalize_label(change["text"]).strip())
+        if not added:
+            return False
+        for row in await self.signals.rows():
+            if row.get("kind") not in STRONG_AGAINST or row.get("polarity") != "-":
+                continue
+            label = normalize_label(row.get("label_text") or row.get("label_norm") or "").strip()
+            if label not in added or row.get("at_utc") is None:
+                continue
+            if _stamp(row["at_utc"]) >= since:
+                return True
+        return False
+
+    async def _canary_volume(self, version: str) -> tuple[int, int]:
+        # shortcut: все строки книг на canary, не только задетые новой меткой
+        books = rows = 0
+        async for item in self.store.list("books/"):
+            parts = item.key.split("/")
+            if len(parts) != 3 or parts[2] != "_head.json":
+                continue
+            body = json.loads(await self.store.get(item.key))
+            if (body.get("versions") or {}).get("glossary") != version:
+                continue
+            books += 1
+            rows += await self._coverage_rows(parts[1], body)
+        return books, rows
+
+    async def _coverage_rows(self, job_id: str, head: dict) -> int:
+        build, derive = head.get("build_key"), head.get("derive_key")
+        if not build or not derive:
+            return 0
+        try:
+            done = json.loads(await self.store.get(keys.derived_done(job_id, build, derive)))
+        except NotFound:
+            return 0
+        files = done.get("files") or {}
+        names = list(files)
+        rel = next((name for name in names if str(name).endswith("coverage.parquet")), None)
+        if rel is None:
+            return 0
+        total = 0
+        for row in await self.parquet.read(await self.store.get(f"books/{job_id}/{build}/{rel}")):
+            total += int(row.get("rows") or 0)
+        return total
+
+    async def _recalibrate_if_due(self) -> dict:
+        calibrators = getattr(self, "calibrators", None)
+        if calibrators is None:
+            return {}
+        count = sum(
+            1
+            for row in await self.signals.rows()
+            if row.get("kind") in {"human.confirmed", "human.corrected"} and row.get("polarity") == "+"
+        )
+        stored = await calibrators.head()
+        if count - int(stored.get("signal_count") or 0) < self.settings.recalibrate_every:
+            return {"recalibrate": "wait"}
+        try:
+            body = await calibrators.train(await self.examples.all_rows(), max_risk=self.settings.calibrator_max_risk)
+        except InvalidArgument:
+            await calibrators.note_progress(count)
+            return {"recalibrate": "skipped"}
+        gate = getattr(self, "recal_gate", None)
+        activated = False
+        if gate is None:
+            # shortcut: без гейта на eval-наборе кандидат не активируется
+            activated = False
+        elif await gate(body):
+            await calibrators.activate(body["version"])
+            activated = True
+        await calibrators.note_progress(count)
+        return {"recalibrate": "active" if activated else "candidate", "version": body.get("version")}
 
     async def compact(self) -> dict:
         return {
@@ -457,6 +629,53 @@ def _abs_by_row(facts: list[dict]) -> dict[str, Decimal]:
             continue
         totals[fact["row_key"]] = totals.get(fact["row_key"], Decimal(0)) + abs(Decimal(str(number)))
     return totals
+
+
+def auto_scope(row: dict) -> str | None:
+    """Куда класть авто-метку. Без профиля alt не публикуется: он остаётся предложением."""
+
+    scope = str(row.get("scope") or "")
+    kind = row.get("label_kind")
+    if kind == "hidden":
+        return scope if scope.startswith("profile:") else None
+    if kind != "alt":
+        return None
+    if int(row.get("profiles") or 0) >= 2 and not row.get("conflicts") and scope == "global":
+        return "global"
+    return scope if scope.startswith("profile:") else None
+
+
+def _glossary_labels(package, documents: list[dict]) -> tuple[dict[str, str], dict[str, set[str]], dict[str, list[str]]]:
+    owned: dict[str, str] = {}
+    negatives: dict[str, set[str]] = {}
+    known: dict[str, list[str]] = {}
+    for concept_id, concept in package.concepts.items():
+        negatives[concept_id] = set(concept.negative)
+        texts = list(concept.pref.values())
+        for document in documents:
+            glossary = (document.get("glossaries") or {}).get(concept_id) or {}
+            for kind in ("alt", "hidden"):
+                for values in (glossary.get(kind) or {}).values():
+                    texts.extend([values] if isinstance(values, str) else list(values or []))
+            for block in (glossary.get("scoped") or {}).values():
+                if not isinstance(block, dict):
+                    continue
+                for kind in ("alt", "hidden"):
+                    bucket = block.get(kind) or {}
+                    if not isinstance(bucket, dict):
+                        continue
+                    for values in bucket.values():
+                        texts.extend([values] if isinstance(values, str) else list(values or []))
+        known[concept_id] = [text for text in texts if isinstance(text, str)]
+        for text in known[concept_id]:
+            owned[normalize_label(text).strip()] = concept_id
+    return owned, negatives, known
+
+
+def _stamp(value) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return datetime.strptime(str(value)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
 
 
 def labeling_input(prepared, bindings, facts, links, package, identities) -> LabelingInput:

@@ -15,10 +15,19 @@ from finance_analysis.domain.calibration import bootstrap_delta
 from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.errors import NotFound
 from finance_analysis.domain.evaluation import score_book, summarize, targets_met
+from finance_analysis.domain.glossary import with_profile
 from finance_analysis.domain.glossary_release import package_of
 
 METRIC_CONCEPTS = frozenset({"cfads", "debt_service", "interest", "principal", "ebitda", "ebit", "debt_outstanding", "discount_rate"})
 FOCUS = frozenset({"cfads", "debt_service", "interest"})
+
+
+def _profile_of(head) -> str | None:
+    raw = str((head.versions or {}).get("profile") or "")
+    name = raw.split("@", 1)[0]
+    if not name or name == "p-0":
+        return None
+    return name
 
 
 def evidence_from(bindings: list[dict]) -> dict[str, RowEvidence]:
@@ -66,11 +75,13 @@ class Evaluator:
     def __init__(self, service) -> None:
         self.service = service
 
-    async def book(self, job_id: str, package, *, calibrator=None, use_models: bool = True) -> tuple[list[dict], list[dict]]:
+    async def book(self, job_id: str, package, *, calibrator=None, use_models: bool = True, document=None) -> tuple[list[dict], list[dict]]:
         svc = self.service
         head, _token = await svc._read_head(job_id)
         if head is None:
             raise NotFound(f"книга {job_id} не загружена")
+        if document is not None:
+            package = with_profile(package, document, _profile_of(head))
         projected = {
             "dim_row": await svc._dataset_rows(job_id, head, "dim_row"),
             "dim_period": await svc._dataset_rows(job_id, head, "dim_period"),
@@ -117,12 +128,12 @@ class Evaluator:
                 critical.add(row["binding_key"])
         return labels, frozenset(critical)
 
-    async def run(self, package, *, calibrator=None, items: list[dict] | None = None) -> dict:
+    async def run(self, package, *, calibrator=None, items: list[dict] | None = None, document=None) -> dict:
         scores = []
         missing = []
         for item in items if items is not None else self.eval_set():
             try:
-                bindings, rows = await self.book(item["job_id"], package, calibrator=calibrator)
+                bindings, rows = await self.book(item["job_id"], package, calibrator=calibrator, document=document)
             except NotFound:
                 missing.append(item["job_id"])
                 continue
@@ -160,15 +171,17 @@ class Evaluator:
         # Гейт зовут под замком глоссария: только чтения без замка (peek, document, jobs).
         state = await svc.glossary.peek()
         active_version = state["active"]
-        active = package_of(await svc.glossary.document(active_version))
-        candidate = package_of(await svc.glossary.document(version))
+        active_doc = await svc.glossary.document(active_version)
+        candidate_doc = await svc.glossary.document(version)
+        active = package_of(active_doc)
+        candidate = package_of(candidate_doc)
         calibrator = await svc.calibrators.active()
         reasons: list[str] = []
         eval_items = self.eval_set()
         eval_report: dict = {"books": 0}
         if eval_items:
-            before = await self.run(active, calibrator=calibrator, items=eval_items)
-            after = await self.run(candidate, calibrator=calibrator, items=eval_items)
+            before = await self.run(active, calibrator=calibrator, items=eval_items, document=active_doc)
+            after = await self.run(candidate, calibrator=calibrator, items=eval_items, document=candidate_doc)
             pairs = list(zip(before["scores"], after["scores"], strict=True))
             slices = {
                 "all": [((a.false, a.accepted), (b.false, b.accepted)) for a, b in pairs],
@@ -192,8 +205,8 @@ class Evaluator:
         recent = (await svc.glossary.jobs())[-svc.settings.glossary_shadow_recent_books :]
         for job_id in recent:
             try:
-                old, rows = await self.book(job_id, active, calibrator=calibrator)
-                new, _rows = await self.book(job_id, candidate, calibrator=calibrator)
+                old, rows = await self.book(job_id, active, calibrator=calibrator, document=active_doc)
+                new, _rows = await self.book(job_id, candidate, calibrator=calibrator, document=candidate_doc)
             except (NotFound, StopIteration):
                 continue
             label = {row["binding_key"]: row.get("label_path_text") for row in rows}

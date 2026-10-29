@@ -146,7 +146,15 @@ class ExampleStore:
             return await self._index.size()
         rows = [row for row in await self.active() if row.get("embedding_f32")]
         vectors = [unpack_vector(row["embedding_f32"]) for row in rows]
-        payloads = [{"concept": row["concept"], "job_id": row["job_id"], "binding_key": row["binding_key"]} for row in rows]
+        payloads = [
+            {
+                "concept": row["concept"],
+                "job_id": row["job_id"],
+                "binding_key": row["binding_key"],
+                **({"path_text": row["path_text"]} if row.get("path_text") else {}),
+            }
+            for row in rows
+        ]
         await self._index.replace(vectors, payloads)
         self._keys = keys
         self._loaded_at = time.monotonic()
