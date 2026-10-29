@@ -1,0 +1,31 @@
+# Analyses
+
+[Русский](../ru/analyses.md)
+
+`POST /v1/books/{job_id}/analyses` takes `type` of `audit`, `ratios`, `impact`, or `full`. Any other value is `400`. A non-null `include` is `400` (`поле include не принимается`). `include: null` is ignored.
+
+`audit` and `ratios` wait inside the sync deadline (`SYNC_DEADLINE_MS`, and `LOAD_SYNC_SEC` on the HTTP call). `ratios` and `impact` also return `202` when the book has more periods than `SYNC_MAX_PERIODS`, or when `async` is true. `full` always returns `202`. The work runs in the API process, the same way an audit does. It is not a separate queue job. If that process is killed, the run dies with it.
+
+`render` is `json` or `md`. It selects the report format stored with the result. The default metrics for `full`, when `metrics` is omitted, are `dscr` only.
+
+## What each type does
+
+`audit` runs the selected rules. Omit `rules` and every rule runs. An empty `rules` list runs none.
+
+`ratios` requires a non-empty `metrics` list. The allowed names are the `metrics` array in `GET /v1/capabilities`.
+
+`impact` traces one target. Pass `target` as a `cell_id`, a `row_key`, or a `concept`. `direction` is `precedents` or `dependents`. `depth` defaults when it is omitted.
+
+`full` runs ratios, then audit, then impact when `target` is present.
+
+`POST /v1/books/{job_id}:compare` is not an analysis type. It compares two builds, two saved scenarios, or two books (`other.job_id`). It does not emit a metric delta between cases.
+
+## Report and findings
+
+`GET /v1/books/{job_id}/analyses/{analysis_id}/report?format=json|md` renders the stored `result.json`. The same result is byte-identical on a second read. `GET` does not recompute and does not call a model.
+
+`GET /v1/books/{job_id}/findings` reads the last audit on `build_key`, or on the current head when `build_key` is omitted. `rule` and `severity` are comma-separated. `concept` keeps findings whose row is bound to that concept. `page_size` defaults to 50.
+
+`GET /v1/books/{job_id}/findings/{fingerprint}` explains one finding and traces its formula graph. `direction` defaults to `precedents`. A fingerprint from an older build needs that build's `build_key`, or the lookup uses the current head and returns `404`.
+
+Rule codes, the ratio formulas, and the finding shape are in [design-v0.23.md](../design-v0.23.md) §6.
