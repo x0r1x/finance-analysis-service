@@ -7,11 +7,19 @@ from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
 from finance_analysis.adapters.storage.store import LocalStore
 from finance_analysis.adapters.vector.numpy_index import NumpyIndex
 from finance_analysis.application.catalog import load_catalog, load_git_document
+from finance_analysis.application.evaluation import Evaluator
 from finance_analysis.application.examples import ExampleStore
 from finance_analysis.application.glossary_store import GlossaryStore
 from finance_analysis.application.learning import Learning
-from finance_analysis.application.mapping_pipeline import few_shot_state
+from finance_analysis.application.mapping_pipeline import (
+    MappingPipeline,
+    PipelineResult,
+    few_shot_state,
+)
 from finance_analysis.application.ports import Models
+from finance_analysis.domain.book import Head
+from finance_analysis.domain.candidates import Candidate, RowEvidence
+from finance_analysis.domain.deadline import Deadline
 from finance_analysis.domain.glossary import with_profile
 from finance_analysis.domain.glossary_release import (
     canary_verdict,
@@ -40,6 +48,7 @@ def test_canary_verdict_waits_without_volume_or_time():
     assert canary_verdict(since, 9, 200, since + timedelta(hours=49), **kwargs) == "wait"
     assert canary_verdict(since, 10, 200, since + timedelta(hours=47), **kwargs) == "wait"
     assert canary_verdict(since, 1, 1, since + timedelta(hours=200), **kwargs) == "wait"
+    assert canary_verdict(since, 10, 200, since + timedelta(hours=200), **kwargs) == "wait"
 
 
 def test_canary_bucket_is_stable_and_share_zero_stays_active():
@@ -113,3 +122,84 @@ async def test_shadow_failure_keeps_auto_proposal(tmp_path):
     assert head.get("canary") is None
     opened = [item for item in (await glossary.proposals())["proposals"] if item["origin"] == "auto"]
     assert opened and opened[0]["status"] == "open" and opened[0]["text"] == "Lender cash"
+
+
+async def test_clm_shots_stay_with_the_call_that_found_them():
+    class Clm:
+        model = "fake"
+
+        def __init__(self):
+            self.states: list[str] = []
+
+        async def choose(self, state, questions, *, deadline):
+            self.states.append(state)
+            return {"concept": {"choice": "cfads", "probabilities": {"cfads": 0.6, "debt_service": 0.3, "none": 0.1}}}
+
+    class Budget:
+        def __init__(self, pipeline):
+            self.pipeline = pipeline
+
+        async def take(self, key, limit, ttl):
+            self.pipeline._shot_hits = {"k": [(0.9, {"path_text": "PATH-B", "concept": "debt_service"})]}
+            return True
+
+    clm = Clm()
+    pipeline = MappingPipeline(Models(embed=object(), clm=clm), settings=Settings(FAS_REDIS_URL="redis://unused"))
+    pipeline.budget = Budget(pipeline)
+    evidence = {
+        "k": RowEvidence(candidates=(Candidate("cfads", recall_cos=0.9), Candidate("debt_service", recall_cos=0.9)))
+    }
+    hits = {"k": [(0.9, {"path_text": "PATH-A", "concept": "cfads"})]}
+    await pipeline._adjudicate(
+        "job",
+        "run",
+        [{"binding_key": "k"}],
+        ["row text"],
+        evidence,
+        CATALOG,
+        Deadline.after_ms(1000),
+        PipelineResult(),
+        None,
+        hits,
+    )
+    assert clm.states and "PATH-A → cfads" in clm.states[0]
+    assert "PATH-B" not in clm.states[0]
+
+
+async def test_shadow_book_uses_the_profile_label():
+    document = load_git_document()
+    document["glossaries"]["debt_service"].setdefault("scoped", {})["acme"] = {"hidden": {"en": ["CFADS"]}}
+    package = package_of(document)
+    head = Head("b", 1, "d", {"profile": "acme@1", "glossary": "g"})
+
+    class Guard:
+        async def read_all(self, job_id):
+            return []
+
+    class Svc:
+        async def _read_head(self, job_id):
+            return head, "t"
+
+        async def _dataset_rows(self, job_id, got, name):
+            if name == "dim_row":
+                return [
+                    {
+                        "kind": "fact",
+                        "binding_key": "k",
+                        "row_key": "k",
+                        "label": "CFADS",
+                        "label_path_text": "CFADS",
+                        "model_id": "m",
+                        "build_key": "b",
+                        "check_row": False,
+                    }
+                ]
+            if name == "fact_observation":
+                return [{"row_key": "k", "value_status": "value", "value": "1"}]
+            return []
+
+        guard = Guard()
+
+    bindings, _rows = await Evaluator(Svc()).book("job", package, document=document, use_models=False)
+    found = next(row for row in bindings if row["binding_key"] == "k")
+    assert found["effective_concept"] == "debt_service"

@@ -99,7 +99,7 @@ class MappingPipeline:
         calibrator: Calibrator | None = None,
     ) -> PipelineResult:
         result = PipelineResult()
-        self._shot_hits = {}
+        shot_hits: dict[str, list] = {}
         targets = [
             row
             for row in rows
@@ -126,7 +126,7 @@ class MappingPipeline:
                     order = np.argsort(-cos[index])[:top_k]
                     nearest_concept[index] = float(cos[index][order[0]]) if len(order) else None
                     recall[index] = [Candidate(names[j], recall_cos=float(cos[index][j])) for j in order]
-                await self._knn(targets, vectors, recall, nearest_example, job_id)
+                await self._knn(targets, vectors, recall, nearest_example, job_id, shot_hits)
             except ModelDegraded as exc:
                 result.degraded.append(exc.as_dict())
             except ValueError:
@@ -149,7 +149,7 @@ class MappingPipeline:
             )
             for index, row in enumerate(targets)
         }
-        await self._adjudicate(job_id, run_id, targets, texts, evidence, package, deadline, result, calibrator)
+        await self._adjudicate(job_id, run_id, targets, texts, evidence, package, deadline, result, calibrator, shot_hits)
         result.evidence = evidence
         return result
 
@@ -169,14 +169,14 @@ class MappingPipeline:
         self._concept_vectors = {key: (names, matrix)}
         return names, matrix
 
-    async def _knn(self, targets, vectors, recall, nearest_example, job_id: str) -> None:
+    async def _knn(self, targets, vectors, recall, nearest_example, job_id: str, shot_hits: dict) -> None:
         if self.examples is None:
             return
         hits = await self.examples.search(vectors, self.settings.knn_k)
-        self._shot_hits = {}
+        shot_hits.clear()
         for index, row in enumerate(targets):
             found = [(cos, item) for cos, item in hits[index] if not (item["job_id"] == job_id and item["binding_key"] == row["binding_key"])]
-            self._shot_hits[row["binding_key"]] = found
+            shot_hits[row["binding_key"]] = found
             if not found:
                 continue
             nearest_example[index] = max(cos for cos, _item in found)
@@ -225,7 +225,7 @@ class MappingPipeline:
             result.degraded.append(failures[0])
         return list(ranked)
 
-    async def _adjudicate(self, job_id, run_id, targets, texts, evidence, package, deadline, result, calibrator) -> None:
+    async def _adjudicate(self, job_id, run_id, targets, texts, evidence, package, deadline, result, calibrator, shot_hits) -> None:
         """Стадия 8: только неоднозначные строки, бюджет CLM_MAX_CALLS_PER_BOOK атомарно в Redis."""
 
         if self.models.clm is None or self.settings.clm_max_calls_per_book <= 0:
@@ -255,7 +255,7 @@ class MappingPipeline:
             criteria["none"] = "Ни одно из перечисленных"
             question = {"concept": {"type": "choice", "instructions": "Какому понятию соответствует строка?", "criteria": criteria}}
             try:
-                shots = getattr(self, "_shot_hits", {}).get(row["binding_key"]) or []
+                shots = shot_hits.get(row["binding_key"]) or []
                 state = few_shot_state(texts[index], shots, self.settings.knn_k)
                 answer = (await self.models.clm.choose(state, question, deadline=deadline))["concept"]
             except ModelDegraded as exc:

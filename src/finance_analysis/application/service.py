@@ -1692,6 +1692,8 @@ class FasService:
                 cursor = (current.get("result") or {}).get("cursor")
                 batch = await self.remap_glossary(limit=self.settings.remap_batch_books, cursor=cursor)
                 if not batch["remaining"]:
+                    # Курсор не возвращается назад: релиз посередине батча оставлял ранние книги на старой цели.
+                    await self.remap_glossary()
                     await self.finish_op(op_id, "succeeded", result={"jobs": batch["jobs"], "glossary": batch["glossary"]})
                     return
                 await append_event(
@@ -1733,7 +1735,7 @@ class FasService:
             lf_accuracy=lf_accuracy(await self.learning.signals.rows()),
         )
         months = body["unknown_by_month"]
-        if months:
+        if not start and not end and not profile_id and months:
             GLOSSARY_UNKNOWN_SHARE.set(list(months.values())[-1] or 0)
         if body["auto"]["rollback_rate"] is not None:
             GLOSSARY_AUTO_ROLLBACK.set(body["auto"]["rollback_rate"])
@@ -1791,9 +1793,12 @@ class FasService:
             if event.get("type") == "release" and event.get("version"):
                 when[event["version"]] = event.get("at_utc") or ""
         labels = []
+        seen: set[str] = set()
         for item in head.get("history") or []:
-            if item.get("source") != "auto":
+            version = item.get("version")
+            if item.get("source") != "auto" or not version or version in seen:
                 continue
+            seen.add(version)
             try:
                 record = json.loads(await self.store.get(f"glossary/releases/{item['version']}/release.json"))
             except NotFound:

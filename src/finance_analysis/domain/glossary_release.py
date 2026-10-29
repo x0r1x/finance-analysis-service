@@ -164,14 +164,13 @@ def canary_verdict(
     min_rows: int,
     max_hours: int,
 ) -> str:
-    """promote — время и объём набраны. Иначе wait: до max_hours ждём, дальше решает человек."""
+    """promote — время и объём набраны раньше max_hours. Дальше wait: решает человек."""
 
     elapsed = (now - since).total_seconds() / 3600
-    enough = books >= min_books and rows >= min_rows
-    if enough and elapsed >= hours:
-        return "promote"
     if elapsed >= max_hours:
         return "wait"
+    if books >= min_books and rows >= min_rows and elapsed >= hours:
+        return "promote"
     return "wait"
 
 
