@@ -50,7 +50,7 @@ def register(app, settings, *, svc, write, read) -> None:
     async def glossary_resolve(request: Request):
         return await write(
             request,
-            lambda gloss, body, _match: gloss.resolve(str(body.get("text") or "")),
+            lambda gloss, body, _match: svc().resolve_concept(body),
         )
 
     @app.post("/v1/glossary/releases")

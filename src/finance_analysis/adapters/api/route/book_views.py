@@ -22,7 +22,9 @@ def register(app, settings, *, svc, book_get, read, op_headers) -> None:
         return await book_get(
             job_id,
             request,
-            lambda checked, who: svc().mapping_view(checked, who, wait_sec=settings.load_sync_sec),
+            lambda checked, who: svc().mapping_view(
+                checked, who, wait_sec=settings.load_sync_sec, query=dict(request.query_params),
+            ),
         )
 
     @app.get("/v1/books/{job_id}/questions")

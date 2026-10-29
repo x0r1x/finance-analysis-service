@@ -23,7 +23,7 @@ from finance_analysis.domain.errors import (
     ProposalDecided,
     StaleParent,
 )
-from finance_analysis.domain.glossary import normalize_label
+from finance_analysis.domain.glossary import normalize_label, with_profile
 from finance_analysis.domain.glossary_release import (
     apply_ops,
     label_diff,
@@ -31,7 +31,7 @@ from finance_analysis.domain.glossary_release import (
     version_for,
 )
 from finance_analysis.domain.ids import profile_id as check_profile
-from finance_analysis.domain.mapping import label_id
+from finance_analysis.domain.mapping import label_id, structure_pass
 
 HEAD = "glossary/_head.json"
 PROPOSALS = "glossary/proposals.json"
@@ -58,6 +58,13 @@ def _token(value: str | None) -> str | None:
     if text.startswith("W/"):
         text = text[2:].strip()
     return text.strip('"') or None
+
+
+def _plain(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
 
 
 def state_of(head: dict) -> dict:
@@ -245,12 +252,73 @@ class GlossaryStore:
             return yaml.safe_dump(document, allow_unicode=True, sort_keys=True).encode(), "application/yaml"
         return canonical_json(document).encode(), "application/json"
 
-    async def resolve(self, text: str) -> dict:
-        package = package_of(await self._active_document())
-        hit = package.resolve(text)
-        if hit is None:
-            return {"match": None}
-        return {"match": {"concept": hit.concept, "kind": hit.kind, "text": hit.text}}
+    async def resolve(self, body: dict, *, rank=None) -> dict:
+        """Стадии 1 и 4 одной строки. Модели вызывает rank, если лексика не дала понятие."""
+
+        if not isinstance(body, dict):
+            raise InvalidArgument("тело должно быть объектом")
+        label = _plain(body.get("label")) or _plain(body.get("text"))
+        path = _plain(body.get("path_text"))
+        if label and path:
+            raise InvalidArgument("нужен один из label и path_text")
+        if path:
+            label = path.split(" › ")[-1].strip()
+        if not label:
+            raise InvalidArgument("нужен label или path_text")
+        version = _plain(body.get("version"))
+        profile = _plain(body.get("profile_id"))
+        unit = _plain(body.get("unit"))
+        # Релиз читаем до ensure: чужая version не должна публиковать git-базу.
+        document = await self._document(version) if version else await self._active_document()
+        head = await self.ensure()
+        package = package_of(document)
+        if profile:
+            package = with_profile(package, document, profile)
+        row = {
+            "binding_key": "resolve",
+            "label": label,
+            "label_path_text": path or label,
+            "unit": unit or "",
+            "kind": "fact",
+        }
+        hit = package.resolve(label)
+        stages = ["lexical"]
+        match = None
+        candidates: list[dict] = []
+        if hit is not None:
+            stages.append("structure")
+            concept = package.concepts.get(hit.concept)
+            passed = concept is not None and structure_pass(row, concept, label=label)
+            rejected = {"concept": hit.concept, "kind": hit.kind, "text": hit.text, "structure_pass": False}
+            if passed:
+                match = {"concept": hit.concept, "kind": hit.kind, "text": hit.text}
+                candidates = [dict(match)]
+            else:
+                candidates = [rejected]
+        if match is None and rank is not None:
+            ranked = await rank(row, package, version or head["active"])
+            if ranked is not None:
+                chosen, evidence = ranked
+                stages = ["lexical", "model"]
+                candidates = [item.as_dict() for item in evidence.candidates]
+                match = {"concept": chosen.concept, "status": chosen.status} if chosen.concept else None
+        return {
+            "state": state_of(head),
+            "results": [
+                {
+                    "input": {
+                        "label": None if path else label,
+                        "path_text": path,
+                        "unit": unit,
+                        "profile_id": profile,
+                        "version": version,
+                    },
+                    "stages": stages,
+                    "match": match,
+                    "candidates": candidates,
+                }
+            ],
+        }
 
     async def labels(self, query: str) -> dict:
         document = await self._active_document()

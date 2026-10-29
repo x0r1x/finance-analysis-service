@@ -11,6 +11,7 @@ from finance_analysis.application.analyses import (
     Target,
     _full_metrics,
     _origins,
+    _prepare_analysis_body,
 )
 from finance_analysis.application.compare import (
     Comparisons,
@@ -208,6 +209,47 @@ def test_full_rejects_an_empty_metrics_list():
         _full_metrics({"metrics": []})
     with pytest.raises(InvalidArgument):
         _full_metrics({"metrics": None})
+
+
+def test_prepare_drops_null_fields_and_a_blank_target():
+    body = _prepare_analysis_body(
+        {
+            "type": "full",
+            "metrics": None,
+            "rules": None,
+            "render": None,
+            "build_key": None,
+            "scope": None,
+            "target": {"cell_id": None, "row_key": "", "concept": None},
+        }
+    )
+    assert body == {"type": "full"}
+    assert _full_metrics(body) == ["dscr"]
+
+
+class _Stop(Exception):
+    pass
+
+
+class _Ensures:
+    settings = type("Settings", (), {"load_sync_sec": 1})()
+
+    async def ensure(self, *args, **kwargs):
+        raise _Stop
+
+
+@pytest.mark.asyncio
+async def test_include_and_blank_target_follow_the_handler():
+    analyses = Analyses(_Ensures())
+    blank = {"cell_id": None, "row_key": None, "concept": None}
+    with pytest.raises(InvalidArgument):
+        await analyses.run("job", {"type": "audit", "include": []}, Actor(), wait_sec=1)
+    with pytest.raises(InvalidArgument):
+        await analyses.run("job", {"type": "impact", "target": blank}, Actor(), wait_sec=1)
+    with pytest.raises(_Stop):
+        await analyses.run("job", {"type": "audit", "target": dict(blank)}, Actor(), wait_sec=1)
+    with pytest.raises(_Stop):
+        await analyses.run("job", {"type": "full", "metrics": None, "target": dict(blank)}, Actor(), wait_sec=1)
 
 
 def test_unknown_cell_is_not_an_empty_impact():

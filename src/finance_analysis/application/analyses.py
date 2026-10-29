@@ -485,6 +485,9 @@ class Analyses:
     async def run(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
 
+        if "include" in body:
+            raise InvalidArgument("поле include не задано")
+        body = _prepare_analysis_body(body)
         kind = body.get("type")
         render = body.get("render")
         if render not in (None, "json", "md"):
@@ -1270,6 +1273,23 @@ class Analyses:
             return None
         await svc.support.cache_set(key, _dumps(found), svc.settings.etag_ttl)
         return found
+
+
+_NULL_ABSENT = ("metrics", "rules", "render", "build_key", "scope")
+_TARGET_KEYS = ("cell_id", "row_key", "concept")
+
+
+def _prepare_analysis_body(body: dict) -> dict:
+    """null у необязательных полей и объект target из пустых значений — как отсутствие ключа."""
+
+    prepared = dict(body)
+    for key in _NULL_ABSENT:
+        if key in prepared and prepared[key] is None:
+            del prepared[key]
+    target = prepared.get("target")
+    if isinstance(target, dict) and not any(target.get(name) for name in _TARGET_KEYS):
+        del prepared["target"]
+    return prepared
 
 
 def _full_metrics(body: dict) -> list[str]:
