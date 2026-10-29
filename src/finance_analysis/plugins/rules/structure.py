@@ -31,8 +31,11 @@ from finance_analysis.domain.formulas import analyze
 from finance_analysis.domain.metrics import aligned_keys
 
 _VALUED = frozenset({"cached", "zero_explicit"})
-_BARE_REF = re.compile(r"^=\s*(?:'[^']+'!|[^'!=+\-*/^(),\s]+!)?\$?[A-Za-z]{1,3}\$?\d+\s*$")
-_NOT_ADDITIVE = re.compile(r"[*/^]")
+# Имя листа и смещения R1C1 (`R[-4]`, `C[2]`) — часть ссылки, не операторы.
+_SHEET_PREFIX = re.compile(r"'(?:[^']|'')+'!|[^'!=+\-*/^&<>(),\s]+!")
+_R1C1_OFFSET = re.compile(r"\[[+-]?\d+\]")
+_OPERATOR = re.compile(r"[-+*/^&<>=,:()\s]")
+_NOT_ADDITIVE = re.compile(r"[*/^&<>=]")
 _ADDITIVE_FUNCTIONS = frozenset({"SUM"})
 _RATE_UNITS = frozenset({"rate", "%", "percent", "ratio", "x"})
 _MONEY_UNITS = frozenset({"money", "price"})
@@ -50,8 +53,18 @@ def _number(fact: dict | None) -> Decimal | None:
     return None if value is None else Decimal(str(value))
 
 
+def _operators_text(formula: str | None) -> str:
+    """Текст формулы без `=`, имён листов и смещений R1C1: остаются ссылки и операторы."""
+
+    text = (formula or "").strip().lstrip("=")
+    return _R1C1_OFFSET.sub("", _SHEET_PREFIX.sub("", text)).strip()
+
+
 def _is_bare_ref(formula: str | None) -> bool:
-    return bool(formula) and bool(_BARE_REF.fullmatch(formula.strip()))
+    """Перенос значения `=X` в A1 или R1C1: ни операторов, ни функций; число ссылок проверяет граф."""
+
+    text = _operators_text(formula)
+    return bool(text) and not _OPERATOR.search(text) and not analyze(formula).functions
 
 
 def _additive(formula: str | None) -> bool:
@@ -61,7 +74,7 @@ def _additive(formula: str | None) -> bool:
     строки-копии могла разойтись с источником без ошибки в модели.
     """
 
-    text = (formula or "").lstrip("=").strip()
+    text = _operators_text(formula)
     if not text or _NOT_ADDITIVE.search(text):
         return False
     functions = analyze(formula).functions

@@ -6,12 +6,15 @@
 Обе стороны считаются на текущем состоянии подтверждений: оно хранится по
 `binding_key` (§4.5), поэтому разница — только в данных сборок. Строки и
 периоды сопоставляются по устойчивым ключам: строка — `binding_key`,
-период — номер оси на листе (как в отпечатке находки, §6.1) и `period_id`.
+период — шкала builder (`timeline_id` + `period_index`) и `period_id`: так
+стыкуется и новая ось на том же листе. Номер оси на листе (как в отпечатке
+находки, §6.1) — только для осей без шкалы.
 """
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from decimal import Decimal, localcontext
 
 import anyio
@@ -24,7 +27,7 @@ from finance_analysis.application.rule_engine import (
 )
 from finance_analysis.domain.audit import axis_ordinals
 from finance_analysis.domain.errors import InvalidArgument
-from finance_analysis.domain.metrics import RATIO, _primaries
+from finance_analysis.domain.metrics import RATIO, _primaries, aligned_keys
 
 # Варианты `other`, которые появятся в фазе 4 (§12).
 LATER_SIDES = {"scenario": 4, "job_id": 4}
@@ -48,13 +51,31 @@ def _side(raw, name: str) -> dict:
     return raw
 
 
-def _axis_key(periods: list[dict]) -> dict[str, tuple[str, int]]:
+@dataclass(frozen=True)
+class _Places:
+    ordinals: dict[str, tuple[str, int]]
+    timelines: dict[str, str]
+    aligned: dict[tuple[str, str], tuple]
+
+
+def _axis_key(periods: list[dict]) -> _Places:
     ordinals = axis_ordinals(period["axis_id"] for period in periods)
-    return {axis: (axis.rsplit("!", 1)[0], ordinal) for axis, ordinal in ordinals.items()}
+    return _Places(
+        ordinals={axis: (axis.rsplit("!", 1)[0], ordinal) for axis, ordinal in ordinals.items()},
+        timelines={period["axis_id"]: period["timeline_id"] for period in periods if period.get("timeline_id")},
+        aligned=aligned_keys(periods),
+    )
 
 
-def _period_key(axes: dict, axis_id: str | None, period_id: str | None) -> tuple:
-    return (*axes.get(axis_id or "", (axis_id, -1)), period_id)
+def _period_key(axes: _Places, axis_id: str | None, period_id: str | None) -> tuple:
+    """Устойчивый ключ периода между сборками: шкала, затем номер оси на листе."""
+
+    place = axes.aligned.get((axis_id or "", period_id or ""))
+    if place is not None:
+        return (*place, period_id)
+    if period_id is None and axis_id in axes.timelines:
+        return (axes.timelines[axis_id], -1, None)
+    return (*axes.ordinals.get(axis_id or "", (axis_id, -1)), period_id)
 
 
 def _delta(base: Decimal | None, other: Decimal | None) -> dict:
@@ -191,10 +212,11 @@ class Comparisons:
         def sums(side: dict) -> dict[tuple, Decimal]:
             axes = _axis_key(side["periods"])
             totals: dict[tuple, Decimal] = {}
+            by_row: dict[str, list[dict]] = {}
+            for fact in side["facts"]:
+                by_row.setdefault(fact.get("row_key"), []).append(fact)
             for concept, binding in _primaries(side["bindings"]).items():
-                for fact in side["facts"]:
-                    if fact.get("row_key") != binding["row_key"]:
-                        continue
+                for fact in by_row.get(binding["row_key"], ()):
                     raw = fact.get("normalized_value")
                     number = _number(raw if raw is not None else fact.get("value_dec"))
                     if number is None:

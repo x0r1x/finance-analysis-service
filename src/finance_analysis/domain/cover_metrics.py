@@ -44,6 +44,8 @@ METRIC_INPUTS = {
     "discount_rate": LOAN_LIFE,
 }
 DIRECTIONS = ("lookback", "lookforward")
+# `validation_range` понятия `discount_rate` в `configs/concepts/core.yaml`: доля, не проценты.
+RATE_RANGE = (Decimal(0), Decimal("0.30"))
 
 
 def add_months(day: date, months: int) -> date:
@@ -151,7 +153,8 @@ def adscr(
 ) -> dict:
     """Сумма CFADS ÷ сумма обслуживания долга за 12 месяцев на каждом тестовом периоде.
 
-    Отдаётся только при `grain` короче года (§5.7). Окно собирается из целых
+    Отдаётся только при известном `grain` короче года (§5.7); пустой или
+    годовой `grain` — `adscr_not_applicable`. Окно собирается из целых
     периодов книги по датам; окно, которое периоды покрывают не целиком,
     не считается.
     """
@@ -178,7 +181,7 @@ def adscr(
     for axis in sorted(_axes_of(facts, primaries["debt_service"])):
         ordered = _ordered(periods, axis)
         months = grain_months(ordered[0].get("grain") if ordered else None)
-        if months is not None and months >= WINDOW_MONTHS:
+        if months is None or months >= WINDOW_MONTHS:
             warnings.append({"code": "adscr_not_applicable", "params": {"axis_id": axis, "grain": ordered[0].get("grain")}})
             continue
         tested = {(row["axis_id"], row["period_id"]) for row in dscr["rows"] if row["status"] == "computed"}
@@ -361,16 +364,19 @@ def loan_life_ratio(
             if owed is None:
                 rows.append(_row(metric, period, None, "missing_input", "no_binding"))
                 continue
-            owed = -owed if owed < 0 else owed
-            if owed == 0:
-                rows.append(_row(metric, period, None, "not_computed", "zero_balance"))
+            if owed <= 0:
+                reason = "zero_balance" if owed == 0 else "negative_balance"
+                rows.append(_row(metric, period, None, "not_computed", reason))
                 continue
             first = index + 1 if basis == "period_end" else index
             last = final if metric == "llcr" else len(keyed) - 1
-            npv, used, rate_error = _npv(keyed[first : last + 1], fractions[first : last + 1], cfads, rate_by_key, rates, key)
-            if rate_error:
-                rows.append(_row(metric, period, None, "missing_input", rate_error))
+            npv, used, error = _npv(keyed[first : last + 1], fractions[first : last + 1], cfads, rate_by_key, rates, key)
+            if error:
+                rows.append(_row(metric, period, None, "missing_input", error))
                 continue
+            if metric == "llcr":
+                # §5.7: в числителе LLCR ещё DSRA без дисконта; понятия `dsra_balance` пока нет.
+                warnings.append({"code": "dsra_not_included", "params": {"axis_id": axis, "period_id": period["period_id"]}})
             rows.append(
                 _row(
                     metric,
@@ -379,6 +385,7 @@ def loan_life_ratio(
                     "computed",
                     None,
                     basis=basis,
+                    window=[item["period_id"] for item, _key in keyed[first : last + 1]],
                     inputs={"npv_cfads": str(npv.quantize(Decimal("0.000001"))), "debt_outstanding": str(owed), "periods": used},
                 )
             )
@@ -402,7 +409,11 @@ def _fractions(ordered: list[dict]) -> list[Decimal] | None:
 
 
 def _npv(window, fractions, cfads, rate_by_key, rates, valuation_key) -> tuple[Decimal, int, str | None]:
-    """NPV CFADS окна на дату оценки; дисконт накапливается по периодам."""
+    """NPV CFADS окна на дату оценки; дисконт накапливается по периодам.
+
+    Период окна без CFADS — `no_binding`, как у DSCR: ноль вместо факта не
+    подставляется. Ставка вне `RATE_RANGE` — `rate_out_of_range`.
+    """
 
     with localcontext() as ctx:
         _ctx(ctx)
@@ -417,13 +428,55 @@ def _npv(window, fractions, cfads, rate_by_key, rates, valuation_key) -> tuple[D
                 if len(rates) != 1:
                     return Decimal(0), 0, "rate_not_at_period"
                 rate = rates[0]
+            if not RATE_RANGE[0] <= rate <= RATE_RANGE[1]:
+                return Decimal(0), 0, "rate_out_of_range"
             factor = factor / (Decimal(1) + rate) ** fraction
             flow = cfads.get(key)
             if flow is None:
-                continue
+                return Decimal(0), 0, "no_binding"
             total += flow * factor
             used += 1
         return total, used, None
+
+
+# Метрика → понятия, чьи ячейки цитируются за периоды окна строки (§5.7).
+_CITED = {
+    "dscr": ("cfads", "debt_service"),
+    "adscr": ("cfads", "debt_service"),
+    "dscr_min": ("cfads", "debt_service"),
+    "dscr_avg": ("cfads", "debt_service"),
+    "llcr": ("cfads",),
+    "plcr": ("cfads",),
+    "icr": ("interest",),
+}
+
+
+def ratio_cells(row: dict, facts: list[dict], bindings: list[dict], periods: list[dict], absent: frozenset[str]) -> list[dict]:
+    """Факты книги, из которых посчитана строка коэффициента: окно строки и знаменатель LLCR/PLCR.
+
+    Периоды окна — с оси обслуживания долга; факты других листов стыкуются по шкале.
+    """
+
+    if row.get("status") != "computed" or row.get("axis_id") is None:
+        return []
+    primaries = _primaries(bindings, absent)
+    aligned = aligned_keys(periods)
+    axis = row["axis_id"]
+    own = row.get("window") or row.get("over") or [row["period_id"]]
+    wanted = {aligned.get((axis, pid), (axis, pid)) for pid in own}
+    scoped = {name: wanted for name in _CITED.get(row["metric"], ()) if name in primaries}
+    if row["metric"] in LOAN_LIFE and "debt_outstanding" in primaries:
+        scoped["debt_outstanding"] = {aligned.get((axis, row["period_id"]), (axis, row["period_id"]))}
+    by_row = {primaries[name]["row_key"]: keys for name, keys in scoped.items()}
+    found = []
+    for fact in facts:
+        keys = by_row.get(fact.get("row_key"))
+        if keys is None or not fact.get("cell_id"):
+            continue
+        place = (fact["axis_id"], fact["period_id"])
+        if aligned.get(place, place) in keys:
+            found.append(fact)
+    return found
 
 
 __all__ = [
@@ -439,4 +492,5 @@ __all__ = [
     "dscr_reductions",
     "grain_months",
     "loan_life_ratio",
+    "ratio_cells",
 ]

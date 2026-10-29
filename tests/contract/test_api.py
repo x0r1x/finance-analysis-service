@@ -40,6 +40,7 @@ async def test_capabilities_health_metrics(app):
     assert ready.json()["storage"]["conditional_writes"] == "flock"
     assert ready.json()["builder"] == "closed"
     assert caps.json()["storage"]["backend"] == "local"
+    assert caps.json()["metrics"] == ["dscr", "icr", "adscr", "dscr_min", "dscr_avg", "llcr", "plcr"]
     assert any(tool["name"] == "get_series" for tool in caps.json()["tools"])
     assert b"fas_http_requests_total" in metrics.content or metrics.status_code == 200
 

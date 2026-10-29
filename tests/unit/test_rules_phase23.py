@@ -31,6 +31,25 @@ def test_daisy_chain_needs_a_reference_to_a_reference():
     assert [item.locations[0].cell_id for item in found] == ["S!C5"]
 
 
+def test_daisy_chain_reads_r1c1_formulas_of_the_builder():
+    data = AuditInput(
+        rows=[row(A), row(B)],
+        periods=PERIODS,
+        links=link("S!C5", "=R[1]C[0]", A, "2024", ("S!C6",)) + link("S!C6", "=R[1]C", B, "2024", ("S!C7",)),
+        facts=[fact(A, "S!C5", "2024", "1"), fact(B, "S!C6", "2024", "1")],
+    )
+    assert [item.locations[0].cell_id for item in _codes("daisy_chain", data)] == ["S!C5"]
+
+
+def test_r1c1_check_formula_is_not_a_sum():
+    rows = [row(A, unit="money", scale_factor=1000), row(B, unit="money", scale_factor=1), row(C, unit="money", scale_factor=1)]
+    facts = [fact(A, "S!C5", "2024", "1"), fact(B, "S!C6", "2024", "1"), fact(C, "S!C7", "2024", "1")]
+    check_cell = link("S!C5", "=R[-27]C[0]-R[-15]C[0]<0.01", A, "2024", ("S!C6", "S!C7"))
+    assert _codes("scale_mismatch", AuditInput(rows=rows, periods=PERIODS, facts=facts, links=check_cell)) == []
+    summed = link("S!C5", "=R[1]C[0]+R[2]C[0]", A, "2024", ("S!C6", "S!C7"))
+    assert _codes("scale_mismatch", AuditInput(rows=rows, periods=PERIODS, facts=facts, links=summed))
+
+
 def test_partial_range_reference_sees_the_missing_tail():
     facts = [fact(A, "S!C5", "2024", "1"), fact(A, "S!D5", "2025", "2"), fact(A, "S!E5", "2026@план", "3")]
     partial = AuditInput(
@@ -139,6 +158,22 @@ def test_rollforward_break_on_hardcoded_opening_and_value_drift():
     assert _codes("rollforward_break", AuditInput(rows=[row(opening), row(closing)], periods=periods, facts=fixed, links=links)) == []
 
 
+def test_rollforward_break_reads_r1c1_openings():
+    periods = _indexed()
+    opening, closing = A, B
+    facts = [
+        fact(opening, "S!C5", "2024", "0"),
+        fact(opening, "S!D5", "2025", "10"),
+        fact(opening, "S!E5", "2026@план", "99"),
+        fact(closing, "S!C6", "2024", "10"),
+        fact(closing, "S!D6", "2025", "20"),
+        fact(closing, "S!E6", "2026@план", "30"),
+    ]
+    links = link("S!D5", "=R[1]C[-1]", opening, "2025", ("S!C6",)) + link("S!E5", "=R[1]C[-1]", opening, "2026@план", ("S!D6",))
+    found = _codes("rollforward_break", AuditInput(rows=[row(opening), row(closing)], periods=periods, facts=facts, links=links))
+    assert [(item.locations[0].cell_id, item.params["reason"]) for item in found] == [("S!E5", "value_differs")]
+
+
 def test_sign_anomaly_and_mixed_convention():
     rows = [row(A), row(B), row(C)]
     facts = [
@@ -241,6 +276,15 @@ def test_sculpting_deviation_against_target_and_median():
     assert _codes("sculpting_deviation", sculpted)[0].params["basis"] == "median"
     spread = _coverage_book(["1.10", "1.40", "1.70", "2.00"])
     assert _codes("sculpting_deviation", spread) == []
+
+
+def test_sculpting_sees_a_target_restored_after_concept_absent():
+    book = _coverage_book(["1.30", "1.30", "1.45"], target="1.30")
+    restored = [{**item, "source": "confirmed"} if item["effective_concept"] == "target_dscr" else item for item in book.bindings]
+    data = AuditInput(rows=book.rows, periods=book.periods, facts=book.facts, bindings=restored, absent=frozenset({"target_dscr"}))
+    assert _codes("sculpting_deviation", data)[0].params["basis"] == "target_dscr"
+    hidden = AuditInput(rows=book.rows, periods=book.periods, facts=book.facts, bindings=book.bindings, absent=frozenset({"target_dscr"}))
+    assert [item.params["basis"] for item in _codes("sculpting_deviation", hidden)] in ([], ["median"])
 
 
 def test_period_grain_mismatch_on_a_short_first_test_year():

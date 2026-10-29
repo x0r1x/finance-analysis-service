@@ -16,7 +16,7 @@ import anyio
 from ulid import ULID
 
 from finance_analysis.application import keys
-from finance_analysis.application.analyses import Analyses
+from finance_analysis.application.analyses import RATIO_METRICS, Analyses
 from finance_analysis.application.builds import (
     index_document,
     projection_of,
@@ -1636,7 +1636,7 @@ class FasService:
             "phase": "3",
             "storage": storage,
             "rules": self.analyses.capabilities(),
-            "metrics": ["dscr", "icr"],
+            "metrics": list(RATIO_METRICS),
             "concepts": sorted(self.catalog.ids),
             "renderers": ["json"],
             "problems": PROBLEM_CATALOG,

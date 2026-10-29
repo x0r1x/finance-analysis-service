@@ -16,7 +16,12 @@ from finance_analysis.domain.cover_metrics import (
     add_months,
     grain_months,
 )
-from finance_analysis.domain.metrics import absent_concepts, coverage_ratio
+from finance_analysis.domain.metrics import (
+    _groups,
+    _primaries,
+    absent_concepts,
+    coverage_ratio,
+)
 
 _BOUND = frozenset({"bound", "bound_with_warning"})
 SCULPT_TOLERANCE = Decimal("0.01")
@@ -58,14 +63,11 @@ def dscr_rows(data: AuditInput) -> list[dict]:
 
 
 def _primary(data: AuditInput, concept: str) -> dict | None:
-    if concept in data.absent:
+    """Основная строка понятия; `concept.absent` отменяет только привязка человека, как в DSCR."""
+
+    if len(_groups(data.bindings).get(concept, ())) > 1:
         return None
-    found = [
-        row
-        for row in data.bindings
-        if row.get("is_primary") and row.get("status") in _BOUND and (row.get("effective_concept") or row.get("concept")) == concept
-    ]
-    return found[0] if len(found) == 1 else None
+    return _primaries(data.bindings, data.absent).get(concept)
 
 
 def _scalar(data: AuditInput, row_key: str) -> Decimal | None:

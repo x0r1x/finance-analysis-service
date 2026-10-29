@@ -41,6 +41,7 @@ from finance_analysis.domain.cover_metrics import (
     adscr,
     dscr_reductions,
     loan_life_ratio,
+    ratio_cells,
 )
 from finance_analysis.domain.errors import (
     AlreadyExists,
@@ -238,6 +239,25 @@ def _citation(data: AuditInput, location: Location) -> dict | None:
         return None
     sheet, cell = fact["cell_id"].split("!", 1)
     row = data.rows_by_key.get(fact["row_key"]) or {}
+    return {
+        "cell_id": fact["cell_id"],
+        "sheet": sheet,
+        "cell": cell,
+        "row_key": fact["row_key"],
+        "axis_id": fact["axis_id"],
+        "period_id": fact["period_id"],
+        "label": row.get("label"),
+        "value": _decimal_text(fact.get("value_dec")),
+        "value_status": fact.get("value_status"),
+        "normalized_value": _decimal_text(fact.get("normalized_value")),
+        "binding_key": row.get("binding_key"),
+    }
+
+
+def _fact_citation(fact: dict, row: dict) -> dict:
+    """Цитата ячейки коэффициента: тот же конверт, что `_citation`, подпись — из привязки строки."""
+
+    sheet, cell = fact["cell_id"].split("!", 1)
     return {
         "cell_id": fact["cell_id"],
         "sheet": sheet,
@@ -546,9 +566,21 @@ class Analyses:
         got = await self.compute_metrics(job_id, target, metrics)
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows = []
+        citations: dict[str, dict] = {}
+        bound = {item["row_key"]: item for item in got["bindings"] if item.get("row_key")}
         for row in computed:
             value = row.get("value")
-            text_rows.append({**row, "value": _decimal_text(value), "value_f": None if value is None else float(value)})
+            cells = ratio_cells(row, got["facts"], got["bindings"], got["periods"], got["absent"])
+            for fact in cells:
+                citations.setdefault(fact["cell_id"], _fact_citation(fact, bound.get(fact["row_key"], {})))
+            text_rows.append(
+                {
+                    **row,
+                    "value": _decimal_text(value),
+                    "value_f": None if value is None else float(value),
+                    "cell_ids": sorted(fact["cell_id"] for fact in cells),
+                }
+            )
         attached = await self._metric_findings(
             job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
         )
@@ -569,7 +601,7 @@ class Analyses:
             },
             "tables": [],
             "charts": [],
-            "citations": [],
+            "citations": [citations[cell] for cell in sorted(citations)],
             "needs_input": needs,
             "warnings": warnings,
         }

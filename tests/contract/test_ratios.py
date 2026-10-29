@@ -69,6 +69,10 @@ async def test_rvi_dscr_quotient_and_icr(local_service):
     bindings = await local_service._dataset_rows(RVI, head, "bindings")
     cfads = next(row for row in bindings if row.get("effective_concept") == "cfads" and row.get("is_primary"))
     debt_binding = next(row for row in bindings if row.get("effective_concept") == "debt_service" and row.get("is_primary"))
+    cited = {item["cell_id"]: item for item in got["citations"]}
+    for row in rows:
+        assert row["cell_ids"], row
+        assert {cited[cell]["row_key"] for cell in row["cell_ids"]} == {cfads["row_key"], debt_binding["row_key"]}
     model = await _row(local_service, "DSCR Metrics")
     cached = [
         fact
