@@ -1251,7 +1251,7 @@ class FasService:
                 order = _phase_order(periods, events, target, item.get("value"))
             supersedes = item.get("supersedes") if isinstance(item.get("supersedes"), dict) else None
             seq = supersedes.get("seq") if supersedes else None
-            if supersedes is not None and (isinstance(seq, bool) or not isinstance(seq, int)):
+            if supersedes is not None and "seq" in supersedes and (isinstance(seq, bool) or not isinstance(seq, int)):
                 supersedes = None
             slot = (target, event_type)
             expected = followed[slot] if slot in followed else item.get("expected_seq")
@@ -1858,6 +1858,7 @@ class FasService:
             package,
             glossary_version=version,
             deadline=effective(self.settings.mapping_deadline_ms),
+            clm=False,
         )
         evidence = scored.evidence.get(row["binding_key"])
         if evidence is None:

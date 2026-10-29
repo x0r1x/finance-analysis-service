@@ -332,6 +332,13 @@ async def test_capability_tool_card(app):
     assert isinstance(bindings["additionalProperties"], dict)
     assert bindings["additionalProperties"]["additionalProperties"] is False
     assert by_name["evaluate_expression"]["strict"] is False
+    assert by_name["get_slice"]["parameters"]["properties"]["time"]["items"]["properties"]["dimension"]["enum"] == ["period_start"]
+    assert by_name["explain_finding"]["in"] == {
+        "fingerprint": "path",
+        "build_key": "query",
+        "direction": "query",
+        "depth": "query",
+    }
     seq = by_name["submit_decisions"]["parameters"]["properties"]["decisions"]["items"]["properties"]["supersedes"]
     assert seq["properties"]["seq"]["type"] == "integer"
     for tool in tools:

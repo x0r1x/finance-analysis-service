@@ -268,9 +268,10 @@ class GlossaryStore:
         version = _plain(body.get("version"))
         profile = _plain(body.get("profile_id"))
         unit = _plain(body.get("unit"))
-        # Релиз читаем до ensure: чужая version не должна публиковать git-базу.
+        # Только чтение: чужая version — 404, пустая голова не публикует git-базу.
+        head = await self.peek()
         document = await self._document(version) if version else await self._active_document()
-        head = await self.ensure()
+        release_id = version or (head["active"] if head else version_for(1, document))
         package = package_of(document)
         if profile:
             package = with_profile(package, document, profile)
@@ -295,15 +296,15 @@ class GlossaryStore:
                 candidates = [dict(match)]
             else:
                 candidates = [rejected]
-        if match is None and rank is not None:
-            ranked = await rank(row, package, version or head["active"])
+        if hit is None and rank is not None:
+            ranked = await rank(row, package, release_id)
             if ranked is not None:
                 chosen, evidence = ranked
                 stages = ["lexical", "model"]
                 candidates = [item.as_dict() for item in evidence.candidates]
                 match = {"concept": chosen.concept, "status": chosen.status} if chosen.concept else None
         return {
-            "state": state_of(head),
+            "state": state_of(head) if head else None,
             "results": [
                 {
                     "input": {

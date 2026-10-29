@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 
 from finance_analysis.adapters.storage.store import LocalStore
+from finance_analysis.application.catalog import load_git_document
 from finance_analysis.application.glossary_store import GlossaryStore
 from finance_analysis.application.service import filter_bindings
 from finance_analysis.domain.errors import InvalidArgument, NotFound
+from finance_analysis.domain.glossary_release import version_for
 
 _ROWS = [
     {"status": "unknown", "concept": None, "effective_concept": None, "importance": "peripheral", "label_path_text": "Other"},
@@ -51,6 +53,7 @@ async def test_resolve_is_lexical_without_models(tmp_path):
     assert missed["results"][0]["candidates"] == []
     with pytest.raises(InvalidArgument):
         await gloss.resolve({"label": "CFADS", "path_text": "CF › CFADS"})
+    assert await gloss.peek() is None
 
 
 @pytest.mark.asyncio
@@ -61,5 +64,14 @@ async def test_resolve_ranks_against_the_active_release(tmp_path):
     async def rank(row, package, version):
         seen.append(version)
 
+    rejected = await gloss.resolve({"label": "CFADS", "unit": "%"}, rank=rank)
+    assert seen == []
+    assert rejected["results"][0]["match"] is None
+    assert rejected["results"][0]["candidates"][0]["structure_pass"] is False
+    assert await gloss.peek() is None
     await gloss.resolve({"label": "нет такой метки"}, rank=rank)
-    assert seen == [(await gloss.peek())["active"]]
+    assert seen == [version_for(1, load_git_document())]
+    head = await gloss.ensure()
+    await gloss.resolve({"label": "другая метка"}, rank=rank)
+    assert seen[-1] == head["active"]
+    assert (await gloss.peek())["seq"] == head["seq"]

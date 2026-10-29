@@ -485,8 +485,10 @@ class Analyses:
     async def run(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
 
+        if "include" in body and body["include"] is not None:
+            raise InvalidArgument("поле include не принимается")
         if "include" in body:
-            raise InvalidArgument("поле include не задано")
+            body = {key: value for key, value in body.items() if key != "include"}
         body = _prepare_analysis_body(body)
         kind = body.get("type")
         render = body.get("render")

@@ -244,6 +244,8 @@ async def test_include_and_blank_target_follow_the_handler():
     blank = {"cell_id": None, "row_key": None, "concept": None}
     with pytest.raises(InvalidArgument):
         await analyses.run("job", {"type": "audit", "include": []}, Actor(), wait_sec=1)
+    with pytest.raises(_Stop):
+        await analyses.run("job", {"type": "audit", "include": None}, Actor(), wait_sec=1)
     with pytest.raises(InvalidArgument):
         await analyses.run("job", {"type": "impact", "target": blank}, Actor(), wait_sec=1)
     with pytest.raises(_Stop):

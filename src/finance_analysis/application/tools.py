@@ -121,7 +121,7 @@ def build_tools(*, decision_kinds: tuple[str, ...], measures: tuple[str, ...], d
     )
     time_item = _closed(
         {
-            "dimension": _text("Измерение времени."),
+            "dimension": {"type": "string", "enum": ["period_start"], "description": "Измерение времени."},
             "granularity": _text("Шаг."),
             "dateRange": _strings("Границы диапазона."),
         }
@@ -270,7 +270,21 @@ def build_tools(*, decision_kinds: tuple[str, ...], measures: tuple[str, ...], d
         ),
         _tool("run_analysis", "Аудит, коэффициенты, влияние или полный прогон.", "POST", f"{_BOOK}/analyses", analysis, _where(analysis, "body")),
         _tool("list_findings", "Находки последнего аудита.", "GET", f"{_BOOK}/findings", findings, _where(findings, "query")),
-        _tool("explain_finding", "Пояснение одной находки.", "GET", f"{_BOOK}/findings/{{fingerprint}}", _closed({"fingerprint": _text("Отпечаток находки.")}), {"fingerprint": "path"}),
+        _tool(
+            "explain_finding",
+            "Пояснение одной находки.",
+            "GET",
+            f"{_BOOK}/findings/{{fingerprint}}",
+            _closed(
+                {
+                    "fingerprint": _text("Отпечаток находки."),
+                    "build_key": _text_or_null("Сборка. null — текущая голова."),
+                    "direction": _enum_or_null(("precedents", "dependents"), "Направление графа."),
+                    "depth": _int_or_null("Глубина графа. null — глубина по умолчанию."),
+                }
+            ),
+            {"fingerprint": "path", "build_key": "query", "direction": "query", "depth": "query"},
+        ),
         _tool("compare", "Сравнение сборок, сценариев или двух книг.", "POST", f"{_BOOK}:compare", compared, _where(compared, "body")),
         _tool("submit_decisions", "Пакет решений по книге.", "POST", f"{_BOOK}/decisions", decisions, _where(decisions, "body")),
         _tool("get_report", "Отчёт анализа.", "GET", f"{_BOOK}/analyses/{{analysis_id}}/report", report, {"analysis_id": "path", "format": "query"}),

@@ -133,6 +133,9 @@ async def test_pipeline_ranks_and_spends_clm_budget(tmp_path):
     assert set(result.embeddings) == {"a", "b"}
     assert budget.used.get("fas:clm:job", 0) <= 2
     assert models.clm.calls <= 1
+    calls = models.clm.calls
+    await pipeline.score("job", "run", rows, CATALOG, glossary_version="g", deadline=Deadline.after_ms(5000), clm=False)
+    assert models.clm.calls == calls
 
 
 def test_partition_holds_with_model_evidence_on_golden_books():
