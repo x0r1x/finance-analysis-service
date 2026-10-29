@@ -367,6 +367,10 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
     async def run_analysis(job_id: str, request: Request):
         return await _calc(job_id, request, _svc().analyses.run, prefer_async=True)
 
+    @app.post("/v1/books/{job_id}:compare")
+    async def compare(job_id: str, request: Request):
+        return await _calc(job_id, request, _svc().compare.run, prefer_async=True)
+
     @app.get("/v1/books/{job_id}/analyses")
     async def list_analyses(
         job_id: str,

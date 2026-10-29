@@ -135,6 +135,16 @@ def _col_letters(number: int) -> str:
     return letters
 
 
+def split_cell(cell: str) -> tuple[str, int, int] | None:
+    """`Лист!AB12` → (лист, номер колонки, номер строки); иначе None."""
+
+    sheet, _, address = cell.rpartition("!")
+    matched = _CELL_RE.fullmatch(address)
+    if not sheet or not matched:
+        return None
+    return sheet, _col_index(matched.group("col")), int(matched.group("row").lstrip("$"))
+
+
 def expand_ref(
     ref: str,
     *,

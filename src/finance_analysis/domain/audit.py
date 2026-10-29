@@ -20,6 +20,8 @@ SEVERITIES = ("info", "low", "medium", "high", "critical")
 ROWS = frozenset({"rows", "periods", "facts"})
 ROWS_LINKS = ROWS | {"links"}
 ROWS_COUNTERS = ROWS | {"counters"}
+# Правила фазы 2: знак строки из `row_semantics` (§5.4).
+ROWS_SEMANTICS = ROWS | {"semantics"}
 ERROR_CLASSES = frozenset({"mechanical", "logic", "omission", "quantitative", "qualitative"})
 LOCATIONS_MAX = 32
 
@@ -122,6 +124,14 @@ class AuditInput:
     counters: dict = field(default_factory=dict)
     # Пустой список: правила коэффициентов молчат, отпечаток аудита не плывёт.
     bindings: list[dict] = field(default_factory=list)
+    # `row_semantics` закреплённого состояния: знак, природа строки (§5.4).
+    semantics: list[dict] = field(default_factory=list)
+    # Состав понятий таксономии (`composition`, §5.1): debt_service → interest, principal.
+    composition: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Параметры профиля, которые меняют только вариант расчёта (§5.7).
+    profile: dict = field(default_factory=dict)
+    # Понятия с записью `concept.absent` в журнале книги (§5.10.5).
+    absent: frozenset[str] = frozenset()
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:
