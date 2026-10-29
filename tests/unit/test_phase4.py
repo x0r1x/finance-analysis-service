@@ -5,16 +5,23 @@ from __future__ import annotations
 import pytest
 
 from finance_analysis.adapters.storage.store import LocalStore
-from finance_analysis.application.analyses import AuditInput, Target, _origins
+from finance_analysis.application.analyses import (
+    Analyses,
+    AuditInput,
+    Target,
+    _full_metrics,
+    _origins,
+)
 from finance_analysis.application.compare import (
     Comparisons,
     _input_deltas,
     _input_index,
+    _scenario_inputs,
     match_periods,
 )
 from finance_analysis.application.explain import narrate
 from finance_analysis.application.impact import impact_view
-from finance_analysis.application.operations import create_op, read_op
+from finance_analysis.application.operations import append_event, create_op, read_op
 from finance_analysis.application.report import (
     choose_format,
     render_json,
@@ -22,7 +29,7 @@ from finance_analysis.application.report import (
 )
 from finance_analysis.application.service import FasService
 from finance_analysis.domain.book import Actor, Head
-from finance_analysis.domain.errors import NotAcceptable, NotFound
+from finance_analysis.domain.errors import InvalidArgument, NotAcceptable, NotFound
 
 
 def test_report_bytes_stay_put():
@@ -73,6 +80,10 @@ async def test_narrate_keeps_template_when_the_model_invents_a_digit():
             raise RuntimeError("нет модели")
 
     assert (await narrate(Down(), items, None))["summary"] == plain["summary"]
+    missing = Stub('{"summary": "{drivers.missing}"}')
+    assert (await narrate(missing, items, None))["summary"] == plain["summary"]
+    hidden = Stub('{"summary": "{drivers.__class__.__name__}"}')
+    assert (await narrate(hidden, items, None))["summary"] == plain["summary"]
 
 
 def test_impact_uses_cached_values_and_does_not_invent_external():
@@ -119,6 +130,29 @@ def test_impact_uses_cached_values_and_does_not_invent_external():
     assert external["external"][0]["kind"] == "external_workbook"
     assert external["warnings"] == []
 
+    class Link:
+        refs = ("[Other]Sheet!A1",)
+        formula = None
+        formula_class = None
+
+    quoted = {
+        "source": "builder",
+        "items": [
+            {
+                "origin": "S!A1",
+                "nodes": [{"node_id": "S!B1", "depth": 1, "formula": "=1"}],
+                "edges": [{"kind": "ref", "source": "S!A1", "target": "S!B1"}],
+            }
+        ],
+    }
+    named = impact_view(quoted, {"S!A1": Link()}, [], "S!A1", {"S!B1": {"value_raw": "5"}})
+    assert named["drivers"][0]["cached_value"] == "5"
+    assert named["external"] == [{"cell_id": "S!A1", "ref": "[Other]Sheet!A1"}]
+    assert named["warnings"] == []
+    unclassified = impact_view(quoted, {}, [], "S!A1")
+    assert unclassified["external"] == []
+    assert unclassified["warnings"] == [{"code": "external_not_in_trace", "params": {}}]
+
 
 def test_scenario_deltas_are_inputs_only():
     periods = [
@@ -144,11 +178,36 @@ def test_scenario_case_lines_up_on_the_same_period():
         {"axis_id": "p", "period_id": "c1", "row_key": "row", "value": "10"},
         {"axis_id": "t", "period_id": "2024", "row_key": "row", "value": "4"},
     ]
-    [row] = _input_deltas(_input_index(facts, live), _input_index(facts, fact))
+    [row] = _scenario_inputs(facts, [], live, fact)
     assert row["period_key_base"] == "2024"
     assert row["base"] == "10"
     assert row["other"] == "4"
     assert row["delta_abs"] == "-6"
+
+
+def test_case_columns_pair_on_the_row_and_skip_formulas():
+    left = [{"header_text": "Case 1", "axis_kind": "params", "axis_id": "p", "period_id": "case-1", "period_key_base": "case-1"}]
+    right = [{"header_text": "Case 2", "axis_kind": "params", "axis_id": "p", "period_id": "case-2", "period_key_base": "case-2"}]
+    facts = [
+        {"axis_id": "p", "period_id": "case-1", "row_key": "gen", "value": "50"},
+        {"axis_id": "p", "period_id": "case-2", "row_key": "gen", "value": "75"},
+        {"axis_id": "p", "period_id": "case-1", "row_key": "npv", "value": "10"},
+        {"axis_id": "p", "period_id": "case-2", "row_key": "npv", "value": "4"},
+    ]
+    rows = [{"row_key": "gen"}, {"row_key": "npv", "formula": "=1"}]
+    [row] = _scenario_inputs(facts, rows, left, right)
+    assert row["row_key"] == "gen"
+    assert row["base"] == "50"
+    assert row["other"] == "75"
+    assert row["delta_abs"] == "25"
+
+
+def test_full_rejects_an_empty_metrics_list():
+    assert _full_metrics({}) == ["dscr"]
+    with pytest.raises(InvalidArgument):
+        _full_metrics({"metrics": []})
+    with pytest.raises(InvalidArgument):
+        _full_metrics({"metrics": None})
 
 
 def test_unknown_cell_is_not_an_empty_impact():
@@ -185,6 +244,62 @@ async def test_progress_after_cancel_does_not_reopen_the_operation(redis_runtime
     svc.get_op = stale_running
     await FasService.progress_op(svc, operation["id"], "rendering")
     assert (await read_op(store, operation["id"]))["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_later_success_does_not_replace_cancel(redis_runtime, tmp_path):
+    store = LocalStore(tmp_path / "ops")
+    operation = await create_op(store, "analysis", None, Actor(), {"type": "full"})
+    await append_event(store, operation["id"], {"status": "cancelled", "result": {"actor": "a"}})
+    await append_event(store, operation["id"], {"status": "succeeded", "result": {"analysis_id": "x"}})
+    body = await read_op(store, operation["id"])
+    assert body["status"] == "cancelled"
+    assert body["result"] == {"actor": "a"}
+
+    fresh = await create_op(store, "analysis", None, Actor(), {"type": "full"})
+    await redis_runtime.cache_set(f"fas:op:{fresh['id']}:cancel", b"1", 60)
+    svc = type("Svc", (), {"store": store, "support": redis_runtime})()
+
+    async def get_op(op_id):
+        return await read_op(store, op_id)
+
+    svc.get_op = get_op
+    await FasService.finish_op(svc, fresh["id"], "succeeded", result={"analysis_id": "x"})
+    assert (await read_op(store, fresh["id"]))["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_full_does_not_save_after_cancel():
+    saved: list[str] = []
+
+    class Support:
+        async def cache_get(self, key):
+            return b"1"
+
+    class Svc:
+        support = Support()
+        finished: tuple | None = None
+
+        async def get_op(self, op_id):
+            return {"status": "running"}
+
+        async def finish_op(self, op_id, status, **fields):
+            self.finished = (op_id, status)
+
+        async def progress_op(self, op_id, stage):
+            saved.append(stage)
+
+    svc = Svc()
+    analyses = Analyses(svc)
+
+    async def unused(*args, **kwargs):
+        saved.append("work")
+
+    analyses._input = unused
+    analyses._save_tables = unused
+    await analyses._execute_full("job", None, "analysis", ["dscr"], None, {}, Actor(), "op")
+    assert saved == []
+    assert svc.finished == ("op", "cancelled")
 
 
 @pytest.mark.asyncio

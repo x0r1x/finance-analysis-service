@@ -6,6 +6,7 @@ import json
 import re
 
 _DIGIT = re.compile(r"\d")
+_PLACE = re.compile(r"\{([^{}]*)\}")
 
 
 def scalars(params: dict | None) -> dict[str, str]:
@@ -32,9 +33,12 @@ def _fill(phrase: str, params: dict | None) -> str | None:
 
     if not isinstance(phrase, str) or not phrase.strip() or _DIGIT.search(phrase):
         return None
+    names = scalars(params)
+    if any(field not in names for field in _PLACE.findall(phrase)):
+        return None
     try:
-        return phrase.format_map(scalars(params)).strip()
-    except (KeyError, IndexError, ValueError):
+        return phrase.format_map(names).strip()
+    except (KeyError, IndexError, ValueError, AttributeError):
         return None
 
 

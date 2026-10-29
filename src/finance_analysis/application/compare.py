@@ -55,18 +55,40 @@ def match_periods(periods: list[dict], name: str) -> list[dict]:
     ]
 
 
-def _input_index(facts: list[dict], periods: list[dict]) -> dict[tuple, Decimal | None]:
+def _input_index(
+    facts: list[dict],
+    periods: list[dict],
+    *,
+    by_row: bool = False,
+    skip: set[str] | None = None,
+) -> dict[tuple, Decimal | None]:
     chosen = {(row["axis_id"], row["period_id"]): row for row in periods}
     found: dict[tuple, Decimal | None] = {}
+    skipped = skip or set()
     for fact in facts:
+        row_key = fact.get("row_key")
+        if row_key in skipped:
+            continue
         meta = chosen.get((fact.get("axis_id"), fact.get("period_id")))
         if meta is None:
             continue
         number = _number(fact.get("value_dec") if fact.get("value_dec") is not None else fact.get("value"))
-        key = (fact.get("row_key"), meta.get("period_key_base") or fact.get("period_id"))
+        # case-1 и case-2 не делят календарный ключ, поэтому внутри блока кейсов ключ — строка.
+        key = (row_key, None) if by_row else (row_key, meta.get("period_key_base") or fact.get("period_id"))
         if key not in found or found[key] is None:
             found[key] = number
     return found
+
+
+def _scenario_inputs(facts: list[dict], rows: list[dict], left: list[dict], right: list[dict]) -> list[dict]:
+    """Кейс с кейсом — по строке и без формул. Факт/план — по календарному периоду."""
+
+    by_row = bool(left and right) and all(row.get("axis_kind") == "params" for row in left + right)
+    skip = {row["row_key"] for row in rows if row.get("formula") or row.get("has_formula")} if by_row else set()
+    return _input_deltas(
+        _input_index(facts, left, by_row=by_row, skip=skip),
+        _input_index(facts, right, by_row=by_row, skip=skip),
+    )
 
 
 def _input_deltas(left: dict[tuple, Decimal | None], right: dict[tuple, Decimal | None]) -> list[dict]:
@@ -220,7 +242,7 @@ class Comparisons:
             "base": {**pin, "scenario": left_name},
             "other": {**pin, "scenario": right_name},
             "metrics": [],
-            "inputs": _input_deltas(_input_index(data.facts, left_periods), _input_index(data.facts, right_periods)),
+            "inputs": _scenario_inputs(data.facts, data.rows, left_periods, right_periods),
             "concepts": [],
             "structure": None,
             "findings": None,

@@ -105,6 +105,12 @@ async def test_report_impact_full_scenario_and_sse(app, local_service, settings)
         assert done.json()["status"] == "succeeded", done.text
         assert done.json()["result"]["analysis_id"]
         assert done.json()["result"]["resource"].endswith(done.json()["result"]["analysis_id"])
+        stored_full = await client.get(
+            f"/v1/books/{RVI}/analyses/{done.json()['result']['analysis_id']}",
+            headers=HEADERS,
+        )
+        assert stored_full.status_code == 200, stored_full.text
+        assert stored_full.json()["versions"]["rules"]["hardcoded_formula"] == "1"
 
         stream = await client.get(
             f"/v1/operations/{op_id}/events",

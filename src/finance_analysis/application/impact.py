@@ -18,7 +18,19 @@ def _cells_of(trace: dict) -> set[str]:
     return found
 
 
-def _drivers(trace: dict) -> list[dict]:
+def _cached(value, cell_id: str | None, facts: dict) -> object:
+    if value is not None:
+        return value
+    fact = facts.get(cell_id or "")
+    if not fact:
+        return None
+    if fact.get("value_raw") is not None:
+        return fact["value_raw"]
+    number = fact.get("value_dec") if fact.get("value_dec") is not None else fact.get("value")
+    return None if number is None else str(number)
+
+
+def _drivers(trace: dict, facts: dict) -> list[dict]:
     found = []
     for item in trace.get("items") or []:
         for node in item.get("nodes") or []:
@@ -29,7 +41,7 @@ def _drivers(trace: dict) -> list[dict]:
                     "node_id": node.get("node_id"),
                     "row_key": node.get("row_key"),
                     "formula": node.get("formula"),
-                    "cached_value": node.get("cached_value"),
+                    "cached_value": _cached(node.get("cached_value"), node.get("node_id"), facts),
                     "depth": node.get("depth"),
                 }
             )
@@ -40,7 +52,7 @@ def _drivers(trace: dict) -> list[dict]:
                         "node_id": precedent.get("cell_id"),
                         "row_key": precedent.get("row_key"),
                         "formula": None,
-                        "cached_value": precedent.get("value"),
+                        "cached_value": _cached(precedent.get("value"), precedent.get("cell_id"), facts),
                         "depth": 1,
                     }
                 )
@@ -70,15 +82,32 @@ def _hardcodes(trace: dict, link_cells: dict) -> list[dict]:
     return found
 
 
-def _external(trace: dict) -> tuple[list[dict], bool]:
-    """Пустой kind у всех рёбер — след не классифицировал внешние ссылки."""
+def _outside(ref: str) -> bool:
+    """Как ExternalRef: ссылка `[книга]Лист!A1`."""
+
+    return ref.startswith("[") or "]" in ref.split("!", 1)[0]
+
+
+def _external(trace: dict, link_cells: dict) -> tuple[list[dict], bool]:
+    """Рёбра есть, а внешних ссылок нет — след их не классифицировал."""
 
     edges = [edge for item in trace.get("items") or [] for edge in item.get("edges") or []]
+    found: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for cell in sorted(_cells_of(trace)):
+        link = link_cells.get(cell)
+        if link is None:
+            continue
+        for ref in link.refs:
+            if _outside(ref) and (cell, ref) not in seen:
+                seen.add((cell, ref))
+                found.append({"cell_id": cell, "ref": ref})
+    found.extend(edge for edge in edges if "external" in str(edge.get("kind") or "").lower())
+    if found:
+        return found, False
     if not edges:
         return [], trace.get("source") != "builder"
-    if all(edge.get("kind") is None for edge in edges):
-        return [], True
-    return [edge for edge in edges if "external" in str(edge.get("kind") or "").lower()], False
+    return [], True
 
 
 def _findings(findings: list[dict], cells: set[str]) -> list[str]:
@@ -90,9 +119,10 @@ def _findings(findings: list[dict], cells: set[str]) -> list[str]:
     return found
 
 
-def impact_view(trace: dict, link_cells: dict, findings: list[dict], origin: str) -> dict:
+def impact_view(trace: dict, link_cells: dict, findings: list[dict], origin: str, facts: dict | None = None) -> dict:
     cells = _cells_of(trace)
-    external, unclassified = _external(trace)
+    values = facts or {}
+    external, unclassified = _external(trace, link_cells)
     warnings = list(trace.get("warnings") or [])
     if unclassified:
         warnings.append({"code": "external_not_in_trace", "params": {}})
@@ -101,7 +131,7 @@ def impact_view(trace: dict, link_cells: dict, findings: list[dict], origin: str
         "direction": trace.get("direction"),
         "depth": trace.get("depth"),
         "source": trace.get("source"),
-        "drivers": _drivers(trace),
+        "drivers": _drivers(trace, values),
         "hardcodes": _hardcodes(trace, link_cells),
         "external": external,
         "findings": _findings(findings, cells),

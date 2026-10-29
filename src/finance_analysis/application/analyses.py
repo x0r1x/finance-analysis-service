@@ -542,8 +542,7 @@ class Analyses:
         from finance_analysis.application.service import Accepted
 
         spec = _impact_target(body.get("target")) if body.get("target") else None
-        metrics = body.get("metrics") or ["dscr"]
-        _check_metrics(metrics)
+        metrics = _full_metrics(body)
         target = await self._target(job_id, actor, body.get("build_key"), wait_sec=wait_sec)
         if isinstance(target, Accepted):
             return target
@@ -707,7 +706,7 @@ class Analyses:
         except NoAudit:
             findings = []
         origin = spec.get("cell_id") or spec.get("row_key") or spec.get("concept")
-        view = impact_view(trace, data.link_cells, findings, str(origin))
+        view = impact_view(trace, data.link_cells, findings, str(origin), data.facts_by_cell)
         return view, list(view["warnings"])
 
     async def _execute_full(
@@ -722,11 +721,15 @@ class Analyses:
         op_id: str,
     ) -> None:
         try:
+            if await self._cancelled(op_id):
+                return
             started = _now()
             rules = select_rules(self.rules, body.get("rules"))
             scope = _scope(body)
             await self.service.progress_op(op_id, "loading")
             data = await self._input(job_id, target, requirements(rules) | {"links"})
+            if await self._cancelled(op_id):
+                return
             await self.service.progress_op(op_id, "semantics")
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
@@ -748,7 +751,13 @@ class Analyses:
                 "analysis_id": analysis_id,
                 "status": "succeeded",
                 "builder_ref": target.manifest.get("builder_ref"),
-                "versions": {**head.versions, "fas": FAS_VERSION, "state_seq": head.state_seq, "derive_key": target.derive_key},
+                "versions": {
+                    **head.versions,
+                    "rules": {rule.code: rule.version for rule in rules},
+                    "fas": FAS_VERSION,
+                    "state_seq": head.state_seq,
+                    "derive_key": target.derive_key,
+                },
                 "build_key": target.build,
                 "is_latest": target.is_latest,
                 "summary": {"code": "full_completed", "params": {"metrics": metrics, "findings": len(findings)}, "text": None},
@@ -766,6 +775,8 @@ class Analyses:
                 "warnings": warnings,
             }
             await self._annotate(envelope)
+            if await self._cancelled(op_id):
+                return
             stored = [_finding_row(job_id, target.build, head.state_seq, analysis_id, item) for item in findings]
             ratio_stored = _ratio_stored(job_id, target, analysis_id, head, got["rows"])
             tables = {}
@@ -780,7 +791,18 @@ class Analyses:
                 result={"analysis_id": analysis_id, "resource": f"/v1/books/{job_id}/analyses/{analysis_id}"},
             )
         except Exception as exc:  # noqa: BLE001 — ошибка полного отчёта закрывает операцию
+            if await self._cancelled(op_id):
+                return
             await self.service.finish_op(op_id, "failed", error={"code": getattr(exc, "code", "failed"), "detail": str(exc)})
+
+    async def _cancelled(self, op_id: str) -> bool:
+        current = await self.service.get_op(op_id)
+        if current["status"] in {"succeeded", "failed", "cancelled"}:
+            return True
+        if not await self.service.support.cache_get(f"fas:op:{op_id}:cancel"):
+            return False
+        await self.service.finish_op(op_id, "cancelled")
+        return True
 
     async def _metric_findings(
         self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent
@@ -1248,6 +1270,13 @@ class Analyses:
             return None
         await svc.support.cache_set(key, _dumps(found), svc.settings.etag_ttl)
         return found
+
+
+def _full_metrics(body: dict) -> list[str]:
+    """Нет ключа — DSCR. Пустой список и null проверяет `_check_metrics`."""
+
+    metrics = body.get("metrics") if "metrics" in body else ["dscr"]
+    return _check_metrics(metrics)
 
 
 def _check_metrics(metrics) -> list[str]:

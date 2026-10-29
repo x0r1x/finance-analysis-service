@@ -1403,6 +1403,8 @@ class FasService:
         current = await self.get_op(op_id)
         if current["status"] in {"succeeded", "failed", "cancelled"}:
             return current
+        if status == "succeeded" and await self.support.cache_get(f"fas:op:{op_id}:cancel"):
+            return current
         await append_event(self.store, op_id, {"status": status, **fields})
         await self.support.publish(f"fas:op:{op_id}", status)
         return await self.get_op(op_id)

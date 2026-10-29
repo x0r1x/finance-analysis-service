@@ -68,13 +68,20 @@ async def read_events(store, op_id: str, after: int = 0) -> list[dict]:
 
 async def read_op(store, op_id: str) -> dict:
     body = json.loads(await store.get(keys.operation_key(op_id)))
+    closed = False
     for seq in range(1, 64):
         meta = await store.stat(keys.operation_event_key(op_id, seq))
         if meta is None:
             break
         event = json.loads(await store.get(keys.operation_event_key(op_id, seq)))
+        # requeue пишет running после failed и снова открывает операцию.
+        # Поздний succeeded после cancelled статус не переписывает.
+        if closed and event.get("status") in _TERMINAL:
+            body["updated_at"] = event.get("at", body["updated_at"])
+            continue
         if "status" in event:
             body["status"] = event["status"]
+            closed = event["status"] in _TERMINAL
         if "result" in event:
             body["result"] = event["result"]
         if "error" in event:
