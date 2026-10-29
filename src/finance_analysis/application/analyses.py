@@ -18,6 +18,9 @@ import anyio
 from ulid import ULID
 
 from finance_analysis.application import keys
+from finance_analysis.application.explain import narrate, template_text
+from finance_analysis.application.impact import impact_view
+from finance_analysis.application.report import render_json, render_markdown
 from finance_analysis.application.rule_engine import (
     load_rules,
     requirements,
@@ -43,25 +46,26 @@ from finance_analysis.domain.cover_metrics import (
     loan_life_ratio,
     ratio_cells,
 )
+from finance_analysis.domain.deadline import effective
 from finance_analysis.domain.errors import (
     AlreadyExists,
     DependencyUnavailable,
     InvalidArgument,
     NoAudit,
+    NotAcceptable,
     NotFound,
 )
 from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.mapping import absent_in_journal
-from finance_analysis.domain.metrics import coverage_ratio
+from finance_analysis.domain.metrics import _primaries, coverage_ratio
 from finance_analysis.plugins.rules.coverage import (
     MISSING_TOTAL_ROW,
     PERIOD_GRAIN_MISMATCH,
 )
 
-# Типы из §3.2 и фаза, в которой они появляются (§12). ratios — эта фаза.
-LATER_TYPES = {"impact": 4, "full": 4}
+ANALYSIS_TYPES = ("audit", "ratios", "impact", "full")
 RATIO_METRICS = ("dscr", "icr", "adscr", "dscr_min", "dscr_avg", "llcr", "plcr")
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs")
@@ -442,21 +446,57 @@ class Analyses:
         profile_id = profile.split("@", 1)[0] if "@" in profile else None
         return (await self.service.glossary.profile_body(profile_id) if profile_id else None) or {}
 
+    async def _annotate(self, envelope: dict) -> None:
+        """Текст сводки и находок пишется в результат один раз. GET его не пересчитывает."""
+
+        summary = envelope.get("summary") or {}
+        findings = (envelope.get("result_data") or {}).get("findings") or []
+        items = [
+            {
+                "id": "summary",
+                "code": summary.get("code") or "analysis",
+                "params": summary.get("params") or {},
+                "title": None,
+            }
+        ]
+        for item in findings:
+            items.append(
+                {
+                    "id": item.get("fingerprint") or item.get("code"),
+                    "code": item.get("code") or "",
+                    "params": item.get("params") or {},
+                    "title": item.get("code"),
+                }
+            )
+        texts = await narrate(getattr(self.service.models, "llm", None), items, effective(self.service.settings.llm_timeout_sec * 1000))
+        summary["text"] = texts.get("summary")
+        envelope["summary"] = summary
+        for item in findings:
+            item["explanation"] = texts.get(item.get("fingerprint") or item.get("code"))
+
+    async def report(self, job_id: str, analysis_id: str, fmt: str) -> tuple[bytes, str]:
+        result = await self.result(job_id, analysis_id)
+        if fmt == "md":
+            return render_markdown(result).encode(), "text/markdown; charset=utf-8"
+        if fmt == "json":
+            return render_json(result), "application/json"
+        raise NotAcceptable("формат json или md", extra={"formats": ["json", "md"]})
+
     async def run(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
 
         kind = body.get("type")
+        render = body.get("render")
+        if render not in (None, "json", "md"):
+            raise NotAcceptable("render: json или md", extra={"formats": ["json", "md"]})
         if kind == "ratios":
             return await self._ratios(job_id, body, actor, wait_sec=wait_sec)
-        if kind in LATER_TYPES:
-            raise InvalidArgument(
-                f"type={kind} появится в фазе {LATER_TYPES[kind]}",
-                extra={"supported": ["audit"]},
-            )
+        if kind == "impact":
+            return await self._impact(job_id, body, actor, wait_sec=wait_sec)
+        if kind == "full":
+            return await self._full(job_id, body, actor, wait_sec=wait_sec)
         if kind != "audit":
-            raise InvalidArgument("type должен быть audit", extra={"supported": ["audit"]})
-        if body.get("render") not in (None, "json"):
-            raise InvalidArgument("render=md появится вместе с отчётами (фаза 4)", extra={"supported": ["json"]})
+            raise InvalidArgument("type должен быть audit", extra={"supported": list(ANALYSIS_TYPES)})
         rules = select_rules(self.rules, body.get("rules"))
         scope = _scope(body)
         notes: list[dict] = []
@@ -473,15 +513,48 @@ class Analyses:
         except TimeoutError:
             return await self._defer(job_id, actor, analysis_id, work)
 
+    async def _impact(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
+        from finance_analysis.application.service import Accepted
+
+        spec = _impact_target(body.get("target"))
+        target = await self._target(job_id, actor, body.get("build_key"), wait_sec=wait_sec)
+        if isinstance(target, Accepted):
+            return target
+        analysis_id = str(ULID())
+        work = self.service.spawn(self._execute_impact(job_id, target, analysis_id, spec, body, actor))
+        wide = False
+        try:
+            periods = await self.service._dataset_rows(job_id, target.head, "dim_period")
+            wide = len(periods) > self.service.settings.sync_max_periods
+        except (NotFound, StopIteration):
+            wide = False
+        if body.get("async") is True or wide:
+            return await self._defer(job_id, actor, analysis_id, work, kind="impact")
+        budget = max(0.1, min(wait_sec, self.service.settings.sync_deadline_ms / 1000) * 0.8)
+        try:
+            return await asyncio.wait_for(asyncio.shield(work), timeout=budget)
+        except TimeoutError:
+            return await self._defer(job_id, actor, analysis_id, work, kind="impact")
+
+    async def _full(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
+        """Всегда 202. shortcut: тот же in-process spawn, что у audit, не отдельная задача Taskiq."""
+
+        from finance_analysis.application.service import Accepted
+
+        spec = _impact_target(body.get("target")) if body.get("target") else None
+        metrics = _full_metrics(body)
+        target = await self._target(job_id, actor, body.get("build_key"), wait_sec=wait_sec)
+        if isinstance(target, Accepted):
+            return target
+        analysis_id = str(ULID())
+        op = await self.service.create_op("analysis", job_id, actor, {"analysis_id": analysis_id, "type": "full"})
+        self.service.spawn(self._execute_full(job_id, target, analysis_id, list(metrics), spec, body, actor, op["id"]))
+        return Accepted(op)
+
     async def _ratios(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
 
-        metrics = body.get("metrics")
-        if not isinstance(metrics, list) or not metrics:
-            raise InvalidArgument("нужен список metrics", extra={"supported": list(RATIO_METRICS)})
-        unknown = [item for item in metrics if item not in RATIO_METRICS]
-        if unknown:
-            raise InvalidArgument("неизвестная метрика", extra={"supported": list(RATIO_METRICS), "metrics": unknown})
+        metrics = _check_metrics(body.get("metrics"))
         target = await self._target(job_id, actor, body.get("build_key"), wait_sec=wait_sec)
         if isinstance(target, Accepted):
             return target
@@ -565,22 +638,7 @@ class Analyses:
         head = target.head
         got = await self.compute_metrics(job_id, target, metrics)
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
-        text_rows = []
-        citations: dict[str, dict] = {}
-        bound = {item["row_key"]: item for item in got["bindings"] if item.get("row_key")}
-        for row in computed:
-            value = row.get("value")
-            cells = ratio_cells(row, got["facts"], got["bindings"], got["periods"], got["absent"])
-            for fact in cells:
-                citations.setdefault(fact["cell_id"], _fact_citation(fact, bound.get(fact["row_key"], {})))
-            text_rows.append(
-                {
-                    **row,
-                    "value": _decimal_text(value),
-                    "value_f": None if value is None else float(value),
-                    "cell_ids": sorted(fact["cell_id"] for fact in cells),
-                }
-            )
+        text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
             job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
         )
@@ -601,38 +659,150 @@ class Analyses:
             },
             "tables": [],
             "charts": [],
-            "citations": [citations[cell] for cell in sorted(citations)],
+            "citations": citations,
             "needs_input": needs,
             "warnings": warnings,
         }
-        stored = []
-        for row in computed:
-            value = row.get("value")
-            stored.append(
-                {
-                    "analysis_id": analysis_id,
-                    "model_id": job_id,
-                    "build_key": target.build,
-                    "state_seq": head.state_seq,
-                    "glossary_version": head.versions.get("glossary"),
-                    "metric": row["metric"],
-                    "axis_id": row["axis_id"],
-                    "period_id": row["period_id"],
-                    "period_key_base": row.get("period_key_base"),
-                    "period_marker": row.get("period_marker"),
-                    "value": value,
-                    "value_f": None if value is None else float(value),
-                    "status": row["status"],
-                    "reason": row.get("reason"),
-                    "variant": row.get("variant"),
-                    "inputs_json": json.dumps(
-                        {"metric": row["metric"], **{name: row[name] for name in RATIO_EXTRAS if row.get(name) is not None}},
-                        sort_keys=True,
-                    ),
-                }
-            )
+        await self._annotate(envelope)
+        stored = _ratio_stored(job_id, target, analysis_id, head, computed)
         await self._save_tables(job_id, target, analysis_id, "ratios", {"ratios": stored}, envelope, actor, started)
         return envelope
+
+    async def _execute_impact(self, job_id: str, target: Target, analysis_id: str, spec: dict, body: dict, actor: Actor) -> dict:
+        started = _now()
+        view, warnings = await self._impact_of(job_id, target, spec, body)
+        head = target.head
+        envelope = {
+            "analysis_id": analysis_id,
+            "status": "succeeded",
+            "builder_ref": target.manifest.get("builder_ref"),
+            "versions": {**head.versions, "fas": FAS_VERSION, "state_seq": head.state_seq, "derive_key": target.derive_key},
+            "build_key": target.build,
+            "is_latest": target.is_latest,
+            "summary": {"code": "impact_completed", "params": {"drivers": len(view["drivers"])}, "text": None},
+            "result_data": {"findings": [], "ratios": [], "series": [], "expression": None, "impact": view},
+            "tables": [],
+            "charts": [],
+            "citations": [],
+            "needs_input": [],
+            "warnings": warnings,
+        }
+        await self._annotate(envelope)
+        await self._save_tables(job_id, target, analysis_id, "impact", {}, envelope, actor, started)
+        return envelope
+
+    async def _impact_of(self, job_id: str, target: Target, spec: dict, body: dict) -> tuple[dict, list[dict]]:
+        direction = body.get("direction") or "precedents"
+        if direction not in {"precedents", "dependents"}:
+            raise InvalidArgument("direction: precedents или dependents")
+        depth = _trace_depth(body.get("depth"), {})
+        data = await self._input(job_id, target, frozenset({"links"}))
+        origins = _origins(data, spec)
+        locations = [Location(cell, None, None, None) for cell in origins]
+        trace = await self._trace(job_id, target, data, locations, direction=direction, depth=depth)
+        try:
+            marker = await self._last_audit(job_id, target)
+            findings = list(marker["result"]["result_data"]["findings"])
+        except NoAudit:
+            findings = []
+        origin = spec.get("cell_id") or spec.get("row_key") or spec.get("concept")
+        view = impact_view(trace, data.link_cells, findings, str(origin), data.facts_by_cell)
+        return view, list(view["warnings"])
+
+    async def _execute_full(
+        self,
+        job_id: str,
+        target: Target,
+        analysis_id: str,
+        metrics: list[str],
+        spec: dict | None,
+        body: dict,
+        actor: Actor,
+        op_id: str,
+    ) -> None:
+        try:
+            if await self._cancelled(op_id):
+                return
+            started = _now()
+            rules = select_rules(self.rules, body.get("rules"))
+            scope = _scope(body)
+            await self.service.progress_op(op_id, "loading")
+            data = await self._input(job_id, target, requirements(rules) | {"links"})
+            if await self._cancelled(op_id):
+                return
+            await self.service.progress_op(op_id, "semantics")
+            await self.service.progress_op(op_id, "mapping")
+            await self.service.progress_op(op_id, "evaluating")
+            got = await self.compute_metrics(job_id, target, metrics)
+            found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
+            bound: set[str] = set()
+            if "concepts" in scope:
+                bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
+            findings = [item for item in found if _in_scope(item, scope, data, bound)]
+            warnings = list(got["warnings"])
+            impact = None
+            if spec:
+                impact, extra = await self._impact_of(job_id, target, spec, body)
+                warnings.extend(extra)
+            await self.service.progress_op(op_id, "rendering")
+            text_rows, citations = _ratio_rows(got)
+            head = target.head
+            envelope = {
+                "analysis_id": analysis_id,
+                "status": "succeeded",
+                "builder_ref": target.manifest.get("builder_ref"),
+                "versions": {
+                    **head.versions,
+                    "rules": {rule.code: rule.version for rule in rules},
+                    "fas": FAS_VERSION,
+                    "state_seq": head.state_seq,
+                    "derive_key": target.derive_key,
+                },
+                "build_key": target.build,
+                "is_latest": target.is_latest,
+                "summary": {"code": "full_completed", "params": {"metrics": metrics, "findings": len(findings)}, "text": None},
+                "result_data": {
+                    "findings": [item.as_dict(target.manifest.get("builder_ref")) for item in findings],
+                    "ratios": text_rows,
+                    "series": [],
+                    "expression": None,
+                    "impact": impact,
+                },
+                "tables": [],
+                "charts": [],
+                "citations": citations,
+                "needs_input": got["needs_input"],
+                "warnings": warnings,
+            }
+            await self._annotate(envelope)
+            if await self._cancelled(op_id):
+                return
+            stored = [_finding_row(job_id, target.build, head.state_seq, analysis_id, item) for item in findings]
+            ratio_stored = _ratio_stored(job_id, target, analysis_id, head, got["rows"])
+            tables = {}
+            if stored:
+                tables["findings"] = stored
+            if ratio_stored:
+                tables["ratios"] = ratio_stored
+            await self._save_tables(job_id, target, analysis_id, "full", tables, envelope, actor, started)
+            await self.service.finish_op(
+                op_id,
+                "succeeded",
+                result={"analysis_id": analysis_id, "resource": f"/v1/books/{job_id}/analyses/{analysis_id}"},
+            )
+        except Exception as exc:  # noqa: BLE001 — ошибка полного отчёта закрывает операцию
+            if await self._cancelled(op_id):
+                return
+            await self.service.finish_op(op_id, "failed", error={"code": getattr(exc, "code", "failed"), "detail": str(exc)})
+
+    async def _cancelled(self, op_id: str) -> bool:
+        current = await self.service.get_op(op_id)
+        if current["status"] in {"succeeded", "failed", "cancelled"}:
+            return True
+        if not await self.service.support.cache_get(f"fas:op:{op_id}:cancel"):
+            return False
+        await self.service.finish_op(op_id, "cancelled")
+        return True
 
     async def _metric_findings(
         self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent
@@ -778,6 +948,7 @@ class Analyses:
             skipped = sorted(rule.code for rule in rules if COUNTER_RULES_INPUT in rule.requires)
             warnings.append({"code": "builder_counters_missing", "params": {"rules": skipped}})
         envelope = self._envelope(job_id, target, analysis_id, rules, data, findings, warnings)
+        await self._annotate(envelope)
         await self._save(job_id, target, analysis_id, rules, findings, envelope, actor, started)
         return envelope
 
@@ -1045,6 +1216,9 @@ class Analyses:
                 "title": rule.title if rule else found["code"],
                 "basis": found.get("basis") or [],
                 "params": found.get("params") or {},
+                "text": found.get("explanation")
+                if isinstance(found.get("explanation"), str)
+                else template_text(found["code"], found.get("params"), rule.title if rule else None),
             },
             "citations": [item for item in (_citation(data, location) for location in locations) if item],
             "trace": trace,
@@ -1096,6 +1270,113 @@ class Analyses:
             return None
         await svc.support.cache_set(key, _dumps(found), svc.settings.etag_ttl)
         return found
+
+
+def _full_metrics(body: dict) -> list[str]:
+    """Нет ключа — DSCR. Пустой список и null проверяет `_check_metrics`."""
+
+    metrics = body.get("metrics") if "metrics" in body else ["dscr"]
+    return _check_metrics(metrics)
+
+
+def _check_metrics(metrics) -> list[str]:
+    if not isinstance(metrics, list) or not metrics:
+        raise InvalidArgument("нужен список metrics", extra={"supported": list(RATIO_METRICS)})
+    unknown = [item for item in metrics if item not in RATIO_METRICS]
+    if unknown:
+        raise InvalidArgument("неизвестная метрика", extra={"supported": list(RATIO_METRICS), "metrics": unknown})
+    return list(metrics)
+
+
+def _impact_target(raw) -> dict:
+    if isinstance(raw, str) and raw.strip():
+        text = raw.strip()
+        if "|" in text:
+            return {"row_key": text}
+        if "!" in text:
+            return {"cell_id": text}
+        return {"concept": text}
+    if isinstance(raw, dict):
+        keys = [name for name in ("cell_id", "row_key", "concept") if raw.get(name)]
+        if len(keys) == 1:
+            return {keys[0]: str(raw[keys[0]])}
+    raise InvalidArgument("target: одно из cell_id, row_key, concept")
+
+
+def _origins(data: AuditInput, spec: dict) -> list[str]:
+    row_key = spec.get("row_key")
+    if spec.get("cell_id"):
+        cell = str(spec["cell_id"])
+        if cell not in data.facts_by_cell and cell not in data.link_cells:
+            raise NotFound("ячейка не найдена", extra={"cell_id": cell})
+        return [cell]
+    if spec.get("concept"):
+        primary = _primaries(data.bindings).get(spec["concept"])
+        if primary is None:
+            raise NotFound("понятие не привязано", extra={"concept": spec["concept"]})
+        row_key = primary["row_key"]
+    cells: list[str] = []
+    for fact in data.facts:
+        cell = fact.get("cell_id")
+        if fact.get("row_key") == row_key and cell and cell not in cells:
+            cells.append(cell)
+    if not cells:
+        for cell, link in data.link_cells.items():
+            if link.row_key == row_key and cell not in cells:
+                cells.append(cell)
+    if not cells:
+        raise NotFound("строка не найдена", extra={"row_key": row_key})
+    return cells[:TRACE_CELLS]
+
+
+def _ratio_rows(got: dict) -> tuple[list[dict], list[dict]]:
+    text_rows = []
+    citations: dict[str, dict] = {}
+    bound = {item["row_key"]: item for item in got["bindings"] if item.get("row_key")}
+    for row in got["rows"]:
+        value = row.get("value")
+        cells = ratio_cells(row, got["facts"], got["bindings"], got["periods"], got["absent"])
+        for fact in cells:
+            citations.setdefault(fact["cell_id"], _fact_citation(fact, bound.get(fact["row_key"], {})))
+        text_rows.append(
+            {
+                **row,
+                "value": _decimal_text(value),
+                "value_f": None if value is None else float(value),
+                "cell_ids": sorted(fact["cell_id"] for fact in cells),
+            }
+        )
+    return text_rows, [citations[cell] for cell in sorted(citations)]
+
+
+def _ratio_stored(job_id: str, target: Target, analysis_id: str, head: Head, rows: list[dict]) -> list[dict]:
+    stored = []
+    for row in rows:
+        value = row.get("value")
+        stored.append(
+            {
+                "analysis_id": analysis_id,
+                "model_id": job_id,
+                "build_key": target.build,
+                "state_seq": head.state_seq,
+                "glossary_version": head.versions.get("glossary"),
+                "metric": row["metric"],
+                "axis_id": row["axis_id"],
+                "period_id": row["period_id"],
+                "period_key_base": row.get("period_key_base"),
+                "period_marker": row.get("period_marker"),
+                "value": value,
+                "value_f": None if value is None else float(value),
+                "status": row["status"],
+                "reason": row.get("reason"),
+                "variant": row.get("variant"),
+                "inputs_json": json.dumps(
+                    {"metric": row["metric"], **{name: row[name] for name in RATIO_EXTRAS if row.get(name) is not None}},
+                    sort_keys=True,
+                ),
+            }
+        )
+    return stored
 
 
 def _trace_depth(raw, finding: dict) -> int:

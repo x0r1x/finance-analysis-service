@@ -1,14 +1,7 @@
-"""Сравнение двух сборок книги: `POST /v1/books/{job_id}:compare` (§3.2, §6.4).
+"""Сравнение: две сборки, сценарии одной книги или две книги (§3.2, §6.4).
 
-Фаза 3 — только две сборки одной книги (`other.build_key`). Кейсы внутри
-книги и вторая книга (`other.scenario`, `other.job_id`) — фаза 4.
-
-Обе стороны считаются на текущем состоянии подтверждений: оно хранится по
-`binding_key` (§4.5), поэтому разница — только в данных сборок. Строки и
-периоды сопоставляются по устойчивым ключам: строка — `binding_key`,
-период — шкала builder (`timeline_id` + `period_index`) и `period_id`: так
-стыкуется и новая ось на том же листе. Номер оси на листе (как в отпечатке
-находки, §6.1) — только для осей без шкалы.
+Сценарий — только сохранённые числа (`period_marker` или колонка params).
+Две книги — два отдельных расчёта и diff. Общего SQL нет.
 """
 
 from __future__ import annotations
@@ -27,11 +20,13 @@ from finance_analysis.application.rule_engine import (
 )
 from finance_analysis.domain.audit import axis_ordinals
 from finance_analysis.domain.errors import InvalidArgument
+from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.metrics import RATIO, _primaries, aligned_keys
 
-# Варианты `other`, которые появятся в фазе 4 (§12).
-LATER_SIDES = {"scenario": 4, "job_id": 4}
+_BASE_FIELDS = {"build_key", "scenario"}
+_OTHER_FIELDS = {"build_key", "scenario", "job_id"}
 DEFAULT_METRICS = ("dscr",)
+_SCENARIO_MISSING = "сценарий не найден в числах книги; неактивный кейс сравнивается как две сборки или две книги"
 
 
 def _side(raw, name: str) -> dict:
@@ -39,16 +34,77 @@ def _side(raw, name: str) -> dict:
         return {}
     if not isinstance(raw, dict):
         raise InvalidArgument(f"{name} должен быть объектом")
-    later = sorted(set(raw) & set(LATER_SIDES))
-    if later:
-        raise InvalidArgument(
-            f"{name}.{later[0]} появится в фазе {LATER_SIDES[later[0]]}",
-            extra={"supported": ["build_key"]},
-        )
-    unknown = sorted(set(raw) - {"build_key"})
+    allowed = _OTHER_FIELDS if name == "other" else _BASE_FIELDS
+    unknown = sorted(set(raw) - allowed)
     if unknown:
         raise InvalidArgument(f"неизвестные поля {name}", extra={"fields": unknown})
     return raw
+
+
+def match_periods(periods: list[dict], name: str) -> list[dict]:
+    """Колонка кейса по заголовку, иначе маркер факт/план."""
+
+    needle = str(name).casefold()
+    exact = [row for row in periods if str(row.get("header_text") or "").casefold() == needle]
+    if exact:
+        return exact
+    return [
+        row
+        for row in periods
+        if needle in {str(row.get("period_marker") or "").casefold(), str(row.get("marker_class") or "").casefold()}
+    ]
+
+
+def _input_index(
+    facts: list[dict],
+    periods: list[dict],
+    *,
+    by_row: bool = False,
+    skip: set[str] | None = None,
+) -> dict[tuple, Decimal | None]:
+    chosen = {(row["axis_id"], row["period_id"]): row for row in periods}
+    found: dict[tuple, Decimal | None] = {}
+    skipped = skip or set()
+    for fact in facts:
+        row_key = fact.get("row_key")
+        if row_key in skipped:
+            continue
+        meta = chosen.get((fact.get("axis_id"), fact.get("period_id")))
+        if meta is None:
+            continue
+        number = _number(fact.get("value_dec") if fact.get("value_dec") is not None else fact.get("value"))
+        # case-1 и case-2 не делят календарный ключ, поэтому внутри блока кейсов ключ — строка.
+        key = (row_key, None) if by_row else (row_key, meta.get("period_key_base") or fact.get("period_id"))
+        if key not in found or found[key] is None:
+            found[key] = number
+    return found
+
+
+def _scenario_inputs(facts: list[dict], rows: list[dict], left: list[dict], right: list[dict]) -> list[dict]:
+    """Кейс с кейсом — по строке и без формул. Факт/план — по календарному периоду."""
+
+    by_row = bool(left and right) and all(row.get("axis_kind") == "params" for row in left + right)
+    skip = {row["row_key"] for row in rows if row.get("formula") or row.get("has_formula")} if by_row else set()
+    return _input_deltas(
+        _input_index(facts, left, by_row=by_row, skip=skip),
+        _input_index(facts, right, by_row=by_row, skip=skip),
+    )
+
+
+def _input_deltas(left: dict[tuple, Decimal | None], right: dict[tuple, Decimal | None]) -> list[dict]:
+    found = []
+    for key in sorted(set(left) | set(right), key=lambda item: tuple(str(part) for part in item)):
+        before, after = left.get(key), right.get(key)
+        found.append(
+            {
+                "row_key": key[0],
+                "period_key_base": key[1],
+                "base": _decimal_text(before),
+                "other": _decimal_text(after),
+                **_delta(before, after),
+            }
+        )
+    return found
 
 
 @dataclass(frozen=True)
@@ -105,8 +161,16 @@ class Comparisons:
 
         base_side = _side(body.get("base"), "base")
         other_side = _side(body.get("other"), "other")
+        if base_side.get("scenario") or other_side.get("scenario"):
+            if other_side.get("job_id"):
+                raise InvalidArgument("scenario относится к одной книге")
+            if not base_side.get("scenario") or not other_side.get("scenario"):
+                raise InvalidArgument("для кейсов нужны base.scenario и other.scenario")
+            return await self._run_scenarios(job_id, actor, base_side, other_side, body, wait_sec=wait_sec)
+        if other_side.get("job_id"):
+            return await self._run_books(job_id, actor, base_side, other_side, body, wait_sec=wait_sec)
         if not other_side.get("build_key"):
-            raise InvalidArgument("нужен other.build_key: в фазе 3 сравниваются две сборки книги")
+            raise InvalidArgument("нужен other.build_key, other.scenario или other.job_id")
         metrics = body.get("metrics", list(DEFAULT_METRICS))
         if not isinstance(metrics, list) or any(item not in RATIO_METRICS for item in metrics):
             raise InvalidArgument("неизвестная метрика", extra={"supported": list(RATIO_METRICS)})
@@ -121,7 +185,7 @@ class Comparisons:
             return other
         if base.build == other.build:
             raise InvalidArgument("base и other — одна и та же сборка", extra={"build_key": base.build})
-        work = self.service.spawn(self._compare(job_id, base, other, list(metrics), rules))
+        work = self.service.spawn(self._compare(job_id, base, job_id, other, list(metrics), rules))
         if body.get("async") is True:
             return await self._defer(job_id, actor, work)
         budget = max(0.1, min(wait_sec, self.service.settings.sync_deadline_ms / 1000) * 0.8)
@@ -147,22 +211,88 @@ class Comparisons:
         svc.spawn(_finish())
         return Accepted(op)
 
-    async def _compare(self, job_id: str, base: Target, other: Target, metrics: list[str], rules) -> dict:
-        left = await self.analyses.compute_metrics(job_id, base, metrics)
-        right = await self.analyses.compute_metrics(job_id, other, metrics)
-        result = {
+    async def _run_scenarios(self, job_id, actor, base_side, other_side, body, *, wait_sec: float):
+        from finance_analysis.application.service import Accepted
+
+        build = base_side.get("build_key") or other_side.get("build_key")
+        if base_side.get("build_key") and other_side.get("build_key") and base_side["build_key"] != other_side["build_key"]:
+            raise InvalidArgument("сценарии сравниваются внутри одной сборки")
+        target = await self.analyses._target(job_id, actor, build, wait_sec=wait_sec)
+        if isinstance(target, Accepted):
+            return target
+        work = self.service.spawn(self._scenarios(job_id, target, base_side["scenario"], other_side["scenario"]))
+        if body.get("async") is True:
+            return await self._defer(job_id, actor, work)
+        budget = max(0.1, min(wait_sec, self.service.settings.sync_deadline_ms / 1000) * 0.8)
+        try:
+            return await asyncio.wait_for(asyncio.shield(work), timeout=budget)
+        except TimeoutError:
+            return await self._defer(job_id, actor, work)
+
+    async def _scenarios(self, job_id: str, target, left_name: str, right_name: str) -> dict:
+        data = await self.analyses._input(job_id, target, frozenset())
+        left_periods = match_periods(data.periods, left_name)
+        right_periods = match_periods(data.periods, right_name)
+        if not left_periods or not right_periods:
+            missing = left_name if not left_periods else right_name
+            raise InvalidArgument(_SCENARIO_MISSING, extra={"scenario": missing})
+        pin = self._pin(target)
+        return {
             "job_id": job_id,
+            "base": {**pin, "scenario": left_name},
+            "other": {**pin, "scenario": right_name},
+            "metrics": [],
+            "inputs": _scenario_inputs(data.facts, data.rows, left_periods, right_periods),
+            "concepts": [],
+            "structure": None,
+            "findings": None,
+            "needs_input": [],
+            "warnings": [{"code": "scenario_inputs_only", "params": {}}],
+        }
+
+    async def _run_books(self, job_id, actor, base_side, other_side, body, *, wait_sec: float):
+        from finance_analysis.application.service import Accepted
+
+        right_job = check_job(str(other_side["job_id"]))
+        metrics = body.get("metrics", list(DEFAULT_METRICS))
+        if not isinstance(metrics, list) or any(item not in RATIO_METRICS for item in metrics):
+            raise InvalidArgument("неизвестная метрика", extra={"supported": list(RATIO_METRICS)})
+        rules = select_rules(self.analyses.rules, body.get("rules")) if body.get("rules") is not None else None
+        base = await self.analyses._target(job_id, actor, base_side.get("build_key"), wait_sec=wait_sec)
+        if isinstance(base, Accepted):
+            return base
+        other = await self.analyses._target(right_job, actor, other_side.get("build_key"), wait_sec=wait_sec)
+        if isinstance(other, Accepted):
+            return other
+        if job_id == right_job and base.build == other.build:
+            raise InvalidArgument("base и other — одна и та же сборка", extra={"build_key": base.build})
+        work = self.service.spawn(self._compare(job_id, base, right_job, other, list(metrics), rules))
+        if body.get("async") is True:
+            return await self._defer(job_id, actor, work)
+        budget = max(0.1, min(wait_sec, self.service.settings.sync_deadline_ms / 1000) * 0.8)
+        try:
+            return await asyncio.wait_for(asyncio.shield(work), timeout=budget)
+        except TimeoutError:
+            return await self._defer(job_id, actor, work)
+
+    async def _compare(self, left_job: str, base: Target, right_job: str, other: Target, metrics: list[str], rules) -> dict:
+        left = await self.analyses.compute_metrics(left_job, base, metrics)
+        right = await self.analyses.compute_metrics(right_job, other, metrics)
+        result = {
+            "job_id": left_job,
             "base": self._pin(base),
             "other": self._pin(other),
             "metrics": self._metric_deltas(left, right),
             "concepts": self._concept_deltas(left, right),
-            "structure": await self._structure(job_id, base, other, left, right),
+            "structure": await self._structure(left_job, right_job, base, other, left, right),
             "findings": None,
             "needs_input": _unique(left["needs_input"] + right["needs_input"]),
             "warnings": _unique(left["warnings"] + right["warnings"]),
         }
+        if right_job != left_job:
+            result["other_job_id"] = right_job
         if rules is not None:
-            result["findings"] = await self._finding_deltas(job_id, base, other, rules)
+            result["findings"] = await self._finding_deltas(left_job, right_job, base, other, rules)
         return result
 
     @staticmethod
@@ -242,12 +372,12 @@ class Comparisons:
             )
         return found
 
-    async def _structure(self, job_id: str, base: Target, other: Target, left: dict, right: dict) -> dict:
+    async def _structure(self, left_job: str, right_job: str, base: Target, other: Target, left: dict, right: dict) -> dict:
         from finance_analysis.application.analyses import _pinned
 
         svc = self.service
-        rows_before = {row["binding_key"]: row for row in await svc._dataset_rows(job_id, _pinned(base), "dim_row")}
-        rows_after = {row["binding_key"]: row for row in await svc._dataset_rows(job_id, _pinned(other), "dim_row")}
+        rows_before = {row["binding_key"]: row for row in await svc._dataset_rows(left_job, _pinned(base), "dim_row")}
+        rows_after = {row["binding_key"]: row for row in await svc._dataset_rows(right_job, _pinned(other), "dim_row")}
 
         def periods(side: dict) -> set[tuple]:
             axes = _axis_key(side["periods"])
@@ -271,11 +401,12 @@ class Comparisons:
             ],
         }
 
-    async def _finding_deltas(self, job_id: str, base: Target, other: Target, rules) -> dict:
+    async def _finding_deltas(self, left_job: str, right_job: str, base: Target, other: Target, rules) -> dict:
         needed = requirements(rules)
         found = {}
+        jobs = {"base": left_job, "other": right_job}
         for name, target in (("base", base), ("other", other)):
-            data = await self.analyses._input(job_id, target, needed)
+            data = await self.analyses._input(jobs[name], target, needed)
             items = await anyio.to_thread.run_sync(lambda data=data: run_rules(rules, data), limiter=self.service._cpu)
             found[name] = {item.fingerprint: item for item in items}
 

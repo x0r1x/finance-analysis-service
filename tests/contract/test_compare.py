@@ -111,6 +111,9 @@ async def test_ratios_on_a_past_build_and_compare_two_builds(tmp_path, settings,
         later = await client.post(
             f"/v1/books/{RVI}:compare", headers=HEADERS, json={"other": {"job_id": RVI, "build_key": old_build}}
         )
-        assert later.status_code == 400, later.text
+        assert later.status_code == 200, later.text
+        assert later.json()["other"]["build_key"] == old_build
+        assert later.json()["base"]["build_key"] == new_build
+        assert later.json()["metrics"]
         same = await client.post(f"/v1/books/{RVI}:compare", headers=HEADERS, json={"other": {"build_key": new_build}})
         assert same.status_code == 400, same.text

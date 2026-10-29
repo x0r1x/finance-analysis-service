@@ -55,15 +55,33 @@ async def append_event(store, op_id: str, event: dict) -> dict:
     raise PreconditionFailed("слишком много событий операции")
 
 
+async def read_events(store, op_id: str, after: int = 0) -> list[dict]:
+    found = []
+    start = after + 1 if after > 0 else 1
+    for seq in range(start, 64):
+        meta = await store.stat(keys.operation_event_key(op_id, seq))
+        if meta is None:
+            break
+        found.append(json.loads(await store.get(keys.operation_event_key(op_id, seq))))
+    return found
+
+
 async def read_op(store, op_id: str) -> dict:
     body = json.loads(await store.get(keys.operation_key(op_id)))
+    closed = False
     for seq in range(1, 64):
         meta = await store.stat(keys.operation_event_key(op_id, seq))
         if meta is None:
             break
         event = json.loads(await store.get(keys.operation_event_key(op_id, seq)))
+        # requeue пишет running после failed и снова открывает операцию.
+        # Поздний succeeded после cancelled статус не переписывает.
+        if closed and event.get("status") in _TERMINAL:
+            body["updated_at"] = event.get("at", body["updated_at"])
+            continue
         if "status" in event:
             body["status"] = event["status"]
+            closed = event["status"] in _TERMINAL
         if "result" in event:
             body["result"] = event["result"]
         if "error" in event:

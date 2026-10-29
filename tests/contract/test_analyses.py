@@ -201,7 +201,8 @@ async def test_audit_arguments_and_async(app):
         assert history.json()["next_page_token"]
 
         caps = await client.get("/v1/capabilities")
-        assert caps.json()["phase"] == "3"
+        assert caps.json()["phase"] == "4"
+        assert caps.json()["renderers"] == ["json", "md"]
         assert {"run_analysis", "list_findings", "explain_finding"} <= {tool["name"] for tool in caps.json()["tools"]}
         assert any(rule["code"] == "check_failure" and rule["severity"] == "critical" for rule in caps.json()["rules"])
         assert any(item["code"] == "no_audit" for item in caps.json()["problems"])
