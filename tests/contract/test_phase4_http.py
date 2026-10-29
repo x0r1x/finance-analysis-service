@@ -1,17 +1,13 @@
-"""Фаза 4: отчёт, impact, полный прогон, сценарий, SSE, OSI."""
+"""Фаза 4: отчёт, impact, полный прогон, сценарий, SSE."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-from pathlib import Path
 
-import jsonschema
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from finance_analysis.adapters.api.app import create_app
-from finance_analysis.application.osi import schema_path
 from finance_analysis.domain.book import Actor
 from tests.books import job_id
 
@@ -189,36 +185,3 @@ async def test_sse_reads_the_store_when_pubsub_is_quiet(app, local_service, redi
         redis_runtime.messages = real
         if task is not None and not task.done():
             task.cancel()
-
-
-async def test_semantic_model_matches_the_pinned_schema(app):
-    schema = json.loads(Path(schema_path()).read_text(encoding="utf-8"))
-    validator = jsonschema.Draft202012Validator(schema)
-    async with _client(app) as client:
-        got = await client.get("/v1/semantic-model", headers=HEADERS, params={"format": "json"})
-        assert got.status_code == 200, got.text
-        document = got.json()
-        validator.validate(document)
-        assert document["name"] == "fas_semantic_model"
-        assert document["datasets"][0]["source"] == "fas.series"
-        assert "parquet" not in got.text.lower()
-        etag = got.headers["etag"]
-        cached = await client.get(
-            "/v1/semantic-model",
-            headers={**HEADERS, "If-None-Match": etag},
-            params={"format": "json"},
-        )
-        assert cached.status_code == 304, cached.text
-        rendered = await client.get(
-            "/v1/semantic-model",
-            headers={**HEADERS, "Accept": "text/markdown"},
-            params={"format": "md"},
-        )
-        repeat = await client.get("/v1/semantic-model", headers=HEADERS, params={"format": "md"})
-        assert rendered.status_code == 200, rendered.text
-        assert rendered.content == repeat.content
-        assert "fas_semantic_model" in rendered.text
-        unknown = await client.get("/v1/semantic-model", headers=HEADERS, params={"profile_id": "no-such"})
-        assert unknown.status_code == 404, unknown.text
-        bad = await client.get("/v1/semantic-model", headers=HEADERS, params={"format": "xlsx"})
-        assert bad.status_code == 406, bad.text

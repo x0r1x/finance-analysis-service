@@ -7,7 +7,6 @@ import json
 from finance_analysis.domain.errors import NotAcceptable
 
 REPORT_FORMATS = ("json", "md")
-MODEL_FORMATS = ("json", "yaml", "md")
 
 
 def choose_format(fmt: str | None, accept: str | None, allowed: tuple[str, ...]) -> str:
@@ -20,8 +19,6 @@ def choose_format(fmt: str | None, accept: str | None, allowed: tuple[str, ...])
     header = (accept or "*/*").lower()
     if "text/markdown" in header and "md" in allowed:
         return "md"
-    if ("application/yaml" in header or "text/yaml" in header) and "yaml" in allowed:
-        return "yaml"
     if "application/json" in header or "*/*" in header or "application/problem+json" in header:
         return "json"
     raise NotAcceptable("формат не поддерживается", extra={"formats": list(allowed)})

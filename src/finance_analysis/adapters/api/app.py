@@ -21,12 +21,7 @@ from prometheus_client import (
 
 from finance_analysis.adapters.api.problems import problem_response
 from finance_analysis.application.operations import read_events
-from finance_analysis.application.osi import export_model
-from finance_analysis.application.report import (
-    MODEL_FORMATS,
-    REPORT_FORMATS,
-    choose_format,
-)
+from finance_analysis.application.report import REPORT_FORMATS, choose_format
 from finance_analysis.application.service import Accepted, Freshness
 from finance_analysis.domain.book import FAS_VERSION, Actor
 from finance_analysis.domain.deadline import (
@@ -57,28 +52,16 @@ _TERMINAL = {"succeeded", "failed", "cancelled"}
 
 
 def _accept_ok(path: str, accept: str) -> bool:
-    """json везде. markdown/yaml — отчёт и семантическая модель. SSE — только поток событий."""
+    """json везде. markdown — отчёт. SSE — только поток событий."""
 
     header = accept.lower()
     if path == "/metrics":
         return True
     if "application/json" in header or "*/*" in header or "application/problem+json" in header:
         return True
-    if path.endswith("/report") or path == "/v1/semantic-model":
-        return "text/markdown" in header or "application/yaml" in header or "text/yaml" in header
+    if path.endswith("/report"):
+        return "text/markdown" in header
     return path.startswith("/v1/operations/") and path.endswith("/events") and "text/event-stream" in header
-
-
-def _none_match(header: str | None, etag: str) -> bool:
-    if not header:
-        return False
-    for part in header.split(","):
-        token = part.strip()
-        if token.startswith("W/"):
-            token = token[2:].strip()
-        if token.strip('"') == etag:
-            return True
-    return False
 
 
 def _resume_after(header: str | None) -> int:
@@ -251,31 +234,6 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
     @app.get("/metrics")
     async def metrics():
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-    @app.get("/v1/semantic-model")
-    async def semantic_model(
-        request: Request,
-        format: str | None = None,
-        glossary_version: str | None = None,
-        profile_id: str | None = None,
-    ):
-        fmt = choose_format(format, request.headers.get("accept"), MODEL_FORMATS)
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            _status, body, media, etag = await export_model(
-                _svc().glossary,
-                _support(),
-                glossary_version=glossary_version,
-                profile_id=profile_id,
-                fmt=fmt,
-            )
-            quoted = f'"{etag}"'
-            if _none_match(request.headers.get("if-none-match"), etag):
-                return Response(status_code=304, headers={"ETag": quoted})
-            return Response(body, media_type=media, headers={"ETag": quoted})
-        finally:
-            app.state.inflight -= 1
 
     @app.get("/v1/capabilities")
     async def capabilities(request: Request):
