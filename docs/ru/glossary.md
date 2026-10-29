@@ -1,0 +1,48 @@
+# Глоссарий
+
+[English](../en/glossary.md)
+
+Глоссарий — данные FAS. Пакет в git — это `configs/concepts/`, `configs/glossary/` и `configs/metrics/`. Релиз — неизменяемая копия этого документа в object store. Загрузка книги запоминает id релиза, с которым она собрана.
+
+`GLOSSARY_AUTO_PROMOTE` по умолчанию выключен. Метка, выученная на книгах, сама активным релизом не становится. `uv run fas glossary shadow <version>` строит shadow-отчёт кандидата. Пороги и canary-гейт — в [design-v0.23.md](../design-v0.23.md) §5.9, не на этой странице.
+
+Размеченные книги и команда `fas eval mapping` описаны в [eval/README.md](../../eval/README.md).
+
+## Чтение и запись
+
+`GET /v1/glossary` возвращает голову и `ETag` вида `h-{seq}`.
+
+Несколько чтений публикуют то же самое, если головы ещё нет: `GET /v1/glossary`, `GET /v1/glossary/releases`, `GET /v1/glossary/releases/{version}`, `GET /v1/glossary/content`, `GET /v1/glossary/concepts`, `GET /v1/glossary/diff` и `GET /v1/glossary/events`. Первое из них записывает git-пакет как релиз 1.
+
+Эти не публикуют:
+
+- `GET /v1/glossary/labels?q=`
+- `GET /v1/glossary/impact` — возвращает `{"books": []}` и книги не сканирует
+- `GET /v1/glossary/stats?from=&to=&profile_id=`
+- `GET /v1/glossary/proposals` и `GET /v1/glossary/proposals/{proposal_id}`
+- `POST /v1/glossary:resolve`
+
+Запись:
+
+- `POST /v1/glossary/releases` — релиз из `ops` или замена документа при `mode=replace`.
+- `POST /v1/glossary/transitions` — перевод релиза в другой статус. Успешный переход запускает ремап книг.
+- `POST /v1/glossary:rollback` — включает предыдущий релиз и запускает ремап.
+- `POST /v1/glossary/proposals` и `POST /v1/glossary/proposals:decide` — открыть предложение или пакетом принять и отклонить.
+
+Если задан `FAS_ADMIN_TOKEN`, релизы, переходы, откат и решения по предложениям требуют заголовок `X-Admin-Token`. Пустое значение токен не проверяет.
+
+## Resolve
+
+`POST /v1/glossary:resolve` сопоставляет одну метку с понятием. Тело — объект. Передаётся `label` или `text`, либо `path_text`: меткой становится последний сегмент после ` › `. Вместе `label` и `path_text` дают `400`. Необязательные поля — `unit`, `profile_id`, `version`.
+
+Вызов ничего не пишет. `version`, которой нет в хранилище, — это `404`, и git-пакет не публикуется. Без опубликованной головы ответ берётся из git-документа, а `state` равен null.
+
+Лексическое попадание, не прошедшее проверку единицы, остаётся в `candidates` с `structure_pass: false` и `match` null. Модель не вызывается. Метка без лексического попадания ранжируется только если настроен сервер embed или rerank, и этот ранж не тратит бюджет choice-модели на книгу.
+
+## Профили
+
+Профиль — наложение меток и нескольких настроек на одну книгу.
+
+- `GET /v1/profiles`
+- `GET /v1/profiles/{profile}`
+- `PUT /v1/profiles/{profile}`
