@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from finance_analysis.adapters.api.app import create_app
+from finance_analysis.application.analyses import ANALYSIS_TYPES, RATIO_METRICS
 from finance_analysis.domain.errors import InvalidArgument
 from tests.books import (
     PACKT_PERIOD,
@@ -248,6 +249,125 @@ async def test_disconnect_cancels_handler(settings, local_service, redis_runtime
 async def test_query_without_book_is_not_planned(local_service):
     with pytest.raises(InvalidArgument):
         await local_service.query.sql(JOB, "SELECT 1", pin=None)
+
+
+_TOOL_NAMES = (
+    "get_book",
+    "get_coverage",
+    "get_mapping",
+    "get_semantics",
+    "resolve_periods",
+    "get_series",
+    "get_slice",
+    "evaluate_expression",
+    "run_analysis",
+    "list_findings",
+    "explain_finding",
+    "compare",
+    "submit_decisions",
+    "get_report",
+    "get_operation",
+    "resolve_concept",
+)
+_SCHEMA_BANNED = {"oneOf", "if", "then", "else"}
+
+
+def _schema_objects(node):
+    if isinstance(node, dict):
+        kind = node.get("type")
+        types = kind if isinstance(kind, list) else [kind]
+        if "object" in types or "properties" in node:
+            yield node
+        for value in node.values():
+            yield from _schema_objects(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _schema_objects(item)
+
+
+def _schema_banned(node):
+    if isinstance(node, dict):
+        assert not (_SCHEMA_BANNED & set(node))
+        for value in node.values():
+            _schema_banned(value)
+    elif isinstance(node, list):
+        for item in node:
+            _schema_banned(item)
+
+
+def _property_paths(node, prefix=""):
+    found = []
+    if not isinstance(node, dict):
+        return found
+    props = node.get("properties")
+    if isinstance(props, dict):
+        for key, value in props.items():
+            path = f"{prefix}.{key}" if prefix else key
+            found.append(path)
+            found.extend(_property_paths(value, path))
+    extra = node.get("additionalProperties")
+    if isinstance(extra, dict):
+        found.extend(_property_paths(extra, f"{prefix}.*" if prefix else "*"))
+    items = node.get("items")
+    if isinstance(items, dict):
+        found.extend(_property_paths(items, f"{prefix}[]" if prefix else "[]"))
+    return found
+
+
+async def test_capability_tool_card(app):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
+        caps = await client.get("/v1/capabilities")
+    assert caps.status_code == 200, caps.text
+    body = caps.json()
+    assert body["phase"] == "4"
+    tools = body["tools"]
+    assert [tool["name"] for tool in tools] == list(_TOOL_NAMES)
+    fastapi = getattr(app, "fastapi", app)
+    routes = {route.path for route in fastapi.routes if hasattr(route, "path")}
+    by_name = {tool["name"]: tool for tool in tools}
+    assert by_name["run_analysis"]["parameters"]["properties"]["type"]["enum"] == list(ANALYSIS_TYPES)
+    assert by_name["run_analysis"]["parameters"]["properties"]["metrics"]["items"]["enum"] == list(RATIO_METRICS)
+    assert by_name["compare"]["parameters"]["properties"]["metrics"]["items"]["enum"] == list(RATIO_METRICS)
+    bindings = by_name["evaluate_expression"]["parameters"]["properties"]["bindings"]
+    assert isinstance(bindings["additionalProperties"], dict)
+    assert bindings["additionalProperties"]["additionalProperties"] is False
+    assert by_name["evaluate_expression"]["strict"] is False
+    assert by_name["get_slice"]["parameters"]["properties"]["time"]["items"]["properties"]["dimension"]["enum"] == ["period_start"]
+    assert by_name["explain_finding"]["in"] == {
+        "fingerprint": "path",
+        "build_key": "query",
+        "direction": "query",
+        "depth": "query",
+    }
+    seq = by_name["submit_decisions"]["parameters"]["properties"]["decisions"]["items"]["properties"]["supersedes"]
+    assert seq["properties"]["seq"]["type"] == "integer"
+    for tool in tools:
+        parameters = tool["parameters"]
+        assert parameters["type"] == "object"
+        props = parameters["properties"]
+        assert set(tool["in"]) == set(props)
+        _schema_banned(parameters)
+        for obj in _schema_objects(parameters):
+            assert "additionalProperties" in obj
+            assert set(obj.get("properties") or {}) <= set(obj.get("required") or [])
+        job_ids = [path for path in _property_paths(parameters) if path == "job_id" or path.endswith(".job_id")]
+        if tool["name"] == "compare":
+            assert job_ids == ["other.job_id"]
+        else:
+            assert job_ids == []
+        assert tool["path"] in routes
+        assert tool["strict"] is (tool["name"] != "evaluate_expression")
+
+
+async def test_glossary_resolve_text_alias(app):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
+        resolved = await client.post(
+            "/v1/glossary:resolve",
+            headers={"X-User-Id": "alex", "X-Client-Id": "desk"},
+            json={"text": "CFADS"},
+        )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["results"][0]["match"]["concept"] == "cfads"
 
 
 async def test_redis_lock_excludes(redis_runtime):

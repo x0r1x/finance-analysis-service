@@ -92,7 +92,48 @@ async def test_packt_semantics_mapping_and_one_fold(app, local_service):
     )
     assert clash["results"][0]["status"] == "rejected"
     assert clash["results"][0]["errors"][0]["code"] == "supersede_required"
+    blank = await local_service.submit_decisions(
+        JOB,
+        {
+            "decisions": [
+                {
+                    "kind": "concept.set",
+                    "target": ebitda["binding_key"],
+                    "value": "debt_service",
+                    "expected_seq": None,
+                    "supersedes": {"seq": None},
+                }
+            ]
+        },
+        Actor(),
+        wait_sec=30,
+    )
+    assert blank["results"][0]["status"] == "rejected"
+    assert blank["results"][0]["errors"][0]["code"] == "supersede_required"
+    inferred = {
+        "source": "inferred",
+        "binding_key": ebitda["binding_key"],
+        "derive_key": head.derive_key,
+    }
+    kept = await local_service.submit_decisions(
+        JOB,
+        {
+            "decisions": [
+                {
+                    "kind": "concept.set",
+                    "target": ebitda["binding_key"],
+                    "value": "ebitda",
+                    "expected_seq": None,
+                    "supersedes": inferred,
+                }
+            ]
+        },
+        Actor(),
+        wait_sec=30,
+    )
+    assert kept["results"][0]["status"] == "accepted"
     events = await local_service.guard.read_all(JOB)
+    assert any(event.get("type") == "concept.set" and event.get("supersedes") == inferred for event in events)
     assert any(
         event.get("type") == "concept.set" and event.get("target") == debt["binding_key"] and event.get("value") == "debt_service"
         for event in events

@@ -41,6 +41,7 @@ from finance_analysis.application.operations import append_event, create_op, rea
 from finance_analysis.application.ports import Models
 from finance_analysis.application.project import derive_rows, prepare_rows, project
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
+from finance_analysis.application.tools import build_tools
 from finance_analysis.domain.book import (
     FAS_PROJECTION_VERSION,
     FAS_SCHEMA_VERSION,
@@ -83,6 +84,7 @@ from finance_analysis.domain.glossary_release import (
 )
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.ids import ulid as check_ulid
+from finance_analysis.domain.mapping import decide
 from finance_analysis.domain.operational_year import resolve_operational_year
 from finance_analysis.domain.periods import marker_class, split_period_key
 from finance_analysis.domain.phases import phase_target, split_phase_target
@@ -1248,6 +1250,9 @@ class FasService:
             if event_type == "phase.set":
                 order = _phase_order(periods, events, target, item.get("value"))
             supersedes = item.get("supersedes") if isinstance(item.get("supersedes"), dict) else None
+            seq = supersedes.get("seq") if supersedes else None
+            if supersedes is not None and "seq" in supersedes and (isinstance(seq, bool) or not isinstance(seq, int)):
+                supersedes = None
             slot = (target, event_type)
             expected = followed[slot] if slot in followed else item.get("expected_seq")
             written = await self.guard.write_decision(
@@ -1560,7 +1565,7 @@ class FasService:
             ],
         }
 
-    async def mapping_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
+    async def mapping_view(self, job_id: str, actor: Actor, *, wait_sec: float, query: dict | None = None) -> dict | Accepted:
         head = await self._head_ready(job_id, actor, wait_sec)
         if isinstance(head, Accepted):
             return head
@@ -1570,7 +1575,7 @@ class FasService:
         counts: dict[str, int] = {}
         for row in rows:
             counts[row["status"]] = counts.get(row["status"], 0) + 1
-        return {"build_key": head.build_key, "rows": rows, "counts": counts}
+        return {"build_key": head.build_key, "rows": filter_bindings(rows, query), "counts": counts}
 
     async def questions_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
         mapped = await self.mapping_view(job_id, actor, wait_sec=wait_sec)
@@ -1841,6 +1846,26 @@ class FasService:
             return None
         return json.loads(await self.store.get(key))
 
+    async def resolve_concept(self, body: dict) -> dict:
+        rank = self._rank_label if self.pipeline.enabled else None
+        return await self.glossary.resolve(body, rank=rank)
+
+    async def _rank_label(self, row: dict, package, version: str):
+        scored = await self.pipeline.score(
+            "resolve",
+            "resolve",
+            [row],
+            package,
+            glossary_version=version,
+            deadline=effective(self.settings.mapping_deadline_ms),
+            clm=False,
+        )
+        evidence = scored.evidence.get(row["binding_key"])
+        if evidence is None:
+            return None
+        chosen = decide(row, evidence, package, await self.calibrators.active())
+        return chosen, evidence
+
     def capabilities(self) -> dict:
         storage = {
             "backend": self.store.backend,
@@ -1857,7 +1882,12 @@ class FasService:
             "concepts": sorted(self.catalog.ids),
             "renderers": ["json", "md"],
             "problems": PROBLEM_CATALOG,
-            "tools": TOOLS,
+            "tools": build_tools(
+                decision_kinds=tuple(_DECISION_KINDS),
+                measures=tuple(sorted(_MEASURES)),
+                dims=tuple(sorted(_DIMS)),
+                ops=tuple(sorted(_OPS)),
+            ),
         }
 
     def model_states(self) -> dict[str, str]:
@@ -2171,21 +2201,33 @@ PROBLEM_CATALOG = [
     {"code": "deadline_exceeded", "http": 504, "retryable": True},
 ]
 
-TOOLS = [
-    {"name": "get_book", "method": "GET", "path": "/v1/books/{job_id}"},
-    {"name": "list_builds", "method": "GET", "path": "/v1/books/{job_id}/builds"},
-    {"name": "get_build", "method": "GET", "path": "/v1/books/{job_id}/builds/{build_key}"},
-    {"name": "get_series", "method": "POST", "path": "/v1/books/{job_id}/series"},
-    {"name": "get_slice", "method": "POST", "path": "/v1/books/{job_id}/slice"},
-    {"name": "evaluate_expression", "method": "POST", "path": "/v1/books/{job_id}/expression"},
-    {"name": "resolve_periods", "method": "POST", "path": "/v1/books/{job_id}/periods:resolve"},
-    {"name": "submit_decisions", "method": "POST", "path": "/v1/books/{job_id}/decisions"},
-    {"name": "run_analysis", "method": "POST", "path": "/v1/books/{job_id}/analyses"},
-    {"name": "list_analyses", "method": "GET", "path": "/v1/books/{job_id}/analyses"},
-    {"name": "get_analysis", "method": "GET", "path": "/v1/books/{job_id}/analyses/{analysis_id}"},
-    {"name": "get_report", "method": "GET", "path": "/v1/books/{job_id}/analyses/{analysis_id}/report"},
-    {"name": "list_findings", "method": "GET", "path": "/v1/books/{job_id}/findings"},
-    {"name": "explain_finding", "method": "GET", "path": "/v1/books/{job_id}/findings/{fingerprint}"},
-    {"name": "compare", "method": "POST", "path": "/v1/books/{job_id}:compare"},
-    {"name": "get_operation", "method": "GET", "path": "/v1/operations/{id}"},
-]
+_MAPPING_QUERY = frozenset({"status", "concept", "importance", "q"})
+
+
+def filter_bindings(rows: list[dict], query: dict | None) -> list[dict]:
+    """Строки mapping по status, concept, importance и подстроке q. counts считаются до фильтра."""
+
+    if not query:
+        return rows
+    unknown = sorted(set(query) - _MAPPING_QUERY)
+    if unknown:
+        raise InvalidArgument(
+            "неизвестный фильтр mapping",
+            extra={"fields": unknown, "supported": sorted(_MAPPING_QUERY)},
+        )
+    status = query.get("status") or None
+    concept = query.get("concept") or None
+    importance = query.get("importance") or None
+    needle = str(query.get("q") or "").casefold()
+    found = []
+    for row in rows:
+        if status and row.get("status") != status:
+            continue
+        if concept and concept not in {row.get("concept"), row.get("effective_concept")}:
+            continue
+        if importance and row.get("importance") != importance:
+            continue
+        if needle and needle not in str(row.get("label_path_text") or "").casefold():
+            continue
+        found.append(row)
+    return found

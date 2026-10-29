@@ -97,6 +97,7 @@ class MappingPipeline:
         deadline: Deadline,
         skip: frozenset[str] = frozenset(),
         calibrator: Calibrator | None = None,
+        clm: bool = True,
     ) -> PipelineResult:
         result = PipelineResult()
         shot_hits: dict[str, list] = {}
@@ -149,7 +150,8 @@ class MappingPipeline:
             )
             for index, row in enumerate(targets)
         }
-        await self._adjudicate(job_id, run_id, targets, texts, evidence, package, deadline, result, calibrator, shot_hits)
+        if clm:
+            await self._adjudicate(job_id, run_id, targets, texts, evidence, package, deadline, result, calibrator, shot_hits)
         result.evidence = evidence
         return result
 
