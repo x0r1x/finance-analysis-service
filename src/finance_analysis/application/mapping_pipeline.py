@@ -99,6 +99,7 @@ class MappingPipeline:
         calibrator: Calibrator | None = None,
     ) -> PipelineResult:
         result = PipelineResult()
+        self._shot_hits = {}
         targets = [
             row
             for row in rows
@@ -172,8 +173,10 @@ class MappingPipeline:
         if self.examples is None:
             return
         hits = await self.examples.search(vectors, self.settings.knn_k)
+        self._shot_hits = {}
         for index, row in enumerate(targets):
             found = [(cos, item) for cos, item in hits[index] if not (item["job_id"] == job_id and item["binding_key"] == row["binding_key"])]
+            self._shot_hits[row["binding_key"]] = found
             if not found:
                 continue
             nearest_example[index] = max(cos for cos, _item in found)
@@ -252,7 +255,9 @@ class MappingPipeline:
             criteria["none"] = "Ни одно из перечисленных"
             question = {"concept": {"type": "choice", "instructions": "Какому понятию соответствует строка?", "criteria": criteria}}
             try:
-                answer = (await self.models.clm.choose(texts[index], question, deadline=deadline))["concept"]
+                shots = getattr(self, "_shot_hits", {}).get(row["binding_key"]) or []
+                state = few_shot_state(texts[index], shots, self.settings.knn_k)
+                answer = (await self.models.clm.choose(state, question, deadline=deadline))["concept"]
             except ModelDegraded as exc:
                 failures.append(exc.as_dict())
                 return
@@ -277,3 +282,22 @@ class MappingPipeline:
             result.degraded.append(failures[0])
             for key, found in list(evidence.items()):
                 evidence[key] = replace(found, degraded=tuple(result.degraded))
+
+
+def few_shot_state(text: str, hits: list, k: int = 5) -> str:
+    """До 5 ближайших подтверждённых примеров в state CLM. Без path_text state не меняется."""
+
+    lines = []
+    for item in hits or []:
+        payload = item[1] if isinstance(item, tuple) else item
+        if not isinstance(payload, dict):
+            continue
+        path, concept = payload.get("path_text"), payload.get("concept")
+        if not path or not concept:
+            continue
+        lines.append(f"{path} → {concept}")
+        if len(lines) >= k:
+            break
+    if not lines:
+        return text
+    return f"{text}\nПримеры:\n" + "\n".join(lines)

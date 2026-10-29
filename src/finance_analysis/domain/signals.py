@@ -149,7 +149,9 @@ def mine(
         minus = [row for row in rows if row.get("polarity") == "-"]
         if not plus:
             continue
-        independent = {(row.get("profile_id") or row["job_id"]) for row in plus if row.get("kind") in STRONG or row["kind"].startswith("lf.")}
+        strong_or_lf = [row for row in plus if row.get("kind") in STRONG or str(row.get("kind") or "").startswith("lf.")]
+        independent = {(row.get("profile_id") or row["job_id"]) for row in strong_or_lf}
+        jobs = {row["job_id"] for row in strong_or_lf}
         profiles = {row.get("profile_id") for row in plus if row.get("profile_id")}
         people = {row.get("actor") for row in plus if row.get("kind") in STRONG and row.get("actor")}
         lf_for = sum(1 for row in plus if row["kind"].startswith("lf."))
@@ -175,9 +177,11 @@ def mine(
             votes += base if row.get("polarity") == "+" else 0.0
         p_weak = votes / weight_sum if weight_sum else None
         enough = len(independent) >= thresholds.min_books and len(people) >= thresholds.min_confirmations
+        # Книги одного профиля в `books` слиты в одну, но три книги одного профиля — уже авто в этот профиль.
+        profile_ready = len(profiles) == 1 and len(jobs) >= thresholds.min_books and len(people) >= thresholds.min_confirmations
         if conflicts:
             decision = "review"
-        elif enough:
+        elif enough or profile_ready:
             decision = "auto"
         elif people or lf_for:
             decision = "review"

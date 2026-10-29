@@ -127,6 +127,10 @@ class CalibratorStore:
         self._at = 0.0
         return updated
 
+    async def note_progress(self, signal_count: int) -> None:
+        head = await self.head()
+        await self._write_head({**head, "signal_count": int(signal_count)})
+
     async def _write_head(self, body: dict) -> None:
         data = json.dumps(body, sort_keys=True).encode()
         meta = await self.store.stat(HEAD)

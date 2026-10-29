@@ -16,6 +16,7 @@ from finance_analysis.domain.errors import (
     AlreadyExists,
     GlossaryRegression,
     InvalidArgument,
+    InvalidTransition,
     NotFound,
     PreconditionFailed,
     PreconditionRequired,
@@ -82,6 +83,7 @@ class GlossaryStore:
         self._lock = asyncio.Lock()
         # Shadow-гейт (§5.11.3): async (version) -> отчёт с passed. Ставит composition root.
         self.gate = None
+        self.canary_share = 10
 
     async def peek(self) -> dict | None:
         head, _etag = await self._read()
@@ -133,8 +135,8 @@ class GlossaryStore:
         force: bool = False,
         reason: str | None = None,
     ) -> dict:
-        if status != "active":
-            raise InvalidArgument("переход только в active")
+        if status not in {"canary", "active", "rejected"}:
+            raise InvalidTransition("переход только в canary, active или rejected")
         if not version:
             raise InvalidArgument("нужна version")
         if force and not (isinstance(reason, str) and reason.strip()):
@@ -142,6 +144,10 @@ class GlossaryStore:
         async with self._lock:
             head, etag = await self._ensure_locked()
             self._match(head, if_match)
+            if status == "canary":
+                return await self._to_canary(head, etag, version, force=force, reason=reason)
+            if status == "rejected":
+                return await self._reject(head, etag, version, reason=reason)
             report = None
             if version != head.get("previous"):
                 report = await self._shadow(version)
@@ -591,6 +597,84 @@ class GlossaryStore:
             await self._notify(version)
         return {"version": version, "status": release["status"], "diff": diff, "state": state_of(updated), "etag": f"h-{seq}"}
 
+    def _status(self, head: dict, version: str) -> str | None:
+        found = None
+        for item in head.get("history") or []:
+            if item.get("version") == version:
+                found = item.get("status")
+        return found
+
+    async def _to_canary(self, head: dict, etag: str | None, version: str, *, force: bool, reason: str | None) -> dict:
+        if version == head.get("active") or self._status(head, version) in {"rejected", "active", "retired"}:
+            raise InvalidTransition("в canary только готовый релиз", extra={"version": version, "state": state_of(head)})
+        record = await self._release_record(version)
+        parent = record.get("parent_version")
+        if parent != head["active"]:
+            raise StaleParent("родитель релиза не активен", extra={"parent": parent, "active": head["active"], "state": state_of(head)})
+        report = await self._shadow(version)
+        if report is not None and not report.get("passed") and not force:
+            raise GlossaryRegression(
+                "доля ложных привязок выросла или покрытие упало",
+                extra={"version": version, "shadow": _shadow_summary(report)},
+            )
+        history = []
+        for item in head.get("history") or []:
+            row = dict(item)
+            if row.get("version") == version:
+                row["status"] = "canary"
+            history.append(row)
+        seq = int(head["seq"]) + 1
+        history.append({"version": version, "status": "canary", "parent_version": parent, "source": record.get("source"), "seq": seq})
+        record["status"] = "canary"
+        await self.store.put(self._release_key(version), _dumps(record))
+        updated = {
+            **head,
+            "seq": seq,
+            "canary": version,
+            "canary_share": int(self.canary_share or 10),
+            "canary_since": _now(),
+            "pending": None if head.get("pending") == version else head.get("pending"),
+            "fence": int(head.get("fence") or 0) + 1,
+            "history": history,
+        }
+        event = {"type": "canary", "version": version, "share": updated["canary_share"]}
+        if force:
+            event["force"] = True
+            event["reason"] = reason
+        await self._event(seq, event)
+        await self._write_head(updated, etag)
+        result = {"version": version, "status": "canary", "state": state_of(updated), "etag": f"h-{seq}"}
+        if report is not None:
+            result["shadow"] = _shadow_summary(report)
+        return result
+
+    async def _reject(self, head: dict, etag: str | None, version: str, *, reason: str | None) -> dict:
+        if self._status(head, version) not in {"ready", "canary"}:
+            raise InvalidTransition("отклонить можно ready или canary", extra={"version": version, "state": state_of(head)})
+        record = await self._release_record(version)
+        history = []
+        for item in head.get("history") or []:
+            row = dict(item)
+            if row.get("version") == version and row.get("status") in {"ready", "canary"}:
+                row["status"] = "rejected"
+            history.append(row)
+        seq = int(head["seq"]) + 1
+        history.append(
+            {"version": version, "status": "rejected", "parent_version": record.get("parent_version"), "source": record.get("source"), "seq": seq}
+        )
+        record["status"] = "rejected"
+        await self.store.put(self._release_key(version), _dumps(record))
+        updated = {**head, "seq": seq, "fence": int(head.get("fence") or 0) + 1, "history": history}
+        if head.get("canary") == version:
+            updated["canary"] = None
+            updated["canary_share"] = None
+            updated["canary_since"] = None
+        if head.get("pending") == version:
+            updated["pending"] = None
+        await self._event(seq, {"type": "rejected", "version": version, "reason": reason})
+        await self._write_head(updated, etag)
+        return {"version": version, "status": "rejected", "state": state_of(updated), "etag": f"h-{seq}"}
+
     async def _activate(
         self, head: dict, etag: str | None, version: str, *, source: str = "activate", forced: dict | None = None
     ) -> dict:
@@ -616,11 +700,16 @@ class GlossaryStore:
             "seq": seq,
             "active": version,
             "previous": head["active"],
+            "canary": None,
+            "canary_share": None,
+            "canary_since": None,
             "pending": None,
             "fence": int(head.get("fence") or 0) + 1,
             "history": history,
         }
         event = {"type": source, "version": version}
+        if source == "rollback":
+            event["reason"] = "rolled_back"
         if forced:
             event["force"] = True
             event["reason"] = forced.get("reason")
