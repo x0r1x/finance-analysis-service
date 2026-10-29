@@ -1,16 +1,14 @@
-"""Маршруты фаз 0–1."""
+"""Оболочка HTTP: middleware, дедлайн и служебные маршруты."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -19,10 +17,9 @@ from prometheus_client import (
     generate_latest,
 )
 
+from finance_analysis.adapters.api.http import accept_ok, actor, route_template
 from finance_analysis.adapters.api.problems import problem_response
-from finance_analysis.application.operations import read_events
-from finance_analysis.application.report import REPORT_FORMATS, choose_format
-from finance_analysis.application.service import Accepted, Freshness
+from finance_analysis.adapters.api.route import register as register_routes
 from finance_analysis.domain.book import FAS_VERSION, Actor
 from finance_analysis.domain.deadline import (
     Deadline,
@@ -33,14 +30,8 @@ from finance_analysis.domain.errors import (
     DeadlineExceeded,
     DependencyUnavailable,
     FasError,
-    InvalidArgument,
-    InvalidId,
     NotAcceptable,
-    NotFound,
 )
-from finance_analysis.domain.ids import actor_token
-from finance_analysis.domain.ids import build_key as check_build
-from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.settings import Settings
 
 REQUESTS = Counter("fas_http_requests_total", "HTTP-запросы", ["method", "path", "status"])
@@ -48,57 +39,6 @@ LATENCY = Histogram("fas_http_request_seconds", "Длительность HTTP",
 LOOP_LAG = Gauge("fas_event_loop_lag_seconds", "Задержка event loop")
 
 _SYNC_SKIP = ("/health/", "/metrics", "/v1/operations", "/v1/capabilities")
-_TERMINAL = {"succeeded", "failed", "cancelled"}
-
-
-def _accept_ok(path: str, accept: str) -> bool:
-    """json везде. markdown — отчёт. SSE — только поток событий."""
-
-    header = accept.lower()
-    if path == "/metrics":
-        return True
-    if "application/json" in header or "*/*" in header or "application/problem+json" in header:
-        return True
-    if path.endswith("/report"):
-        return "text/markdown" in header
-    return path.startswith("/v1/operations/") and path.endswith("/events") and "text/event-stream" in header
-
-
-def _resume_after(header: str | None) -> int:
-    text = (header or "").strip()
-    return int(text) if text.isdigit() else 0
-
-
-def _sse(event: dict) -> str:
-    status = event.get("status")
-    if status in _TERMINAL:
-        name = "done"
-    elif event.get("type") == "progress" or event.get("stage"):
-        name = "progress"
-    else:
-        name = "status"
-    data = json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
-    return f"id: {event['seq']}\nevent: {name}\ndata: {data}\n\n"
-
-
-def _actor(request: Request) -> Actor:
-    user = request.headers.get("x-user-id")
-    client = request.headers.get("x-client-id")
-    if user:
-        user = actor_token(user, header="X-User-Id")
-    if client:
-        client = actor_token(client, header="X-Client-Id")
-    return Actor(user_id=user or "anonymous", client_id=client or "anonymous")
-
-
-def _prefer_async(request: Request) -> bool:
-    prefer = (request.headers.get("prefer") or "").lower()
-    return "respond-async" in prefer
-
-
-def _route_template(request: Request) -> str:
-    route = request.scope.get("route")
-    return getattr(route, "path", request.url.path)
 
 
 def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
@@ -139,7 +79,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         path = request.url.path
         started = time.perf_counter()
         accept = request.headers.get("accept") or "*/*"
-        if not _accept_ok(path, accept):
+        if not accept_ok(path, accept):
             return problem_response(
                 NotAcceptable("допустим application/json", extra={"formats": ["json"]}),
                 request_id,
@@ -175,7 +115,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001 — неизвестное исключение становится 503, не 500
             response = problem_response(DependencyUnavailable(str(exc)), request_id)
         response.headers["X-Request-Id"] = request_id
-        template = _route_template(request)
+        template = route_template(request)
         REQUESTS.labels(request.method, template, str(response.status_code)).inc()
         LATENCY.labels(template).observe(time.perf_counter() - started)
         return response
@@ -205,10 +145,10 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
             raise DependencyUnavailable("Redis не подключён")
         return current
 
-    async def _limited(request: Request, actor: Actor):
-        support = _support()
+    async def _limited(request: Request, who: Actor):
+        runtime = _support()
         try:
-            await support.rate_limit(actor)
+            await runtime.rate_limit(who)
         except DependencyUnavailable:
             if request.method == "GET":
                 return
@@ -219,7 +159,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
             from finance_analysis.domain.errors import Overloaded
 
             raise Overloaded("реплика перегружена", extra={"retry_after": 1})
-        return support
+        return runtime
 
     @app.get("/health/live")
     async def live():
@@ -237,353 +177,14 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
 
     @app.get("/v1/capabilities")
     async def capabilities(request: Request):
-        actor = _actor(request)
-        await _limited(request, actor)
+        who = actor(request)
+        await _limited(request, who)
         try:
             return _svc().capabilities()
         finally:
             app.state.inflight -= 1
 
-    @app.post("/v1/books/{job_id}:load")
-    async def load_book(job_id: str, request: Request):
-        checked = check_job(job_id)
-        actor = _actor(request)
-        support = await _limited(request, actor)
-        method, route = "POST", "/v1/books/{job_id}:load"
-        raw = b""
-        pending = False
-        try:
-            raw = await request.body()
-            cached = await _idem_begin(support, actor, method, route, request, raw)
-            if cached is not None:
-                return _idem_response(cached)
-            pending = _idem_key(request) is not None
-            async with support.user_inflight(actor):
-                result = await _svc().ensure(
-                    checked,
-                    actor,
-                    wait_sec=settings.load_sync_sec,
-                    prefer_async=_prefer_async(request),
-                )
-            if isinstance(result, Accepted):
-                response = JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
-                await _idem_finish(support, actor, method, route, request, raw, result.operation, 202)
-                pending = False
-                return response
-            if isinstance(result, Freshness):
-                view = await _svc().describe(checked, result.head, fresh=True)
-            else:
-                view = await _svc().describe(checked, result, fresh=False)
-            if isinstance(view, Accepted):
-                response = JSONResponse(view.operation, status_code=202, headers=_op_headers(view))
-                await _idem_finish(support, actor, method, route, request, raw, view.operation, 202)
-                pending = False
-                return response
-            await _idem_finish(support, actor, method, route, request, raw, view.body, 200)
-            pending = False
-            return view.body
-        except BaseException:
-            if pending:
-                await _idem_abort(support, actor, method, route, request, raw)
-            raise
-        finally:
-            app.state.inflight -= 1
-
-    @app.get("/v1/books/{job_id}/builds")
-    async def list_builds(job_id: str, request: Request, page_size: int = 50, page_token: str | None = None):
-        checked = check_job(job_id)
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            if page_size < 1 or page_size > 1000:
-                raise InvalidArgument("page_size должен быть от 1 до 1000")
-            async with _support().user_inflight(actor):
-                return await _svc().list_builds(checked, page_size=page_size, page_token=page_token)
-        finally:
-            app.state.inflight -= 1
-
-    @app.get("/v1/books/{job_id}/builds/{build_key}")
-    async def get_build(job_id: str, build_key: str, request: Request):
-        checked = check_job(job_id)
-        build = check_build(build_key)
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            async with _support().user_inflight(actor):
-                return await _svc().get_build(checked, build)
-        finally:
-            app.state.inflight -= 1
-
-    @app.get("/v1/books/{job_id}")
-    async def get_book(job_id: str, request: Request, min_state_seq: int | None = None):
-        checked = check_job(job_id)
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            async with _support().user_inflight(actor):
-                view = await _svc().book_view(
-                    checked, actor, wait_sec=settings.load_sync_sec, min_state_seq=min_state_seq,
-                )
-        finally:
-            app.state.inflight -= 1
-        if isinstance(view, Accepted):
-            return JSONResponse(view.operation, status_code=202, headers=_op_headers(view))
-        return view.body
-
-    async def _calc(job_id: str, request: Request, method, *, prefer_async: bool = False):
-        checked = check_job(job_id)
-        actor = _actor(request)
-        support = await _limited(request, actor)
-        route = _route_template(request)
-        raw = b""
-        pending = False
-        try:
-            raw = await request.body()
-            cached = await _idem_begin(support, actor, "POST", route, request, raw)
-            if cached is not None:
-                return _idem_response(cached)
-            pending = _idem_key(request) is not None
-            try:
-                body = await request.json() if raw else {}
-            except Exception as exc:
-                raise InvalidArgument("тело не JSON") from exc
-            if not isinstance(body, dict):
-                raise InvalidArgument("тело должно быть объектом")
-            if prefer_async and _prefer_async(request):
-                body = {**body, "async": True}
-            digest = hashlib.sha256(raw or b"{}").hexdigest()
-            flight = f"{checked}:{route}:{digest}:{body.get('async') is True}"
-
-            async def _run():
-                async with support.user_inflight(actor):
-                    return await method(checked, body, actor, wait_sec=settings.sync_deadline_ms / 1000)
-
-            result = await support.singleflight(flight, _run)
-            if isinstance(result, Accepted):
-                await _idem_finish(support, actor, "POST", route, request, raw, result.operation, 202)
-                pending = False
-                return JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
-            await _idem_finish(support, actor, "POST", route, request, raw, result, 200)
-            pending = False
-            return result
-        except BaseException:
-            if pending:
-                await _idem_abort(support, actor, "POST", route, request, raw)
-            raise
-        finally:
-            app.state.inflight -= 1
-
-    @app.post("/v1/books/{job_id}/series")
-    async def series(job_id: str, request: Request):
-        return await _calc(job_id, request, _svc().series)
-
-    @app.post("/v1/books/{job_id}/slice")
-    async def slice_route(job_id: str, request: Request):
-        return await _calc(job_id, request, _svc().slice)
-
-    @app.post("/v1/books/{job_id}/expression")
-    async def expression(job_id: str, request: Request):
-        return await _calc(job_id, request, _svc().expression)
-
-    @app.post("/v1/books/{job_id}/periods:resolve")
-    async def periods(job_id: str, request: Request):
-        return await _calc(job_id, request, _svc().resolve_periods)
-
-    @app.post("/v1/books/{job_id}/decisions")
-    async def decisions(job_id: str, request: Request):
-        header = request.headers.get("if-match")
-
-        async def method(checked, body, actor, *, wait_sec: float):
-            return await _svc().submit_decisions(checked, body, actor, wait_sec=wait_sec, if_match=header)
-
-        return await _calc(job_id, request, method)
-
-    @app.post("/v1/books/{job_id}/analyses")
-    async def run_analysis(job_id: str, request: Request):
-        return await _calc(job_id, request, _svc().analyses.run, prefer_async=True)
-
-    @app.post("/v1/books/{job_id}:compare")
-    async def compare(job_id: str, request: Request):
-        return await _calc(job_id, request, _svc().compare.run, prefer_async=True)
-
-    @app.get("/v1/books/{job_id}/analyses")
-    async def list_analyses(
-        job_id: str,
-        request: Request,
-        type: str | None = None,
-        status: str | None = None,
-        page_size: int = 50,
-        page_token: str | None = None,
-    ):
-        checked = check_job(job_id)
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            async with _support().user_inflight(actor):
-                return await _svc().analyses.history(
-                    checked, kind=type, status=status, page_size=page_size, page_token=page_token
-                )
-        finally:
-            app.state.inflight -= 1
-
-    @app.get("/v1/books/{job_id}/analyses/{analysis_id}")
-    async def get_analysis(job_id: str, analysis_id: str, request: Request):
-        checked = check_job(job_id)
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            async with _support().user_inflight(actor):
-                return await _svc().analyses.result(checked, analysis_id)
-        finally:
-            app.state.inflight -= 1
-
-    @app.get("/v1/books/{job_id}/analyses/{analysis_id}/report")
-    async def get_report(job_id: str, analysis_id: str, request: Request, format: str | None = None):
-        checked = check_job(job_id)
-        actor = _actor(request)
-        fmt = choose_format(format, request.headers.get("accept"), REPORT_FORMATS)
-        await _limited(request, actor)
-        try:
-            async with _support().user_inflight(actor):
-                body, media = await _svc().analyses.report(checked, analysis_id, fmt)
-        finally:
-            app.state.inflight -= 1
-        return Response(content=body, media_type=media)
-
-    async def _findings_read(job_id: str, request: Request, read):
-        checked = check_job(job_id)
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            async with _support().user_inflight(actor):
-                result = await read(checked, actor, dict(request.query_params))
-        finally:
-            app.state.inflight -= 1
-        if isinstance(result, Accepted):
-            return JSONResponse(result.operation, status_code=202, headers=_op_headers(result))
-        return result
-
-    @app.get("/v1/books/{job_id}/findings")
-    async def list_findings(job_id: str, request: Request):
-        async def read(checked, actor, query):
-            return await _svc().analyses.findings(checked, actor, query, wait_sec=settings.load_sync_sec)
-
-        return await _findings_read(job_id, request, read)
-
-    @app.get("/v1/books/{job_id}/findings/{fingerprint}")
-    async def explain_finding(job_id: str, fingerprint: str, request: Request):
-        async def read(checked, actor, query):
-            return await _svc().analyses.finding(checked, fingerprint, actor, query, wait_sec=settings.load_sync_sec)
-
-        return await _findings_read(job_id, request, read)
-
-    @app.get("/v1/operations/{op_id}")
-    async def get_operation(op_id: str, request: Request, wait_ms: int = 0):
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            body = await _svc().wait_op(op_id, wait_ms)
-        finally:
-            app.state.inflight -= 1
-        return body
-
-    @app.get("/v1/operations/{op_id}/events")
-    async def operation_events(op_id: str, request: Request):
-        if not settings.sse_enabled:
-            raise NotFound("SSE выключен")
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            op = await _svc().get_op(op_id)
-        except Exception:
-            app.state.inflight -= 1
-            raise
-
-        async def stream():
-            last = _resume_after(request.headers.get("last-event-id"))
-            for event in await read_events(_svc().store, op_id, last):
-                yield _sse(event)
-                last = int(event["seq"])
-                if event.get("status") in _TERMINAL:
-                    return
-            if op["status"] in _TERMINAL:
-                return
-            agen = _support().messages(f"fas:op:{op_id}").__aiter__()
-            pending: asyncio.Task | None = asyncio.create_task(agen.__anext__())
-            probe = True
-            try:
-                while True:
-                    if await request.is_disconnected():
-                        return
-                    if _svc().draining:
-                        yield "retry: 1000\n\n"
-                        return
-                    woke = True
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.shield(pending),
-                            timeout=0.05 if probe else settings.sse_heartbeat_sec,
-                        )
-                    except TimeoutError:
-                        woke = False
-                    except StopAsyncIteration:
-                        woke = False
-                        pending = None
-                    else:
-                        pending = asyncio.create_task(agen.__anext__())
-                    for event in await read_events(_svc().store, op_id, last):
-                        yield _sse(event)
-                        last = int(event["seq"])
-                        if event.get("status") in _TERMINAL:
-                            return
-                    if pending is None:
-                        return
-                    if not woke and not probe:
-                        yield ": ping\n\n"
-                    probe = False
-            finally:
-                if pending is not None and not pending.done():
-                    pending.cancel()
-                    try:
-                        await pending
-                    except (asyncio.CancelledError, StopAsyncIteration, Exception):  # noqa: BLE001, S110
-                        pass
-                try:
-                    await agen.aclose()
-                except RuntimeError:
-                    pass
-
-        try:
-            return StreamingResponse(stream(), media_type="text/event-stream")
-        finally:
-            app.state.inflight -= 1
-
-    @app.get("/v1/operations")
-    async def list_operations(request: Request, kind: str | None = None, job_id: str | None = None, status: str | None = None):
-        actor = _actor(request)
-        await _limited(request, actor)
-        try:
-            if job_id:
-                check_job(job_id)
-            rows = await _svc().list_ops(kind=kind, job_id=job_id, status=status)
-        finally:
-            app.state.inflight -= 1
-        return {"operations": rows}
-
-    @app.post("/v1/operations/{op_id}:cancel")
-    async def cancel(op_id: str, request: Request):
-        actor = _actor(request)
-        support = await _limited(request, actor)
-        try:
-            await request.body()
-            async with support.user_inflight(actor):
-                return await _svc().cancel_op(op_id, actor)
-        finally:
-            app.state.inflight -= 1
-
-    from finance_analysis.adapters.api.route import register as register_routes
-
-    register_routes(app, settings, actor=_actor, limited=_limited, svc=_svc, support=_support)
+    register_routes(app, settings, actor=actor, limited=_limited, svc=_svc, support=_support)
 
     wrapped = CancelOnDisconnect(app)
     wrapped.fastapi = app
@@ -633,43 +234,3 @@ class CancelOnDisconnect:
         finally:
             watcher.cancel()
             feeder.cancel()
-
-
-def _op_headers(result: Accepted) -> dict:
-    op_id = result.operation["id"]
-    return {
-        "Operation-Location": f"/v1/operations/{op_id}",
-        "Location": f"/v1/operations/{op_id}",
-        "Retry-After": str(result.retry_after),
-    }
-
-
-def _idem_key(request: Request) -> str | None:
-    return request.headers.get("idempotency-key") or None
-
-
-async def _idem_abort(support, actor, method, route, request: Request, raw: bytes) -> None:
-    key = _idem_key(request)
-    if not key or support is None:
-        return
-    await support.idem_abort(actor, method, route, key, raw)
-
-
-async def _idem_begin(support, actor, method, route, request: Request, raw: bytes):
-    key = request.headers.get("idempotency-key")
-    if not key:
-        return None
-    if len(key) > 200:
-        raise InvalidId("Idempotency-Key слишком длинный")
-    return await support.idem_begin(actor, method, route, key, raw)
-
-
-async def _idem_finish(support, actor, method, route, request: Request, raw: bytes, response: dict, status: int) -> None:
-    key = request.headers.get("idempotency-key")
-    if not key:
-        return
-    await support.idem_finish(actor, method, route, key, raw, response, status)
-
-
-def _idem_response(stored: dict):
-    return JSONResponse(stored["response"], status_code=int(stored["http_status"]))
