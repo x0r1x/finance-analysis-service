@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     sync_deadline_ms: int = Field(default=10_000, alias="SYNC_DEADLINE_MS")
     sync_max_periods: int = Field(default=120, alias="SYNC_MAX_PERIODS")
     operation_wait_max_ms: int = Field(default=30_000, alias="OPERATION_WAIT_MAX_MS")
+    sse_enabled: bool = Field(default=True, alias="SSE_ENABLED")
+    sse_heartbeat_sec: int = Field(default=15, alias="SSE_HEARTBEAT_SEC")
     async_slow_callback_ms: int = Field(default=100, alias="ASYNC_SLOW_CALLBACK_MS")
 
     result_cache_ttl: int = Field(default=86_400, alias="RESULT_CACHE_TTL")

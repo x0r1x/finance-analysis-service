@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -19,6 +20,13 @@ from prometheus_client import (
 )
 
 from finance_analysis.adapters.api.problems import problem_response
+from finance_analysis.application.operations import read_events
+from finance_analysis.application.osi import export_model
+from finance_analysis.application.report import (
+    MODEL_FORMATS,
+    REPORT_FORMATS,
+    choose_format,
+)
 from finance_analysis.application.service import Accepted, Freshness
 from finance_analysis.domain.book import FAS_VERSION, Actor
 from finance_analysis.domain.deadline import (
@@ -33,6 +41,7 @@ from finance_analysis.domain.errors import (
     InvalidArgument,
     InvalidId,
     NotAcceptable,
+    NotFound,
 )
 from finance_analysis.domain.ids import actor_token
 from finance_analysis.domain.ids import build_key as check_build
@@ -44,6 +53,49 @@ LATENCY = Histogram("fas_http_request_seconds", "Длительность HTTP",
 LOOP_LAG = Gauge("fas_event_loop_lag_seconds", "Задержка event loop")
 
 _SYNC_SKIP = ("/health/", "/metrics", "/v1/operations", "/v1/capabilities")
+_TERMINAL = {"succeeded", "failed", "cancelled"}
+
+
+def _accept_ok(path: str, accept: str) -> bool:
+    """json везде. markdown/yaml — отчёт и семантическая модель. SSE — только поток событий."""
+
+    header = accept.lower()
+    if path == "/metrics":
+        return True
+    if "application/json" in header or "*/*" in header or "application/problem+json" in header:
+        return True
+    if path.endswith("/report") or path == "/v1/semantic-model":
+        return "text/markdown" in header or "application/yaml" in header or "text/yaml" in header
+    return path.startswith("/v1/operations/") and path.endswith("/events") and "text/event-stream" in header
+
+
+def _none_match(header: str | None, etag: str) -> bool:
+    if not header:
+        return False
+    for part in header.split(","):
+        token = part.strip()
+        if token.startswith("W/"):
+            token = token[2:].strip()
+        if token.strip('"') == etag:
+            return True
+    return False
+
+
+def _resume_after(header: str | None) -> int:
+    text = (header or "").strip()
+    return int(text) if text.isdigit() else 0
+
+
+def _sse(event: dict) -> str:
+    status = event.get("status")
+    if status in _TERMINAL:
+        name = "done"
+    elif event.get("type") == "progress" or event.get("stage"):
+        name = "progress"
+    else:
+        name = "status"
+    data = json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
+    return f"id: {event['seq']}\nevent: {name}\ndata: {data}\n\n"
 
 
 def _actor(request: Request) -> Actor:
@@ -104,7 +156,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         path = request.url.path
         started = time.perf_counter()
         accept = request.headers.get("accept") or "*/*"
-        if path != "/metrics" and "application/json" not in accept and "*/*" not in accept and "application/problem+json" not in accept:
+        if not _accept_ok(path, accept):
             return problem_response(
                 NotAcceptable("допустим application/json", extra={"formats": ["json"]}),
                 request_id,
@@ -199,6 +251,31 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
     @app.get("/metrics")
     async def metrics():
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    @app.get("/v1/semantic-model")
+    async def semantic_model(
+        request: Request,
+        format: str | None = None,
+        glossary_version: str | None = None,
+        profile_id: str | None = None,
+    ):
+        fmt = choose_format(format, request.headers.get("accept"), MODEL_FORMATS)
+        actor = _actor(request)
+        await _limited(request, actor)
+        try:
+            _status, body, media, etag = await export_model(
+                _svc().glossary,
+                _support(),
+                glossary_version=glossary_version,
+                profile_id=profile_id,
+                fmt=fmt,
+            )
+            quoted = f'"{etag}"'
+            if _none_match(request.headers.get("if-none-match"), etag):
+                return Response(status_code=304, headers={"ETag": quoted})
+            return Response(body, media_type=media, headers={"ETag": quoted})
+        finally:
+            app.state.inflight -= 1
 
     @app.get("/v1/capabilities")
     async def capabilities(request: Request):
@@ -402,6 +479,19 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         finally:
             app.state.inflight -= 1
 
+    @app.get("/v1/books/{job_id}/analyses/{analysis_id}/report")
+    async def get_report(job_id: str, analysis_id: str, request: Request, format: str | None = None):
+        checked = check_job(job_id)
+        actor = _actor(request)
+        fmt = choose_format(format, request.headers.get("accept"), REPORT_FORMATS)
+        await _limited(request, actor)
+        try:
+            async with _support().user_inflight(actor):
+                body, media = await _svc().analyses.report(checked, analysis_id, fmt)
+        finally:
+            app.state.inflight -= 1
+        return Response(content=body, media_type=media)
+
     async def _findings_read(job_id: str, request: Request, read):
         checked = check_job(job_id)
         actor = _actor(request)
@@ -438,6 +528,77 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
         finally:
             app.state.inflight -= 1
         return body
+
+    @app.get("/v1/operations/{op_id}/events")
+    async def operation_events(op_id: str, request: Request):
+        if not settings.sse_enabled:
+            raise NotFound("SSE выключен")
+        actor = _actor(request)
+        await _limited(request, actor)
+        try:
+            op = await _svc().get_op(op_id)
+        except Exception:
+            app.state.inflight -= 1
+            raise
+
+        async def stream():
+            last = _resume_after(request.headers.get("last-event-id"))
+            for event in await read_events(_svc().store, op_id, last):
+                yield _sse(event)
+                last = int(event["seq"])
+                if event.get("status") in _TERMINAL:
+                    return
+            if op["status"] in _TERMINAL:
+                return
+            agen = _support().messages(f"fas:op:{op_id}").__aiter__()
+            pending: asyncio.Task | None = asyncio.create_task(agen.__anext__())
+            probe = True
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    if _svc().draining:
+                        yield "retry: 1000\n\n"
+                        return
+                    woke = True
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(pending),
+                            timeout=0.05 if probe else settings.sse_heartbeat_sec,
+                        )
+                    except TimeoutError:
+                        woke = False
+                    except StopAsyncIteration:
+                        woke = False
+                        pending = None
+                    else:
+                        pending = asyncio.create_task(agen.__anext__())
+                    for event in await read_events(_svc().store, op_id, last):
+                        yield _sse(event)
+                        last = int(event["seq"])
+                        if event.get("status") in _TERMINAL:
+                            return
+                    if pending is None:
+                        return
+                    if not woke and not probe:
+                        yield ": ping\n\n"
+                    probe = False
+            finally:
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    try:
+                        await pending
+                    except (asyncio.CancelledError, StopAsyncIteration, Exception):  # noqa: BLE001, S110
+                        pass
+                try:
+                    await agen.aclose()
+                except RuntimeError:
+                    pass
+
+        try:
+            return StreamingResponse(stream(), media_type="text/event-stream")
+        finally:
+            app.state.inflight -= 1
 
     @app.get("/v1/operations")
     async def list_operations(request: Request, kind: str | None = None, job_id: str | None = None, status: str | None = None):

@@ -1391,6 +1391,14 @@ class FasService:
         await self.support.publish(f"fas:op:{body['id']}", "running")
         return body
 
+    async def progress_op(self, op_id: str, stage: str) -> None:
+        current = await self.get_op(op_id)
+        if current["status"] in {"succeeded", "failed", "cancelled"}:
+            return
+        # status здесь переписал бы отмену, если событие село позже финального.
+        await append_event(self.store, op_id, {"type": "progress", "stage": stage})
+        await self.support.publish(f"fas:op:{op_id}", stage)
+
     async def finish_op(self, op_id: str, status: str, **fields) -> dict:
         current = await self.get_op(op_id)
         if current["status"] in {"succeeded", "failed", "cancelled"}:
@@ -1840,12 +1848,12 @@ class FasService:
         }
         return {
             "fas_version": FAS_VERSION,
-            "phase": "3",
+            "phase": "4",
             "storage": storage,
             "rules": self.analyses.capabilities(),
             "metrics": list(RATIO_METRICS),
             "concepts": sorted(self.catalog.ids),
-            "renderers": ["json"],
+            "renderers": ["json", "md"],
             "problems": PROBLEM_CATALOG,
             "tools": TOOLS,
         }
@@ -2173,6 +2181,7 @@ TOOLS = [
     {"name": "run_analysis", "method": "POST", "path": "/v1/books/{job_id}/analyses"},
     {"name": "list_analyses", "method": "GET", "path": "/v1/books/{job_id}/analyses"},
     {"name": "get_analysis", "method": "GET", "path": "/v1/books/{job_id}/analyses/{analysis_id}"},
+    {"name": "get_report", "method": "GET", "path": "/v1/books/{job_id}/analyses/{analysis_id}/report"},
     {"name": "list_findings", "method": "GET", "path": "/v1/books/{job_id}/findings"},
     {"name": "explain_finding", "method": "GET", "path": "/v1/books/{job_id}/findings/{fingerprint}"},
     {"name": "compare", "method": "POST", "path": "/v1/books/{job_id}:compare"},
