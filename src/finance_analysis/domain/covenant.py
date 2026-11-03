@@ -183,8 +183,12 @@ def composed_ratio(
             if problem:
                 rows.append(_line(metric, period, None, "not_computed", problem, inputs, window))
                 continue
-            numerator = _total(keys, series, formula.numerator, sign_convention, pay_plus=False)
-            denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True)
+            if metric == "net_debt_ebitda":
+                numerator = _ending(keys, series, "net_debt")
+                denominator = _part(keys, series, "ebitda", sign_convention, False)
+            else:
+                numerator = _total(keys, series, formula.numerator, sign_convention, pay_plus=False)
+                denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True)
             if numerator is None or denominator is None:
                 continue
             if denominator == 0:
@@ -251,6 +255,12 @@ def _span(window: str, ordered: list[dict], period: dict, aligned: dict, axis: s
         return None, None, "partial_window"
     keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in span]
     return keys, [item["period_id"] for item in span], None
+
+
+def _ending(keys, series: dict, name: str) -> Decimal | None:
+    if not keys or keys[-1] not in series[name]:
+        return None
+    return series[name][keys[-1]]
 
 
 def _total(keys, series: dict, side: Side, convention: str, *, pay_plus: bool) -> Decimal | None:

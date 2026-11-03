@@ -364,6 +364,40 @@ def test_hybrid_of_escrow_and_project_finance_keeps_both_labels():
     assert catalog.types["corporate"].variants["dscr"] == "corporate_covenant"
 
 
+def test_net_debt_ebitda_uses_the_ending_stock_and_raw_ebitda():
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    formula = catalog.composed["net_debt_ebitda"]
+    periods = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    facts = []
+    for index in range(1, 5):
+        facts.extend([_fact("n", f"Q{index}", "100"), _fact("e", f"Q{index}", "10")])
+    got = composed_ratio(
+        "net_debt_ebitda",
+        formula,
+        facts=facts,
+        bindings=[_bind("net_debt", "n"), _bind("ebitda", "e")],
+        periods=periods,
+    )
+    by_period = {row["period_id"]: row for row in got["rows"]}
+    assert by_period["Q1"]["status"] == "not_computed"
+    assert by_period["Q4"]["value"] == Decimal("2.5000000000")
+    year = composed_ratio(
+        "net_debt_ebitda",
+        formula,
+        facts=[_fact("n", "Y1", "100"), _fact("e", "Y1", "-40")],
+        bindings=[_bind("net_debt", "n"), _bind("ebitda", "e")],
+        periods=[_year()],
+    )
+    assert year["rows"][0]["value"] == Decimal("-2.5000000000")
+
+
 def test_escrow_coverage_is_balance_over_outstanding():
     from finance_analysis.domain.covenant import composed_ratio
 
