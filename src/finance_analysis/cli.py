@@ -131,6 +131,18 @@ async def _learn(command: str) -> None:
     _print(await _with_service(run))
 
 
+def _check_config() -> None:
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.validation.model_types import ModelTypeInvalid
+
+    try:
+        catalog = load_model_types()
+    except ModelTypeInvalid as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(f"ok {catalog.version}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="fas")
     sub = parser.add_subparsers(dest="command")
@@ -155,6 +167,7 @@ def main(argv: list[str] | None = None) -> None:
     evaluate.add_argument("--prune", help="понятия через запятую для eval с удалённым понятием")
     learn = sub.add_parser("learn")
     learn.add_argument("learn_command", choices=["cluster", "mine", "compact"])
+    sub.add_parser("check-config")
     ops = sub.add_parser("ops")
     ops_sub = ops.add_subparsers(dest="ops_command")
     requeue = ops_sub.add_parser("requeue")
@@ -177,6 +190,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "learn":
         asyncio.run(_learn(args.learn_command))
+        return
+    if args.command == "check-config":
+        _check_config()
         return
     if args.command == "ops" and args.ops_command == "requeue":
         asyncio.run(_requeue(args.entry_id))

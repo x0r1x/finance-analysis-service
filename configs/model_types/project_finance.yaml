@@ -1,0 +1,17 @@
+id: project_finance
+title:
+  ru: "Проектное финансирование"
+  en: "Project finance"
+signals:
+  - kind: concepts_bound_all
+    concepts: [cfads, debt_service]
+    weight: 1
+required_concepts: [cfads, debt_service]
+metrics:
+  dscr: {use: required}
+  dscr_min: {use: required}
+  adscr: {use: optional}
+  dscr_avg: {use: optional}
+  llcr: {use: optional}
+  plcr: {use: optional}
+  icr: {use: optional}

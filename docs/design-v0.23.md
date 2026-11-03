@@ -153,6 +153,7 @@
 12. **Внешнее потребление вне рамок** (§4.11). FAS не создаёт таблиц и не интегрируется со сторонними движками и оркестраторами. Файлы — обычный Parquet в собственной раскладке, поэтому такое потребление можно добавить позже без изменений FAS. Ничего зафиксированного не удаляется: все сборки книги хранятся как история (§4.10).
 13. **Много пользователей сразу** (§4.13). API — stateless-реплики, общее состояние только в Redis и object store. Одинаковые расчёты выполняются один раз (single-flight). Квоты на пользователя, `429/503 + Retry-After`, отдельные лимиты на серверы моделей. Тяжёлое — в очередях Taskiq по классам. Правки одной строки разными людьми ловятся как конфликт `409`. Личность вызывающего FAS не проверяет: `X-User-Id` нужен только для аудита и квот, доступ ограничивает внутренняя сеть.
 14. **Async-first** (§4.14). Весь ввод-вывод асинхронный (FastAPI, httpx, redis.asyncio, opendal `AsyncOperator`, Taskiq), все порты `async def`. Блокирующее — в ограниченных пулах потоков или в worker-ах; тяжёлые стадии worker-а — в отдельном процессе с жёстким kill (с 0.22). Всё долгое — `202` + операция; клиент опрашивает (с long-poll) или подписывается на SSE.
+15. **Тип модели** (§5.5, §5.7). Перед коэффициентами FAS относит книгу к `project_finance`, `corporate` или `other`. Тип задаёт, какие из семи метрик обязательны, необязательны или неприменимы. Подтверждённый `model_type.set` перекрывает профиль и вывод по правилам. Пока тип не уверен, вопрос о типе стоит первым в пакете, а применимость — объединение кандидатов: метрика не скрывается без подтверждения.
 
 ---
 
@@ -305,7 +306,7 @@ Builder для FAS всегда один — один `BUILDER_BASE_URL`, ско
 | UI | подтвердить, исправить (`supersedes`), отклонить привязку; ответить «в книге нет» (`concept.absent`); задать фазу, знак, единицу; выбрать профиль книги | `POST …/decisions` |
 | UI | кто и когда менял решения по книге | `GET …/decisions` |
 | UI | семантика строк и периодов | `GET …/semantics` |
-| UI | настройки клиента: знаки, факт/план (без входов расчёта — ставки, порогов, валют, §0 п. 2) | `GET/PUT /v1/profiles/{profile_id}`, `GET /v1/profiles` |
+| UI | настройки клиента: знаки, факт/план, `model_type_default` (`labels` и `primary`, без чисел). Ставок, порогов и валют нет (§0 п. 2) | `GET/PUT /v1/profiles/{profile_id}`, `GET /v1/profiles` |
 | UI | пересчитать привязки после правки профиля | `POST …/mapping:infer` |
 | все | ждать долгую операцию, отменить её | `GET /v1/operations/{id}?wait_ms=` (SSE — опция), `POST …:cancel` |
 | администратор | глоссарий (все сценарии) | §5.9.1 |
@@ -338,9 +339,9 @@ Builder для FAS всегда один — один `BUILDER_BASE_URL`, ско
 
 | Перечисление | Значения |
 |---|---|
-| вид решения (`…/decisions` `kind`) = тип записи журнала | `concept.confirm`→`concept.confirmed`, `concept.set`→`concept.set`, `concept.reject`→`concept.rejected`, `concept.ignore`→`concept.ignored`, `concept.absent`, `phase.set`, `sign.set`, `unit.set`, `profile.set`; системные: `mapping.remapped`, `semantics.inferred`, `binding.suspended` |
+| вид решения (`…/decisions` `kind`) = тип записи журнала | `concept.confirm`→`concept.confirmed`, `concept.set`→`concept.set`, `concept.reject`→`concept.rejected`, `concept.ignore`→`concept.ignored`, `concept.absent`, `phase.set`, `sign.set`, `unit.set`, `profile.set`, `model_type.set`; системные: `mapping.remapped`, `semantics.inferred`, `binding.suspended` |
 | коды ошибок `SemanticWriteGuard` (§5.12) | `schema_invalid`, `concept_not_in_catalog`, `ref_not_found`, `concept_already_bound`, `row_multi_concept`, `cyclic_binding`, `currency_conflict`, `supersede_required`, `measure_mismatch`, `shape_mismatch`, `cell_not_numeric`, `duplicate_in_batch`; причины `binding.suspended`: `row_missing`, `cell_not_numeric`, `measure_mismatch`, `unit_changed`, `shape_mismatch` |
-| предупреждения `SemanticWriteGuard`, требующие `confirm` | `value_implausible`, `period_mismatch`, `absent_with_strong_candidate`, `component_over_total` |
+| предупреждения `SemanticWriteGuard`, требующие `confirm` | `value_implausible`, `period_mismatch`, `absent_with_strong_candidate`, `component_over_total`, `model_type_contradicts_signals` |
 | статус элемента в `results[]` | `accepted`, `rejected`, `needs_confirm` |
 | `binding_source` в `citations[]`/`inputs[]` | = `source` |
 | `Operation.kind` | `book.load`, `mapping.infer`, `analysis`, `compare`, `glossary.validate`, `glossary.remap`, `learn.export` |
@@ -348,6 +349,8 @@ Builder для FAS всегда один — один `BUILDER_BASE_URL`, ско
 | `AnalysisResult.status` | `succeeded`, `needs_input`, `failed`, `cancelled` (ход выполнения — только в `Operation`) |
 | статус строки | `bound`, `bound_with_warning`, `ambiguous`, `unknown`, `not_applicable`, `ignored` |
 | `source` | `profile`, `confirmed`, `verified`, `inferred` |
+| применимость метрики (`applicability`) | `required`, `optional`, `not_applicable` |
+| источник типа модели | `confirmed`, `inferred`, `profile`, `unresolved` |
 | статус релиза глоссария | `validating`, `ready`, `canary`, `active`, `retired`, `rejected` |
 | события глоссария | `release.created`, `release.status_changed`, `label.added\|removed\|moved\|kind_changed\|promoted`, `concept.created\|updated\|deprecated\|merged\|split`, `proposal.created\|decided` |
 
@@ -361,10 +364,10 @@ Builder для FAS всегда один — один `BUILDER_BASE_URL`, ско
                   "graph_schema_version": "1.7.0"},
   "versions": {"taxonomy": "…", "glossary": "g-0042:3f9a…", "latest_glossary": "g-0043:…", "calibrator": "…", "mdl": "…",
                "profile": {"id": "…", "version": "p-7"}, "metrics": "…", "rules": {"hardcoded_formula": "1"}, "fas": "0.21.0",
-               "models": {"embed": "…", "rerank": "…", "clm": "…"}, "state_seq": 42, "derive_key": "…"},
+               "models": {"embed": "…", "rerank": "…", "clm": "…"}, "model_types": "…", "state_seq": 42, "derive_key": "…"},
   "is_latest": true,
   "summary": {"code": "dscr_below_covenant", "params": {"min": "1.08", "period_id": "2031"}, "text": "…"},
-  "result_data": {"findings": [], "ratios": [], "series": [], "expression": null, "impact": null},
+  "result_data": {"findings": [], "ratios": [], "metrics": [], "series": [], "expression": null, "impact": null},
   "tables": [{"id": "dscr_by_period", "columns": ["period_id", "dscr", "cfads", "debt_service"],
               "rows": [["2030", "1.31", "512.4", "391.1"]]}],
   "charts": [{"id": "dscr_line", "type": "line", "table_ref": "dscr_by_period", "x": "period_id", "y": ["dscr"]}],
@@ -372,7 +375,10 @@ Builder для FAS всегда один — один `BUILDER_BASE_URL`, ско
                  "axis_id": "CF!r9", "period_id": "2030", "label": "CFADS",
                  "value": "512.4", "value_status": "cached", "normalized_value": "512400000",
                  "binding_source": "inferred", "binding_key": "…", "score": "0.91", "reasons": ["label_match", "identity"]}],
-  "needs_input": [{"question_id": "q_…", "kind": "concept | sign | unit",
+  "model_type": {"labels": ["project_finance"], "primary": "project_finance", "source": "inferred",
+                 "score": 1.0, "scores": {"project_finance": 1.0, "corporate": 0.0}, "seq": null,
+                 "profile_version": null, "reason": null, "candidates": []},
+  "needs_input": [{"question_id": "q_…", "kind": "concept | sign | unit | model_type",
                    "reason": "ambiguous | concept_unknown | stale | currency_conflict",
                    "subject": "debt_service", "needed_by": ["dscr", "llcr"],
                    "expects": {"measure": "money", "shape": "series"}, "status": "open",
@@ -382,6 +388,9 @@ Builder для FAS всегда один — один `BUILDER_BASE_URL`, ско
   "warnings": []
 }
 ```
+- `model_type` — действующий тип книги (§5.5). `versions.model_types` — sha256 каталога `configs/model_types` (16 hex). Вывод по правилам пересчитывается на вопрос и на прогон метрик и в журнал не пишется: запись журнала во время свёртки сдвинула бы `state_seq`. История человека — только `model_type.set`.
+- `result_data.metrics[]` — применимость каждой запрошенной метрики. `not_applicable` несёт `reason: model_type` и `model_type`. Необязательная метрика без входа — `skipped: input_absent` и предупреждение `input_absent`, без вопроса. `AnalysisResult.status` остаётся `succeeded`. Поле применимости не называется `status`: этот код уже занят строкой коэффициента.
+- Неуверенный тип даёт предупреждение `model_type_unresolved`.
 - `citations[]` = объединение `locations[]` находок и `inputs[]` вычислений, без дублей. Поля `row_key, period_id, cell, value, value_status` совпадают с формой цитаты в slice API builder, поэтому клиент проверяет числа так же, как наблюдения.
 - `needs_input[]` — подмножество пакета вопросов книги (§5.10.5): анализ не создаёт своих вопросов, а ссылается на вопросы книги (`question_id`, `candidates[]`). `kind: phase` не выдаётся.
 - `binding_source` (`profile | confirmed | verified | inferred`, = поле `source` привязки) выводится у каждого входа в `citations[]`/`inputs[]`; уверенная `inferred`-привязка дополнительно несёт `binding_key`, `score`, `reasons[]` и может быть переопределена (`supersedes`).
@@ -443,7 +452,7 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
       derived/{derive_key}/a/{attempt}/bindings.parquet   # все fact-строки, включая unknown/ambiguous (§5.10.1)
       derived/{derive_key}/a/{attempt}/coverage.parquet   # отчёт покрытия, одна строка на (статус, важность) (§5.10.3)
       derived/{derive_key}/a/{attempt}/questions.parquet  # пакет вопросов книги (§5.10.5)
-      # derive_key = sha256(canonical{state_seq, glossary_version, taxonomy_version, calibrator_version, embed_model, rerank_model, clm_model, profile_version, fas_derive_version})[:16]
+      # derive_key = sha256(canonical{state_seq, glossary_version, taxonomy_version, calibrator_version, embed_model, rerank_model, clm_model, profile_version, fas_derive_version, model_types_version, model_type_seq})[:16]
       results/{analysis_id}/result.json | run.parquet | findings.parquet | ratios.parquet | report.md   # result.json пишется последним (put_if_absent)
     _state/
       log/{seq:020d}.json                     # журнал книги: решения и системные записи (put_if_absent; номер = порядок, с 0.21)
@@ -528,7 +537,7 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
 Схему Parquet задаёт `fas_schema_version` (`MAJOR.MINOR`). Если FAS видит неизвестную major-версию, сборка пересоздаётся загрузчиком (миграции = перезагрузка из builder, Alembic не нужен). Правила схем — §4.11. Время во всех файлах — колонки `*_utc` типа `timestamp(us, tz=UTC)` (`isAdjustedToUTC=true`, §4.12 P3).
 
 ### 4.5 Изменяемое состояние: журнал событий
-- **Запись журнала (с 0.21):** `_state/log/{seq:020d}.json` = `{"seq", "id": <ulid>, "type": <тип из таблицы «Перечисления», §3.2>, "binding_key"|"axis_id+period_key_base"|"book", "value", "actor": {user_id, client_id}, "expected_seq", "request_id", "at_utc", "supersedes_seq"?, "warnings_ack": [], "question_id"?}` (последние три — с 0.23, §5.12) (`actor` — из непроверяемых заголовков, §4.13.7). Пишется **только** `put_if_absent` по номеру `last_seq + 1`; `AlreadyExists` значит, что номер занят другим писателем: хвост перечитывается, проверка `expected_seq` повторяется. Порядок задаёт хранилище, а не часы реплик (ULID монотонен только внутри одного генератора, [ULID spec](https://github.com/ulid/spec)); так устроен журнал Delta Lake: «single serial history… contiguous, monotonically-increasing integers», «writers MUST never overwrite an existing log entry» ([Delta PROTOCOL](https://github.com/delta-io/delta/blob/master/PROTOCOL.md)).
+- **Запись журнала (с 0.21):** `_state/log/{seq:020d}.json` = `{"seq", "id": <ulid>, "type": <тип из таблицы «Перечисления», §3.2>, "binding_key"|"axis_id+period_key_base"|"book", "value", "actor": {user_id, client_id}, "expected_seq", "request_id", "at_utc", "supersedes_seq"?, "warnings_ack": [], "question_id"?}` (последние три — с 0.23, §5.12) (`actor` — из непроверяемых заголовков, §4.13.7). Цель `book` — у `concept.absent`, `profile.set` и `model_type.set`. Пишется **только** `put_if_absent` по номеру `last_seq + 1`; `AlreadyExists` значит, что номер занят другим писателем: хвост перечитывается, проверка `expected_seq` повторяется. Порядок задаёт хранилище, а не часы реплик (ULID монотонен только внутри одного генератора, [ULID spec](https://github.com/ulid/spec)); так устроен журнал Delta Lake: «single serial history… contiguous, monotonically-increasing integers», «writers MUST never overwrite an existing log entry» ([Delta PROTOCOL](https://github.com/delta-io/delta/blob/master/PROTOCOL.md)).
 - **Текущее состояние** = `fold(snapshot ≤ s, log > s)` в порядке `seq`; для ключа выигрывает запись с бо́льшим `seq`. `state_seq` = номер последней применённой записи. Результат материализуется в `derived/{derive_key}/` (для Wren) и кэшируется в Redis `fas:state:{job_id}:{state_seq}`; карта `last_seq[key]` в Redis — только кэш, при промахе перестраивается из снимка и хвоста.
 - **Порядок записи** (§4.13.6): проверка `expected_seq` по ключу и запись `put_if_absent(log/{n})`. Короткая блокировка `fas:lock:state:{job_id}` лишь уменьшает число повторов; корректность не зависит от неё. Затем одна задача на книгу сворачивает все накопившиеся записи (group commit) → `derived/{derive_key}` → `_head.json` через `put_if_match`. Если CAS не прошёл, перечитывается `_head` и свёртка повторяется; повторное применение идемпотентно (по `seq` и `request_id`). **Журнал — outbox:** если процесс упал между записью и постановкой свёртки, при любом чтении книги сравниваются `head.state_seq` и последний номер журнала (`stat` следующего номера), и при отставании свёртка ставится в очередь; плюс периодический sweep в `maintenance` ([Transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html)).
 - **Компакция:** при числе записей > `STATE_COMPACT_EVERY` (200) после снимка пишется `snapshot/{seq:020d}.parquet`; записи не удаляются (аудит), читаются только после снимка.
@@ -655,7 +664,7 @@ fas storage sync file:///data s3://fas-bucket/fas --verify    # копия + с�
 
 ##### 4.13.2.1 Single-flight и кэш результатов
 
-- **Ключ расчёта** = `sha256(canonical_json{op, job_id, build_key, state_seq, derive_key, glossary_version, taxonomy_version, calibrator_version, profile_id, profile_version, rules_version, metrics_version, fas_version, params})` (с 0.21 — профиль, правила, метрики и код). Все входы закреплены версиями, поэтому результат по ключу неизменяем. Инвалидировать нечего: новый `state_seq`, релиз глоссария, версия профиля или выкладка кода дают новый ключ.
+- **Ключ расчёта** = `sha256(canonical_json{op, job_id, build_key, state_seq, derive_key, glossary_version, taxonomy_version, calibrator_version, profile_id, profile_version, rules_version, metrics_version, fas_version, params})` (с 0.21 — профиль, правила, метрики и код). `derive_key` включает `model_types_version` и `model_type_seq` (§4.2), поэтому смена каталога типов или `model_type.set` даёт новый ключ. Все входы закреплены версиями, поэтому результат по ключу неизменяем. Инвалидировать нечего: новый `state_seq`, релиз глоссария, версия профиля или выкладка кода дают новый ключ.
 - **Порядок:** (1) `GET fas:res:{key}` — попадание отдаётся сразу; (2) промах → `SET fas:sf:{key} <op_id> NX PX <deadline>`; (3) победитель считает, пишет результат в `fas:res:{key}` (TTL `RESULT_CACHE_TTL` = 24 ч) и, для анализов, в `results/` object store, затем публикует `fas:sf:done:{key}`; (4) остальные ждут уведомления до своего дедлайна, затем получают `202` со ссылкой на операцию победителя. Так ведёт себя `singleflight` из Go: дубликат ждёт исходный вызов и получает тот же результат ([golang.org/x/sync/singleflight](https://pkg.go.dev/golang.org/x/sync/singleflight)). Внутри процесса первым срабатывает локальный single-flight (словарь `asyncio.Future`), поэтому в Redis идёт один запрос от реплики.
 - **Лавина промахов (cache stampede).** Для неизменяемых результатов её закрывает блокировка из шага (2), это вариант «locking» ([Wikipedia: Cache stampede](https://en.wikipedia.org/wiki/Cache_stampede)). Для изменяемых кэшей (`_head.json`, ETag builder) используется вероятностное раннее обновление (XFetch, там же): каждый читатель с вероятностью, растущей к концу TTL, обновляет значение заранее. Поэтому значение не истекает у всех читателей одновременно.
 - **Идемпотентность.** Ключ хранится как `fas:idem:{user_id}:{client_id}:{method}:{route_template}:{Idempotency-Key}` → `{request_hash, status, response | operation_id}`, TTL 24 ч (с 0.21 — область включает клиента, метод и маршрут). Тот же ключ с другим телом → `422 idempotency_key_reused`. Тот же ключ, пока первый запрос идёт, → `409 request_in_progress` с `Retry-After`. Коды совпадают с черновиком IETF ([draft-ietf-httpapi-idempotency-key-header-07](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/), черновик истёк — используется как практика) и [Zalando](https://opensource.zalando.com/restful-api-guidelines/). Без `X-User-Id` используется `anonymous` (§4.13.7). **Долговечность:** для записей с побочным эффектом (`…/decisions`, релизы глоссария, профили) `request_id` записывается в журнал, и повтор после потери Redis отбрасывается по нему при записи и свёртке.
@@ -880,6 +889,7 @@ concepts:
   dscr_default: {kind: parameter, unit: ratio}
   target_dscr:  {kind: parameter, unit: ratio}
   dscr:         {kind: ratio, unit: ratio, plausible: [0.8, 5.0]}
+  icr:          {kind: ratio, unit: ratio}
 ```
 `dscr_lockup`, `dscr_default`, `target_dscr` (с 0.23) привязываются к ячейкам книги, как `discount_rate`. `validation` — **только правила проверки** записей (§5.12): диапазоны ничего не подставляют и не входят в расчёт (§0 п. 2). Значения диапазонов — стартовые [допущение], настраиваются; знак проверяется уже по `expected_sign`.
 Таксономия версионируется (`taxonomy_version`), хранение и релизы — §5.9. Идентификаторы — свои: в FIBO LOAN есть займ, основной долг, проценты, графики платежей, но нет DSCR/CFADS ([FIBO LoanCore](https://spec.edmcouncil.org/fibo/ontology/LOAN/LoanContracts/LoanCore/index-en.html)). У IFRS Accounting Taxonomy нет русского перевода в списке пакетов ([IFRS Taxonomy translations](https://www.ifrs.org/issued-standards/ifrs-taxonomy/ifrs-taxonomy-translations/)), поэтому ru-метки живут в своём глоссарии.
@@ -939,6 +949,18 @@ broader: operating_cash_flow                                   # иерархи�
   Ответ: `(axis_id, period_id)` временной оси, `period_key`, `calendar_year` (или `null` с `reason: no_calendar_anchor`), `basis: phase_decision | nonzero_debt_service`.
 
 ### 5.5 Конвейер привязки понятий
+
+**Тип модели** считается до коэффициентов, двумя правилами. Score — доля сработавших сигналов типа, вес нормирован на [0, 1]. Порог `FAS_MODEL_TYPE_ACCEPT=0.6`, отрыв `FAS_MODEL_TYPE_GAP=0.15`, не больше `FAS_MODEL_TYPE_MAX_LABELS=3` меток. Пороги живут в `settings.py`, не в каталоге. Score каждого типа пишется в лог и в `model_type.scores` результата.
+
+| Правило | Тип |
+|---|---|
+| Привязаны и `cfads`, и `debt_service` | `project_finance` |
+| Есть листы трёх форм: (ОПиУ \| P&L \| Income statement) и (Баланс \| Balance sheet) и (ДДС \| Cash flow) | `corporate` |
+
+Имя листа сравнивается целиком после `casefold` и `strip`. Алиасы внутри группы — или, группы — и. `CFS` не алиас «Cash flow». `other` сигналов не имеет и не набирает score. Гибриды, escrow, 214-ФЗ и ГЧП в этом срезе нет: `compatible` пуст.
+
+Уверенный вывод — лидер ≥ 0.6 и отрыв от второго ≥ 0.15. Иначе вопрос `kind: model_type`. Приоритет: подтверждённый `model_type.set` > уверенный вывод > `model_type_default` профиля. Если score указанного в профиле типа < 0.2, а другого > 0.8, профиль молча не применяется: вопрос с `reason: profile_conflict`. То же противоречие у `model_type.set` — предупреждение `model_type_contradicts_signals` (`needs_confirm`), пока нет `confirm` и `warnings_ack`. Повторная запись требует `supersedes` прежнего `seq`. Вывод по правилам в журнал не пишется.
+
 **Одно понятие — одна строка книги.** Понятие таксономии привязывается ровно к одной строке книги; составных и многострочных привязок нет. Если в модели нет итоговой строки (например, несколько траншей senior/junior без total debt service), FAS выдаёт находку `missing_total_row` и не считает зависящие метрики. Явная сумма возможна только разово через `…/expression`, но никогда как вход метрики (§0 п. 2).
 
 | # | Стадия | Что делает | Модель |
@@ -981,7 +1003,7 @@ metrics:
   adscr: {type: rolling_ratio, base: dscr, window: 12M, direction: lookback|lookforward}    # сумма CFADS / сумма DS за окно
   dscr_min: {type: reduce, base: dscr, fn: min, over: test_periods}
   dscr_avg: {type: reduce, base: dscr, fn: [mean_of_ratios, ratio_of_sums], over: test_periods}   # отдаются оба
-  icr:   {type: ratio, numerator: {one_of: [ebitda, ebit]}, denominator: interest, grain: period}
+  icr:   {type: ratio, numerator: {one_of: [ebitda, ebit]}, denominator: interest, grain: period}   # понятие icr — собственная строка коэффициента, как dscr
   llcr:  {type: npv_window, numerator: {npv: cfads, window: remaining_loan_life, cap_at: final_debt_service_period, rate: discount_rate},
           plus_undiscounted: [dsra_balance?], denominator: {balance: debt_outstanding, basis: period_end|period_start},
           not_computed_at: final_debt_service_period}
@@ -1000,6 +1022,15 @@ metrics:
 - **Арифметика:** NPV считается в Python `Decimal` по фактическим долям периода (`period_start/end`), а не Excel `NPV()`. FAST запрещает `NPV()` ([FAST Standard 02c](https://www.fast-standard.org/wp-content/uploads/2019/10/FAST-Standard-02c-July-2019.pdf) 4.01-02), Mazars указывает на ошибки XNPV с переменной ставкой ([Forvis Mazars: LLCR](https://financialmodelling.forvismazars.com/resources/loan-life-coverage-ratio-llcr/)).
 
 Типы: `simple`, `ratio`, `expression`, `rolling_ratio`, `reduce`, `npv_window`, `cumulative`.
+
+**Применимость по типу** (`configs/model_types/*.yaml`, валидатор при старте и `fas check-config`). Формулы остаются в `configs/metrics`. `default_use: not_applicable`. У `other` метрики `*: optional`, и только он освобождён от правила «сумма весов сигналов > 0».
+
+| Метрика | `project_finance` | `corporate` | `other` |
+|---|---|---|---|
+| `dscr`, `dscr_min` | required | not_applicable | optional |
+| `adscr`, `dscr_avg`, `llcr`, `plcr`, `icr` | optional | `icr` required, остальные not_applicable | optional |
+
+`required` без входа — `needs_input`. `optional` без входа — `skipped: input_absent`, вопроса нет. `not_applicable` не считается и не порождает вопросов и находок; строка метрики остаётся видимой. Пока тип `unresolved`, применимость — максимум по кандидатам (`required` > `optional` > `not_applicable`). Пустой набор кандидатов берёт все типы каталога, поэтому метрика не пропадает. `missing_total_row` остаётся, если понятие нужно метрике, которая не `not_applicable` (необязательная тоже считается). Обязательная метрика должна достигать своих входов из `required_concepts` типа: все `all_of` и хотя бы один `one_of`. `dscr.corporate_covenant` в этом срезе нет.
 
 **Реализация фазы 3 [код: `domain/cover_metrics.py`].**
 - Периоды строк разных листов одной шкалы сопоставляются по `timeline_id` + `period_index`; строка результата лежит на оси знаменателя (`debt_service`). Так DSCR считается, когда CFADS на листе CFS, а обслуживание долга — на листе Debt.
@@ -1326,7 +1357,7 @@ class Operation(BaseModel):
                   "candidates": [{"concept": "fees", "score_rank": 1, "gap": "0.04"}], "cluster_id": "u-17"}]}
 ```
 - Отчёт строится вместе с `derived/{derive_key}` (при каждой загрузке и каждом новом `derive_key`) и кэшируется в Redis.
-- `/v1/books/{job_id}` отдаёт сводку (`row_coverage`, `critical_path.covered`, число `critical`-неизвестных).
+- `/v1/books/{job_id}` отдаёт сводку (`row_coverage`, `critical_path.covered`, число `critical`-неизвестных). `critical_path.covered` пока shortcut: 1, если нет `unknown` с `importance: critical`, иначе 0. Обход графа только по применимым метрикам — следующий срез; опубликованный флаг этот обход не имитирует.
 - Предупреждение `coverage_low` попадает в `warnings` любого `AnalysisResult`, если `critical_path.covered < 1` для запрошенных метрик.
 
 #### 5.10.4 Рост глоссария: от неизвестных строк к релизу
@@ -1342,7 +1373,7 @@ class Operation(BaseModel):
 #### 5.10.5 Поведение аудита и метрик при нехватке понятий
 
 - **Пакет вопросов по книге (с 0.23).**
-  1. **Один пакет на книгу.** Для новой книги FAS собирает все свои вопросы в один пакет по `job_id` и не спрашивает по одному. В пакете все открытые вопросы:
+  1. **Один пакет на книгу.** Для новой книги FAS собирает все свои вопросы в один пакет по `job_id` и не спрашивает по одному. Если тип `unresolved`, вопрос `kind: model_type` стоит первым. До ответа применимость — объединение кандидатов (§5.7): ничего не отбрасывается без подтверждения. Вопрос строки снимается, только если её `effective_concept` входит во входы метрик и ни одна потребляющая метрика не `required`. Необязательная метрика не спрашивает. Строка без понятия остаётся: вопросы по понятиям вместо строк — следующий срез. В пакете все открытые вопросы:
      - `concept` — понятия, нужные метрикам каталога §5.7: `debt_service`, ставка LLCR/PLCR (`discount_rate`), `dscr_lockup`/`dscr_default`, `target_dscr` и т. д.;
      - `sign` — по §5.4; `phase` не спрашивается;
      - `unit` — только при конфликте названных валют (§5.8).
@@ -1387,7 +1418,7 @@ class Operation(BaseModel):
 #### 5.10.6 Тесты и метрики
 
 - **Eval с искусственным NIL** — приём BLINKout: из таксономии временно удаляется понятие (taxonomy pruning) или берётся старая версия глоссария (versioning). Строки этого понятия должны получить `unknown`/`ambiguous`, а не уйти в соседнее понятие ([BLINKout](https://arxiv.org/abs/2302.07189)). Прогон на каждом PR в `configs/` и при обновлении моделей.
-- **Метрики:** NIL precision/recall/F1; доля ложных привязок среди `bound` (главная метрика риска); `row_coverage`, `value_coverage`, `critical_path.covered` по eval-книгам; доля кластеров, ставших релизом; медианное время от кластера до релиза. Целевые значения [допущение, задать по первым 20–30 книгам]: ложные привязки ≤ 2% на понятиях метрик (как порог risk–coverage в §5.6), NIL recall ≥ 0.9 на `critical`-строках.
+- **Метрики:** NIL precision/recall/F1; доля ложных привязок среди `bound` (главная метрика риска); `row_coverage`, `value_coverage`, `critical_path.covered` по eval-книгам; доля кластеров, ставших релизом; медианное время от кластера до релиза; `model_type_accuracy` — доля книг, где выведенный `primary` совпал с разметкой. Целевые значения [допущение, задать по первым 20–30 книгам]: ложные привязки ≤ 2% на понятиях метрик (как порог risk–coverage в §5.6), NIL recall ≥ 0.9 на `critical`-строках. Книга К3 в CI не гоняется: локальный тест читает путь из `FAS_LOCAL_BOOK_K3` и ожидание из соседнего `.local.yaml` (в git не входит) и пропускается, если файла нет. Имя клиента в репозитории не пишется.
 - **Регрессия глоссария:** новый релиз прогоняется на eval-наборе до публикации. Сравнение — по доверительному интервалу (bootstrap по книгам, 95 %) и отдельно по срезам «понятия метрик» и `critical`-строки, а не по точечному «не больше» (с 0.21; принцип проверки модели до выкладки — [The ML Test Score](https://research.google/pubs/the-ml-test-score-a-rubric-for-ml-production-readiness-and-technical-debt-reduction/)). Если доля ложных привязок статистически значимо выросла хотя бы в одном срезе, публикация блокируется (`409 glossary_regression`, обходится только флагом `force=true` с обязательным `reason`).
 
 ### 5.11 Обучение глоссария на потоке книг (новое в 0.9)
@@ -1497,7 +1528,8 @@ class Operation(BaseModel):
 | `phase.set` (`axis_id+period_key_base`) | человек | ось и период есть; фаза из словаря; не ломает порядок фаз оси (строительство → эксплуатация) |
 | `sign.set` | человек | строка денежная; значение из `inflow\|outflow\|stock`; предупреждение, если противоречит `expected_sign` и итогам по графу |
 | `unit.set` | человек | строка существует; код валюты ISO 4217 или `unit` из словаря builder; отказ, если противоречит названной в книге валюте строки (§5.8: книга главнее) |
-| `profile.set` и `PUT /v1/profiles/{id}` | человек | схема профиля; профиль не содержит входов расчёта (§0 п. 2, §5.8: ни ставок, ни валют, ни порогов) |
+| `profile.set` и `PUT /v1/profiles/{id}` | человек | схема профиля; профиль не содержит входов расчёта (§0 п. 2, §5.8: ни ставок, ни валют, ни порогов). `model_type_default` — только `{labels, primary}`, без чисел. `dscr_definition` в профиле нет до следующего среза |
+| `model_type.set` (цель `book`) | человек | метки из каталога `configs/model_types`; `primary` входит в `labels`; меток не больше `FAS_MODEL_TYPE_MAX_LABELS`; повтор — `supersedes` прежнего `seq`; score указанного типа < 0.2 при чужом > 0.8 — `model_type_contradicts_signals` |
 | системные `semantics.inferred`, `mapping.remapped` и файлы `derived/` (`bindings`, `row_semantics`, `period_semantics`, `coverage`) | конвейер, ремап | инварианты: ≤1 `is_primary` на понятие в книге; понятие в каталоге или `NULL`; ссылки на строки сборки; без `confirm` (системная запись с предупреждением не пишется, а становится вопросом пакета). Уверенная `inferred`-привязка (§5.10.5, п. 3) проходит **те же** жёсткие проверки, что и ответ человека. Если не прошла или есть предупреждение — она не применяется и становится вопросом пакета; подтверждать за человека guard не может |
 | глоссарий: `label.*` (синонимы и алиасы), `concept.*` (создание, `deprecated`, слияние), `proposal.decided`, релизы (§5.9) | человек, `glossary_mine` | уже есть `glossary.validate`/`dry_run`; guard вызывает их как часть проверки. Плюс `concept_id` не переиспользуется (§5.9); метка не ведёт к двум несовместимым понятиям |
 | кросс-книжные примеры (§4.5), сигналы S (§5.11.1) | система, из `concept.*` | пишутся только из принятой записи guard; при `supersedes` прежний пример → `superseded` |
@@ -1524,6 +1556,7 @@ class Operation(BaseModel):
 - `period_mismatch`: периоды или длина ряда не совпадают с остальными входами метрики;
 - `absent_with_strong_candidate`: `concept.absent` при кандидате со `score` ≥ `QUESTION_STRONG_SCORE` (0.8, настраивается);
 - `component_over_total`: выбрана строка-компонент (`component_of`) при найденной итоговой.
+- `model_type_contradicts_signals`: score указанного типа < 0.2, а другого > 0.8. Форму значения проверяет guard. Противоречие сигналам книги проверяет запись решения: у guard нет привязок книги.
 
 **Диапазоны правдоподобия** — в таксономии §5.1, поле `validation` у понятия (например, `discount_rate`, `dscr_lockup`, `debt_service.not_all_zero`; знак — уже `expected_sign`). Это **только правила проверки**: они ничего не подставляют и не входят в расчёт (§0 п. 2).
 
@@ -1610,7 +1643,7 @@ class Operation(BaseModel):
 
 Результат по периоду: `value` или `status ∈ missing_input (reason: no_binding | concept_unknown | stale) | ambiguous | no_debt_service (DS = 0 → не тестовый период) | not_computed (LLCR в последнем периоде) | out_of_phase (только при явных фазах) | unit_mismatch`. Отрицательный CFADS даёт отрицательный DSCR, без `abs` и без подстановки нуля. Частичные периоды считаются как есть: DSCR и ADSCR не пересчитываются по долям периода, исключения из min DSCR нет. К результату метрики прикрепляется `period_grain_mismatch` (`findings[]`); `status` не меняется. Плюс `inputs[]` с `cell_id` → `citations[]`. Если в книге есть своя строка метрики, сравнение уходит в `ratio_mismatch`.
 
-Нехватка понятий обрабатывается по §5.10.5: `missing_input` вместо числа, `unclassified_precedent` — если на пути метрики есть `critical`-unknown.
+Нехватка понятий обрабатывается по §5.10.5: `missing_input` вместо числа, `unclassified_precedent` — если на пути метрики есть `critical`-unknown. Перед расчётом метрика проходит матрицу типа (§5.7): `not_applicable` не считается, необязательная без входа не спрашивает. Находки `period_grain_mismatch` и `missing_total_row` смотрят только применимые метрики запроса.
 
 ### 6.3 Выражения над ячейками (`…/expression`, §3.2)
 Замена клиентской арифметики:
@@ -1623,6 +1656,8 @@ class Operation(BaseModel):
 LLM не считает: она только формирует выражение, вычисляет FAS.
 
 ### 6.4 Сценарии
+Селектор кейса (ячейка, которая выбирает Live / Case N) — не тип модели. Тип модели — `project_finance` / `corporate` / `other` (§5.5). Вопрос 4 в §14 про находку при селекторе остаётся открытым.
+
 В кэше Excel лежат только числа активного кейса. Внутри книги FAS сравнивает лишь кейсы, которые сохранены в ней как числа: колонки кейсов и маркеры факт/план (`period_marker`). Другой кейс, который выбирается ячейкой-селектором, — это отдельная загрузка (отдельная сборка или книга). Сравнение — через существующий `POST …:compare`: две сборки (`other.build_key`) или две книги (`other.job_id`). Неактивные кейсы FAS не пересчитывает (§0 п. 2, §13 риск 6).
 
 Источники кейсов в одной книге — только числа, сохранённые в ней: `period_marker` (факт/план/оценка одного года) и params-колонки со `scenario` (`cells[].header`: `Live`, `Case N`). Для колонок кейсов сравниваются только сами входы. Метрики и выходы есть лишь у активного кейса, так что дельты метрик между `Case N` не считаются. Flag-строки кейсов (`periods[].flags`) и ячейка-селектор только показывают, какой кейс активен; чисел неактивного кейса они не дают. `compare` выдаёт дельты по метрикам и понятиям (`delta_abs`, `delta_pct`) и структурные различия. Один маршрут `POST /v1/books/{job_id}:compare` (§3.2) сравнивает кейсы внутри книги, две сборки книги (бывший `builds/compare`) и, если задан `other.job_id`, две книги. Кейс по селектору — отдельная загрузка; его сравнивают как две сборки или две книги. Сравнение двух `job_id` (решено): только так — два изолированных запроса (у каждого своё свойство сессии и свой MDL) + diff в FAS. Совместного SQL нет.
@@ -1819,7 +1854,7 @@ finance-analysis-service/
 │   ├── plugins/{rules,ratios,labeling}/   # labeling: LF по графу и тождествам (§5.11.1)
 │   ├── cli.py                        # fas storage sync|gc|verify, fas book load, fas glossary validate|upload|release|export|rollback, fas learn export (только датасет; обучения в FAS нет)
 │   └── settings.py · main.py         # composition root, фабрики по конфигу
-├── configs/{concepts,glossary,identities,metrics,profiles,mdl}/
+├── configs/{concepts,glossary,identities,metrics,model_types,profiles,mdl}/
 ├── eval/                             # размеченные книги, top-1/ECE, обучение калибратора
 ├── tests/
 │   ├── unit/
@@ -1913,6 +1948,7 @@ finance-analysis-service/
 | `SHUTDOWN_GRACE_SEC`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | 25, —, `fas` | плавное завершение и трассировка (§4.13.9, с 0.21) |
 | `GLOSSARY_CANARY_MIN_BOOKS`, `GLOSSARY_CANARY_MIN_ROWS`, `GLOSSARY_CANARY_MAX_HOURS` | 10, 200, 168 | минимальный объём canary (§5.11.3, с 0.21) |
 | `REMATCH_MIN_WEIGHT` | 0.9 [допущение] | порог вероятностного сопоставления строк при перезагрузке (§5.3, с 0.21) |
+| `FAS_MODEL_TYPE_ACCEPT`, `FAS_MODEL_TYPE_GAP`, `FAS_MODEL_TYPE_MAX_LABELS` | 0.6, 0.15, 3 | порог score типа, минимальный отрыв лидера и сколько меток можно записать (§5.5). Стартовые значения |
 
 `GET /health/ready` → `{"status": "ok", "storage": {"backend": "s3", "url": "s3://fas-bucket/fas", "wren_source": "minio_file", "conditional_writes": "native|flock", "selftest": "passed"}, "redis": "ok|down", "builder": "closed|open|half_open", "glossary": "g-0042:3f9a…", "storage_stats": {"books": 412, "builds": 3870, "bytes": "…"}}`; то же (без статусов) — в поле `storage` ответа `GET /v1/capabilities`. Поле `builder` — состояние circuit breaker builder (информационно, на готовность не влияет); отдельного запроса к builder нет. `GET /health/live` — `200`, пока процесс жив (без проверки зависимостей). Готовность (`status`) зависит только от Redis, хранилища и самотеста условных записей; builder и серверы моделей — информационные поля (с 0.21).
 
@@ -2091,6 +2127,7 @@ sequenceDiagram
 | 2b | embed, rerank, `examples/` + NumPy kNN, калибратор (20–30 размеченных книг); NIL-порог и eval с удалёнными понятиями; `unmapped/` + `cluster_unmapped` + предложения LLM/CLM + ревью (§5.10.4); журнал `signals/`, LF по графу и тождествам, `glossary_mine` **только в режиме предложений**, провенанс меток, shadow-гейт релизов (§5.11); bulkheads, circuit breaker, дедлайны и бюджет CLM в Redis, сценарий S5 | top-1 ≥ 0.9 на cfads/debt_service/interest, ECE < 0.05; ложные привязки ≤ 2% и NIL recall ≥ 0.9 на critical-строках [допущение] |
 | 3 | правила фазы 2, ADSCR/min/avg, LLCR, PLCR, `sculpting_deviation`, `period_grain_mismatch`, `missing_total_row` + `concept.absent`; `build_key` у расчётов и `POST …:compare` для двух сборок | LLCR без ставки → `missing_input`; LLCR в последнем периоде не считается; результаты совпадают с ручным re-performance на 3 эталонных книгах. Сделано: min/avg DSCR совпадают со сводкой Live-кейса RVI; LLCR/PLCR/ADSCR сверены с ручным расчётом на синтетической книге — в golden-книгах Packt и RVI нет строк LLCR и ставки дисконтирования, третьей эталонной книги нет [открыто] |
 | 3b | авто-продвижение `hiddenLabel`/`altLabel` (сначала в профиль), canary и откат релизов, few-shot для CLM, перекалибровка, `GET /v1/glossary/stats` (§5.11.2–5.11.6); ремап пачками под нагрузкой, сценарий S4 | на исторических данных авто-метки дают ≤ 2% отката за 30 дней; откат релиза восстанавливает привязки; доля `unknown` в новых книгах падает от месяца к месяцу [допущение] |
+| 3c | тип модели, срез 1 (§5.5, §5.7): `project_finance`, `corporate`, `other`; матрица семи метрик; `model_type.set` и `model_type_default` без чисел; вопрос типа первым и объединение кандидатов | Packt и RVI выводятся как `project_finance`; синтетическая книга из трёх форм — `corporate`, семейство DSCR `not_applicable`; `fas check-config` не пускает битый каталог. Вопросы по понятиям вместо строк, escrow/214-ФЗ, ГЧП и `dscr.corporate_covenant` — позже |
 | 4 | сценарии и две книги в `…:compare`, `…/analyses` `impact` и `full` (202, тот же in-process spawn, что у audit), отчёты md/json (`…/report`), SSE `/v1/operations/{id}/events` для UI, CLM adjudicate, LLM-пояснения. OSI-экспорта нет (решение 31) | отчёт воспроизводим по `builder_ref` + версиям |
 | 5 (опц.) | `POST /v1/learn/exports` / `fas learn export`; `reembed_examples`; переключение `EMBED_MODEL`/`RERANK_MODEL` через shadow-сравнение. Обучение — вне FAS (§5.11.5) | модель, обученная вне FAS и развёрнутая на тех же серверах, включается сменой id; не хуже по top-1 и ложным привязкам на eval; откат — возврат id |
 
@@ -2190,12 +2227,13 @@ sequenceDiagram
 29. **Очередь: Taskiq остаётся, вариант C (22.10, v0.22).** Taskiq + `taskiq-redis` для async-оркестрации; свой `FasStreamBroker` (аренда с продлением через `XCLAIM`, перехват по таймеру, таймаут лока, `run_attempt` → `fas:dlq`), `FasRetryMiddleware` с `RedisScheduleSource`, тяжёлые sync-стадии — в процессе на стадию с жёстким kill (§4.13.5, §4.14.3); только standalone Redis. Обоснование и прогоны — `fas-rq-vs-taskiq-v2.md`. **Запасной вариант (записан, не включён):** если chaos-тесты 0.22 (1)–(4) или (7) не проходят и это не чинится в своём коде — RQ (`rq>=2.12,<3`) **только для очереди `batch`** за тем же `JobQueuePort`; `interactive`, `glossary`, `maintenance` остаются на Taskiq. Риски запасного варианта: две системы очередей (две модели повторов и DLQ, две панели); RQ 3.0 ломает API (раздел «3.0 (unreleased)» в [CHANGES.md](https://github.com/rq/rq/blob/master/CHANGES.md)) → закрепление `<3`; процесс задачи переживает SIGKILL worker-а и может закрыть чужую задачу ([rq#2495](https://github.com/rq/rq/issues/2495)) → только контейнеры и проверка `run_attempt`; `unique` не работает для `enqueue_in/at` в 2.12 ([rq#2499](https://github.com/rq/rq/issues/2499)) → дедупликация через `Operation`; брошенная задача без `Retry` уходит в `FailedJobRegistry`, а простаивающий worker запускает maintenance раз в `worker_ttl − 15` с ([RQ: Workers](https://python-rq.org/docs/workers/), [RQ: Exceptions](https://python-rq.org/docs/exceptions/)) → `Retry` на всех задачах, меньший `worker_ttl`, reconciler операций.
 30. **Аудит модели, а не вторая модель (23.10, v0.23).** FAS проверяет только текущую книгу: одно понятие = одна строка, своих формул, запасных сумм и умолчаний ставки/порогов нет (§0 п. 2, §5.7); валюта только из книги (§5.8); фаза только по `phase.set` (§5.4); вопросы книги — пакетом `GET …/questions`, ответы — `…/decisions` (§3.2, §5.10.5); запись привязок — через `SemanticWriteGuard` (§5.12); требований к builder нет (Приложение A).
 31. **OSI-экспорт снят (29.10).** `GET /v1/semantic-model` нет. Черновик Apache Ossie `0.2.0.dev0` не имеет релиза, снаружи от маршрута никто не зависит, внутри его не читают расчёт, отчёт и Wren. Определения — таксономия, глоссарий и `configs/metrics`; MDL FAS строит сам (§7.2). Заменяет решение 26.
+32. **Тип модели, срез 1 (03.11).** Три типа в `configs/model_types`, матрица семи существующих метрик, пороги в настройках, score в логе и в результате (Р1–Р3, Р5). Факт книги `model_type.set` с историей перекрывает профиль; профиль хранит только структуру `model_type_default`, без чисел. Пока тип не уверен, вопрос первый, применимость — объединение кандидатов. Р4 (`dscr_definition` / корпоративный ковенант), Р6–Р9 и типы escrow, ГЧП и гибриды приняты владельцем и в этот срез не входят. finance-context-builder не меняется.
 
 **Открыто:**
 1. Лимиты латентности и параллелизма серверов моделей — единственный открытый инфраструктурный вопрос. До ответа действуют умолчания: таймауты embed 2 с, rerank 3 с, CLM 10 с, LLM 30 с [допущение]; одновременность на процесс 16/8/4/4 (§10.1); circuit breaker 5 ошибок / 30 с.
 2. Кто и на каких книгах размечает eval-набор для фазы 2b (датасет из подтверждений копится, но нужен независимый тест).
 3. Определения DSCR/LLCR из term sheet конкретных сделок: комиссии и свопы в DS и DSRA в LLCR — это состав привязанных строк книги (проверяется по графу); `period start|end` — вариант расчёта в профиле (§5.7).
-4. Находка при наличии селектора кейсов (в модели N кейсов, посчитан только активный, §6.4) — отложено, обсудить.
+4. Находка при наличии селектора кейсов (в модели N кейсов, посчитан только активный, §6.4) — отложено, обсудить. Селектор кейса не является типом модели (§6.4).
 
 ---
 

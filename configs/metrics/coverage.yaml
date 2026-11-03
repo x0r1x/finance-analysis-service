@@ -6,4 +6,18 @@ metrics:
   icr:
     numerator: [ebitda, ebit]
     denominator: interest
+  adscr:
+    base: dscr
+  dscr_min:
+    base: dscr
+  dscr_avg:
+    base: dscr
+  llcr:
+    numerator: [cfads]
+    denominator: debt_outstanding
+    rate: discount_rate
+  plcr:
+    numerator: [cfads]
+    denominator: debt_outstanding
+    rate: discount_rate
 tolerance: "0.005"

@@ -56,3 +56,6 @@ concepts:
     kind: ratio
     unit: ratio
     plausible: [0.8, 5.0]
+  icr:
+    kind: ratio
+    unit: ratio

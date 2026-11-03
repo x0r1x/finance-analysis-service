@@ -1,0 +1,186 @@
+"""Тип модели на книгах Packt и RVI и запись model_type.set."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from finance_analysis.adapters.api.app import create_app
+from finance_analysis.application.analyses import RATIO_METRICS
+from finance_analysis.application.service import Accepted
+from finance_analysis.domain.book import Actor
+from finance_analysis.domain.cover_metrics import METRIC_INPUTS
+from finance_analysis.domain.model_type import asks_for, decision_labels
+from tests.books import job_id
+
+pytestmark = pytest.mark.asyncio
+HEADERS = {"X-User-Id": "alex", "X-Client-Id": "desk"}
+PACKT = job_id("packt")
+RVI = job_id("rvi")
+# Счётчики fact-строк после нормализации меток: bound / ambiguous / unknown.
+_COUNTS = {"packt": {"bound": 4, "ambiguous": 7, "unknown": 82}, "rvi": {"bound": 5, "ambiguous": 6, "unknown": 218}}
+
+
+@pytest.fixture
+def app(settings, local_service, redis_runtime):
+    return create_app(settings, service=local_service, support=redis_runtime)
+
+
+def _client(app) -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://fas")
+
+
+async def _fact_counts(service, job: str) -> dict[str, int]:
+    head = (await service._read_head(job))[0]
+    rows = await service._dataset_rows(job, head, "dim_row")
+    bindings = await service._dataset_rows(job, head, "bindings")
+    facts = {row["binding_key"] for row in rows if row.get("kind") == "fact" and row.get("binding_key")}
+    counts: dict[str, int] = {}
+    for item in bindings:
+        if item.get("binding_key") not in facts:
+            continue
+        status = str(item.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+async def _ratios(service, job: str) -> dict:
+    result = await service.analyses.run(job, {"type": "ratios", "metrics": list(RATIO_METRICS)}, Actor(), wait_sec=120)
+    if not isinstance(result, Accepted):
+        return result
+    operation = await service.wait_op(result.operation["id"], 120_000)
+    assert operation["status"] == "succeeded", operation
+    analysis_id = operation["result"]["analysis_id"]
+    head = (await service._read_head(job))[0]
+    marker = json.loads(await service.store.get(f"books/{job}/{head.build_key}/results/{analysis_id}/result.json"))
+    return marker["result"]
+
+
+async def test_packt_and_rvi_are_project_finance(local_service):
+    """CFADS и debt service дают project_finance. Счётчики привязок не хуже среза глоссария."""
+
+    for alias, job in (("packt", PACKT), ("rvi", RVI)):
+        await local_service.perform_load(job, actor=Actor(), fence=1)
+        head = (await local_service._read_head(job))[0]
+        verdict = await local_service.resolve_model_type(job, head)
+        assert verdict.primary == "project_finance" and verdict.source == "inferred", alias
+        assert verdict.scores["project_finance"] >= 0.6
+        counts = await _fact_counts(local_service, job)
+        assert {key: counts.get(key, 0) for key in ("bound", "ambiguous", "unknown")} == _COUNTS[alias], counts
+        mapped = await local_service.mapping_view(job, Actor(), wait_sec=30)
+        assert not isinstance(mapped, Accepted)
+        labels = decision_labels(verdict)
+        dropped = [
+            row
+            for row in mapped["rows"]
+            if row.get("status") in {"unknown", "ambiguous"}
+            and row.get("source") != "confirmed"
+            and (users := METRIC_INPUTS.get(row.get("effective_concept"))) is not None
+            and not asks_for(tuple(users), local_service.model_types, labels)
+        ]
+        asked = await local_service.questions_view(job, Actor(), wait_sec=30)
+        assert not isinstance(asked, Accepted)
+        assert asked["questions"] == [] or asked["questions"][0]["kind"] != "model_type"
+        assert all(item["kind"] != "model_type" for item in asked["questions"])
+        ratios = await _ratios(local_service, job)
+        hidden = [item for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"]
+        assert hidden == [], alias
+        assert ratios["model_type"]["primary"] == "project_finance"
+        assert ratios["versions"]["model_types"] == local_service.model_types.version
+        concepts = sorted({row.get("effective_concept") for row in dropped})
+        skipped = [item["metric"] for item in ratios["result_data"]["metrics"] if item.get("skipped")]
+        assert (len(dropped), concepts) == (3, ["interest"])
+        assert skipped == ["icr", "llcr", "plcr"]
+
+
+async def test_model_type_set_needs_confirm_then_keeps_history(local_service):
+    await local_service.perform_load(PACKT, actor=Actor(), fence=1)
+    corporate = {"labels": ["corporate"], "primary": "corporate"}
+    denied = await local_service.submit_decisions(
+        PACKT,
+        {"decisions": [{"kind": "model_type.set", "target": "book", "value": corporate, "expected_seq": None}]},
+        Actor(),
+        wait_sec=60,
+    )
+    assert denied["results"][0]["status"] == "needs_confirm", denied
+    assert denied["results"][0]["warnings"][0]["code"] == "model_type_contradicts_signals"
+    accepted = await local_service.submit_decisions(
+        PACKT,
+        {
+            "decisions": [
+                {
+                    "kind": "model_type.set",
+                    "target": "book",
+                    "value": corporate,
+                    "expected_seq": None,
+                    "confirm": True,
+                    "warnings_ack": ["model_type_contradicts_signals"],
+                }
+            ]
+        },
+        Actor(),
+        wait_sec=60,
+    )
+    assert accepted["results"][0]["status"] == "accepted", accepted
+    seq = accepted["results"][0]["record_seq"]
+    again = await local_service.submit_decisions(
+        PACKT,
+        {
+            "decisions": [
+                {
+                    "kind": "model_type.set",
+                    "target": "book",
+                    "value": {"labels": ["project_finance"], "primary": "project_finance"},
+                    "expected_seq": None,
+                }
+            ]
+        },
+        Actor(),
+        wait_sec=60,
+    )
+    assert again["results"][0]["status"] == "rejected", again
+    assert again["results"][0]["errors"][0]["code"] == "supersede_required"
+    restored = await local_service.submit_decisions(
+        PACKT,
+        {
+            "decisions": [
+                {
+                    "kind": "model_type.set",
+                    "target": "book",
+                    "value": {"labels": ["project_finance"], "primary": "project_finance"},
+                    "expected_seq": seq,
+                    "supersedes": {"seq": seq},
+                }
+            ]
+        },
+        Actor(),
+        wait_sec=60,
+    )
+    assert restored["results"][0]["status"] == "accepted", restored
+    listed = await local_service.list_decisions(PACKT)
+    types = [item for item in listed["items"] if item.get("type") == "model_type.set"]
+    assert [item["value"]["primary"] for item in types] == ["corporate", "project_finance"]
+    head = (await local_service._read_head(PACKT))[0]
+    verdict = await local_service.resolve_model_type(PACKT, head)
+    assert verdict.source == "confirmed" and verdict.primary == "project_finance"
+
+
+async def test_profile_model_type_default_has_no_numbers(app):
+    async with _client(app) as client:
+        numbered = await client.put(
+            "/v1/profiles/desk",
+            headers={**HEADERS, "If-None-Match": "*"},
+            json={"model_type_default": {"labels": ["corporate"], "primary": "corporate", "score": 0.9}},
+        )
+        assert numbered.status_code == 400, numbered.text
+        created = await client.put(
+            "/v1/profiles/desk",
+            headers={**HEADERS, "If-None-Match": "*"},
+            json={"model_type_default": {"labels": ["corporate"], "primary": "corporate"}},
+        )
+        assert created.status_code == 200, created.text
+        body = await client.get("/v1/profiles/desk", headers=HEADERS)
+        assert body.status_code == 200, body.text
+        assert body.json()["body"]["model_type_default"] == {"labels": ["corporate"], "primary": "corporate"}

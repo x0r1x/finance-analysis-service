@@ -1,0 +1,10 @@
+concept: icr
+pref:
+  en: "Interest coverage ratio"
+  ru: "Коэффициент покрытия процентов"
+alt:
+  en: ["ICR"]
+  ru: ["ICR"]
+definition:
+  en: "EBITDA or EBIT divided by interest"
+  ru: "EBITDA или EBIT, делённые на проценты"

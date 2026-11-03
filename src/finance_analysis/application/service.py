@@ -37,6 +37,7 @@ from finance_analysis.application.metrics import (
     GLOSSARY_REVIEW_OPEN,
     GLOSSARY_UNKNOWN_SHARE,
 )
+from finance_analysis.application.model_types import load_model_types
 from finance_analysis.application.operations import append_event, create_op, read_op
 from finance_analysis.application.ports import Models
 from finance_analysis.application.project import derive_rows, prepare_rows, project
@@ -61,6 +62,7 @@ from finance_analysis.domain.book import (
     with_links,
 )
 from finance_analysis.domain.calibration import Calibrator
+from finance_analysis.domain.cover_metrics import METRIC_INPUTS
 from finance_analysis.domain.deadline import bind_request_deadline, effective
 from finance_analysis.domain.errors import (
     AlreadyExists,
@@ -85,6 +87,17 @@ from finance_analysis.domain.glossary_release import (
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.mapping import decide
+from finance_analysis.domain.metrics import _primaries
+from finance_analysis.domain.model_type import (
+    asks_for,
+    assignment_error,
+    contradicts_signals,
+    decision_labels,
+    infer,
+)
+from finance_analysis.domain.model_type import (
+    effective as model_type_effective,
+)
 from finance_analysis.domain.operational_year import resolve_operational_year
 from finance_analysis.domain.periods import marker_class, split_period_key
 from finance_analysis.domain.phases import phase_target, split_phase_target
@@ -143,9 +156,30 @@ _DECISION_KINDS = {
     "sign.set": "sign.set",
     "unit.set": "unit.set",
     "profile.set": "profile.set",
+    "model_type.set": "model_type.set",
 }
-_BOOK_KINDS = frozenset({"concept.absent", "profile.set"})
+_BOOK_KINDS = frozenset({"concept.absent", "profile.set", "model_type.set"})
 _CONCEPT_VALUE = frozenset({"concept.set", "concept.confirmed", "concept.rejected", "concept.absent"})
+
+
+def _model_type_seq(events: list[dict]) -> int:
+    found = 0
+    for event in fold(events).values():
+        if event.get("type") == "model_type.set" and isinstance(event.get("seq"), int):
+            found = int(event["seq"])
+    return found
+
+
+def _model_type_value(events: list[dict]) -> dict | None:
+    for event in fold(events).values():
+        if event.get("type") == "model_type.set" and isinstance(event.get("value"), dict):
+            return {**event["value"], "seq": event.get("seq")}
+    return None
+
+
+def _acked(item: dict, code: str) -> bool:
+    acks = item.get("warnings_ack")
+    return item.get("confirm") is True and isinstance(acks, list) and code in acks
 
 
 def _rejected(index: int, code: str, detail: str) -> dict:
@@ -245,7 +279,13 @@ class FasService:
         self.query = query
         self.support = support
         self.catalog = load_catalog()
-        self.guard = SemanticWriteGuard(store, catalog=self.catalog.ids)
+        self.model_types = load_model_types(concepts=self.catalog.ids)
+        self.guard = SemanticWriteGuard(
+            store,
+            catalog=self.catalog.ids,
+            model_types=self.model_types.ids,
+            max_labels=settings.model_type_max_labels,
+        )
         self.glossary = GlossaryStore(store, support, lock_ttl_ms=settings.lock_ttl_ms)
         self.fold_runs = 0
         self._fold_locks: dict[str, asyncio.Lock] = {}
@@ -370,6 +410,8 @@ class FasService:
             embed_model=base.embed_model,
             rerank_model=base.rerank_model,
             clm_model=base.clm_model,
+            model_types=self.model_types.version,
+            model_type_seq=_model_type_seq(events),
         )
 
     async def _profile_version(self, events: list[dict], current: str) -> str:
@@ -407,6 +449,7 @@ class FasService:
             embed_model=self.settings.embed_model,
             rerank_model=self.settings.rerank_model,
             clm_model=self.settings.clm_model,
+            model_types=self.model_types.version,
         )
 
     async def _write_attempt(self, job_id: str, build: str, attempt: str, tables: dict[str, list[dict]]) -> dict:
@@ -435,6 +478,9 @@ class FasService:
         # Сохраняем прочие поля головы, меняется только глоссарий и derive_key.
         versions_dict = dict(head.versions)
         versions_dict["glossary"] = glossary_version
+        events = await self.guard.read_all(job_id)
+        versions_dict["model_types"] = versions_dict.get("model_types") or self.model_types.version
+        versions_dict["model_type_seq"] = _model_type_seq(events)
         derive = Versions(
             glossary=glossary_version,
             taxonomy=versions_dict.get("taxonomy", "core-1"),
@@ -443,10 +489,11 @@ class FasService:
             embed_model=(versions_dict.get("models") or {}).get("embed", ""),
             rerank_model=(versions_dict.get("models") or {}).get("rerank", ""),
             clm_model=(versions_dict.get("models") or {}).get("clm", ""),
+            model_types=versions_dict.get("model_types") or self.model_types.version,
+            model_type_seq=_model_type_seq(events),
         ).derive(head.state_seq)
         if projected is None:
             projected = await self._projected_from_store(job_id, head.build_key)
-        events = await self.guard.read_all(job_id)
         derived = await self._derive(
             job_id,
             projected,
@@ -1253,6 +1300,42 @@ class FasService:
             seq = supersedes.get("seq") if supersedes else None
             if supersedes is not None and "seq" in supersedes and (isinstance(seq, bool) or not isinstance(seq, int)):
                 supersedes = None
+            if event_type == "model_type.set":
+                problem = assignment_error(
+                    item.get("value"),
+                    known=self.model_types.ids,
+                    max_labels=self.settings.model_type_max_labels,
+                )
+                if problem:
+                    results.append(_rejected(index, problem[0], problem[1]))
+                    continue
+                previous = _model_type_value(events)
+                if previous and (not supersedes or supersedes.get("seq") != previous.get("seq")):
+                    results.append(_rejected(index, "supersede_required", "тип модели уже задан"))
+                    continue
+                guessed = await self._type_guess(job_id, head)
+                if contradicts_signals(guessed.scores, str(item["value"]["primary"])) and not _acked(
+                    item, "model_type_contradicts_signals"
+                ):
+                    results.append(
+                        {
+                            "index": index,
+                            "status": "needs_confirm",
+                            "record_seq": None,
+                            "duplicate": False,
+                            "errors": [],
+                            "warnings": [
+                                {
+                                    "code": "model_type_contradicts_signals",
+                                    "requires_confirm": True,
+                                    "params": {"scores": guessed.scores, "primary": item["value"]["primary"]},
+                                }
+                            ],
+                        }
+                    )
+                    continue
+                if supersedes and item.get("expected_seq") is None:
+                    item = {**item, "expected_seq": supersedes.get("seq")}
             slot = (target, event_type)
             expected = followed[slot] if slot in followed else item.get("expected_seq")
             written = await self.guard.write_decision(
@@ -1273,7 +1356,7 @@ class FasService:
             if not written.accepted:
                 results.append(_rejected(index, written.code or "schema_invalid", written.detail))
                 continue
-            if isinstance(concept, str) or event_type == "phase.set":
+            if isinstance(concept, str) or event_type in {"phase.set", "model_type.set"}:
                 events = await self.guard.read_all(job_id)
             record = written.event or {}
             if isinstance(record.get("seq"), int):
@@ -1577,14 +1660,68 @@ class FasService:
             counts[row["status"]] = counts.get(row["status"], 0) + 1
         return {"build_key": head.build_key, "rows": filter_bindings(rows, query), "counts": counts}
 
+    async def _type_guess(self, job_id: str, head: Head):
+        """Score типов по привязанным понятиям и именам листов. `other` не голосует."""
+
+        try:
+            bindings = await self._dataset_rows(job_id, head, "bindings")
+        except (NotFound, StopIteration):
+            bindings = []
+        try:
+            rows = await self._dataset_rows(job_id, head, "dim_row")
+        except (NotFound, StopIteration):
+            rows = []
+        return infer(
+            self.model_types,
+            bound=frozenset(_primaries(bindings)),
+            sheets=frozenset(str(row["sheet"]) for row in rows if row.get("sheet")),
+            accept=self.settings.model_type_accept,
+            gap=self.settings.model_type_gap,
+        )
+
+    async def resolve_model_type(self, job_id: str, head: Head):
+        """Действующий тип: факт книги, вывод по правилам, профиль. Score пишется в лог."""
+
+        guessed = await self._type_guess(job_id, head)
+        events = await self.guard.read_all(job_id)
+        profile_id = _profile_id(events)
+        body = await self.glossary.profile_body(profile_id) if profile_id else None
+        default = body.get("model_type_default") if isinstance(body, dict) else None
+        if not isinstance(default, dict):
+            default = None
+        verdict = model_type_effective(
+            guessed,
+            confirmed=_model_type_value(events),
+            profile_default=default,
+            profile_version=head.versions.get("profile"),
+        )
+        LOG.info(
+            "model_type job=%s scores=%s source=%s primary=%s",
+            job_id,
+            guessed.scores,
+            verdict.source,
+            verdict.primary,
+        )
+        return verdict
+
     async def questions_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
+        head = await self._head_ready(job_id, actor, wait_sec)
+        if isinstance(head, Accepted):
+            return head
         mapped = await self.mapping_view(job_id, actor, wait_sec=wait_sec)
         if isinstance(mapped, Accepted):
             return mapped
+        verdict = await self.resolve_model_type(job_id, head)
+        labels = decision_labels(verdict)
         questions = []
         limit = self.settings.question_max_candidates
         for row in mapped["rows"]:
             if row.get("status") not in {"unknown", "ambiguous"} or row.get("source") == "confirmed":
+                continue
+            concept = row.get("effective_concept")
+            users = METRIC_INPUTS.get(concept)
+            # Строка без понятия остаётся: вопросы по понятиям вместо строк — отдельный срез.
+            if users is not None and not asks_for(tuple(users), self.model_types, labels):
                 continue
             kind, subject, scope = "concept", row["binding_key"], job_id
             digest = hashlib.sha1(SEP.join([kind, subject, scope]).encode()).hexdigest()
@@ -1605,7 +1742,23 @@ class FasService:
                     "candidates": candidates,
                 }
             )
-        return {"questions": questions[:], "build_key": mapped["build_key"]}
+        if verdict.source == "unresolved":
+            digest = hashlib.sha1(SEP.join(["model_type", "book", job_id]).encode()).hexdigest()
+            questions.insert(
+                0,
+                {
+                    "question_id": digest,
+                    "kind": "model_type",
+                    "subject": "book",
+                    "scope": job_id,
+                    "reason": verdict.reason or "unknown",
+                    "candidates": [
+                        {"label": item.type_id, "score": item.score, "reasons": list(item.reasons)}
+                        for item in verdict.candidates
+                    ],
+                },
+            )
+        return {"questions": questions, "build_key": mapped["build_key"], "model_type": verdict.as_dict()}
 
     async def coverage_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
         head = await self._head_ready(job_id, actor, wait_sec)

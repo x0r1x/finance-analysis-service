@@ -137,6 +137,19 @@ class MarkerMix(Rule):
         ]
 
 
+def _chain_concepts(data: AuditInput) -> set[str]:
+    """Понятия цепочки только тех метрик, которые применимы к типу модели."""
+
+    metrics = data.applicable_metrics
+    watched = set()
+    dscr_family = {"dscr", "adscr", "dscr_min", "dscr_avg", "llcr", "plcr"}
+    if metrics is None or metrics & dscr_family:
+        watched.update({"debt_service", "dscr"})
+    if metrics is None or "icr" in metrics:
+        watched.update({"interest", "icr"})
+    return watched
+
+
 class UnmappedInMetricChain(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         if not data.bindings:
@@ -146,7 +159,8 @@ class UnmappedInMetricChain(Rule):
             for row in data.bindings
             if row.get("is_primary") and row.get("status") in _BOUND and row.get("row_key")
         }
-        if not {"dscr", "icr"} & set(concept_of.values()):
+        watched = _chain_concepts(data)
+        if not ({"dscr", "icr"} & watched) & set(concept_of.values()):
             return []
         parents = _parents(data)
         findings = []
@@ -154,9 +168,9 @@ class UnmappedInMetricChain(Rule):
             if row.get("status") != "unknown" or not row.get("row_key"):
                 continue
             reached = {concept_of[key] for key in _ancestors(parents, row["row_key"]) if key in concept_of}
-            if "debt_service" in reached or "interest" in reached:
+            if {"debt_service", "interest"} & reached & watched:
                 severity = "high"
-            elif "dscr" in reached or "icr" in reached:
+            elif {"dscr", "icr"} & reached & watched:
                 severity = "medium"
             else:
                 continue

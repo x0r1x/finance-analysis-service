@@ -40,7 +40,7 @@ from finance_analysis.domain.mapping import label_id, structure_pass
 HEAD = "glossary/_head.json"
 PROPOSALS = "glossary/proposals.json"
 INDEX = "glossary/_label_index.json"
-_PROFILE_FIELDS = frozenset({"sign_convention", "marker_class"})
+_PROFILE_FIELDS = frozenset({"sign_convention", "marker_class", "model_type_default"})
 _SIGNS = frozenset({"outflow_negative", "outflow_positive"})
 _MARKERS = frozenset({None, "actual", "plan"})
 PROPOSAL_TYPES = frozenset({"synonym_of", "new_concept_under", "not_a_concept", "book_local"})
@@ -377,7 +377,23 @@ class GlossaryStore:
             raise InvalidArgument("тело профиля должно быть объектом")
         extra = set(body) - _PROFILE_FIELDS
         if extra:
-            raise InvalidArgument("в профиле только sign_convention и marker_class", extra={"fields": sorted(extra)})
+            raise InvalidArgument(
+                "в профиле только sign_convention, marker_class и model_type_default",
+                extra={"fields": sorted(extra)},
+            )
+        if "model_type_default" in body:
+            from finance_analysis.application.model_types import load_model_types
+            from finance_analysis.domain.model_type import assignment_error
+            from finance_analysis.settings import Settings
+
+            catalog = load_model_types()
+            problem = assignment_error(
+                body["model_type_default"],
+                known=catalog.ids,
+                max_labels=Settings().model_type_max_labels,
+            )
+            if problem:
+                raise InvalidArgument(problem[1])
         if "sign_convention" in body and body["sign_convention"] not in _SIGNS:
             raise InvalidArgument("sign_convention: outflow_negative или outflow_positive")
         if "marker_class" in body and body["marker_class"] not in _MARKERS:
@@ -388,6 +404,8 @@ class GlossaryStore:
                 if current is not None:
                     raise PreconditionFailed("профиль уже есть", extra={"etag": f"p-{current['seq']}"})
                 saved = {"sign_convention": body.get("sign_convention", "outflow_negative"), "marker_class": body.get("marker_class")}
+                if "model_type_default" in body:
+                    saved["model_type_default"] = body["model_type_default"]
                 return await self._write_profile(profile, 1, saved, etag)
             if current is None or not if_match:
                 raise PreconditionRequired("нужен If-Match или If-None-Match: *")
@@ -397,6 +415,10 @@ class GlossaryStore:
                 "sign_convention": body.get("sign_convention", current["body"]["sign_convention"]),
                 "marker_class": body["marker_class"] if "marker_class" in body else current["body"]["marker_class"],
             }
+            if "model_type_default" in body:
+                saved["model_type_default"] = body["model_type_default"]
+            elif "model_type_default" in current["body"]:
+                saved["model_type_default"] = current["body"]["model_type_default"]
             return await self._write_profile(profile, int(current["seq"]) + 1, saved, etag)
 
     async def profile_ref(self, profile: str) -> str | None:

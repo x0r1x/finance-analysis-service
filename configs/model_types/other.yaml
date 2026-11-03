@@ -1,0 +1,8 @@
+id: other
+title:
+  ru: "Иное"
+  en: "Other"
+signals: []
+required_concepts: []
+metrics:
+  "*": {use: optional}

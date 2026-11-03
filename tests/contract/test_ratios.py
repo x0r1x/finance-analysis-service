@@ -139,10 +139,12 @@ async def test_rvi_min_and_average_dscr_match_the_model_summary(local_service):
     model_avg = _first_value(facts, (await _row(local_service, "Average Debt Service Coverage Ratio (DSCR)"))["row_key"])
     assert abs(Decimal(mean["value"]) - model_avg) <= Decimal("0.005")
     assert any(row["metric"] == "dscr_avg" and row["variant"] == "ratio_of_sums" for row in rows)
-    # Годовая книга: ADSCR не отдаётся; LLCR без ставки и остатка долга — missing_input, а не число.
+    # Годовая книга: ADSCR не отдаётся. LLCR необязателен для project_finance: нет входа — пропуск, без вопроса.
     assert any(item["code"] == "adscr_not_applicable" for item in got["warnings"])
     assert not any(row["metric"] in {"adscr", "llcr"} for row in rows)
-    assert any(item["kind"] == "concept" and item["subject"] in {"debt_outstanding", "discount_rate"} for item in got["needs_input"])
+    assert got["needs_input"] == []
+    skipped = [item for item in got["result_data"]["metrics"] if item["metric"] == "llcr"]
+    assert skipped == [{"metric": "llcr", "applicability": "optional", "skipped": "input_absent"}]
 
 
 async def test_concept_absent_gives_absent_in_book_and_missing_total_row(local_service):
@@ -160,8 +162,25 @@ async def test_concept_absent_gives_absent_in_book_and_missing_total_row(local_s
         ],
     )
     got = await _ratios(local_service, ["llcr"])
-    assert got["needs_input"] == [{"kind": "concept", "reason": "absent_in_book", "subject": "debt_outstanding"}]
+    assert got["needs_input"] == []
     assert got["result_data"]["ratios"] == []
+    assert any(item["code"] == "input_absent" and item["params"]["metric"] == "llcr" for item in got["warnings"])
     missing = [item for item in got["result_data"]["findings"] if item["code"] == "missing_total_row"]
     assert [item["params"]["concept"] for item in missing] == ["debt_outstanding"]
     assert "llcr" in missing[0]["params"]["needed_by"]
+
+
+async def test_required_concept_absent_still_asks(local_service):
+    """Обязательный вход DSCR с `concept.absent` остаётся вопросом."""
+
+    await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    debt = await _row(local_service, "Total debt service")
+    await _set(
+        local_service,
+        [
+            _concept(debt, "debt_service"),
+            {"kind": "concept.absent", "target": "book", "value": "cfads", "expected_seq": None},
+        ],
+    )
+    got = await _ratios(local_service, ["dscr"])
+    assert {"kind": "concept", "reason": "absent_in_book", "subject": "cfads"} in got["needs_input"]

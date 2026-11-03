@@ -28,6 +28,7 @@ _IDS = frozenset(
         "dscr_default",
         "target_dscr",
         "dscr",
+        "icr",
     }
 )
 
