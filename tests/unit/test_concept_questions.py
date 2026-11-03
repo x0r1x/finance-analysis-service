@@ -156,6 +156,28 @@ def test_orphan_row_is_not_a_question_and_reject_drops_the_candidate():
     assert again["interest"]["candidates"] == []
 
 
+def test_absent_inferred_primary_does_not_close_one_of():
+    def primary(concept: str, source: str) -> dict:
+        return {
+            "binding_key": concept,
+            "effective_concept": concept,
+            "is_primary": True,
+            "status": "bound",
+            "source": source,
+        }
+
+    def absent(concept: str) -> list[dict]:
+        return [{"seq": 1, "type": "concept.absent", "target": "book", "binding_key": "book", "value": concept}]
+
+    inferred = _questions(bindings=[primary("ebitda", "inferred")], events=absent("ebitda"))
+    assert [item["subject"] for item in inferred] == ["interest", "ebit"]
+    assert [item["subject"] for item in _questions(events=absent("ebitda"))] == ["interest", "ebit"]
+    other = _questions(bindings=[primary("ebit", "inferred")], events=absent("ebit"))
+    assert [item["subject"] for item in other] == ["interest", "ebitda"]
+    confirmed = _questions(bindings=[primary("ebitda", "confirmed")], events=absent("ebitda"))
+    assert [item["subject"] for item in confirmed] == ["interest"]
+
+
 def test_bound_numerator_closes_the_one_of_group():
     catalog = _catalog()
     assert open_concepts(

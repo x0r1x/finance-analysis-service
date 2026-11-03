@@ -76,8 +76,9 @@ def concept_questions(
 ) -> list[dict]:
     """Открытые вопросы по понятиям. Строка без такого понятия в пакет не входит."""
 
-    bound = frozenset(_primaries(bindings))
-    absent = absent_concepts(bindings, absent_in_journal(events))
+    absent = frozenset(absent_concepts(bindings, absent_in_journal(events)))
+    # Выведенная основная строка после concept.absent не закрывает one_of: ICR её не использует.
+    bound = frozenset(_primaries(bindings, absent))
     rejected = rejected_pairs(events)
     by_key = {row["binding_key"]: row for row in rows if row.get("binding_key")}
     questions = []
