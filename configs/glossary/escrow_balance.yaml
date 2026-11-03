@@ -1,0 +1,7 @@
+concept: escrow_balance
+pref:
+  en: "Escrow account balance"
+  ru: "Остаток на счетах эскроу"
+definition:
+  en: "Balance of escrow accounts under a shared-construction law"
+  ru: "Остаток на счетах эскроу по договору долевого участия"

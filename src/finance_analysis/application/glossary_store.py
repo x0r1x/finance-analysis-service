@@ -40,7 +40,7 @@ from finance_analysis.domain.mapping import label_id, structure_pass
 HEAD = "glossary/_head.json"
 PROPOSALS = "glossary/proposals.json"
 INDEX = "glossary/_label_index.json"
-_PROFILE_FIELDS = frozenset({"sign_convention", "marker_class", "model_type_default"})
+_PROFILE_FIELDS = frozenset({"sign_convention", "marker_class", "model_type_default", "dscr_definition"})
 _SIGNS = frozenset({"outflow_negative", "outflow_positive"})
 _MARKERS = frozenset({None, "actual", "plan"})
 PROPOSAL_TYPES = frozenset({"synonym_of", "new_concept_under", "not_a_concept", "book_local"})
@@ -378,7 +378,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class и model_type_default",
+                "в профиле только sign_convention, marker_class, model_type_default и dscr_definition",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -394,6 +394,15 @@ class GlossaryStore:
             )
             if problem:
                 raise InvalidArgument(problem[1])
+        if "dscr_definition" in body:
+            from finance_analysis.application.catalog import load_catalog
+            from finance_analysis.domain.covenant import dscr_definition_error
+
+            package = load_catalog()
+            money = frozenset(name for name, item in package.concepts.items() if item.unit == "money")
+            problem = dscr_definition_error(body["dscr_definition"], concepts=package.ids, money=money)
+            if problem:
+                raise InvalidArgument(problem)
         if "sign_convention" in body and body["sign_convention"] not in _SIGNS:
             raise InvalidArgument("sign_convention: outflow_negative или outflow_positive")
         if "marker_class" in body and body["marker_class"] not in _MARKERS:
@@ -406,6 +415,8 @@ class GlossaryStore:
                 saved = {"sign_convention": body.get("sign_convention", "outflow_negative"), "marker_class": body.get("marker_class")}
                 if "model_type_default" in body:
                     saved["model_type_default"] = body["model_type_default"]
+                if "dscr_definition" in body:
+                    saved["dscr_definition"] = body["dscr_definition"]
                 return await self._write_profile(profile, 1, saved, etag)
             if current is None or not if_match:
                 raise PreconditionRequired("нужен If-Match или If-None-Match: *")
@@ -419,6 +430,10 @@ class GlossaryStore:
                 saved["model_type_default"] = body["model_type_default"]
             elif "model_type_default" in current["body"]:
                 saved["model_type_default"] = current["body"]["model_type_default"]
+            if "dscr_definition" in body:
+                saved["dscr_definition"] = body["dscr_definition"]
+            elif "dscr_definition" in current["body"]:
+                saved["dscr_definition"] = current["body"]["dscr_definition"]
             return await self._write_profile(profile, int(current["seq"]) + 1, saved, etag)
 
     async def profile_ref(self, profile: str) -> str | None:

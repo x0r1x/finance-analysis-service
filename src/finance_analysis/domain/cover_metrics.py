@@ -464,7 +464,8 @@ def ratio_cells(row: dict, facts: list[dict], bindings: list[dict], periods: lis
     axis = row["axis_id"]
     own = row.get("window") or row.get("over") or [row["period_id"]]
     wanted = {aligned.get((axis, pid), (axis, pid)) for pid in own}
-    scoped = {name: wanted for name in _CITED.get(row["metric"], ()) if name in primaries}
+    cited = row.get("inputs") or _CITED.get(row["metric"], ())
+    scoped = {name: wanted for name in cited if name in primaries}
     if row["metric"] in LOAN_LIFE and "debt_outstanding" in primaries:
         scoped["debt_outstanding"] = {aligned.get((axis, row["period_id"]), (axis, row["period_id"]))}
     by_row = {primaries[name]["row_key"]: keys for name, keys in scoped.items()}

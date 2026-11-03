@@ -24,12 +24,28 @@ class TypeSpec:
     signals: tuple[Signal, ...]
     required_concepts: frozenset[str]
     metrics: dict[str, str]
+    variants: dict[str, str]
 
 
 @dataclass(frozen=True)
 class MetricInputs:
     all_of: frozenset[str]
     one_of: frozenset[str]
+
+
+@dataclass(frozen=True)
+class Side:
+    plus: tuple[str, ...]
+    minus: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Composed:
+    """Числитель и знаменатель из понятий каталога и окно `LTM` или `period`."""
+
+    numerator: Side
+    denominator: Side
+    window: str
 
 
 @dataclass(frozen=True)
@@ -41,6 +57,8 @@ class ModelTypeCatalog:
     metric_inputs: dict[str, MetricInputs]
     documents: dict[str, dict]
     compatible: frozenset[frozenset[str]]
+    composed: dict[str, Composed]
+    variant_inputs: dict[str, dict[str, MetricInputs]]
 
     @property
     def ids(self) -> frozenset[str]:
@@ -296,6 +314,14 @@ def applicable_metrics(catalog: ModelTypeCatalog, labels: tuple[str, ...], metri
     return frozenset(metric for metric in metrics if applicability(catalog, labels, metric) != "not_applicable")
 
 
+def confirmed_variants(catalog: ModelTypeCatalog, verdict: Effective) -> dict[str, str]:
+    """Варианты формул уверенного primary. Пока тип не уверен, считается базовая формула."""
+
+    if verdict.source == "unresolved" or not verdict.primary or verdict.primary not in catalog.types:
+        return {}
+    return dict(catalog.types[verdict.primary].variants)
+
+
 def decision_labels(verdict: Effective) -> tuple[str, ...]:
     """Метки, по которым считается применимость: подтверждённые или объединение кандидатов."""
 
@@ -316,13 +342,15 @@ def open_concepts(
     """Понятия открытых вопросов: входы required-метрик без привязки и без concept.absent.
 
     `one_of` спрашивается целиком, пока ни один член не привязан. Необязательная
-    метрика и `not_applicable` вопросов не дают.
+    метрика и `not_applicable` вопросов не дают. Если у обязательной метрики
+    один общий вариант, спрашиваются его входы, а не базовая формула.
     """
 
     asked: list[str] = []
     seen: set[str] = set()
-    for metric, spec in catalog.metric_inputs.items():
-        if applicability(catalog, labels, metric) != "required":
+    for metric in catalog.metric_inputs:
+        spec = _required_inputs(catalog, labels, metric)
+        if spec is None:
             continue
         group = sorted(spec.all_of)
         if spec.one_of and not (spec.one_of & bound):
@@ -345,9 +373,28 @@ def concept_metrics(
     """required-метрики, которым ещё нужен этот вход (`needed_by` вопроса)."""
 
     found: list[str] = []
-    for metric, spec in catalog.metric_inputs.items():
-        if applicability(catalog, labels, metric) != "required":
+    for metric in catalog.metric_inputs:
+        spec = _required_inputs(catalog, labels, metric)
+        if spec is None:
             continue
         if concept in spec.all_of or (concept in spec.one_of and not (spec.one_of & bound)):
             found.append(metric)
     return tuple(found)
+
+
+def _required_inputs(catalog: ModelTypeCatalog, labels: tuple[str, ...], metric: str) -> MetricInputs | None:
+    """Входы required-метрики. Вариант берётся, если все такие метки называют один и тот же."""
+
+    if applicability(catalog, labels, metric) != "required":
+        return None
+    base = catalog.metric_inputs[metric]
+    chosen: list[MetricInputs] = []
+    for type_id in labels or tuple(catalog.types):
+        if type_id not in catalog.types or catalog.use(type_id, metric) != "required":
+            continue
+        variant = catalog.types[type_id].variants.get(metric)
+        override = catalog.variant_inputs.get(metric, {}).get(variant) if variant else None
+        chosen.append(override or base)
+    if not chosen or any(item != chosen[0] for item in chosen[1:]):
+        return base
+    return chosen[0]

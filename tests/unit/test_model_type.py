@@ -40,8 +40,8 @@ def test_cfads_and_debt_service_are_project_finance():
     assert got.scores["corporate"] == 0.0
 
 
-def test_three_statements_are_corporate_and_dscr_does_not_apply():
-    """Синтетическая corporate-книга: три формы отчётности, без строк клиента."""
+def test_three_statements_are_corporate_and_covenant_dscr_is_optional():
+    """Синтетическая corporate-книга: три формы. Ковенантный DSCR необязателен, семейство PF — нет."""
     catalog = _catalog()
     got = infer(
         catalog,
@@ -52,7 +52,10 @@ def test_three_statements_are_corporate_and_dscr_does_not_apply():
     )
     assert got.confident is True
     assert got.primary == "corporate"
-    assert applicability(catalog, got.labels, "dscr") == "not_applicable"
+    assert applicability(catalog, got.labels, "dscr") == "optional"
+    assert catalog.types["corporate"].variants["dscr"] == "corporate_covenant"
+    assert applicability(catalog, got.labels, "net_debt_ebitda") == "optional"
+    assert applicability(catalog, got.labels, "escrow_coverage") == "not_applicable"
     assert applicability(catalog, got.labels, "llcr") == "not_applicable"
     assert applicability(catalog, got.labels, "icr") == "required"
 
@@ -135,7 +138,12 @@ def test_flat_sheet_group_fails_check_config(tmp_path, monkeypatch):
     from finance_analysis.cli import _check_config
 
     catalog = _catalog()
-    validate_model_types(catalog.documents, concepts=catalog.concepts, metric_inputs=catalog.metric_inputs)
+    validate_model_types(
+        catalog.documents,
+        concepts=catalog.concepts,
+        metric_inputs=catalog.metric_inputs,
+        variant_inputs=catalog.variant_inputs,
+    )
     folder = tmp_path / "model_types"
     shutil.copytree(model_types_dir(), folder)
     body = yaml.safe_load((folder / "corporate.yaml").read_text(encoding="utf-8"))
@@ -154,4 +162,9 @@ def test_validator_rejects_an_unknown_metric():
     corporate["metrics"] = {**corporate["metrics"], "nope": {"use": "required"}}
     types["corporate"] = corporate
     with pytest.raises(ModelTypeInvalid, match="nope"):
-        validate_model_types(types, concepts=catalog.concepts, metric_inputs=catalog.metric_inputs)
+        validate_model_types(
+            types,
+            concepts=catalog.concepts,
+            metric_inputs=catalog.metric_inputs,
+            variant_inputs=catalog.variant_inputs,
+        )

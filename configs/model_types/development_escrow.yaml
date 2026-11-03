@@ -1,0 +1,19 @@
+id: development_escrow
+title:
+  ru: "Девелопмент со счетами эскроу (214-ФЗ)"
+  en: "Development with escrow accounts"
+signals:
+  - kind: concepts_bound_all
+    concepts: [escrow_balance]
+    weight: 1
+required_concepts: [escrow_balance, debt_outstanding]
+metrics:
+  escrow_coverage: {use: required}
+  dscr: {use: optional, variant: pf}
+  icr: {use: not_applicable}
+  adscr: {use: not_applicable}
+  dscr_min: {use: not_applicable}
+  dscr_avg: {use: not_applicable}
+  llcr: {use: not_applicable}
+  plcr: {use: not_applicable}
+  net_debt_ebitda: {use: not_applicable}

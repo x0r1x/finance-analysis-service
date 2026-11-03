@@ -59,3 +59,18 @@ concepts:
   icr:
     kind: ratio
     unit: ratio
+  cash_taxes:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+  net_debt:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  dscr_covenant:
+    kind: ratio
+    unit: ratio
+  escrow_balance:
+    kind: measure
+    unit: money
+    expected_sign: stock

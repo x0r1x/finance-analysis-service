@@ -3,6 +3,15 @@ metrics:
   dscr:
     numerator: [cfads]
     denominator: debt_service
+    variants:
+      pf:
+        numerator: [cfads]
+        denominator: debt_service
+        window: period
+      corporate_covenant:
+        numerator: {plus: [ebitda], minus: [cash_taxes, capex]}
+        denominator: {plus: [interest, principal]}
+        window: LTM
   icr:
     numerator: [ebitda, ebit]
     denominator: interest
@@ -20,4 +29,12 @@ metrics:
     numerator: [cfads]
     denominator: debt_outstanding
     rate: discount_rate
+  net_debt_ebitda:
+    numerator: {plus: [net_debt]}
+    denominator: {plus: [ebitda]}
+    window: LTM
+  escrow_coverage:
+    numerator: {plus: [escrow_balance]}
+    denominator: {plus: [debt_outstanding]}
+    window: period
 tolerance: "0.005"

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from finance_analysis.domain.audit import ROWS, ROWS_LINKS, AuditInput, Finding, Rule
+from finance_analysis.domain.audit import (
+    ROWS,
+    ROWS_LINKS,
+    AuditInput,
+    Finding,
+    Rule,
+    project_finance_dscr,
+)
 from finance_analysis.domain.metrics import coverage_ratio
 
 _TOLERANCE = Decimal("0.005")
@@ -36,9 +43,7 @@ def _cached(data: AuditInput, row_key: str) -> dict[tuple[str, str], Decimal]:
 
 class RatioMismatch(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
-        if not data.bindings:
-            return []
-        if data.applicable_metrics is not None and "dscr" not in data.applicable_metrics:
+        if not data.bindings or not project_finance_dscr(data):
             return []
         model = _primary(data, "dscr")
         if model is None or _primary(data, "cfads") is None or _primary(data, "debt_service") is None:

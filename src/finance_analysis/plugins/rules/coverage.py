@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
-from finance_analysis.domain.audit import ROWS, AuditInput, Finding, Location, Rule
+from finance_analysis.domain.audit import (
+    ROWS,
+    AuditInput,
+    Finding,
+    Location,
+    Rule,
+    project_finance_dscr,
+)
 from finance_analysis.domain.cover_metrics import (
     METRIC_INPUTS,
     add_months,
@@ -45,9 +52,7 @@ def _phases(data: AuditInput) -> dict[tuple[str, str], str]:
 def dscr_rows(data: AuditInput) -> list[dict]:
     """DSCR FAS по тестовым периодам книги, как в `…/analyses` `ratios`."""
 
-    if not data.bindings:
-        return []
-    if data.applicable_metrics is not None and "dscr" not in data.applicable_metrics:
+    if not data.bindings or not project_finance_dscr(data):
         return []
     phases = _phases(data)
     result = coverage_ratio(

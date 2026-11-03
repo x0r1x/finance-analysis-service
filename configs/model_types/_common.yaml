@@ -1,3 +1,4 @@
 # Пары совместимости гибридов — срез 2. Пороги — в settings.py.
-compatible: []
+compatible:
+  - [development_escrow, project_finance]
 default_use: not_applicable

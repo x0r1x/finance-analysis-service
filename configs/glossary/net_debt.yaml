@@ -1,0 +1,7 @@
+concept: net_debt
+pref:
+  en: "Net debt"
+  ru: "Чистый долг"
+definition:
+  en: "Debt net of cash"
+  ru: "Долг за вычетом денежных средств"

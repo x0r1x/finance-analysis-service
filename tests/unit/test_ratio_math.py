@@ -185,6 +185,26 @@ def test_dscr_findings_stay_quiet_when_only_icr_applies():
     live = AuditInput(periods=periods, facts=facts, bindings=bindings, applicable_metrics=frozenset({"dscr"}))
     assert [item.code for item in RATIO_MISMATCH.check(live)] == ["ratio_mismatch", "ratio_mismatch", "ratio_mismatch"]
     assert len(PERIOD_GRAIN_MISMATCH.check(live)) == 3
+    corporate = AuditInput(
+        periods=periods,
+        facts=facts,
+        bindings=bindings,
+        applicable_metrics=frozenset({"dscr"}),
+        dscr_variant="corporate_covenant",
+    )
+    assert RATIO_MISMATCH.check(corporate) == []
+    assert dscr_rows(corporate) == []
+    assert SCULPTING_DEVIATION.check(corporate) == []
+    assert PERIOD_GRAIN_MISMATCH.check(corporate) == []
+    project = AuditInput(
+        periods=periods,
+        facts=facts,
+        bindings=bindings,
+        applicable_metrics=frozenset({"dscr"}),
+        dscr_variant="pf",
+    )
+    assert len(RATIO_MISMATCH.check(project)) == 3
+    assert len(PERIOD_GRAIN_MISMATCH.check(project)) == 3
 
 
 def test_dscr_cache_must_match_the_model_row():
