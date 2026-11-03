@@ -167,6 +167,13 @@ class MissingTotalRow(Rule):
         absent = sorted(concept for concept in absent_concepts(data.bindings, data.absent) if concept in METRIC_INPUTS)
         findings = []
         for concept in absent:
+            needed = [
+                metric
+                for metric in METRIC_INPUTS[concept]
+                if data.applicable_metrics is None or metric in data.applicable_metrics
+            ]
+            if not needed:
+                continue
             parts = data.composition.get(concept, ())
             locations = [
                 Location(None, row["row_key"], None, None)
@@ -178,7 +185,7 @@ class MissingTotalRow(Rule):
                     data,
                     locations=locations,
                     subject=f"concept:{concept}",
-                    params={"concept": concept, "needed_by": list(METRIC_INPUTS[concept]), "components": list(parts)},
+                    params={"concept": concept, "needed_by": needed, "components": list(parts)},
                 )
             )
         return findings

@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     recall_top_k: int = Field(default=20, alias="RECALL_TOP_K")
     rerank_top_k: int = Field(default=5, alias="RERANK_TOP_K")
     question_max_candidates: int = Field(default=5, alias="QUESTION_MAX_CANDIDATES")
+    # Стартовые пороги вывода типа модели. Калибровка — позже, на eval-корпусе (§5.10.6).
+    model_type_accept: float = Field(default=0.6, ge=0, le=1, alias="FAS_MODEL_TYPE_ACCEPT")
+    model_type_gap: float = Field(default=0.15, ge=0, le=1, alias="FAS_MODEL_TYPE_GAP")
+    model_type_max_labels: int = Field(default=3, ge=1, alias="FAS_MODEL_TYPE_MAX_LABELS")
     knn_k: int = Field(default=5, alias="KNN_K")
     examples_refresh_sec: float = Field(default=60, alias="EXAMPLES_REFRESH_SEC")
 

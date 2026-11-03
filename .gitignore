@@ -12,3 +12,4 @@ data/
 .coverage
 htmlcov/
 tests/fixtures/local-builder/
+*.local.yaml

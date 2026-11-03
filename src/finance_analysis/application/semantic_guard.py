@@ -9,6 +9,7 @@ from finance_analysis.application.derived_store import DerivedWrite, write_deriv
 from finance_analysis.application.journal import Journal
 from finance_analysis.domain.book import Actor
 from finance_analysis.domain.errors import SemanticRejected
+from finance_analysis.domain.model_type import assignment_error
 from finance_analysis.domain.phases import check_phase_order, check_phase_value
 from finance_analysis.domain.validation.semantics import (
     Verdict,
@@ -39,11 +40,15 @@ class SemanticWriteGuard:
         *,
         catalog: frozenset[str] | None = None,
         targets: frozenset[str] | None = None,
+        model_types: frozenset[str] | None = None,
+        max_labels: int = 3,
     ) -> None:
         self._store = store
         self._journal = Journal(store)
         self._catalog = catalog or frozenset()
         self._targets = targets or frozenset()
+        self._model_types = model_types or frozenset()
+        self._max_labels = max_labels
 
     async def read_all(self, job_id: str) -> list[dict]:
         return await self._journal.read_all(job_id)
@@ -104,6 +109,10 @@ class SemanticWriteGuard:
         binding_key: str | None = None,
         supersedes: dict | None = None,
     ) -> WriteResult:
+        if event_type == "model_type.set":
+            problem = assignment_error(value, known=self._model_types, max_labels=self._max_labels)
+            if problem:
+                return WriteResult(False, code=problem[0], detail=problem[1])
         if event_type == "phase.set":
             verdict = check_phase_value(value)
             if not verdict.accepted:

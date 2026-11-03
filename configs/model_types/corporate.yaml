@@ -1,0 +1,20 @@
+id: corporate
+title:
+  ru: "Корпоративная (три формы)"
+  en: "Corporate three-statement"
+signals:
+  - kind: sheets_any
+    groups:
+      - [ОПиУ, P&L, "Income statement"]
+      - [Баланс, "Balance sheet"]
+      - [ДДС, "Cash flow"]
+    weight: 1
+required_concepts: [ebitda, interest]
+metrics:
+  icr: {use: required}
+  dscr: {use: not_applicable}
+  adscr: {use: not_applicable}
+  dscr_min: {use: not_applicable}
+  dscr_avg: {use: not_applicable}
+  llcr: {use: not_applicable}
+  plcr: {use: not_applicable}

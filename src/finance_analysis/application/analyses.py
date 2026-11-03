@@ -60,6 +60,11 @@ from finance_analysis.domain.ids import fingerprint as check_fingerprint
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.mapping import absent_in_journal
 from finance_analysis.domain.metrics import _primaries, coverage_ratio
+from finance_analysis.domain.model_type import (
+    applicability,
+    applicable_metrics,
+    decision_labels,
+)
 from finance_analysis.plugins.rules.coverage import (
     MISSING_TOTAL_ROW,
     PERIOD_GRAIN_MISMATCH,
@@ -420,6 +425,8 @@ class Analyses:
             phase = phases.get((period["axis_id"], period["period_id"]))
             if phase:
                 period["phase"] = phase
+        verdict = await self.service.resolve_model_type(job_id, target.head)
+        live = applicable_metrics(self.service.model_types, decision_labels(verdict), RATIO_METRICS)
         return AuditInput(
             rows=dim_rows,
             periods=periods,
@@ -431,6 +438,7 @@ class Analyses:
             composition=await self.service.glossary.composition(target.head.versions.get("glossary")),
             profile=await self._profile(target.head),
             absent=await self._absent(job_id, target),
+            applicable_metrics=live,
         )
 
     async def _absent(self, job_id: str, target: Target) -> frozenset[str]:
@@ -611,10 +619,24 @@ class Analyses:
             "marker_class": body.get("marker_class"),
             "absent": await self._absent(job_id, target),
         }
+        verdict = await svc.resolve_model_type(job_id, target.head)
+        labels = decision_labels(verdict)
         computed = []
         needs = []
         warnings = []
+        uses = []
         for metric in metrics:
+            use = applicability(svc.model_types, labels, metric)
+            if use == "not_applicable":
+                uses.append(
+                    {
+                        "metric": metric,
+                        "applicability": "not_applicable",
+                        "reason": "model_type",
+                        "model_type": verdict.primary,
+                    }
+                )
+                continue
             if metric in LOAN_LIFE:
                 result = loan_life_ratio(metric, basis=basis, **common)
             elif metric in REDUCED:
@@ -623,9 +645,24 @@ class Analyses:
                 result = adscr(direction=direction, **common)
             else:
                 result = coverage_ratio(metric=metric, **common)
+            if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
+                uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
+                warnings.append({"code": "input_absent", "params": {"metric": metric}})
+                continue
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
             computed.extend({**row, "metric": metric} for row in result["rows"])
+            uses.append({"metric": metric, "applicability": use})
+        if verdict.source == "unresolved":
+            warnings.append(
+                {
+                    "code": "model_type_unresolved",
+                    "params": {
+                        "reason": verdict.reason,
+                        "candidates": [item.type_id for item in verdict.candidates],
+                    },
+                }
+            )
         return {
             "rows": computed,
             "needs_input": needs,
@@ -636,6 +673,8 @@ class Analyses:
             "phase_of": phase_of,
             "profile": body,
             "absent": common["absent"],
+            "applicability": uses,
+            "model_type": verdict.as_dict(),
         }
 
     async def _execute_ratios(self, job_id: str, target: Target, analysis_id: str, metrics: list[str], actor: Actor) -> dict:
@@ -667,7 +706,10 @@ class Analyses:
             "citations": citations,
             "needs_input": needs,
             "warnings": warnings,
+            "model_type": got["model_type"],
         }
+        envelope["versions"]["model_types"] = self.service.model_types.version
+        envelope["result_data"]["metrics"] = got["applicability"]
         await self._annotate(envelope)
         stored = _ratio_stored(job_id, target, analysis_id, head, computed)
         await self._save_tables(job_id, target, analysis_id, "ratios", {"ratios": stored}, envelope, actor, started)
@@ -778,7 +820,10 @@ class Analyses:
                 "citations": citations,
                 "needs_input": got["needs_input"],
                 "warnings": warnings,
+                "model_type": got["model_type"],
             }
+            envelope["versions"]["model_types"] = self.service.model_types.version
+            envelope["result_data"]["metrics"] = got["applicability"]
             await self._annotate(envelope)
             if await self._cancelled(op_id):
                 return
@@ -818,7 +863,9 @@ class Analyses:
         если понятие, нужное запрошенной метрике, отмечено `concept.absent`.
         """
 
-        wanted = set(metrics)
+        verdict = await self.service.resolve_model_type(job_id, target.head)
+        live = applicable_metrics(self.service.model_types, decision_labels(verdict), RATIO_METRICS)
+        wanted = set(metrics) & live
         rules = []
         if wanted & set(METRIC_INPUTS["debt_service"]):
             rules.append(PERIOD_GRAIN_MISMATCH)
@@ -837,6 +884,7 @@ class Analyses:
             composition=await self.service.glossary.composition(target.head.versions.get("glossary")),
             profile=profile or {},
             absent=absent,
+            applicable_metrics=live,
         )
         found = run_rules(rules, data)
         return [item for item in found if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]

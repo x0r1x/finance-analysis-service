@@ -53,6 +53,8 @@ def derive_key_for(
     clm_model: str,
     profile_version: str,
     fas_derive_version: str = FAS_DERIVE_VERSION,
+    model_types_version: str = "none",
+    model_type_seq: int = 0,
 ) -> str:
     payload = {
         "state_seq": state_seq,
@@ -64,6 +66,8 @@ def derive_key_for(
         "clm_model": clm_model,
         "profile_version": profile_version,
         "fas_derive_version": fas_derive_version,
+        "model_types_version": model_types_version,
+        "model_type_seq": model_type_seq,
     }
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -119,6 +123,8 @@ class Versions:
     rerank_model: str = ""
     clm_model: str = ""
     fas: str = FAS_VERSION
+    model_types: str = "none"
+    model_type_seq: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -132,6 +138,8 @@ class Versions:
                 "clm": self.clm_model,
             },
             "fas": self.fas,
+            "model_types": self.model_types,
+            "model_type_seq": self.model_type_seq,
         }
 
     def derive(self, state_seq: int) -> str:
@@ -144,6 +152,8 @@ class Versions:
             rerank_model=self.rerank_model,
             clm_model=self.clm_model,
             profile_version=self.profile,
+            model_types_version=self.model_types,
+            model_type_seq=self.model_type_seq,
         )
 
 

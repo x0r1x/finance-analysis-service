@@ -15,6 +15,7 @@ EVENT_TYPES = frozenset(
         "sign.set",
         "unit.set",
         "profile.set",
+        "model_type.set",
         "mapping.remapped",
         "semantics.inferred",
         "binding.suspended",

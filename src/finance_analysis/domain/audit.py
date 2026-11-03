@@ -132,6 +132,8 @@ class AuditInput:
     profile: dict = field(default_factory=dict)
     # Понятия с записью `concept.absent` в журнале книги (§5.10.5).
     absent: frozenset[str] = frozenset()
+    # Метрики, применимые к типу модели. None — фильтр выключен, правила видят весь каталог.
+    applicable_metrics: frozenset[str] | None = None
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:
