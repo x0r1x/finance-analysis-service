@@ -64,6 +64,7 @@ from finance_analysis.domain.metrics import _primaries
 from finance_analysis.domain.model_type import (
     applicability,
     applicable_metrics,
+    confirmed_variants,
     decision_labels,
 )
 from finance_analysis.plugins.rules.coverage import (
@@ -95,10 +96,7 @@ TRACE_DEPTH_MAX = 32
 
 
 def _dscr_variant(catalog, verdict) -> str | None:
-    primary = verdict.primary
-    if not primary or primary not in catalog.types:
-        return None
-    return catalog.types[primary].variants.get("dscr")
+    return confirmed_variants(catalog, verdict).get("dscr")
 
 
 def _now() -> datetime:
@@ -646,7 +644,7 @@ class Analyses:
         uses = []
         money = frozenset(name for name, item in svc.catalog.concepts.items() if item.unit == "money")
         profile_ref = target.head.versions.get("profile")
-        variant_of = svc.model_types.types[verdict.primary].variants if verdict.primary in svc.model_types.types else {}
+        variant_of = confirmed_variants(svc.model_types, verdict)
         for metric in metrics:
             use = applicability(svc.model_types, labels, metric)
             if use == "not_applicable":

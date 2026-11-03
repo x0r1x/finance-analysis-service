@@ -5,7 +5,13 @@ from __future__ import annotations
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.domain.book import question_digest
-from finance_analysis.domain.model_type import open_concepts
+from finance_analysis.domain.model_type import (
+    MetricInputs,
+    ModelTypeCatalog,
+    TypeSpec,
+    concept_metrics,
+    open_concepts,
+)
 from finance_analysis.domain.questions import concept_questions, question_id_problem
 
 
@@ -60,6 +66,38 @@ def test_synthetic_corporate_book_asks_three_icr_concepts():
     )
     assert got[0]["question_id"] == question_digest("concept", "interest", "synthetic")
     assert all(item["kind"] != "model_type" for item in got)
+
+
+def test_required_variant_asks_for_its_inputs_and_a_tie_stays_on_the_base():
+    base = MetricInputs(frozenset({"cfads", "debt_service"}), frozenset())
+    covenant = MetricInputs(
+        frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal"}), frozenset()
+    )
+    catalog = ModelTypeCatalog(
+        types={
+            "corporate": TypeSpec("corporate", (), frozenset(), {"dscr": "required"}, {"dscr": "corporate_covenant"}),
+            "project_finance": TypeSpec("project_finance", (), frozenset(), {"dscr": "required"}, {"dscr": "pf"}),
+        },
+        default_use="not_applicable",
+        version="t",
+        concepts=frozenset(),
+        metric_inputs={"dscr": base},
+        documents={},
+        compatible=frozenset(),
+        composed={},
+        variant_inputs={"dscr": {"corporate_covenant": covenant, "pf": base}},
+    )
+    assert open_concepts(catalog, ("corporate",), bound=frozenset(), absent=frozenset()) == (
+        "capex",
+        "cash_taxes",
+        "ebitda",
+        "interest",
+        "principal",
+    )
+    assert concept_metrics(catalog, ("corporate",), "cash_taxes", bound=frozenset()) == ("dscr",)
+    assert open_concepts(
+        catalog, ("corporate", "project_finance"), bound=frozenset(), absent=frozenset()
+    ) == ("cfads", "debt_service")
 
 
 def test_unresolved_union_asks_both_families_and_skips_optional():

@@ -9,9 +9,15 @@ from finance_analysis.domain.covenant import (
     DEFAULT_DEFINITION_TEXT,
     covenant_dscr,
     dscr_definition_error,
+    select_ratio,
 )
 from finance_analysis.domain.cover_metrics import ratio_cells
-from finance_analysis.domain.model_type import applicability, infer
+from finance_analysis.domain.model_type import (
+    Effective,
+    applicability,
+    confirmed_variants,
+    infer,
+)
 
 _MONEY = frozenset(
     {
@@ -271,6 +277,73 @@ def test_default_definition_mismatch_with_the_book_row_is_not_a_model_error():
         }
     )
     assert all(item["code"] != "covenant_definition_mismatch" for item in same["warnings"])
+
+
+def test_unresolved_tie_keeps_the_base_dscr_formula():
+    catalog = _catalog()
+    unresolved = Effective(
+        ("corporate", "project_finance"),
+        "corporate",
+        "unresolved",
+        "gap",
+        None,
+        None,
+        1.0,
+        {"corporate": 1.0, "project_finance": 1.0},
+        (),
+    )
+    assert confirmed_variants(catalog, unresolved) == {}
+    confirmed = Effective(("corporate",), "corporate", "inferred", None, None, None, 1.0, {"corporate": 1.0}, ())
+    assert confirmed_variants(catalog, confirmed)["dscr"] == "corporate_covenant"
+    common = {
+        "facts": [
+            _fact("e", "Y1", "100"),
+            _fact("t", "Y1", "10"),
+            _fact("c", "Y1", "20"),
+            _fact("i", "Y1", "15"),
+            _fact("p", "Y1", "5"),
+            _fact("f", "Y1", "10"),
+            _fact("d", "Y1", "4"),
+        ],
+        "bindings": [
+            _bind("ebitda", "e"),
+            _bind("cash_taxes", "t"),
+            _bind("capex", "c"),
+            _bind("interest", "i"),
+            _bind("principal", "p"),
+            _bind("cfads", "f"),
+            _bind("debt_service", "d"),
+        ],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    base = select_ratio(
+        "dscr",
+        None,
+        common,
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=_MONEY,
+    )
+    covenant = select_ratio(
+        "dscr",
+        "corporate_covenant",
+        common,
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=_MONEY,
+    )
+    assert base["rows"][0]["value"] == Decimal("2.5000000000")
+    assert covenant["rows"][0]["value"] == Decimal("3.5000000000")
+    assert covenant["definition_source"] == "default"
 
 
 def test_hybrid_of_escrow_and_project_finance_keeps_both_labels():
