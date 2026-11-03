@@ -27,7 +27,9 @@ def project_return(
     flow = primaries.get("project_fcf")
     if flow is None:
         return _missing(metric, "project_fcf")
-    points = _points(facts, flow, periods)
+    points, problem = _points(facts, flow, periods)
+    if problem == "series_gap":
+        return _warned(metric, "project_return_incomplete")
     if points is None:
         return _empty(metric, "missing_input")
     rate = None
@@ -36,6 +38,8 @@ def project_return(
         if rate_row is None:
             return _missing(metric, "discount_rate")
         rate = _unique(facts, rate_row)
+        if rate == "not_unique":
+            return _warned(metric, "discount_rate_not_unique")
         if rate is None:
             return _empty(metric, "missing_input")
         shown = _npv(points, rate).quantize(MONEY)
@@ -67,25 +71,27 @@ def project_return(
     }
 
 
-def _points(facts: list[dict], binding: dict, periods: list[dict]) -> list[tuple[int, Decimal, dict]] | None:
+def _points(
+    facts: list[dict], binding: dict, periods: list[dict]
+) -> tuple[list[tuple[int, Decimal, dict]] | None, str | None]:
     row = binding["row_key"]
     axes = {fact["axis_id"] for fact in facts if fact.get("row_key") == row}
-    by_index: dict[int, tuple[Decimal, dict]] = {}
+    filled: dict[int, tuple[Decimal, dict]] = {}
     for period in periods:
         if period.get("axis_id") not in axes or period.get("period_index") is None:
             continue
         index = int(period["period_index"])
         value = _at(facts, row, period)
         if value is None:
-            return None
-        current = by_index.get(index)
-        by_index[index] = (value if current is None else current[0] + value, period)
-    if not by_index:
-        return None
-    indexes = sorted(by_index)
-    if indexes != list(range(indexes[0], indexes[-1] + 1)):
-        return None
-    return [(index, by_index[index][0], by_index[index][1]) for index in indexes]
+            continue
+        current = filled.get(index)
+        filled[index] = (value if current is None else current[0] + value, period)
+    if not filled:
+        return None, "missing"
+    low, high = min(filled), max(filled)
+    if any(index not in filled for index in range(low, high + 1)):
+        return None, "series_gap"
+    return [(index, filled[index][0], filled[index][1]) for index in range(low, high + 1)], None
 
 
 def _at(facts: list[dict], row: str, period: dict) -> Decimal | None:
@@ -99,14 +105,16 @@ def _at(facts: list[dict], row: str, period: dict) -> Decimal | None:
     return None
 
 
-def _unique(facts: list[dict], binding: dict) -> Decimal | None:
+def _unique(facts: list[dict], binding: dict) -> Decimal | None | str:
     found = [
         Decimal(str(fact["normalized_value"]))
         for fact in facts
         if fact.get("row_key") == binding["row_key"] and fact.get("normalized_value") is not None
     ]
-    if not found or any(abs(item - found[0]) > Decimal("1e-12") for item in found) or found[0] <= -1:
+    if not found or found[0] <= -1:
         return None
+    if any(abs(item - found[0]) > Decimal("1e-12") for item in found):
+        return "not_unique"
     return found[0]
 
 
@@ -166,3 +174,13 @@ def _missing(metric: str, subject: str) -> dict:
 
 def _empty(metric: str, status: str) -> dict:
     return {"metric": metric, "rows": [], "needs_input": [], "warnings": [], "status": status}
+
+
+def _warned(metric: str, code: str) -> dict:
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [],
+        "warnings": [{"code": code, "params": {"metric": metric}}],
+        "status": "not_computed",
+    }

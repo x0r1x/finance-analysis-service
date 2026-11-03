@@ -233,6 +233,70 @@ def test_toll_road_npv_and_irr_use_the_year_index():
     assert abs(irr["rows"][0]["value"] - Decimal(book["project_irr"])) <= _IRR_TOL
 
 
+def _quote(flows: list[tuple[int, str | None]], *, rate: str = "0.10", rates: list[str] | None = None, book: list[str] | None = None):
+    catalog = _catalog()
+    facts, periods = [], []
+    bindings = [_bind("project_fcf"), _bind("discount_rate")]
+    for index, value in flows:
+        period = f"Y{index}"
+        periods.append(_period(period, index))
+        facts.append(
+            {
+                "row_key": "project_fcf",
+                "axis_id": "a",
+                "period_id": period,
+                "normalized_value": value,
+                "cell_id": f"a!{period}",
+            }
+        )
+    for number, item in enumerate(rates if rates is not None else [rate]):
+        period = f"R{number}"
+        facts.append(_fact("discount_rate", period, item, axis="p"))
+        periods.append(_period(period, None, axis="p"))
+    if book is not None:
+        bindings.append(_bind("npv"))
+        for number, item in enumerate(book):
+            period = f"B{number}"
+            facts.append(_fact("npv", period, item, axis="p"))
+            periods.append(_period(period, None, axis="p"))
+    return select_ratio(
+        "npv",
+        None,
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+
+
+def test_an_empty_period_outside_the_filled_span_is_ignored():
+    plain = _quote([(0, "-100"), (1, "60")])
+    edged = _quote([(0, None), (1, "-100"), (2, "60"), (3, None)])
+    same_indexes = _quote([(1, "-100"), (2, "60")])
+    assert plain["status"] == "succeeded"
+    assert plain["rows"][0]["value"] == Decimal("-45.454545")
+    assert edged["warnings"] == []
+    assert edged["rows"][0]["value"] == same_indexes["rows"][0]["value"]
+
+
+def test_a_hole_inside_the_span_is_not_computed():
+    got = _quote([(0, "-100"), (1, None), (2, "60")])
+    assert got["status"] == "not_computed"
+    assert got["rows"] == []
+    assert got["needs_input"] == []
+    assert got["warnings"][0]["code"] == "project_return_incomplete"
+
+
+def test_two_discount_rates_are_not_computed():
+    got = _quote([(0, "-100"), (1, "60")], rates=["0.10", "0.12"])
+    assert got["status"] == "not_computed"
+    assert got["rows"] == []
+    assert got["needs_input"] == []
+    assert got["warnings"][0]["code"] == "discount_rate_not_unique"
+
+
 def test_book_row_that_disagrees_is_a_warning():
     book = _load("port.json")
     npv, irr = _returns(book, field="project_fcf", book_npv="100", book_irr="0.5")
