@@ -74,3 +74,24 @@ concepts:
     kind: measure
     unit: money
     expected_sign: stock
+  grantor_payment:
+    kind: measure
+    unit: money
+  capital_grant:
+    kind: measure
+    unit: money
+  mgd_compensation:
+    kind: measure
+    unit: money
+  project_fcf:
+    kind: measure
+    unit: money
+  npv:
+    kind: measure
+    unit: money
+  irr:
+    kind: ratio
+    unit: ratio
+  payback:
+    kind: measure
+    unit: count

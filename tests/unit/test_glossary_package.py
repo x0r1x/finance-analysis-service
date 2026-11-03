@@ -33,6 +33,13 @@ _IDS = frozenset(
         "net_debt",
         "dscr_covenant",
         "escrow_balance",
+        "grantor_payment",
+        "capital_grant",
+        "mgd_compensation",
+        "project_fcf",
+        "npv",
+        "irr",
+        "payback",
     }
 )
 

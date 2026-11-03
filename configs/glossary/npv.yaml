@@ -1,0 +1,7 @@
+concept: npv
+pref:
+  en: "Project net present value"
+  ru: "Чистая приведённая стоимость проекта"
+definition:
+  en: "Book row of project net present value, compared with the cited cash flows"
+  ru: "Строка книги с чистой приведённой стоимостью проекта, сверяется с процитированным потоком"

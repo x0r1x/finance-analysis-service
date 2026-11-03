@@ -1,0 +1,22 @@
+id: investment_project
+title:
+  ru: "Инвестиционный проект"
+  en: "Investment project"
+signals:
+  - kind: concepts_bound_all
+    concepts: [npv, irr, discount_rate]
+    absent: [debt_service]
+    weight: 1
+required_concepts: [project_fcf, discount_rate]
+metrics:
+  npv: {use: required}
+  irr: {use: required}
+  dscr: {use: not_applicable}
+  dscr_min: {use: not_applicable}
+  adscr: {use: not_applicable}
+  dscr_avg: {use: not_applicable}
+  llcr: {use: not_applicable}
+  plcr: {use: not_applicable}
+  icr: {use: not_applicable}
+  escrow_coverage: {use: not_applicable}
+  net_debt_ebitda: {use: not_applicable}

@@ -16,3 +16,5 @@ metrics:
   plcr: {use: optional}
   icr: {use: optional}
   escrow_coverage: {use: not_applicable}
+  npv: {use: not_applicable}
+  irr: {use: not_applicable}

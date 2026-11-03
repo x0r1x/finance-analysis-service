@@ -83,6 +83,8 @@ RATIO_METRICS = (
     "plcr",
     "net_debt_ebitda",
     "escrow_coverage",
+    "npv",
+    "irr",
 )
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs")

@@ -1,0 +1,21 @@
+id: ppp_concession
+title:
+  ru: "ГЧП и концессия"
+  en: "PPP and concession"
+signals:
+  - kind: concepts_bound_any
+    concepts: [grantor_payment, capital_grant, mgd_compensation]
+    weight: 1
+required_concepts: [cfads, debt_service]
+metrics:
+  dscr: {use: required, variant: pf}
+  dscr_min: {use: required}
+  adscr: {use: optional}
+  dscr_avg: {use: optional}
+  llcr: {use: optional}
+  plcr: {use: optional}
+  icr: {use: optional}
+  npv: {use: optional}
+  irr: {use: optional}
+  escrow_coverage: {use: not_applicable}
+  net_debt_ebitda: {use: not_applicable}

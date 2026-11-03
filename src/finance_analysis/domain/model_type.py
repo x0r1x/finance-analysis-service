@@ -16,6 +16,7 @@ class Signal:
     weight: float
     concepts: tuple[str, ...] = ()
     groups: tuple[tuple[str, ...], ...] = ()
+    absent: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -123,9 +124,18 @@ def _sheet_hit(name: str, group: tuple[str, ...]) -> bool:
     return any(folded == alias.casefold().strip() for alias in group)
 
 
+# Равный score этих типов оставляет их: investment_project — более широкий ярлык.
+_YIELDS_TO = {"investment_project": frozenset({"corporate", "ppp_concession", "development_escrow"})}
+
+
 def _fired(signal: Signal, *, bound: frozenset[str], sheets: frozenset[str]) -> bool:
     if signal.kind == "concepts_bound_all":
-        return bool(signal.concepts) and all(name in bound for name in signal.concepts)
+        present = bool(signal.concepts) and all(name in bound for name in signal.concepts)
+        return present and all(name not in bound for name in signal.absent)
+    if signal.kind == "concepts_bound_any":
+        return bool(signal.concepts) and any(name in bound for name in signal.concepts)
+    if signal.kind == "concepts_absent_all":
+        return bool(signal.concepts) and all(name not in bound for name in signal.concepts)
     if signal.kind == "sheets_any":
         return bool(signal.groups) and all(any(_sheet_hit(name, group) for name in sheets) for group in signal.groups)
     return False
@@ -159,6 +169,7 @@ def infer(
         key=lambda item: (-item.score, item.type_id),
     )
     scores = {item.type_id: item.score for item in ranked}
+    ranked = _stand_down(ranked, accept)
     if not ranked:
         return Inference(False, "unknown", (), None, (), scores)
     leader, second = ranked[0], ranked[1] if len(ranked) > 1 else None
@@ -175,6 +186,21 @@ def infer(
     candidates = accepted if accepted else tuple(ranked)
     top = candidates[0].type_id if candidates else None
     return Inference(False, reason, (), top, candidates, scores)
+
+
+def _stand_down(ranked: list[Scored], accept: float) -> list[Scored]:
+    """Тип из `_YIELDS_TO` не спорит с уже набравшим порог более узким типом."""
+
+    blocked = {
+        item.type_id
+        for item in ranked
+        if item.score >= accept
+        and (peers := _YIELDS_TO.get(item.type_id)) is not None
+        and any(other.type_id in peers and other.score >= item.score for other in ranked)
+    }
+    if not blocked:
+        return ranked
+    return [item for item in ranked if item.type_id not in blocked]
 
 
 def contradicts_signals(scores: dict[str, float], stated: str) -> bool:

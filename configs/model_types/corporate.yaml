@@ -20,3 +20,5 @@ metrics:
   llcr: {use: not_applicable}
   plcr: {use: not_applicable}
   escrow_coverage: {use: not_applicable}
+  npv: {use: not_applicable}
+  irr: {use: not_applicable}
