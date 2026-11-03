@@ -47,20 +47,30 @@ async def _row(service, label: str) -> dict:
     return next(row for row in rows if row["label"] == label and row["kind"] == "fact")
 
 
+async def _set(service, decisions: list[dict]) -> None:
+    decided = await service.submit_decisions(RVI, {"decisions": decisions}, Actor(), wait_sec=60)
+    assert [item["status"] for item in decided["results"]] == ["accepted"] * len(decisions), decided
+
+
+def _concept(row: dict, concept: str) -> dict:
+    return {"kind": "concept.set", "target": row["binding_key"], "value": concept, "expected_seq": None}
+
+
 async def test_rvi_dscr_quotient_and_icr(local_service):
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    # Две строки cfads (§5.5): частное не считается, пока человек не выберет одну.
     missing = await _ratios(local_service, ["dscr"])
-    assert missing["needs_input"][0]["reason"] == "concept_unknown"
+    assert missing["needs_input"][0] == {"kind": "concept", "reason": "ambiguous", "subject": "cfads"}
     assert all(row.get("value") is None for row in missing["result_data"]["ratios"])
 
+    cash = await _row(local_service, "CFADS")
     debt = await _row(local_service, "Total debt service")
-    decided = await local_service.submit_decisions(
-        RVI,
-        {"decisions": [{"kind": "concept.set", "target": debt["binding_key"], "value": "debt_service", "expected_seq": None}]},
-        Actor(),
-        wait_sec=60,
+    # «Operating Income or Loss (EBITDA)» делит ebitda со строкой EBITDA. Метрика смотрит и на ebitda.
+    ebitda = await _row(local_service, "EBITDA")
+    await _set(
+        local_service,
+        [_concept(cash, "cfads"), _concept(debt, "debt_service"), _concept(ebitda, "ebitda")],
     )
-    assert decided["results"][0]["status"] == "accepted", decided
     got = await _ratios(local_service, ["dscr"])
     rows = [row for row in got["result_data"]["ratios"] if row.get("value") is not None]
     assert rows
@@ -117,14 +127,13 @@ async def test_rvi_min_and_average_dscr_match_the_model_summary(local_service):
     """Re-performance (§12 фаза 3): min и среднее DSCR FAS = сводка Live-кейса книги."""
 
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    cash = await _row(local_service, "CFADS")
     debt = await _row(local_service, "Total debt service")
-    decided = await local_service.submit_decisions(
-        RVI,
-        {"decisions": [{"kind": "concept.set", "target": debt["binding_key"], "value": "debt_service", "expected_seq": None}]},
-        Actor(),
-        wait_sec=60,
+    ebitda = await _row(local_service, "EBITDA")
+    await _set(
+        local_service,
+        [_concept(cash, "cfads"), _concept(debt, "debt_service"), _concept(ebitda, "ebitda")],
     )
-    assert decided["results"][0]["status"] == "accepted", decided
     got = await _ratios(local_service, ["dscr_min", "dscr_avg", "llcr", "adscr"])
     rows = got["result_data"]["ratios"]
     head = (await local_service._read_head(RVI))[0]
@@ -146,19 +155,16 @@ async def test_concept_absent_gives_absent_in_book_and_missing_total_row(local_s
     """`concept.absent` (§5.10.5): FAS не переспрашивает, метрика — missing_input, находка missing_total_row."""
 
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
+    cash = await _row(local_service, "CFADS")
     debt = await _row(local_service, "Total debt service")
-    decided = await local_service.submit_decisions(
-        RVI,
-        {
-            "decisions": [
-                {"kind": "concept.set", "target": debt["binding_key"], "value": "debt_service", "expected_seq": None},
-                {"kind": "concept.absent", "target": "book", "value": "debt_outstanding", "expected_seq": None},
-            ]
-        },
-        Actor(),
-        wait_sec=60,
+    await _set(
+        local_service,
+        [
+            _concept(cash, "cfads"),
+            _concept(debt, "debt_service"),
+            {"kind": "concept.absent", "target": "book", "value": "debt_outstanding", "expected_seq": None},
+        ],
     )
-    assert [item["status"] for item in decided["results"]] == ["accepted", "accepted"], decided
     got = await _ratios(local_service, ["llcr"])
     assert got["needs_input"] == [{"kind": "concept", "reason": "absent_in_book", "subject": "debt_outstanding"}]
     assert got["result_data"]["ratios"] == []

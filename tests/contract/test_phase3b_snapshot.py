@@ -9,7 +9,6 @@ from finance_analysis.adapters.api.app import create_app
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.metrics import GLOSSARY_REVIEW_OPEN
 from finance_analysis.domain.book import Actor
-from finance_analysis.domain.errors import GlossaryRegression
 from tests.books import job_id
 from tests.conftest import JOB
 
@@ -80,11 +79,8 @@ async def test_remap_batch_snapshot_and_rollback_restores_inferred(local_service
         [{"op": "remove_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "CFADS"}],
         f"h-{state['seq']}",
     )
-    with pytest.raises(GlossaryRegression):
-        await local_service.glossary.transition(removed["version"], "active", removed["etag"])
-    await local_service.glossary.transition(
-        removed["version"], "active", removed["etag"], force=True, reason="тест отката метки"
-    )
+    # cfads неоднозначен: основной строки нет, shadow не видит потери покрытия.
+    await local_service.glossary.transition(removed["version"], "active", removed["etag"])
     await local_service.remap_glossary()
     fresh = (await local_service._read_head(RVI))[0]
     bindings = await local_service._dataset_rows(RVI, fresh, "bindings")

@@ -6,7 +6,7 @@ alt:
   en: ["cash available for debt service", "CFADS"]
   ru: ["ДПОД", "денежный поток, доступный для обслуживания долга"]
 hidden:
-  ru: ["дпод.", "ден. поток для обсл. долга"]
+  ru: ["ден. поток для обсл. долга"]
 expand:
   CFADS: "cash flow available for debt service"
   ДПОД: "денежный поток для обслуживания долга"

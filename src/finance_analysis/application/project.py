@@ -16,6 +16,7 @@ from finance_analysis.domain.book import (
     parse_decimal_text,
 )
 from finance_analysis.domain.currency import resolve_currencies
+from finance_analysis.domain.glossary import label_features
 from finance_analysis.domain.mapping import assign_rows, verify_numeric
 from finance_analysis.domain.periods import (
     expand_ref,
@@ -431,6 +432,12 @@ def derive_rows(
         decided_unit = row.get("unit_decision")
         if isinstance(decided_unit, str) and decided_unit:
             evidence["unit"] = decided_unit
+        # Хвост подписи не затирает unit/scale/currency и period_position: у тех колонок другой смысл.
+        features = label_features(str(row.get("label") or ""))
+        if features.unit and "label_unit" not in evidence:
+            evidence["label_unit"] = features.unit
+        if features.period and "label_period" not in evidence:
+            evidence["label_period"] = features.period
         row_semantics.append(
             {
                 "model_id": row["model_id"],

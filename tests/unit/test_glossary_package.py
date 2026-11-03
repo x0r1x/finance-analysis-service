@@ -54,7 +54,9 @@ def test_package_resolves_display_labels_and_keeps_ranges_as_text():
     assert normalize_label("Ёлка") == normalize_label("елка")
     assert package.resolve("ДПОД").concept == "cfads"
     assert package.resolve("CFADS").concept == "cfads"
-    hidden = package.resolve("дпод.")
+    # «дпод.» схлопывается с alt «ДПОД»; отдельной hidden-метки больше нет.
+    assert package.resolve("дпод.").kind == "alt"
+    hidden = package.resolve("ден. поток для обсл. долга")
     assert hidden.concept == "cfads"
     assert hidden.kind == "hidden"
     shown = package.display_label("cfads", "ru")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -18,10 +19,151 @@ class GlossaryInvalid(ValueError):
         super().__init__("метки глоссария: " + ", ".join(self.labels))
 
 
+# Хвостовые куски сравнения (§5.2). Список замкнутый: новая форма — новое правило и тест.
+_PERIODS = (
+    re.compile(r"(?i)[\s,]+(за\s+кв\.?)$"),
+    re.compile(r"(?i)[\s,]+(за\s+квартал)$"),
+    re.compile(r"(?i)[\s,]+(за\s+год)$"),
+    re.compile(r"(?i)[\s,]+(за\s+период)$"),
+    re.compile(r"(?i)[\s,]+(last\s+12\s+months)$"),
+    re.compile(r"(?i)[\s,]+(ltm)$"),
+)
+_UNITS = (
+    re.compile(r"(?i)[\s,]+((?:тыс|млн|млрд)\.?\s*руб\.?)$"),
+    re.compile(r"(?i),\s*(руб\.?)$"),
+    re.compile(r"(?i)[\s,]+(%)$"),
+    re.compile(r"(?i)\s*(\$\s*'?\s*0{3})$"),
+    re.compile(r"(?i)[\s,]+((?:usd|eur|gbp|rub)\s*'?\s*(?:k|000))$"),
+    re.compile(r"(?i)[\s,]+(k[£€$])$"),
+    re.compile(r"(?i)\s*([£€]\s*'?\s*0{3})$"),
+)
+_PAREN = re.compile(r"\s*\(([^()]*)\)\s*$")
+_PERIOD_INNER = re.compile(r"(?i)^(?:last\s+12\s+months|ltm|за\s+кв\.?|за\s+квартал|за\s+год|за\s+период)$")
+_UNIT_INNER = re.compile(
+    r"(?i)^(?:(?:тыс|млн|млрд)\.?\s*руб\.?|руб\.?|%|\$\s*'?\s*0{3}|(?:usd|eur|gbp|rub)\s*'?\s*(?:k|000)|k[£€$]|[£€$]\s*'?\s*0{3})$"
+)
+_ABBREV = re.compile(r"^[A-ZА-ЯЁ][A-ZА-ЯЁ0-9.]{1,14}$")
+_TOKEN = re.compile(r"[^\W\d_]+|\d+|%")
+
+
+@dataclass(frozen=True)
+class _Peeled:
+    body: str
+    unit: str | None
+    period: str | None
+    abbrevs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LabelFeatures:
+    """Единица и период, снятые с хвоста подписи. Пусто, если хвоста не было."""
+
+    unit: str | None = None
+    period: str | None = None
+
+
+def _clean(fragment: str) -> str:
+    return re.sub(r"\s+", " ", fragment).strip(" ,")
+
+
+def _suffix(body: str, patterns: tuple[re.Pattern[str], ...], kind: str) -> tuple[str, str, str] | None:
+    for pattern in patterns:
+        match = pattern.search(body)
+        if match is None:
+            continue
+        fragment = _clean(match.group(1))
+        rest = body[: match.start()].rstrip(" ,")
+        if fragment and len(rest) < len(body):
+            return kind, fragment, rest
+    return None
+
+
+def _paren(body: str) -> tuple[str, str, str] | None:
+    match = _PAREN.search(body)
+    if match is None:
+        return None
+    inner = _clean(match.group(1))
+    rest = body[: match.start()].rstrip(" ,")
+    if not inner or len(rest) >= len(body):
+        return None
+    if _PERIOD_INNER.match(inner):
+        return "period", inner, rest
+    if _UNIT_INNER.match(inner):
+        return "unit", inner, rest
+    if _ABBREV.match(inner):
+        return "abbrev", inner, rest
+    return "drop", inner, rest
+
+
+def _peel(text: str) -> _Peeled:
+    body = unicodedata.normalize("NFC", text).strip()
+    units: list[str] = []
+    periods: list[str] = []
+    abbrevs: list[str] = []
+    while body:
+        cut = _suffix(body, _PERIODS, "period") or _suffix(body, _UNITS, "unit") or _paren(body)
+        if cut is None:
+            break
+        kind, fragment, rest = cut
+        if kind == "period":
+            periods.append(fragment)
+        elif kind == "unit":
+            units.append(fragment)
+        elif kind == "abbrev":
+            abbrevs.append(fragment)
+        body = rest
+    return _Peeled(
+        body,
+        " ".join(reversed(units)) or None,
+        " ".join(reversed(periods)) or None,
+        tuple(reversed(abbrevs)),
+    )
+
+
+def _plural(word: str) -> str:
+    # Простое -s. Аббревиатура из заглавных и короткое слово без двух гласных не режутся (CFADS).
+    folded = word.casefold()
+    if len(word) < 5 or not folded.endswith("s") or folded.endswith("ss") or word.isupper():
+        return word
+    if sum(char in "aeiouy" for char in folded) < 2:
+        return word
+    return word[:-1]
+
+
+def _fold(text: str) -> str:
+    parts = []
+    for token in _TOKEN.findall(unicodedata.normalize("NFC", text)):
+        if token.isascii() and token.isalpha():
+            token = _plural(token)
+        parts.append(token)
+    return " ".join(parts).casefold().replace("ё", "е")
+
+
+def label_keys(text: str) -> tuple[str, ...]:
+    """Ключи точного сравнения: тело метки и аббревиатуры из хвостовых скобок."""
+
+    peeled = _peel(text)
+    keys: list[str] = []
+    body = _fold(peeled.body)
+    if body:
+        keys.append(body)
+    for abbrev in peeled.abbrevs:
+        key = _fold(abbrev)
+        if key and key not in keys:
+            keys.append(key)
+    return tuple(keys)
+
+
 def normalize_label(text: str) -> str:
     """Поле сравнения. Исходная метка хранится как ввели."""
 
-    return unicodedata.normalize("NFC", text).casefold().replace("ё", "е")
+    keys = label_keys(text)
+    return keys[0] if keys else ""
+
+
+def label_features(text: str) -> LabelFeatures:
+    peeled = _peel(text)
+    return LabelFeatures(peeled.unit, peeled.period)
 
 
 @dataclass(frozen=True)
@@ -64,7 +206,15 @@ class GlossaryPackage:
         return frozenset(self.concepts)
 
     def resolve(self, text: str) -> LabelHit | None:
-        return self._by_norm.get(normalize_label(text))
+        found: list[LabelHit] = []
+        for key in label_keys(text):
+            hit = self._by_norm.get(key)
+            if hit is None or any(item.concept == hit.concept for item in found):
+                continue
+            found.append(hit)
+        if len(found) == 1:
+            return found[0]
+        return None
 
     def display_label(self, concept: str, lang: str) -> str | None:
         return self.concepts[concept].pref.get(lang)
@@ -89,8 +239,7 @@ def with_profile(package: GlossaryPackage, document: dict, profile_id: str | Non
                 for text in items:
                     if not isinstance(text, str) or not text:
                         continue
-                    norm = normalize_label(text)
-                    if norm:
+                    for norm in label_keys(text):
                         overlay[norm] = LabelHit(str(concept), kind, text)
     return GlossaryPackage(
         taxonomy=package.taxonomy,
@@ -198,15 +347,18 @@ def _take(owned: dict[str, LabelHit], name: str, kind: str, groups: Mapping[str,
     seen: set[tuple[str, str]] = set()
     for lang, texts in groups.items():
         for text in texts:
-            norm = normalize_label(text)
-            if not norm or (lang, norm) in seen:
+            if (lang, text) in seen:
                 raise GlossaryInvalid([text])
-            seen.add((lang, norm))
-            previous = owned.get(norm)
-            if previous is not None and (previous.concept != name or previous.kind != kind):
-                raise GlossaryInvalid([previous.text, text])
-            if previous is None:
-                owned[norm] = LabelHit(name, kind, text)
+            seen.add((lang, text))
+            keys = label_keys(text)
+            if not keys:
+                raise GlossaryInvalid([text])
+            for norm in keys:
+                previous = owned.get(norm)
+                if previous is not None and (previous.concept != name or previous.kind != kind):
+                    raise GlossaryInvalid([previous.text, text])
+                if previous is None:
+                    owned[norm] = LabelHit(name, kind, text)
 
 
 def _strings(raw, name: str) -> list[str]:

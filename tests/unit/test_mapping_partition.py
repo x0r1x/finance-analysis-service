@@ -12,6 +12,11 @@ from tests.books import BUILDER_ROOT, job_id
 _STATUSES = {"bound", "bound_with_warning", "ambiguous", "unknown", "not_applicable", "ignored"}
 
 
+def _at(tables: dict, bindings: list[dict], sheet: str, row_num: int) -> dict:
+    source = next(row for row in tables["dim_row"] if row["sheet"] == sheet and row["row_num"] == row_num)
+    return next(row for row in bindings if row["binding_key"] == source["binding_key"])
+
+
 def _tables(alias: str) -> dict:
     job = job_id(alias)
     folder = BUILDER_ROOT / job
@@ -46,11 +51,15 @@ def test_packt_and_rvi_partition_fact_rows():
         if alias == "packt":
             debt = next(row for row in bindings if labels[row["binding_key"]] == "Debt service")
             assert debt["status"] == "bound" and debt["source"] == "inferred"
+            cfads = _at(tables, bindings, "CFS", 14)
+            assert cfads["concept"] == "cfads" and cfads["status"] == "bound" and cfads["is_primary"]
         else:
-            cfads = next(row for row in bindings if labels[row["binding_key"]] == "CFADS")
-            assert cfads["status"] == "bound" and cfads["source"] == "inferred"
-            unknown = next(row for row in bindings if labels[row["binding_key"]] == "Total debt service")
-            assert unknown["status"] == "unknown" and unknown["concept"] is None
+            service = _at(tables, bindings, "PF Model", 534)
+            assert service["concept"] == "debt_service" and service["status"] == "bound" and service["is_primary"]
+            # §5.5: одна строка на понятие. Хвостовая аббревиатура (CFADS) склеивает две строки.
+            for number in (239, 532):
+                row = _at(tables, bindings, "PF Model", number)
+                assert row["concept"] == "cfads" and row["status"] == "ambiguous" and row["is_primary"] is False
         assert all(row["phase"] is None for row in derived["period_semantics"])
 
 

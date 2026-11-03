@@ -3,8 +3,12 @@ pref:
   en: "Principal repayment"
   ru: "Погашение основного долга"
 alt:
-  en: ["principal"]
-  ru: ["погашение долга"]
+  en: ["principal", "Debt principal"]
+  ru:
+    - "погашение долга"
+    - "Погашение кредитов и займов"
+    - "Погашение обязательств по привлеченным кредитам"
+    - "Погашено займов и кредитов"
 definition:
   en: "Scheduled principal repayment"
   ru: "Плановое погашение основного долга"

@@ -3,8 +3,8 @@ pref:
   en: "Interest"
   ru: "Проценты"
 alt:
-  en: ["interest expense"]
-  ru: ["процентные платежи"]
+  en: ["interest expense", "Debt interest"]
+  ru: ["процентные платежи", "Проценты к уплате", "Финансовые расходы", "Процентные расходы"]
 definition:
   en: "Scheduled interest"
   ru: "Плановые проценты"
