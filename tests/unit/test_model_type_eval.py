@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from finance_analysis.domain.model_type import Inference, Scored
-from finance_analysis.domain.model_type_eval import Expectation, build_report
+from finance_analysis.domain.model_type_eval import (
+    Expectation,
+    build_report,
+    render_markdown,
+)
 
 _TYPES = ("corporate", "investment_project", "other", "project_finance")
 
@@ -107,6 +111,41 @@ def test_a_lone_leader_meets_the_gap():
     assert row["top2"] is None
     assert row["meets_gap"] is True
     assert row["primary_hit"] is True
+
+
+def test_a_below_gap_question_names_a_row_only_when_the_runner_up_also_clears_accept():
+    near = build_report(
+        [
+            (
+                "near",
+                Expectation("question", reason="ambiguous"),
+                _infer(
+                    False,
+                    "ambiguous",
+                    (),
+                    "corporate",
+                    {"corporate": 0.6, "project_finance": 0.5, "investment_project": 0.0},
+                ),
+            )
+        ],
+        accept=0.6,
+        gap=0.15,
+        type_ids=_TYPES,
+    )
+    pair = build_report(
+        [
+            (
+                "tie",
+                Expectation("question", reason="ambiguous"),
+                _infer(False, "ambiguous", (), "corporate", {"corporate": 1.0, "project_finance": 0.9}),
+            )
+        ],
+        accept=0.6,
+        gap=0.15,
+        type_ids=_TYPES,
+    )
+    assert "порога: нет." in render_markdown(near)
+    assert "порога: tie." in render_markdown(pair)
 
 
 def test_stand_down_gap_drops_the_yielded_type():

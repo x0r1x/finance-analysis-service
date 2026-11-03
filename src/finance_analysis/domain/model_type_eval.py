@@ -151,7 +151,19 @@ def _threshold_facts(report: dict) -> str:
     gaps = [row["gap"] for row in singles if row["gap"] is not None]
     min_gap = min(gaps) if gaps else None
     tight = [row["id"] for row in report["cases"] if row["confident"] and row["meets_gap"] is False]
-    both = [row["id"] for row in report["cases"] if not row["confident"] and row["meets_accept"] and row["meets_gap"] is False]
+    floor = report["accept"]
+    opened = report["gap"]
+    both = [
+        row["id"]
+        for row in report["cases"]
+        if not row["confident"]
+        and row["top1_score"] is not None
+        and row["top2_score"] is not None
+        and row["top1_score"] >= floor
+        and row["top2_score"] >= floor
+        and row["gap"] is not None
+        and row["gap"] < opened
+    ]
     return (
         f"Минимальный score верного одиночного типа: {_num(min_score)}. "
         f"Минимальный разрыв верного одиночного типа: {_num(min_gap)}. "
