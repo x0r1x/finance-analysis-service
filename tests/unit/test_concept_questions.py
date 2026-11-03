@@ -178,6 +178,50 @@ def test_absent_inferred_primary_does_not_close_one_of():
     assert [item["subject"] for item in confirmed] == ["interest"]
 
 
+def test_lexical_ambiguous_rows_outrank_weak_model_hits():
+    import json
+
+    def lexical(key: str, concept: str) -> dict:
+        return {
+            "binding_key": key,
+            "row_key": key,
+            "status": "ambiguous",
+            "source": "inferred",
+            "effective_concept": concept,
+            "is_primary": False,
+            "confidence": None,
+            "evidence_json": json.dumps({"match_strength": "exact", "label": {"id": concept}}),
+        }
+
+    def hinted(key: str, concept: str, score: float) -> dict:
+        return {
+            "binding_key": key,
+            "row_key": key,
+            "status": "unknown",
+            "source": "inferred",
+            "effective_concept": None,
+            "is_primary": False,
+            "evidence_json": json.dumps(
+                {"candidates": [{"concept": concept, "p": score, "reasons": ["label_match"], "structure_pass": True}]}
+            ),
+        }
+
+    ebitda = [lexical("e1", "ebitda"), lexical("e2", "ebitda")]
+    crowded = _questions(bindings=ebitda + [hinted(f"m{i}", "ebitda", 0.2) for i in range(5)], limit=5)
+    asked = next(item for item in crowded if item["subject"] == "ebitda")
+    assert asked["reason"] == "ambiguous"
+    assert [item["binding_key"] for item in asked["candidates"][:2]] == ["e1", "e2"]
+    assert asked["candidates"][0]["score"] == 0.0
+    alone = next(item for item in _questions(bindings=ebitda) if item["subject"] == "ebitda")
+    assert alone["reason"] == "ambiguous"
+    assert [item["binding_key"] for item in alone["candidates"]] == ["e1", "e2"]
+    interest = [lexical("i1", "interest"), lexical("i2", "interest")]
+    mixed = _questions(bindings=interest + [hinted(f"n{i}", "interest", 0.15) for i in range(5)], limit=5)
+    service = next(item for item in mixed if item["subject"] == "interest")
+    assert service["reason"] == "ambiguous"
+    assert [item["binding_key"] for item in service["candidates"][:2]] == ["i1", "i2"]
+
+
 def test_bound_numerator_closes_the_one_of_group():
     catalog = _catalog()
     assert open_concepts(

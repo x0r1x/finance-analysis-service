@@ -130,8 +130,11 @@ def _candidates(
             continue
         score = _score(hit, row)
         dim = by_key.get(key) or {}
+        # Строка с этим effective_concept выше слабого кандидата модели: у лексики p нет.
+        tier = 1 if row.get("effective_concept") == concept else 0
         found.append(
             (
+                tier,
                 score,
                 key,
                 {
@@ -145,13 +148,12 @@ def _candidates(
                 },
             )
         )
-    found.sort(key=lambda item: (-item[0], item[1]))
+    found.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    ambiguous = any(item[3]["_status"] == "ambiguous" for item in found)
     chosen = found[:limit] if limit > 0 else []
     candidates = []
-    ambiguous = False
-    for _score_value, _key, body in chosen:
-        status = body.pop("_status")
-        ambiguous = ambiguous or status == "ambiguous"
+    for _tier, _score_value, _key, body in chosen:
+        body.pop("_status")
         candidates.append(body)
     return candidates, ambiguous
 
