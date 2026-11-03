@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -83,7 +84,7 @@ async def _wait_job(client: httpx.AsyncClient, base: str, job_id: str, timeout: 
             return
         if status in {"failed", "cancelled"}:
             raise AssertionError(body)
-        time.sleep(2)
+        await asyncio.sleep(2)
     raise AssertionError(f"{job_id} still {status}")
 
 

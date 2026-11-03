@@ -145,7 +145,7 @@ class Settings(BaseSettings):
                 "частичная конфигурация S3: нужны FAS_S3_BUCKET, FAS_S3_ACCESS_KEY и FAS_S3_SECRET_KEY"
             )
         if self.fas_s3_ssl is None:
-            self.fas_s3_ssl = False if self.fas_s3_endpoint else True
+            self.fas_s3_ssl = not bool(self.fas_s3_endpoint)
         return self
 
     @property
