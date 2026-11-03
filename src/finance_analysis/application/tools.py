@@ -209,13 +209,28 @@ def build_tools(*, decision_kinds: tuple[str, ...], measures: tuple[str, ...], d
         {
             "kind": {"type": "string", "enum": list(decision_kinds), "description": "Вид решения."},
             "target": _text("Цель: строка, период или book."),
-            "value": _text_or_null("Новое значение."),
+            "value": {
+                "type": ["string", "object", "null"],
+                "additionalProperties": False,
+                "description": "Строка решения. Для model_type.set — объект {labels, primary}.",
+                "properties": {
+                    "labels": {"type": "array", "items": {"type": "string"}, "description": "Метки типа модели."},
+                    "primary": {"type": "string", "description": "Основная метка типа."},
+                },
+                "required": ["labels", "primary"],
+            },
             "expected_seq": _int_or_null("Ожидаемый seq слота."),
             "supersedes": _closed(
                 {"seq": {"type": "integer", "description": "Seq заменяемого решения."}},
                 description="Замена прежнего решения. null — нет.",
                 nullable=True,
             ),
+            "confirm": {"type": ["boolean", "null"], "description": "Подтверждение предупреждения. null — нет."},
+            "warnings_ack": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+                "description": "Коды подтверждённых предупреждений. null — нет.",
+            },
         }
     )
     decisions = _closed(

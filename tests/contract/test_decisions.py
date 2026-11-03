@@ -48,7 +48,10 @@ async def test_packt_semantics_mapping_and_one_fold(app, local_service):
         assert "covered" in book.json()["critical_path"]
         questions = await client.get(f"/v1/books/{JOB}/questions", headers=HEADERS)
         assert questions.status_code == 200
-        assert all(len(item["question_id"]) == 40 and item["candidates"] == [] for item in questions.json()["questions"])
+        for item in questions.json()["questions"]:
+            assert len(item["question_id"]) == 40
+            if item["kind"] == "concept":
+                assert all("binding_key" in cand for cand in item["candidates"])
         inferred = await client.post(f"/v1/books/{JOB}/mapping:infer", headers=HEADERS)
         assert inferred.status_code == 202
         assert inferred.json()["kind"] == "mapping.infer"

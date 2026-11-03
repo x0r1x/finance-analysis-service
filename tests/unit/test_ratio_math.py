@@ -5,6 +5,11 @@ from decimal import Decimal
 from finance_analysis.domain.audit import AuditInput
 from finance_analysis.domain.metrics import coverage_ratio
 from finance_analysis.domain.rematch import pair_status
+from finance_analysis.plugins.rules.coverage import (
+    PERIOD_GRAIN_MISMATCH,
+    SCULPTING_DEVIATION,
+    dscr_rows,
+)
 from finance_analysis.plugins.rules.ratios import (
     MARKER_MIX,
     RATIO_MISMATCH,
@@ -150,6 +155,36 @@ def test_ratio_mismatch_and_marker_mix_and_pair_status():
     assert pair_status([("keep", 4.0)]) == ("keep", False)
     assert pair_status([("a", 4.0), ("b", 3.5)]) == (None, True)
     assert pair_status([("low", 2.0)]) == (None, True)
+
+
+def test_dscr_findings_stay_quiet_when_only_icr_applies():
+    """Привязанные cfads, debt_service и dscr не дают находок DSCR, если применима только ICR."""
+
+    from datetime import date
+
+    bindings = [_binding("cfads", "c"), _binding("debt_service", "d"), _binding("dscr", "m")]
+    periods = []
+    facts = []
+    for name in ("p", "q", "r"):
+        periods.append(
+            {
+                "axis_id": "Sheet!r1",
+                "period_id": name,
+                "period_key_base": name,
+                "grain": "quarter",
+                "period_start": date(2024, 1, 1),
+                "period_end": date(2024, 1, 15),
+            }
+        )
+        facts.extend([_fact("c", "10", name), _fact("d", "4", name), _fact("m", "9", name)])
+    quiet = AuditInput(periods=periods, facts=facts, bindings=bindings, applicable_metrics=frozenset({"icr"}))
+    assert dscr_rows(quiet) == []
+    assert RATIO_MISMATCH.check(quiet) == []
+    assert SCULPTING_DEVIATION.check(quiet) == []
+    assert PERIOD_GRAIN_MISMATCH.check(quiet) == []
+    live = AuditInput(periods=periods, facts=facts, bindings=bindings, applicable_metrics=frozenset({"dscr"}))
+    assert [item.code for item in RATIO_MISMATCH.check(live)] == ["ratio_mismatch", "ratio_mismatch", "ratio_mismatch"]
+    assert len(PERIOD_GRAIN_MISMATCH.check(live)) == 3
 
 
 def test_dscr_cache_must_match_the_model_row():

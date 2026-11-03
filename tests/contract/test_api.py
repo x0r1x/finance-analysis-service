@@ -314,6 +314,28 @@ def _property_paths(node, prefix=""):
     return found
 
 
+def _assert_model_type_decision(schema: dict) -> None:
+    """Строгая схема capabilities принимает model_type.set и отвергает лишние поля."""
+
+    from jsonschema import Draft202012Validator
+
+    validator = Draft202012Validator(schema)
+    model_type = {
+        "kind": "model_type.set",
+        "target": "book",
+        "value": {"labels": ["corporate"], "primary": "corporate"},
+        "expected_seq": None,
+        "supersedes": None,
+        "confirm": True,
+        "warnings_ack": ["model_type_contradicts_signals"],
+    }
+    assert list(validator.iter_errors({"decisions": [model_type]})) == []
+    concept = {**model_type, "kind": "concept.set", "target": "row", "value": "capex", "confirm": None, "warnings_ack": None}
+    assert list(validator.iter_errors({"decisions": [concept]})) == []
+    assert list(validator.iter_errors({"decisions": [{**model_type, "score": 1}]}))
+    assert list(validator.iter_errors({"decisions": [{**model_type, "value": {"labels": ["corporate"]}}]}))
+
+
 async def test_capability_tool_card(app):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
         caps = await client.get("/v1/capabilities")
@@ -341,6 +363,7 @@ async def test_capability_tool_card(app):
     }
     seq = by_name["submit_decisions"]["parameters"]["properties"]["decisions"]["items"]["properties"]["supersedes"]
     assert seq["properties"]["seq"]["type"] == "integer"
+    _assert_model_type_decision(by_name["submit_decisions"]["parameters"])
     for tool in tools:
         parameters = tool["parameters"]
         assert parameters["type"] == "object"

@@ -111,6 +111,9 @@ def test_profile_conflict_asks_instead_of_applying_the_profile():
     assert used.source == "unresolved"
     assert used.reason == "profile_conflict"
     assert contradicts_signals(strong.scores, "corporate") is True
+    offered = {item.type_id: item.score for item in used.candidates}
+    assert offered["project_finance"] == 1.0
+    assert offered["corporate"] == 0.0
 
 
 def test_corporate_book_does_not_raise_missing_total_row_for_cfads():
@@ -121,6 +124,27 @@ def test_corporate_book_does_not_raise_missing_total_row_for_cfads():
         applicable_metrics=frozenset({"icr"}),
     )
     assert MISSING_TOTAL_ROW.check(data) == []
+
+
+def test_flat_sheet_group_fails_check_config(tmp_path, monkeypatch):
+    import shutil
+
+    import yaml
+
+    from finance_analysis.application.model_types import model_types_dir
+    from finance_analysis.cli import _check_config
+
+    catalog = _catalog()
+    validate_model_types(catalog.documents, concepts=catalog.concepts, metric_inputs=catalog.metric_inputs)
+    folder = tmp_path / "model_types"
+    shutil.copytree(model_types_dir(), folder)
+    body = yaml.safe_load((folder / "corporate.yaml").read_text(encoding="utf-8"))
+    body["signals"][0]["groups"] = ["ОПиУ", "Баланс", "ДДС"]
+    (folder / "corporate.yaml").write_text(yaml.safe_dump(body, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr("finance_analysis.application.model_types.model_types_dir", lambda: folder)
+    with pytest.raises(SystemExit) as caught:
+        _check_config()
+    assert caught.value.code == 1
 
 
 def test_validator_rejects_an_unknown_metric():

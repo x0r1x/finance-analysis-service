@@ -38,6 +38,8 @@ class RatioMismatch(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         if not data.bindings:
             return []
+        if data.applicable_metrics is not None and "dscr" not in data.applicable_metrics:
+            return []
         model = _primary(data, "dscr")
         if model is None or _primary(data, "cfads") is None or _primary(data, "debt_service") is None:
             return []
