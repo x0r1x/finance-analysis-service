@@ -107,7 +107,7 @@ async def test_minio_region_and_conditional(minio_endpoint, tmp_path):
         "region": "ap-northeast-1",
         "endpoint": minio_endpoint,
     }
-    path = Path("deploy/must-verify.json")
+    path = Path("resources/must-verify.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = {}
     if path.is_file():
@@ -155,7 +155,7 @@ async def test_pool_memory_and_gil(local_service):
             notes["cursor_error"] = str(exc)
         notes["cursor_safe"] = cursor_safe
         notes["semaphore"] = 1
-    path = Path("deploy/must-verify.json")
+    path = Path("resources/must-verify.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = json.loads(path.read_text()) if path.is_file() else {}
     existing["pool"] = notes

@@ -16,7 +16,7 @@ Book files are immutable Parquet under `books/{job_id}/{build_key}/`. Derived ta
 
 Redis is required. It holds locks, the operation log, idempotency keys, and the Taskiq queues. The API process does not run those queues.
 
-Compose starts one worker on each queue, plus the scheduler:
+Those five processes are children of `fas-api` in the `finance-analysis` container:
 
 | Process | Command |
 | --- | --- |

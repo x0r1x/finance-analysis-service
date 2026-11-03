@@ -91,6 +91,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-async-tasks", type=int, default=8)
     parser.add_argument("--ready-file", default=os.environ.get("FAS_WORKER_READY"))
     args = parser.parse_args(argv)
+    from finance_analysis.adapters.queue.embedded import arm_parent_death
+
+    arm_parent_death()
     asyncio.run(
         serve(
             load_settings(),

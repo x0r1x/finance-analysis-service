@@ -1,5 +1,5 @@
 // S4: чтения многих книг держат снимок глоссария, пока идёт один transition.
-// Запуск на стенде: k6 run -e BASE_URL=... -e JOB_IDS=id1,id2 deploy/k6/s4.js
+// Запуск на стенде: k6 run -e BASE_URL=... -e JOB_IDS=id1,id2 scripts/k6/s4.js
 import http from "k6/http";
 import { check, sleep } from "k6";
 

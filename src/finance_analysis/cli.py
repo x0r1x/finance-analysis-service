@@ -30,15 +30,14 @@ def _settings_for(url: str) -> Settings:
     if url.startswith("s3://"):
         rest = url.removeprefix("s3://")
         bucket, _, prefix = rest.partition("/")
-        return Settings(
-            FAS_S3_BUCKET=bucket,
-            FAS_S3_PREFIX=prefix,
-            FAS_S3_ENDPOINT=__import__("os").environ.get("FAS_S3_ENDPOINT"),
-            FAS_S3_REGION=__import__("os").environ.get("FAS_S3_REGION", "us-east-1"),
-            FAS_S3_ACCESS_KEY=__import__("os").environ.get("FAS_S3_ACCESS_KEY"),
-            FAS_S3_SECRET_KEY=__import__("os").environ.get("FAS_S3_SECRET_KEY"),
-            FAS_S3_SSL=__import__("os").environ.get("FAS_S3_SSL", "true").lower() == "true",
-            FAS_READ_ONLY=False,
+        current = Settings()
+        return Settings.model_validate(
+            {
+                **current.model_dump(by_alias=True),
+                "FAS_S3_BUCKET": bucket,
+                "FAS_S3_PREFIX": prefix,
+                "FAS_READ_ONLY": False,
+            }
         )
     raise SystemExit(f"неизвестный URL {url}")
 

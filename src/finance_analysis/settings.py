@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,9 +18,12 @@ class Settings(BaseSettings):
     fas_s3_region: str = Field(default="us-east-1", alias="FAS_S3_REGION")
     fas_s3_access_key: str | None = Field(default=None, alias="FAS_S3_ACCESS_KEY")
     fas_s3_secret_key: str | None = Field(default=None, alias="FAS_S3_SECRET_KEY")
-    fas_s3_ssl: bool = Field(default=True, alias="FAS_S3_SSL")
+    fas_s3_ssl: bool | None = Field(default=None, alias="FAS_S3_SSL")
     fas_read_only: bool = Field(default=False, alias="FAS_READ_ONLY")
     fas_redis_url: str | None = Field(default=None, alias="FAS_REDIS_URL")
+    fas_in_container: bool = Field(default=False, alias="FAS_IN_CONTAINER")
+    fas_host: str = Field(default="127.0.0.1", alias="FAS_HOST")
+    fas_port: int = Field(default=8080, alias="FAS_PORT")
 
     lock_ttl_ms: int = Field(default=60_000, alias="LOCK_TTL_MS")
     builder_base_url: str | None = Field(default=None, alias="BUILDER_BASE_URL")
@@ -76,6 +81,10 @@ class Settings(BaseSettings):
     cb_failures: int = Field(default=5, alias="CB_FAILURES")
     cb_open_sec: int = Field(default=30, alias="CB_OPEN_SEC")
     shutdown_grace_sec: int = Field(default=25, alias="SHUTDOWN_GRACE_SEC")
+    fas_embedded_workers: bool = Field(default=False, alias="FAS_EMBEDDED_WORKERS")
+    fas_embedded_restart_backoff_sec: float = Field(
+        default=1.0, gt=0, alias="FAS_EMBEDDED_RESTART_BACKOFF_SEC"
+    )
 
     embed_model: str = Field(default="", alias="EMBED_MODEL")
     rerank_model: str = Field(default="", alias="RERANK_MODEL")
@@ -138,6 +147,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "частичная конфигурация S3: нужны FAS_S3_BUCKET, FAS_S3_ACCESS_KEY и FAS_S3_SECRET_KEY"
             )
+        if self.fas_s3_ssl is None:
+            endpoint = self.fas_s3_endpoint or ""
+            self.fas_s3_ssl = not endpoint.startswith("http://")
+        if self.fas_in_container and _loopback(self.fas_redis_url):
+            raise ValueError(
+                "FAS_REDIS_URL внутри контейнера указывает на сам контейнер. "
+                "Нужен адрес Redis в его сети."
+            )
         return self
 
     @property
@@ -167,6 +184,12 @@ class Settings(BaseSettings):
         if raw.endswith("s"):
             return int(float(raw[:-1]))
         return int(raw)
+
+
+def _loopback(url: str | None) -> bool:
+    if not url:
+        return False
+    return urlparse(url).hostname in {"127.0.0.1", "localhost", "::1"}
 
 
 def load_settings() -> Settings:

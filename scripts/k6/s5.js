@@ -2,7 +2,7 @@ import http from "k6/http";
 import { check } from "k6";
 
 // S5 (§4.13.9): медленный или падающий сервер модели. FAS запущен с EMBED/RERANK/CLM_BASE_URL
-// на deploy/k6/fake_models.py в FAKE_MODE=slow|fail|flaky. Ждём: привязка заканчивается в пределах
+// на scripts/k6/fake_models.py в FAKE_MODE=slow|fail|flaky. Ждём: привязка заканчивается в пределах
 // MAPPING_DEADLINE_MS, синхронные чтения не страдают (bulkhead), цепь модели открыта (circuit breaker),
 // в evidence привязок есть degraded.
 

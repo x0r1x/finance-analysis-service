@@ -20,6 +20,7 @@ from prometheus_client import (
 from finance_analysis.adapters.api.http import accept_ok, actor, route_template
 from finance_analysis.adapters.api.problems import problem_response
 from finance_analysis.adapters.api.route import register as register_routes
+from finance_analysis.adapters.queue.embedded import embedded_workers_ready
 from finance_analysis.domain.book import FAS_VERSION, Actor
 from finance_analysis.domain.deadline import (
     Deadline,
@@ -147,12 +148,7 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
 
     async def _limited(request: Request, who: Actor):
         runtime = _support()
-        try:
-            await runtime.rate_limit(who)
-        except DependencyUnavailable:
-            if request.method == "GET":
-                return
-            raise
+        await runtime.rate_limit(who)
         app.state.inflight += 1
         if app.state.inflight > settings.api_max_inflight:
             app.state.inflight -= 1
@@ -168,6 +164,10 @@ def create_app(settings: Settings, *, service=None, support=None) -> FastAPI:
     @app.get("/health/ready")
     async def ready():
         body = await _svc().ready()
+        workers = embedded_workers_ready()
+        if workers is not None and any(state != "up" for state in workers.values()):
+            body["status"] = "degraded"
+        body["workers"] = workers if workers is not None else "external"
         code = 200 if body["status"] == "ok" else 503
         return JSONResponse(body, status_code=code)
 

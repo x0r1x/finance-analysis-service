@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from pathlib import Path
 
 import uvicorn
@@ -13,6 +14,7 @@ from finance_analysis.adapters.builder.fixture import FixtureBuilder
 from finance_analysis.adapters.builder.http import HttpBuilder
 from finance_analysis.adapters.ml.cluster import HdbscanCluster
 from finance_analysis.adapters.ml.http import build_models, close_models
+from finance_analysis.adapters.queue.embedded import start_for_serve, stop_for_serve
 from finance_analysis.adapters.redis.runtime import RedisRuntime, version_at_least
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
 from finance_analysis.adapters.storage.store import open_storage
@@ -68,35 +70,55 @@ async def _watch_glossary(service, support) -> None:
 
 def main() -> None:
     settings = load_settings()
-    asgi = create_app(settings)
-    api = asgi.fastapi
+    supervisor = start_for_serve(settings)
+    previous_term = signal.getsignal(signal.SIGTERM)
+    previous_int = signal.getsignal(signal.SIGINT)
 
-    from contextlib import asynccontextmanager
+    def _stop_children(signum: int, frame: object) -> None:
+        del frame
+        stop_for_serve(supervisor)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
 
-    from fastapi import FastAPI
+    signal.signal(signal.SIGTERM, _stop_children)
+    signal.signal(signal.SIGINT, _stop_children)
+    try:
+        asgi = create_app(settings)
+        api = asgi.fastapi
 
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI):
-        service, support = await assemble(settings)
-        _app.state.service = service
-        _app.state.support = support
-        _app.state.settings = settings
-        _app.state.inflight = 0
-        watch = asyncio.create_task(_watch_glossary(service, support))
-        yield
-        watch.cancel()
-        try:
-            await watch
-        except asyncio.CancelledError:
-            pass
-        service.draining = True
-        await service.settle()
-        await close_models(service.models)
-        await support.close()
-        await service.builder.aclose()
+        from contextlib import asynccontextmanager
 
-    api.router.lifespan_context = lifespan
-    uvicorn.run(asgi, host=os.environ.get("FAS_HOST", "0.0.0.0"), port=int(os.environ.get("FAS_PORT", "8080")))
+        from fastapi import FastAPI
+
+        @asynccontextmanager
+        async def lifespan(_app: FastAPI):
+            service, support = await assemble(settings)
+            _app.state.service = service
+            _app.state.support = support
+            _app.state.settings = settings
+            _app.state.inflight = 0
+            watch = asyncio.create_task(_watch_glossary(service, support))
+            try:
+                yield
+            finally:
+                watch.cancel()
+                try:
+                    await watch
+                except asyncio.CancelledError:
+                    pass
+                service.draining = True
+                await service.settle()
+                await close_models(service.models)
+                await support.close()
+                await service.builder.aclose()
+                stop_for_serve(supervisor)
+
+        api.router.lifespan_context = lifespan
+        uvicorn.run(asgi, host=settings.fas_host, port=settings.fas_port)
+    finally:
+        stop_for_serve(supervisor)
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
 
 
 if __name__ == "__main__":
