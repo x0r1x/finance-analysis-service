@@ -60,10 +60,24 @@ def _signals(type_id: str, raw) -> None:
         total += float(weight)
         if item["kind"] == "concepts_bound_all" and not item.get("concepts"):
             raise ModelTypeInvalid(f"{type_id}: concepts_bound_all без понятий")
-        if item["kind"] == "sheets_any" and not item.get("groups"):
-            raise ModelTypeInvalid(f"{type_id}: sheets_any без групп листов")
+        if item["kind"] == "sheets_any":
+            _sheet_groups(type_id, item.get("groups"))
     if type_id != "other" and total <= 0:
         raise ModelTypeInvalid(f"{type_id}: сумма весов signals должна быть больше нуля")
+
+
+def _sheet_groups(type_id: str, groups) -> None:
+    """Группа — список непустых строк. Плоский список имён лоадер читает посимвольно."""
+
+    if not isinstance(groups, list) or not groups:
+        raise ModelTypeInvalid(f"{type_id}: sheets_any без групп листов")
+    for group in groups:
+        if (
+            not isinstance(group, list)
+            or not group
+            or any(not isinstance(name, str) or not name for name in group)
+        ):
+            raise ModelTypeInvalid(f"{type_id}: группа листов — список непустых строк")
 
 
 def _concepts(type_id: str, raw, concepts: frozenset[str]) -> frozenset[str]:
