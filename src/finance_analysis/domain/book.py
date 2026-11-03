@@ -27,6 +27,12 @@ def binding_key(sheet: str, label_path: list[str], label: str, occurrence: int) 
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
 
 
+def question_digest(kind: str, subject: str, scope: str) -> str:
+    """sha1(kind › subject › scope). Стабилен между сборками (§5.10.5)."""
+
+    return hashlib.sha1(SEP.join([kind, subject, scope]).encode()).hexdigest()
+
+
 def build_key_for(
     job_id: str,
     summary_etag: str,

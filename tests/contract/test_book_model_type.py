@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from finance_analysis.adapters.api.app import create_app
 from finance_analysis.application.analyses import RATIO_METRICS
 from finance_analysis.application.service import Accepted
-from finance_analysis.domain.book import Actor
+from finance_analysis.domain.book import Actor, question_digest
 from finance_analysis.domain.cover_metrics import METRIC_INPUTS
 from finance_analysis.domain.model_type import asks_for, decision_labels
 from tests.books import job_id
@@ -82,8 +82,18 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         ]
         asked = await local_service.questions_view(job, Actor(), wait_sec=30)
         assert not isinstance(asked, Accepted)
-        assert asked["questions"] == [] or asked["questions"][0]["kind"] != "model_type"
         assert all(item["kind"] != "model_type" for item in asked["questions"])
+        subjects = [item["subject"] for item in asked["questions"]]
+        # cfads и debt_service уже привязаны: обязательных открытых понятий нет.
+        assert subjects == []
+        pool = [
+            row
+            for row in mapped["rows"]
+            if row.get("status") in {"unknown", "ambiguous"} and row.get("source") != "confirmed"
+        ]
+        # До — пакет по строкам (неизвестные и неоднозначные минус необязательный interest).
+        before = len(pool) - len(dropped)
+        assert (alias, before, len(subjects)) == {"packt": ("packt", 86, 0), "rvi": ("rvi", 221, 0)}[alias]
         ratios = await _ratios(local_service, job)
         hidden = [item for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"]
         assert hidden == [], alias
@@ -184,3 +194,83 @@ async def test_profile_model_type_default_has_no_numbers(app):
         body = await client.get("/v1/profiles/desk", headers=HEADERS)
         assert body.status_code == 200, body.text
         assert body.json()["body"]["model_type_default"] == {"labels": ["corporate"], "primary": "corporate"}
+
+
+async def test_concept_answer_keeps_question_id_and_binds_the_row(local_service):
+    """Ответ на вопрос понятия привязывает строку и остаётся в журнале с question_id."""
+
+    await local_service.perform_load(PACKT, actor=Actor(), fence=1)
+    head = (await local_service._read_head(PACKT))[0]
+    bindings = await local_service._dataset_rows(PACKT, head, "bindings")
+    unknown = [row for row in bindings if row.get("status") == "unknown" and row.get("binding_key")]
+    assert len(unknown) >= 2
+    target, other = unknown[0], unknown[1]
+    digest = question_digest("concept", "capex", PACKT)
+    denied = await local_service.submit_decisions(
+        PACKT,
+        {
+            "decisions": [
+                {
+                    "kind": "concept.set",
+                    "target": target["binding_key"],
+                    "value": "capex",
+                    "expected_seq": None,
+                    "question_id": "0" * 40,
+                }
+            ]
+        },
+        Actor(),
+        wait_sec=60,
+    )
+    assert denied["results"][0]["status"] == "rejected", denied
+    assert denied["results"][0]["errors"][0]["code"] == "schema_invalid"
+    accepted = await local_service.submit_decisions(
+        PACKT,
+        {
+            "decisions": [
+                {
+                    "kind": "concept.set",
+                    "target": target["binding_key"],
+                    "value": "capex",
+                    "expected_seq": None,
+                    "question_id": digest,
+                }
+            ]
+        },
+        Actor(),
+        wait_sec=60,
+    )
+    assert accepted["results"][0]["status"] == "accepted", accepted
+    assert accepted["results"][0]["question_id"] == digest
+    listed = await local_service.list_decisions(PACKT)
+    recorded = [item for item in listed["items"] if item.get("type") == "concept.set"]
+    assert recorded[-1]["question_id"] == digest
+    assert recorded[-1]["value"] == "capex"
+    mapped = await local_service.mapping_view(PACKT, Actor(), wait_sec=30)
+    assert not isinstance(mapped, Accepted)
+    bound = next(row for row in mapped["rows"] if row["binding_key"] == target["binding_key"])
+    assert bound["status"] == "bound" and bound["effective_concept"] == "capex"
+    reject_id = question_digest("concept", "ebitda", PACKT)
+    rejected = await local_service.submit_decisions(
+        PACKT,
+        {
+            "decisions": [
+                {
+                    "kind": "concept.reject",
+                    "target": other["binding_key"],
+                    "value": "ebitda",
+                    "expected_seq": None,
+                    "question_id": reject_id,
+                }
+            ]
+        },
+        Actor(),
+        wait_sec=60,
+    )
+    assert rejected["results"][0]["status"] == "accepted", rejected
+    listed = await local_service.list_decisions(PACKT)
+    reject_row = next(item for item in listed["items"] if item.get("type") == "concept.rejected")
+    assert reject_row["question_id"] == reject_id
+    mapped = await local_service.mapping_view(PACKT, Actor(), wait_sec=30)
+    left = next(row for row in mapped["rows"] if row["binding_key"] == other["binding_key"])
+    assert left["status"] == "unknown"

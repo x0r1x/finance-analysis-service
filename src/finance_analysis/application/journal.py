@@ -138,6 +138,7 @@ class Journal:
         at_utc: datetime | None = None,
         binding_key: str | None = None,
         supersedes: dict | None = None,
+        question_id: str | None = None,
     ) -> tuple[dict, bool]:
         """Проверка дубля и запись под одним замком. Второй элемент — duplicate."""
 
@@ -165,6 +166,7 @@ class Journal:
                         at_utc=at_utc,
                         binding_key=binding_key,
                         supersedes=supersedes,
+                        question_id=question_id,
                     )
                 except AlreadyExists:
                     self._last[job_id] = 0
@@ -185,6 +187,7 @@ class Journal:
         at_utc: datetime | None,
         binding_key: str | None = None,
         supersedes: dict | None = None,
+        question_id: str | None = None,
     ) -> dict:
         actual = self._keys.get(job_id, {}).get(_slot(event_type, target))
         if actual != expected_seq:
@@ -209,6 +212,8 @@ class Journal:
         }
         if supersedes is not None:
             event["supersedes"] = supersedes
+        if question_id:
+            event["question_id"] = question_id
         await self.store.put_if_absent(
             log_key(job_id, seq),
             json.dumps(event, ensure_ascii=False).encode(),

@@ -300,3 +300,50 @@ def decision_labels(verdict: Effective) -> tuple[str, ...]:
     if verdict.primary:
         return verdict.labels or (verdict.primary,)
     return verdict.labels
+
+
+def open_concepts(
+    catalog: ModelTypeCatalog,
+    labels: tuple[str, ...],
+    *,
+    bound: frozenset[str],
+    absent: frozenset[str],
+) -> tuple[str, ...]:
+    """Понятия открытых вопросов: входы required-метрик без привязки и без concept.absent.
+
+    `one_of` спрашивается целиком, пока ни один член не привязан. Необязательная
+    метрика и `not_applicable` вопросов не дают.
+    """
+
+    asked: list[str] = []
+    seen: set[str] = set()
+    for metric, spec in catalog.metric_inputs.items():
+        if applicability(catalog, labels, metric) != "required":
+            continue
+        group = sorted(spec.all_of)
+        if spec.one_of and not (spec.one_of & bound):
+            group = [*group, *sorted(spec.one_of)]
+        for concept in group:
+            if concept in seen or concept in bound or concept in absent:
+                continue
+            seen.add(concept)
+            asked.append(concept)
+    return tuple(asked)
+
+
+def concept_metrics(
+    catalog: ModelTypeCatalog,
+    labels: tuple[str, ...],
+    concept: str,
+    *,
+    bound: frozenset[str],
+) -> tuple[str, ...]:
+    """required-метрики, которым ещё нужен этот вход (`needed_by` вопроса)."""
+
+    found: list[str] = []
+    for metric, spec in catalog.metric_inputs.items():
+        if applicability(catalog, labels, metric) != "required":
+            continue
+        if concept in spec.all_of or (concept in spec.one_of and not (spec.one_of & bound)):
+            found.append(metric)
+    return tuple(found)

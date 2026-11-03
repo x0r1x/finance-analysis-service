@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import hashlib
 import json
 import logging
 import re
@@ -47,7 +46,6 @@ from finance_analysis.domain.book import (
     FAS_PROJECTION_VERSION,
     FAS_SCHEMA_VERSION,
     FAS_VERSION,
-    SEP,
     Actor,
     BuilderRef,
     Head,
@@ -58,11 +56,11 @@ from finance_analysis.domain.book import (
     WorkbookSnapshot,
     build_key_for,
     publication_aligned,
+    question_digest,
     sha256_bytes,
     with_links,
 )
 from finance_analysis.domain.calibration import Calibrator
-from finance_analysis.domain.cover_metrics import METRIC_INPUTS
 from finance_analysis.domain.deadline import bind_request_deadline, effective
 from finance_analysis.domain.errors import (
     AlreadyExists,
@@ -89,7 +87,6 @@ from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.mapping import decide
 from finance_analysis.domain.metrics import _primaries
 from finance_analysis.domain.model_type import (
-    asks_for,
     assignment_error,
     contradicts_signals,
     decision_labels,
@@ -101,6 +98,7 @@ from finance_analysis.domain.model_type import (
 from finance_analysis.domain.operational_year import resolve_operational_year
 from finance_analysis.domain.periods import marker_class, split_period_key
 from finance_analysis.domain.phases import phase_target, split_phase_target
+from finance_analysis.domain.questions import concept_questions, question_id_problem
 from finance_analysis.domain.signals import lf_accuracy
 from finance_analysis.domain.state import fold
 from finance_analysis.settings import Settings
@@ -1338,6 +1336,11 @@ class FasService:
                     item = {**item, "expected_seq": supersedes.get("seq")}
             slot = (target, event_type)
             expected = followed[slot] if slot in followed else item.get("expected_seq")
+            given_id = item.get("question_id")
+            id_problem = question_id_problem(event_type, item.get("value"), job_id, given_id)
+            if id_problem:
+                results.append(_rejected(index, "schema_invalid", id_problem))
+                continue
             written = await self.guard.write_decision(
                 job_id,
                 event_type=event_type,
@@ -1352,6 +1355,7 @@ class FasService:
                 concept_taken=taken,
                 binding_key=None if target == "book" else target,
                 supersedes=supersedes,
+                question_id=given_id if isinstance(given_id, str) else None,
             )
             if not written.accepted:
                 results.append(_rejected(index, written.code or "schema_invalid", written.detail))
@@ -1362,16 +1366,17 @@ class FasService:
             if isinstance(record.get("seq"), int):
                 followed[slot] = record["seq"]
             records.append(record)
-            results.append(
-                {
-                    "index": index,
-                    "status": "accepted",
-                    "record_seq": record.get("seq"),
-                    "duplicate": written.duplicate,
-                    "errors": [],
-                    "warnings": [],
-                }
-            )
+            accepted = {
+                "index": index,
+                "status": "accepted",
+                "record_seq": record.get("seq"),
+                "duplicate": written.duplicate,
+                "errors": [],
+                "warnings": [],
+            }
+            if record.get("question_id"):
+                accepted["question_id"] = record["question_id"]
+            results.append(accepted)
         return {"results": results, "records": records}
 
     async def _fold_derived(self, job_id: str, head: Head, token: str | None, fence: int) -> Head:
@@ -1713,37 +1718,24 @@ class FasService:
             return mapped
         verdict = await self.resolve_model_type(job_id, head)
         labels = decision_labels(verdict)
-        questions = []
-        limit = self.settings.question_max_candidates
-        for row in mapped["rows"]:
-            if row.get("status") not in {"unknown", "ambiguous"} or row.get("source") == "confirmed":
-                continue
-            concept = row.get("effective_concept")
-            users = METRIC_INPUTS.get(concept)
-            # Строка без понятия остаётся: вопросы по понятиям вместо строк — отдельный срез.
-            if users is not None and not asks_for(tuple(users), self.model_types, labels):
-                continue
-            kind, subject, scope = "concept", row["binding_key"], job_id
-            digest = hashlib.sha1(SEP.join([kind, subject, scope]).encode()).hexdigest()
-            evidence = json.loads(row.get("evidence_json") or "{}")
-            # Кандидаты только из этой книги и только по признакам конвейера (§5.10.5 п. 2).
-            candidates = [
-                {"concept": item["concept"], "score": item.get("p"), "reasons": item.get("reasons") or []}
-                for item in evidence.get("candidates") or []
-                if item.get("structure_pass", True)
-            ][:limit]
-            questions.append(
-                {
-                    "question_id": digest,
-                    "kind": kind,
-                    "subject": subject,
-                    "scope": scope,
-                    "reason": "ambiguous" if row.get("status") == "ambiguous" else "concept_unknown",
-                    "candidates": candidates,
-                }
-            )
+        events = await self.guard.read_all(job_id)
+        try:
+            dim_rows = await self._dataset_rows(job_id, head, "dim_row")
+        except (NotFound, StopIteration):
+            dim_rows = []
+        package = await self._book_package(str(head.versions.get("glossary") or "none"), events)
+        questions = concept_questions(
+            job_id=job_id,
+            bindings=mapped["rows"],
+            rows=dim_rows,
+            events=events,
+            catalog=self.model_types,
+            labels=labels,
+            concepts=package.concepts,
+            limit=self.settings.question_max_candidates,
+        )
         if verdict.source == "unresolved":
-            digest = hashlib.sha1(SEP.join(["model_type", "book", job_id]).encode()).hexdigest()
+            digest = question_digest("model_type", "book", job_id)
             questions.insert(
                 0,
                 {

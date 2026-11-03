@@ -54,7 +54,11 @@ async def test_models_add_candidates_and_decisions_feed_learning(settings, redis
     lexical = next(row for row in bindings if row["label_path_text"].endswith(" › CFADS"))
     assert json.loads(lexical["evidence_json"])["label"]["id"].startswith("cfads/")
     questions = await service.questions_view(RVI, Actor(), wait_sec=5)
-    assert any(item["candidates"] for item in questions["questions"])
+    for item in questions["questions"]:
+        if item["kind"] != "concept":
+            continue
+        assert item["subject"] in service.catalog.ids
+        assert all("binding_key" in cand for cand in item["candidates"])
 
     target = next(row for row in rows if row["label"] == "Total debt service" and row["kind"] == "fact")
     posted = await service.submit_decisions(
