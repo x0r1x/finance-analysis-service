@@ -18,6 +18,7 @@ from finance_analysis.domain.model_type_eval import (
     render_markdown,
 )
 from tests.books import job_id
+from tests.k3_expect import assert_confident_primary
 
 pytestmark = pytest.mark.eval
 
@@ -86,25 +87,29 @@ def _k3_spec() -> dict | None:
     if not spec_path.is_file():
         return None
     spec = yaml.safe_load(spec_path.read_text(encoding="utf-8")) or {}
-    return {"bound": spec.get("bound") or [], "sheets": spec.get("sheets") or []}
+    primary = spec.get("primary")
+    return {
+        "bound": spec.get("bound") or [],
+        "sheets": spec.get("sheets") or [],
+        "primary": primary if isinstance(primary, str) else None,
+    }
 
 
 def test_k3_expects_corporate_and_stays_out_of_the_snapshot():
     spec = _k3_spec()
     if spec is None:
         pytest.skip("FAS_LOCAL_BOOK_K3 не задан")
+    if spec["primary"] is None:
+        pytest.skip("в .local.yaml нет primary")
     from finance_analysis.application.model_types import load_model_types
 
-    catalog = load_model_types()
     got = infer(
-        catalog,
+        load_model_types(),
         bound=frozenset(spec["bound"]),
         sheets=frozenset(spec["sheets"]),
         accept=0.6,
         gap=0.15,
     )
-    assert got.confident is True
-    assert got.primary == "corporate"
-    assert got.labels == ("corporate",)
+    assert_confident_primary(got, spec["primary"])
     snapshot = json.loads(_REPORT.read_text(encoding="utf-8"))
     assert all(row["id"] != "k3" for row in snapshot["cases"])
