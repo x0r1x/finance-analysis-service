@@ -297,6 +297,19 @@ def test_two_discount_rates_are_not_computed():
     assert got["warnings"][0]["code"] == "discount_rate_not_unique"
 
 
+def test_one_matching_cell_on_the_book_row_does_not_warn():
+    got = _quote([(0, "-100"), (1, "60")], book=["10", "-45.454545"])
+    assert got["rows"][0]["value"] == Decimal("-45.454545")
+    assert got["warnings"] == []
+
+
+def test_a_book_row_with_no_matching_cell_warns_once():
+    got = _quote([(0, "-100"), (1, "60")], book=["10", "11"])
+    assert got["rows"][0]["status"] == "computed"
+    assert [item["code"] for item in got["warnings"]] == ["npv_book_mismatch"]
+    assert got["warnings"][0]["params"]["model"] in {"10", "11"}
+
+
 def test_book_row_that_disagrees_is_a_warning():
     book = _load("port.json")
     npv, irr = _returns(book, field="project_fcf", book_npv="100", book_irr="0.5")

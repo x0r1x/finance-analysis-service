@@ -153,13 +153,14 @@ def _book(metric: str, shown: Decimal, facts: list[dict], binding: dict | None) 
     if binding is None:
         return []
     tol = _NPV_TOL if metric == "npv" else _IRR_TOL
-    for fact in facts:
-        if fact.get("row_key") != binding["row_key"] or fact.get("normalized_value") is None:
-            continue
-        other = Decimal(str(fact["normalized_value"]))
-        if abs(shown - other) > tol:
-            return [{"code": f"{metric}_book_mismatch", "params": {"metric": metric, "fas": str(shown), "model": str(other)}}]
-    return []
+    cells = [
+        Decimal(str(fact["normalized_value"]))
+        for fact in facts
+        if fact.get("row_key") == binding["row_key"] and fact.get("normalized_value") is not None
+    ]
+    if not cells or any(abs(shown - other) <= tol for other in cells):
+        return []
+    return [{"code": f"{metric}_book_mismatch", "params": {"metric": metric, "fas": str(shown), "model": str(cells[0])}}]
 
 
 def _missing(metric: str, subject: str) -> dict:
