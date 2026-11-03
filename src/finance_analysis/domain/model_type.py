@@ -192,9 +192,13 @@ def effective(
         return _from_value(confirmed, source="confirmed", scores=inference.scores, profile_version=profile_version)
     if profile_default and contradicts_signals(inference.scores, str(profile_default.get("primary") or "")):
         names = [item.type_id for item in inference.candidates]
-        for name in (*inference.labels, str(profile_default.get("primary") or "")):
+        stated = str(profile_default.get("primary") or "")
+        for name in (*inference.labels, stated):
             if name and name not in names:
                 names.append(name)
+        candidates = list(inference.candidates)
+        if stated and all(item.type_id != stated for item in candidates):
+            candidates.append(Scored(stated, float(inference.scores.get(stated, 0.0)), ()))
         return Effective(
             labels=tuple(names),
             primary=inference.primary,
@@ -204,7 +208,7 @@ def effective(
             profile_version=profile_version,
             score=inference.scores.get(inference.primary) if inference.primary else None,
             scores=inference.scores,
-            candidates=inference.candidates,
+            candidates=tuple(candidates),
         )
     if inference.confident and inference.primary:
         return Effective(

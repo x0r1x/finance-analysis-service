@@ -111,6 +111,9 @@ def test_profile_conflict_asks_instead_of_applying_the_profile():
     assert used.source == "unresolved"
     assert used.reason == "profile_conflict"
     assert contradicts_signals(strong.scores, "corporate") is True
+    offered = {item.type_id: item.score for item in used.candidates}
+    assert offered["project_finance"] == 1.0
+    assert offered["corporate"] == 0.0
 
 
 def test_corporate_book_does_not_raise_missing_total_row_for_cfads():
