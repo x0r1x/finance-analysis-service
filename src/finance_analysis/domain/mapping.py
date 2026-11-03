@@ -11,7 +11,7 @@ from finance_analysis.domain.calibration import (
     heuristic_probability,
 )
 from finance_analysis.domain.candidates import Candidate, RowEvidence
-from finance_analysis.domain.glossary import GlossaryPackage, normalize_label
+from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
 
 MATERIAL_SHARE = 0.05
 _NOT_MONEY = frozenset({"%", "percent", "rate", "ratio", "x", "count", "years", "date"})
@@ -75,8 +75,8 @@ def structure_pass(row: dict, concept, *, label: str) -> bool:
         return False
     if concept.unit == "ratio" and unit in _MONEY:
         return False
-    norm = normalize_label(label)
-    return not any(normalize_label(item) in norm for item in concept.negative)
+    scanned = label_scan(label)
+    return not any(label_scan(item) in scanned for item in concept.negative)
 
 
 def decide(
@@ -178,9 +178,9 @@ def lexical_hit(row: dict, glossary: GlossaryPackage):
 
 
 def label_id(concept: str, kind: str, text: str) -> str:
-    """Идентификатор метки для провенанса (§5.11.3): понятие, вид, нормализованный текст."""
+    """Идентификатор метки для провенанса (§5.11.3): понятие, вид, исходный текст."""
 
-    return f"{concept}/{kind}/{normalize_label(text)}"
+    return f"{concept}/{kind}/{label_surface(text)}"
 
 
 def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:

@@ -128,6 +128,35 @@ async def test_decisions_feed_signals_examples_and_label_proposal(tmp_path):
     assert proposals[0]["origin"] == "decision" and proposals[0]["text"] == "Cash for lenders"
 
 
+async def test_unmapped_percent_and_two_concept_rows_are_proposed(tmp_path):
+    learning, glossary = _learning(tmp_path)
+    labels = ("Interest, %", "Проценты, %", "EBIT (CFADS)")
+    for index, label in enumerate(labels):
+        row = {
+            "binding_key": f"k{index}",
+            "row_key": f"k{index}",
+            "label": label,
+            "label_path_text": f"Sheet › {label}",
+            "unit": "money",
+        }
+        await learning.after_derive(
+            "job",
+            prepared=[row],
+            bindings=[{**_binding(row["binding_key"], None, status="unknown"), "importance": "critical"}],
+            facts=[],
+            links=[],
+            embeddings={},
+            nearest={},
+            package=CATALOG,
+            glossary_version="g",
+            profile=None,
+            identities={},
+        )
+    await learning.cluster_unmapped(CATALOG)
+    texts = {item["text"] for item in (await glossary.proposals(status="open"))["proposals"]}
+    assert set(labels) <= texts
+
+
 async def test_cluster_unmapped_proposes_once_per_cluster(tmp_path):
     learning, glossary = _learning(tmp_path, models=Models(embed=FakeEmbed(), clm=FakeClm("synonym_of:debt_service"), llm=FakeLlm()))
     rows = []

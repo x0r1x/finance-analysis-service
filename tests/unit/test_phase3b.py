@@ -33,12 +33,22 @@ CATALOG = load_catalog()
 
 def test_profile_overlay_beats_global_for_that_profile_only():
     document = load_git_document()
-    document["glossaries"]["debt_service"].setdefault("scoped", {})["acme"] = {"hidden": {"en": ["CFADS"]}}
+    document["glossaries"]["debt_service"].setdefault("scoped", {})["acme"] = {"hidden": {"en": ["Lender cash"]}}
     package = package_of(document)
-    assert package.resolve("CFADS").concept == "cfads"
-    assert with_profile(package, document, "acme").resolve("CFADS").concept == "debt_service"
-    assert with_profile(package, document, "other").resolve("CFADS").concept == "cfads"
-    assert with_profile(package, document, None).resolve("CFADS").concept == "cfads"
+    assert package.resolve("Lender cash") is None
+    assert with_profile(package, document, "acme").resolve("Lender cash").concept == "debt_service"
+    assert with_profile(package, document, "other").resolve("Lender cash") is None
+    assert with_profile(package, document, None).resolve("Lender cash") is None
+    # Занятый ключ другого понятия профиль не забирает, даже если метка целиком из него.
+    document["glossaries"]["debt_service"]["scoped"]["acme"] = {"hidden": {"en": ["CFADS"]}}
+    assert with_profile(package_of(document), document, "acme").resolve("CFADS").concept == "cfads"
+
+
+async def test_label_search_sees_text_inside_a_parenthesis(tmp_path):
+    glossary = _learning(tmp_path)[1]
+    await glossary.ensure()
+    texts = {item["text"] for item in (await glossary.labels("убыток"))["labels"]}
+    assert "Операционная прибыль (убыток)" in texts
 
 
 def test_canary_verdict_waits_without_volume_or_time():
@@ -168,7 +178,7 @@ async def test_clm_shots_stay_with_the_call_that_found_them():
 
 async def test_shadow_book_uses_the_profile_label():
     document = load_git_document()
-    document["glossaries"]["debt_service"].setdefault("scoped", {})["acme"] = {"hidden": {"en": ["CFADS"]}}
+    document["glossaries"]["debt_service"].setdefault("scoped", {})["acme"] = {"hidden": {"en": ["Lender cash"]}}
     package = package_of(document)
     head = Head("b", 1, "d", {"profile": "acme@1", "glossary": "g"})
 
@@ -187,8 +197,8 @@ async def test_shadow_book_uses_the_profile_label():
                         "kind": "fact",
                         "binding_key": "k",
                         "row_key": "k",
-                        "label": "CFADS",
-                        "label_path_text": "CFADS",
+                        "label": "Lender cash",
+                        "label_path_text": "Lender cash",
                         "model_id": "m",
                         "build_key": "b",
                         "check_row": False,

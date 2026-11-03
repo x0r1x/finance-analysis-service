@@ -5,6 +5,7 @@ import json
 import pytest
 
 from finance_analysis.application.catalog import load_catalog, load_git_document
+from finance_analysis.application.glossary_store import provenance_of
 from finance_analysis.application.project import derive_rows
 from finance_analysis.domain.glossary import (
     build_package,
@@ -12,6 +13,7 @@ from finance_analysis.domain.glossary import (
     normalize_label,
     with_profile,
 )
+from finance_analysis.domain.mapping import label_id
 
 _DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}}
 
@@ -133,6 +135,16 @@ def test_profile_overlay_uses_the_same_normalization():
     assert with_profile(package, document, "bank").resolve("Coupon, %").concept == "interest"
 
 
+def test_profile_does_not_take_another_concepts_key():
+    document = load_git_document()
+    package = load_catalog()
+    document["glossaries"]["interest"].setdefault("scoped", {})["bank"] = {"alt": {"en": ["Coupon (CFADS)"]}}
+    scoped = with_profile(package, document, "bank")
+    assert scoped.resolve("Coupon").concept == "interest"
+    assert scoped.resolve("CFADS").concept == "cfads"
+    assert package.resolve("CFADS").concept == "cfads"
+
+
 @pytest.mark.parametrize(
     ("concept", "label"),
     [
@@ -192,3 +204,30 @@ def test_stripped_unit_and_period_land_in_row_evidence():
     assert row["unit"] == "money"
     assert row["scale"] == "k"
     assert row["currency"] == "RUB"
+
+
+def test_collapsed_alts_keep_separate_provenance():
+    short = "Операционная прибыль"
+    longer = "Операционная прибыль (убыток)"
+    assert label_id("ebit", "alt", short) != label_id("ebit", "alt", longer)
+    added = provenance_of(
+        [
+            {"concept": "ebit", "kind": "alt", "text": short, "change": "add"},
+            {"concept": "ebit", "kind": "alt", "text": longer, "change": "add"},
+        ],
+        {},
+        origin="base_git",
+        seq=1,
+        version="g",
+        proposals=None,
+    )
+    left = provenance_of(
+        [{"concept": "ebit", "kind": "alt", "text": longer, "change": "remove"}],
+        added,
+        origin="review",
+        seq=2,
+        version="g2",
+        proposals=None,
+    )
+    assert label_id("ebit", "alt", short) in left
+    assert label_id("ebit", "alt", longer) not in left

@@ -23,7 +23,11 @@ from finance_analysis.domain.errors import (
     ProposalDecided,
     StaleParent,
 )
-from finance_analysis.domain.glossary import normalize_label, with_profile
+from finance_analysis.domain.glossary import (
+    label_surface,
+    normalize_label,
+    with_profile,
+)
 from finance_analysis.domain.glossary_release import (
     apply_ops,
     label_diff,
@@ -324,7 +328,7 @@ class GlossaryStore:
     async def labels(self, query: str) -> dict:
         document = await self._active_document()
         provenance = await self._active_provenance()
-        needle = normalize_label(query)
+        needle = label_surface(query)
         found = []
         for concept, glossary in (document.get("glossaries") or {}).items():
             for kind in ("pref", "alt", "hidden"):
@@ -334,7 +338,7 @@ class GlossaryStore:
                 for lang, value in bucket.items():
                     texts = [value] if isinstance(value, str) else list(value or [])
                     for text in texts:
-                        if needle and needle not in normalize_label(str(text)):
+                        if needle and needle not in label_surface(str(text)):
                             continue
                         ident = label_id(concept, kind, str(text))
                         found.append(

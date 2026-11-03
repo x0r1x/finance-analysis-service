@@ -161,6 +161,18 @@ def normalize_label(text: str) -> str:
     return keys[0] if keys else ""
 
 
+def label_surface(text: str) -> str:
+    """Идентичность метки и поиск: NFC и casefold, без среза хвоста."""
+
+    return unicodedata.normalize("NFC", text).strip().casefold()
+
+
+def label_scan(text: str) -> str:
+    """Сырой текст для negative: NFC, casefold, ё→е. Хвост не срезается."""
+
+    return label_surface(text).replace("ё", "е")
+
+
 def label_features(text: str) -> LabelFeatures:
     peeled = _peel(text)
     return LabelFeatures(peeled.unit, peeled.period)
@@ -240,7 +252,7 @@ class GlossaryPackage:
 
 
 def with_profile(package: GlossaryPackage, document: dict, profile_id: str | None) -> GlossaryPackage:
-    """Метки `glossaries[concept].scoped[profile]` бьют глобальные только у этой книги."""
+    """Метки профиля бьют глобальные только у этой книги. Чужой ключ не перезаписывается."""
 
     if not profile_id:
         return package
@@ -259,6 +271,9 @@ def with_profile(package: GlossaryPackage, document: dict, profile_id: str | Non
                     if not isinstance(text, str) or not text:
                         continue
                     for norm in label_keys(text):
+                        previous = overlay.get(norm)
+                        if previous is not None and previous.concept != str(concept):
+                            continue
                         overlay[norm] = LabelHit(str(concept), kind, text)
     return GlossaryPackage(
         taxonomy=package.taxonomy,

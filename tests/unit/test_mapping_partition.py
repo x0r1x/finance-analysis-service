@@ -77,6 +77,15 @@ def test_packt_and_rvi_partition_fact_rows():
         assert all(row["phase"] is None for row in derived["period_semantics"])
 
 
+def test_negative_word_inside_a_parenthesis_does_not_bind():
+    catalog = load_catalog()
+    for label in ("CFADS (margin)", "CFADS (маржа)", "Денежный поток для обслуживания долга (доля)"):
+        got = assign_rows([{"kind": "fact", "binding_key": "a", "label": label, "unit": "money", "sign": None}], [], catalog)
+        assert got["a"].status == "unknown" and got["a"].concept is None, label
+    bound = assign_rows([{"kind": "fact", "binding_key": "a", "label": "CFADS", "unit": "money", "sign": None}], [], catalog)
+    assert bound["a"].concept == "cfads" and bound["a"].status == "bound"
+
+
 def test_abbrev_does_not_compete_with_exact_body():
     catalog = load_catalog()
     rows = [
