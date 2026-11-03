@@ -209,6 +209,12 @@ def s3_settings(tmp_path, endpoint: str, bucket: str = "fas") -> Settings:
 
 @pytest.fixture(scope="session")
 def minio_endpoint():
+    explicit = os.environ.get("FAS_TEST_MINIO")
+    if explicit:
+        yield explicit.rstrip("/")
+        return
+    if _port_open(9000):
+        pytest.skip("порт 9000 занят, задайте FAS_TEST_MINIO")
     binary = Path("/tmp/minio")
     if not binary.is_file():
         pytest.skip("бинарник MinIO не найден")

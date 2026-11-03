@@ -40,6 +40,38 @@ def test_file_url_ignores_ambient_s3(monkeypatch):
     remote = _settings_for("s3://bucket/prefix")
     assert remote.fas_read_only is False
     assert remote.fas_s3_bucket == "bucket"
+    assert remote.fas_s3_endpoint == "http://minio:9000"
+    assert remote.fas_s3_ssl is False
+
+
+def test_s3_ssl_follows_endpoint():
+    assert Settings(FAS_REDIS_URL="redis://unused").fas_s3_ssl is True
+    assert Settings(FAS_REDIS_URL="redis://unused").fas_host == "127.0.0.1"
+    assert Settings(FAS_REDIS_URL="redis://unused").fas_port == 8080
+    plain = Settings(
+        FAS_REDIS_URL="redis://unused",
+        FAS_S3_ENDPOINT="http://127.0.0.1:9000",
+        FAS_S3_BUCKET="finance-context",
+        FAS_S3_ACCESS_KEY="minioadmin",
+        FAS_S3_SECRET_KEY="minioadmin",
+    )
+    assert plain.fas_s3_ssl is False
+    explicit = Settings(
+        FAS_REDIS_URL="redis://unused",
+        FAS_S3_ENDPOINT="https://s3.amazonaws.com",
+        FAS_S3_BUCKET="finance-context",
+        FAS_S3_ACCESS_KEY="key",
+        FAS_S3_SECRET_KEY="secret",
+        FAS_S3_SSL=True,
+    )
+    assert explicit.fas_s3_ssl is True
+
+
+def test_s3_url_without_credentials_is_rejected(monkeypatch):
+    for name in ("FAS_S3_BUCKET", "FAS_S3_ACCESS_KEY", "FAS_S3_SECRET_KEY", "FAS_S3_ENDPOINT"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValidationError):
+        _settings_for("s3://bucket/prefix")
 
 
 def test_duckdb_limits_must_be_positive():

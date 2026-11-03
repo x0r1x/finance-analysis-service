@@ -1,101 +1,36 @@
+name: finance
+
 services:
-  redis:
-    image: redis:8.6.7-alpine
-    restart: unless-stopped
-    command: redis-server --appendonly yes --appendfsync everysec --maxmemory-policy noeviction
-    ports:
-      - "127.0.0.1:6379:6379"
-  api:
+  finance-analysis:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FAS_HOST_PORT:-8088}:8080"
+    env_file:
+      - path: ../.env
+        required: false
     environment:
-      FAS_REDIS_URL: redis://redis:6379/0
       FAS_DATA_DIR: /data
       FAS_HOST: 0.0.0.0
       FAS_PORT: "8080"
-    ports:
-      - "8080:8080"
-    depends_on:
-      - redis
+      FAS_EMBEDDED_WORKERS: "true"
+      BUILDER_BASE_URL: ""
     volumes:
       - fas-data:/data
-  worker-interactive:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    restart: unless-stopped
-    command: ["fas-worker", "--queue", "fas:interactive", "--max-async-tasks", "8"]
-    environment:
-      FAS_REDIS_URL: redis://redis:6379/0
-      FAS_DATA_DIR: /data
-    depends_on:
-      - redis
-    volumes:
-      - fas-data:/data
-  worker-glossary:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    restart: unless-stopped
-    command: ["fas-worker", "--queue", "fas:glossary", "--max-async-tasks", "4"]
-    environment:
-      FAS_REDIS_URL: redis://redis:6379/0
-      FAS_DATA_DIR: /data
-    depends_on:
-      - redis
-    volumes:
-      - fas-data:/data
-  worker-batch:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    restart: unless-stopped
-    command: ["fas-worker", "--queue", "fas:batch", "--max-async-tasks", "2"]
-    environment:
-      FAS_REDIS_URL: redis://redis:6379/0
-      FAS_DATA_DIR: /data
-    depends_on:
-      - redis
-    volumes:
-      - fas-data:/data
-  worker-maintenance:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    restart: unless-stopped
-    command: ["fas-worker", "--queue", "fas:maintenance", "--max-async-tasks", "1"]
-    environment:
-      FAS_REDIS_URL: redis://redis:6379/0
-      FAS_DATA_DIR: /data
-    depends_on:
-      - redis
-    volumes:
-      - fas-data:/data
-  scheduler:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    restart: unless-stopped
-    command: ["fas-scheduler"]
-    environment:
-      FAS_REDIS_URL: redis://redis:6379/0
-      FAS_DATA_DIR: /data
-    depends_on:
-      - redis
-    volumes:
-      - fas-data:/data
-  minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    profiles: ["minio"]
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-      MINIO_REGION: ap-northeast-1
-    ports:
-      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   fas-data:
