@@ -4,7 +4,7 @@ pref:
   ru: "Капитальные затраты"
 alt:
   en: ["capex"]
-  ru: ["капекс"]
+  ru: ["капекс", "Капитальные вложения"]
 definition:
   en: "Capital expenditure"
   ru: "Капитальные затраты"

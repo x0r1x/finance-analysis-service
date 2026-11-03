@@ -37,28 +37,15 @@ async def test_first_operational_year_on_packt_and_rvi(local_service):
     )
 
     rvi = job_id("rvi")
-    unbound = await local_service.resolve_periods(
-        rvi,
-        {"text": "первый операционный год"},
-        Actor(),
-        wait_sec=60,
-    )
-    assert unbound["needs_input"] == [
-        {"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}
-    ]
-    assert all(item["kind"] != "phase" for item in unbound["needs_input"])
-    rvi_key = await _binding(local_service, rvi, "Total debt service")
-    await _decide(
-        local_service,
-        rvi,
-        [{"kind": "concept.set", "target": rvi_key, "value": "debt_service", "expected_seq": None}],
-    )
+    # «Total debt service» — alt debt_service, привязка без решения человека.
     resolved = await local_service.resolve_periods(
         rvi,
         {"text": "первый операционный год"},
         Actor(),
         wait_sec=60,
     )
+    assert resolved["needs_input"] == []
+    assert all(item["kind"] != "phase" for item in resolved["needs_input"])
     assert resolved["basis"] == "nonzero_debt_service"
     assert resolved["periods"][0]["period_id"] == "2026"
     assert resolved["periods"][0]["period_key"] == "2026"

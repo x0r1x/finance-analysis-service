@@ -99,5 +99,6 @@ async def test_remap_batch_snapshot_and_rollback_restores_inferred(local_service
     restored = await local_service._dataset_rows(RVI, restored_head, "bindings")
     back = next(row for row in restored if row["binding_key"] == cfads["binding_key"])
     still = next(row for row in restored if row["binding_key"] == debt["binding_key"])
-    assert back["status"] != "unknown" and back["effective_concept"] == "cfads" and back["source"] == "inferred"
+    # Стадия 6 поднимает лексическую строку до verified, когда cfads, debt_service и dscr сходятся.
+    assert back["status"] == "bound" and back["effective_concept"] == "cfads" and back["source"] in {"inferred", "verified"}
     assert still["source"] == "confirmed" and still["effective_concept"] == "debt_service"

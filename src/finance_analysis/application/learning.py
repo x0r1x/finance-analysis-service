@@ -33,6 +33,7 @@ from finance_analysis.domain.errors import (
 )
 from finance_analysis.domain.glossary import normalize_label
 from finance_analysis.domain.glossary_release import canary_verdict, label_diff
+from finance_analysis.domain.mapping import lexical_hit
 from finance_analysis.domain.signals import (
     STRONG_AGAINST,
     WEIGHTS,
@@ -284,7 +285,7 @@ class Learning:
             key = (row["job_id"], row["binding_key"])
             if key not in latest or row["unmapped_id"] > latest[key]["unmapped_id"]:
                 latest[key] = row
-        rows = [row for row in latest.values() if package.resolve(row["label_norm"]) is None]
+        rows = [row for row in latest.values() if _still_unmapped(row, package)]
         with_vectors = [row for row in rows if row.get("embedding_f32")]
         groups: dict[str, list[dict]] = defaultdict(list)
         if with_vectors and self.cluster is not None:
@@ -617,6 +618,17 @@ class Learning:
             "unmapped": await self.unmapped.merge(),
             "signals": await self.signals.merge(),
         }
+
+
+def _still_unmapped(row: dict, package) -> bool:
+    """Уже привязанная строка не идёт в предложения. Решение — по исходной метке, не по очищенному телу."""
+
+    path = str(row.get("path_text") or "")
+    label = path.split(" › ")[-1].strip() if path else ""
+    if not label:
+        label = str(row.get("label_norm") or "")
+    probe = {"label": label, "unit": row.get("unit") or ""}
+    return lexical_hit(probe, package) is None
 
 
 def _abs_by_row(facts: list[dict]) -> dict[str, Decimal]:

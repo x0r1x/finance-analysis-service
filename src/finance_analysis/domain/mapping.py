@@ -11,7 +11,7 @@ from finance_analysis.domain.calibration import (
     heuristic_probability,
 )
 from finance_analysis.domain.candidates import Candidate, RowEvidence
-from finance_analysis.domain.glossary import GlossaryPackage, normalize_label
+from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
 
 MATERIAL_SHARE = 0.05
 _NOT_MONEY = frozenset({"%", "percent", "rate", "ratio", "x", "count", "years", "date"})
@@ -75,8 +75,8 @@ def structure_pass(row: dict, concept, *, label: str) -> bool:
         return False
     if concept.unit == "ratio" and unit in _MONEY:
         return False
-    norm = normalize_label(label)
-    return not any(normalize_label(item) in norm for item in concept.negative)
+    scanned = label_scan(label)
+    return not any(label_scan(item) in scanned for item in concept.negative)
 
 
 def decide(
@@ -149,13 +149,17 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         return Assignment(concept, "bound", "confirmed", True, None, "normal")
     if row.get("excluded"):
         return Assignment(None, "not_applicable", "inferred", False, None, "normal")
-    hit = lexical_hit(row, glossary)
-    if hit is None:
+    found = lexical_hit(row, glossary)
+    if found is None:
         return Assignment(None, "unknown", "inferred", False, None, "peripheral")
+    hit, strength = found
     concept = glossary.concepts[hit.concept]
     warning = concept.expected_sign and row.get("sign") and row.get("sign") != concept.expected_sign
     status = "bound_with_warning" if warning else "bound"
-    evidence = {"label": {"id": label_id(hit.concept, hit.kind, hit.text), "kind": hit.kind, "text": hit.text}}
+    evidence = {
+        "label": {"id": label_id(hit.concept, hit.kind, hit.text), "kind": hit.kind, "text": hit.text},
+        "match_strength": strength,
+    }
     return Assignment(hit.concept, status, "inferred", True, hit.text, "normal", None, evidence)
 
 
@@ -163,19 +167,20 @@ def lexical_hit(row: dict, glossary: GlossaryPackage):
     """Стадия 1: точная метка глоссария, если её не отсеяли % и отрицательные метки."""
 
     label = str(row.get("label") or "")
-    hit = glossary.resolve(label)
-    if hit is None:
+    found = glossary.resolve_match(label)
+    if found is None:
         return None
+    hit, _strength = found
     # Та же стадия 4, что у модельных кандидатов: единица (unit.set приоритетнее), % и negative.
     if not structure_pass(row, glossary.concepts[hit.concept], label=label):
         return None
-    return hit
+    return found
 
 
 def label_id(concept: str, kind: str, text: str) -> str:
-    """Идентификатор метки для провенанса (§5.11.3): понятие, вид, нормализованный текст."""
+    """Идентификатор метки для провенанса (§5.11.3): понятие, вид, исходный текст."""
 
-    return f"{concept}/{kind}/{normalize_label(text)}"
+    return f"{concept}/{kind}/{label_surface(text)}"
 
 
 def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
@@ -183,7 +188,17 @@ def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
     for index, (_row, item) in enumerate(draft):
         if item.is_primary and item.concept and item.status in {"bound", "bound_with_warning"}:
             owners.setdefault(item.concept, []).append(index)
-    for indexes in owners.values():
+    for indexes in list(owners.values()):
+        if len(indexes) < 2:
+            continue
+        # Аббревиатура в скобке не спорит с телом той же метки (§5.5).
+        weak = [index for index in indexes if _abbrev_only(draft[index][1])]
+        strong = [index for index in indexes if index not in weak]
+        if strong and weak:
+            for index in weak:
+                row, item = draft[index]
+                draft[index] = (row, _abbrev_aside(item))
+            indexes = strong
         if len(indexes) < 2:
             continue
         confirmed = [index for index in indexes if draft[index][1].source == "confirmed"]
@@ -210,6 +225,28 @@ def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
 
 def _lexical(item: Assignment) -> bool:
     return bool(item.matched_label) and not str(item.matched_label).startswith(MODEL_LABEL)
+
+
+def _abbrev_only(item: Assignment) -> bool:
+    return item.evidence.get("match_strength") == "abbrev" and item.source != "confirmed"
+
+
+def _abbrev_aside(item: Assignment) -> Assignment:
+    """Слабая строка не bound и не ambiguous: остаётся кандидатом вопроса с пометкой."""
+
+    evidence = {
+        **item.evidence,
+        "match_strength": "abbrev",
+        "candidates": [
+            {
+                "concept": item.concept,
+                "reasons": ["abbrev"],
+                "match_strength": "abbrev",
+                "structure_pass": True,
+            }
+        ],
+    }
+    return replace(item, concept=None, status="unknown", is_primary=False, matched_label=None, evidence=evidence)
 
 
 def verify_numeric(

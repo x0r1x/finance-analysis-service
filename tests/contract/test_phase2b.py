@@ -51,7 +51,7 @@ async def test_models_add_candidates_and_decisions_feed_learning(settings, redis
     assert len(bindings) == sum(1 for row in rows if row["kind"] == "fact")
     with_candidates = [row for row in bindings if json.loads(row["evidence_json"]).get("candidates")]
     assert with_candidates, "у строк без точной метки есть кандидаты моделей"
-    lexical = next(row for row in bindings if row["label_path_text"].endswith("CFADS"))
+    lexical = next(row for row in bindings if row["label_path_text"].endswith(" › CFADS"))
     assert json.loads(lexical["evidence_json"])["label"]["id"].startswith("cfads/")
     questions = await service.questions_view(RVI, Actor(), wait_sec=5)
     assert any(item["candidates"] for item in questions["questions"])
@@ -76,10 +76,11 @@ async def test_shadow_gate_blocks_regression_over_http(settings, local_service, 
     app = create_app(settings, service=local_service, support=redis_runtime)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
         state = (await client.get("/v1/glossary", headers=HEADERS)).json()
+        # «Total debt service» — единственная основная строка debt_service. Снятие alt роняет покрытие.
         released = await client.post(
             "/v1/glossary/releases",
             headers={**HEADERS, "If-Match": state["etag"]},
-            json={"ops": [{"op": "remove_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "CFADS"}]},
+            json={"ops": [{"op": "remove_label", "concept": "debt_service", "kind": "alt", "lang": "en", "text": "Total debt service"}]},
         )
         assert released.status_code == 200, released.text
         version, etag = released.json()["version"], released.json()["etag"]
@@ -98,7 +99,7 @@ async def test_shadow_gate_blocks_regression_over_http(settings, local_service, 
         forced = await client.post(
             "/v1/glossary/transitions",
             headers={**HEADERS, "If-Match": etag},
-            json={"version": version, "status": "active", "force": True, "reason": "методолог: метка дублирует prefLabel"},
+            json={"version": version, "status": "active", "force": True, "reason": "методолог: метка снята осознанно"},
         )
         assert forced.status_code == 200, forced.text
         events = (await client.get("/v1/glossary/events", headers=HEADERS)).json()["events"]
@@ -126,10 +127,10 @@ async def test_eval_and_pruned_concept_on_golden_book(settings, local_service, t
     document = await local_service.glossary.document(state["active"])
     report = await local_service.evaluator.run(package_of(document))
     summary = report["summary"]
-    assert summary["books"] == 1 and summary["top1"]["cfads"] == 1.0
-    assert summary["false_binding_rate"] == 0.0
-    # Total debt service без точной метки и без моделей остаётся unknown: NIL-исход, а не ложная привязка.
-    assert summary["top1"]["debt_service"] == 0.0
+    assert summary["books"] == 1 and summary["false_binding_rate"] == 0.0
+    # «CFADS» — сильное совпадение (вся подпись). «Total debt service» — точная alt.
+    assert summary["top1"]["cfads"] == 1.0
+    assert summary["top1"]["debt_service"] == 1.0
     pruned = await local_service.evaluator.pruned(document, ["cfads"])
     assert pruned["cfads"] == {"rows": 1, "leaked": 0, "nil_recall": 1.0}
 
@@ -179,8 +180,8 @@ async def test_shadow_gate_blocks_metric_concept_moving_to_another_row(local_ser
     state = await local_service.glossary.ensure()
     released = await local_service.glossary.release(
         [
-            {"op": "remove_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "CFADS"},
-            {"op": "add_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "Net Present Value (NPV)"},
+            {"op": "remove_label", "concept": "debt_service", "kind": "alt", "lang": "en", "text": "Total debt service"},
+            {"op": "add_label", "concept": "debt_service", "kind": "alt", "lang": "en", "text": "Total uses of funds"},
         ],
         f"h-{state['seq']}",
     )
@@ -188,14 +189,14 @@ async def test_shadow_gate_blocks_metric_concept_moving_to_another_row(local_ser
     assert report["passed"] is False
     assert f"primary_moved:{RVI}" in report["reasons"]
     moved = report["books"][0]["metric_concepts_moved"]
-    assert moved[0]["concept"] == "cfads" and moved[0]["path"].endswith("Net Present Value (NPV)")
+    assert moved[0]["concept"] == "debt_service" and moved[0]["path"].endswith("Total uses of funds")
 
 
 async def test_blocked_proposal_stays_open(local_service):
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
     await local_service.settle()
     proposal = await local_service.glossary.add_proposal(
-        {"concept": "cfads", "kind": "alt", "lang": "en", "text": "Net Present Value (NPV)"}
+        {"concept": "debt_service", "kind": "alt", "lang": "en", "text": "Total uses of funds"}
     )
     decided = await local_service.glossary.decide_proposals([{"id": proposal["id"], "decision": "accept"}])
     assert decided["release"]["activated"] is False

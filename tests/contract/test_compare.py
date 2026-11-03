@@ -62,7 +62,11 @@ async def test_ratios_on_a_past_build_and_compare_two_builds(tmp_path, settings,
     store = await open_storage(settings)
     service = FasService(settings, store, PyarrowParquet(), FixtureBuilder(root), WrenQuery(settings), redis_runtime)
     await service.perform_load(RVI, actor=Actor(), fence=1)
+    # cfads на этой книге неоднозначен (§5.5): для частного нужна выбранная строка.
+    await _bind(service, "CFADS", "cfads")
     await _bind(service, DEBT_LABEL, "debt_service")
+    # Скобка (EBITDA) делает понятие неоднозначным, а расчёт DSCR смотрит и на него.
+    await _bind(service, "EBITDA", "ebitda")
     app = create_app(settings, service=service, support=redis_runtime)
     async with _client(app) as client:
         first = await client.post(f"/v1/books/{RVI}/analyses", headers=HEADERS, json={"type": "ratios", "metrics": ["dscr"]})

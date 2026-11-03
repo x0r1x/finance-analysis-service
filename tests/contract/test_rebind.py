@@ -63,7 +63,7 @@ async def test_label_removal_drops_only_inferred(local_service):
         [{"op": "remove_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "CFADS"}],
         f"h-{state['seq']}",
     )
-    # Снятие метки CFADS теряет понятие метрики в книге: shadow-гейт блокирует без force (§5.11.3).
+    # «CFADS» — единственная сильная строка cfads. Снятие alt роняет покрытие.
     with pytest.raises(GlossaryRegression) as blocked:
         await local_service.glossary.transition(released["version"], "active", released["etag"])
     assert any(reason.startswith("coverage_down:") for reason in blocked.value.extra["shadow"]["reasons"])
