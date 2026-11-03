@@ -1,0 +1,32 @@
+# Прогон типа модели
+
+Пороги: accept 0.6, gap 0.15. Прогон пороги не меняет.
+
+| книга | ожидание | ответ | top1 | top2 | разрыв | ≥ accept | ≥ gap | ложные |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| packt | project_finance | project_finance | project_finance 1.000 | corporate 0.000 | 1.000 | да | да | — |
+| rvi | project_finance | project_finance | project_finance 1.000 | corporate 0.000 | 1.000 | да | да | — |
+| toll_road | project_finance | project_finance | project_finance 1.000 | corporate 0.000 | 1.000 | да | да | — |
+| port | investment_project | investment_project | investment_project 1.000 | corporate 0.000 | 1.000 | да | да | — |
+| hybrid_ppp | ppp_concession + project_finance | ppp_concession + project_finance | ppp_concession 1.000 | project_finance 1.000 | 0.000 | да | нет | — |
+| corporate | corporate | corporate | corporate 1.000 | development_escrow 0.000 | 1.000 | да | да | — |
+| ambiguous_statements_and_debt | вопрос: ambiguous | вопрос: ambiguous | corporate 1.000 | project_finance 1.000 | 0.000 | да | нет | — |
+| ask_instead_of_other | вопрос: unknown | вопрос: unknown | corporate 0.000 | development_escrow 0.000 | 0.000 | нет | нет | — |
+| partial_npv | вопрос: unknown | вопрос: unknown | corporate 0.000 | development_escrow 0.000 | 0.000 | нет | нет | — |
+
+## Сводка
+
+- accuracy основного типа: 6/6 = 1.000
+- доля вопросов: 3/9 = 0.333
+- верные решения: 9/9 = 1.000
+
+| тип | ложные | доля |
+| --- | --- | --- |
+| corporate | 0 | 0.000 |
+| development_escrow | 0 | 0.000 |
+| investment_project | 0 | 0.000 |
+| other | 0 | 0.000 |
+| ppp_concession | 0 | 0.000 |
+| project_finance | 0 | 0.000 |
+
+Минимальный score верного одиночного типа: 1.000. Минимальный разрыв верного одиночного типа: 1.000. Уверенные ответы с разрывом ниже порога: hybrid_ppp. Вопросы, где оба лидера не ниже accept, а разрыв ниже порога: ambiguous_statements_and_debt.

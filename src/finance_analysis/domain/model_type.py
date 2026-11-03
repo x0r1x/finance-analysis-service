@@ -188,6 +188,14 @@ def infer(
     return Inference(False, reason, (), top, candidates, scores)
 
 
+def decision_ranking(inference: Inference, *, accept: float) -> tuple[Scored, ...]:
+    """Порядок решения: score по убыванию, при равенстве id. Уступивший тип выпадает."""
+
+    ranked = [Scored(type_id, score, ()) for type_id, score in inference.scores.items()]
+    ranked.sort(key=lambda item: (-item.score, item.type_id))
+    return tuple(_stand_down(ranked, accept))
+
+
 def _stand_down(ranked: list[Scored], accept: float) -> list[Scored]:
     """Тип из `_YIELDS_TO` не спорит с уже набравшим порог более узким типом."""
 
