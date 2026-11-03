@@ -243,6 +243,48 @@ def test_ltm_sums_four_quarters_and_period_window_does_not():
     assert last["value"] == Decimal("14.0000000000")
 
 
+def test_a_hole_inside_the_ltm_window_keeps_a_missing_input_row():
+    catalog = _catalog()
+    periods = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    facts = []
+    for index in range(1, 5):
+        period = f"Q{index}"
+        facts.extend(
+            [
+                _fact("e", period, "10"),
+                _fact("t", period, "0"),
+                _fact("i", period, "5"),
+                _fact("p", period, "0"),
+            ]
+        )
+        if index != 2:
+            facts.append(_fact("c", period, "0"))
+    got = covenant_dscr(
+        facts=facts,
+        bindings=[
+            _bind("ebitda", "e"),
+            _bind("cash_taxes", "t"),
+            _bind("capex", "c"),
+            _bind("interest", "i"),
+            _bind("principal", "p"),
+        ],
+        periods=periods,
+        default=catalog.composed["dscr.corporate_covenant"],
+        concepts=_CONCEPTS,
+        money=_MONEY,
+    )
+    by_period = {row["period_id"]: row for row in got["rows"]}
+    assert by_period["Q1"]["reason"] == "partial_window"
+    assert by_period["Q4"]["status"] == "missing_input"
+    assert by_period["Q4"]["reason"] == "no_binding"
+    assert got["status"] == "succeeded"
+
+
 def test_default_definition_mismatch_with_the_book_row_is_not_a_model_error():
     catalog = _catalog()
     common = {

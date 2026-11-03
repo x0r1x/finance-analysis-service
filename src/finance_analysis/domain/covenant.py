@@ -190,6 +190,7 @@ def composed_ratio(
                 numerator = _total(keys, series, formula.numerator, sign_convention, pay_plus=False)
                 denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True)
             if numerator is None or denominator is None:
+                rows.append(_line(metric, period, None, "missing_input", "no_binding", inputs, window))
                 continue
             if denominator == 0:
                 status = "no_debt_service" if metric == "dscr" else "missing_input"
