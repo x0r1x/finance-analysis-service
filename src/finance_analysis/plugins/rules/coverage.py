@@ -47,6 +47,8 @@ def dscr_rows(data: AuditInput) -> list[dict]:
 
     if not data.bindings:
         return []
+    if data.applicable_metrics is not None and "dscr" not in data.applicable_metrics:
+        return []
     phases = _phases(data)
     result = coverage_ratio(
         metric="dscr",
