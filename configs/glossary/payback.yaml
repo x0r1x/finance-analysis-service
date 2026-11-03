@@ -1,0 +1,7 @@
+concept: payback
+pref:
+  en: "Discounted payback period"
+  ru: "Дисконтированный срок окупаемости"
+definition:
+  en: "Book row of the discounted payback period; not a calculated metric in this slice"
+  ru: "Строка книги с дисконтированным сроком окупаемости; в этом срезе метрикой не считается"

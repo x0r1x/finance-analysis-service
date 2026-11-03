@@ -1,0 +1,7 @@
+concept: irr
+pref:
+  en: "Project internal rate of return"
+  ru: "Внутренняя норма доходности проекта"
+definition:
+  en: "Book row of the project internal rate of return, compared with the cited cash flows"
+  ru: "Строка книги с внутренней нормой доходности проекта, сверяется с процитированным потоком"

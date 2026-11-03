@@ -126,6 +126,10 @@ def _sheet_hit(name: str, group: tuple[str, ...]) -> bool:
 def _fired(signal: Signal, *, bound: frozenset[str], sheets: frozenset[str]) -> bool:
     if signal.kind == "concepts_bound_all":
         return bool(signal.concepts) and all(name in bound for name in signal.concepts)
+    if signal.kind == "concepts_bound_any":
+        return bool(signal.concepts) and any(name in bound for name in signal.concepts)
+    if signal.kind == "concepts_absent_all":
+        return bool(signal.concepts) and all(name not in bound for name in signal.concepts)
     if signal.kind == "sheets_any":
         return bool(signal.groups) and all(any(_sheet_hit(name, group) for name in sheets) for group in signal.groups)
     return False

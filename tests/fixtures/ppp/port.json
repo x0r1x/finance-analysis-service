@@ -1,0 +1,94 @@
+{
+  "source": "https://github.com/kushwanth7010/Port-Logistics-PPP-Feasibility",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 Sampathi Kushwanth",
+  "discount_rate": "0.12",
+  "npv": "44.38645685868875",
+  "project_irr": "0.127826852360176",
+  "years": [
+    {
+      "year": 0,
+      "project_fcf": "-700"
+    },
+    {
+      "year": 1,
+      "project_fcf": "62.39000000000001"
+    },
+    {
+      "year": 2,
+      "project_fcf": "66.95840000000001"
+    },
+    {
+      "year": 3,
+      "project_fcf": "71.800904"
+    },
+    {
+      "year": 4,
+      "project_fcf": "76.93395824000001"
+    },
+    {
+      "year": 5,
+      "project_fcf": "82.3749957344"
+    },
+    {
+      "year": 6,
+      "project_fcf": "88.14249547846401"
+    },
+    {
+      "year": 7,
+      "project_fcf": "94.25604520717187"
+    },
+    {
+      "year": 8,
+      "project_fcf": "100.7364079196022"
+    },
+    {
+      "year": 9,
+      "project_fcf": "107.60559239477834"
+    },
+    {
+      "year": 10,
+      "project_fcf": "114.88692793846504"
+    },
+    {
+      "year": 11,
+      "project_fcf": "122.60514361477297"
+    },
+    {
+      "year": 12,
+      "project_fcf": "130.78645223165933"
+    },
+    {
+      "year": 13,
+      "project_fcf": "139.45863936555887"
+    },
+    {
+      "year": 14,
+      "project_fcf": "148.6511577274925"
+    },
+    {
+      "year": 15,
+      "project_fcf": "158.395227191142"
+    },
+    {
+      "year": 16,
+      "project_fcf": "168.7239408226105"
+    },
+    {
+      "year": 17,
+      "project_fcf": "179.67237727196715"
+    },
+    {
+      "year": 18,
+      "project_fcf": "191.27771990828518"
+    },
+    {
+      "year": 19,
+      "project_fcf": "203.5793831027823"
+    },
+    {
+      "year": 20,
+      "project_fcf": "216.6191460889492"
+    }
+  ]
+}

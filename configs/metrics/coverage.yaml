@@ -37,4 +37,9 @@ metrics:
     numerator: {plus: [escrow_balance]}
     denominator: {plus: [debt_outstanding]}
     window: period
+  npv:
+    numerator: [project_fcf]
+    denominator: discount_rate
+  irr:
+    numerator: [project_fcf]
 tolerance: "0.005"

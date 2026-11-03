@@ -1,0 +1,7 @@
+concept: project_fcf
+pref:
+  en: "Unlevered project free cash flow"
+  ru: "Свободный денежный поток проекта без долга"
+definition:
+  en: "Project cash flow before debt service, cited for NPV and IRR"
+  ru: "Денежный поток проекта до обслуживания долга, цитируется для NPV и IRR"

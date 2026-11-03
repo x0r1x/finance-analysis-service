@@ -53,6 +53,8 @@ async def test_capabilities_health_metrics(app):
         "plcr",
         "net_debt_ebitda",
         "escrow_coverage",
+        "npv",
+        "irr",
     ]
     assert caps.json()["metrics"] == list(RATIO_METRICS)
     assert any(tool["name"] == "get_series" for tool in caps.json()["tools"])

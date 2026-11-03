@@ -168,6 +168,8 @@ async def test_audit_arguments_and_async(app):
             "plcr",
             "net_debt_ebitda",
             "escrow_coverage",
+            "npv",
+            "irr",
         ]
         unknown = await client.post(f"/v1/books/{JOB}/analyses", headers=HEADERS, json={"type": "audit", "rules": ["nope"]})
         assert unknown.status_code == 400

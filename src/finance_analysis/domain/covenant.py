@@ -24,6 +24,7 @@ from finance_analysis.domain.metrics import (
     coverage_ratio,
 )
 from finance_analysis.domain.model_type import Composed, Side
+from finance_analysis.domain.returns import project_return
 
 DEFAULT_DEFINITION_TEXT = "определение по умолчанию, не из договора"
 _WINDOWS = frozenset({"LTM", "period"})
@@ -213,6 +214,14 @@ def select_ratio(
 ) -> dict:
     """Вариант `corporate_covenant` считает определение из профиля или из каталога."""
 
+    if metric in {"npv", "irr"}:
+        return project_return(
+            metric,
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            absent=common["absent"],
+        )
     if metric == "dscr" and variant == "corporate_covenant":
         return covenant_dscr(
             facts=common["facts"],
