@@ -17,6 +17,8 @@ from finance_analysis.adapters.storage.parquet_io import PyarrowParquet, load_sc
 from finance_analysis.adapters.storage.store import open_storage
 from finance_analysis.adapters.wren.query import WrenQuery
 from finance_analysis.application import service as service_module
+from finance_analysis.application.analyses import RATIO_METRICS
+from finance_analysis.application.model_types import load_metric_inputs
 from finance_analysis.application.service import FasService
 from finance_analysis.domain.book import Actor
 from tests.books import BUILDER_ROOT, job_id
@@ -156,7 +158,17 @@ async def test_audit_arguments_and_async(app):
     async with _client(app) as client:
         ratios = await client.post(f"/v1/books/{JOB}/analyses", headers=HEADERS, json={"type": "ratios"})
         assert ratios.status_code == 400
-        assert ratios.json()["supported"] == ["dscr", "icr", "adscr", "dscr_min", "dscr_avg", "llcr", "plcr"]
+        assert ratios.json()["supported"] == list(load_metric_inputs()) == list(RATIO_METRICS) == [
+            "dscr",
+            "icr",
+            "adscr",
+            "dscr_min",
+            "dscr_avg",
+            "llcr",
+            "plcr",
+            "net_debt_ebitda",
+            "escrow_coverage",
+        ]
         unknown = await client.post(f"/v1/books/{JOB}/analyses", headers=HEADERS, json={"type": "audit", "rules": ["nope"]})
         assert unknown.status_code == 400
         assert unknown.json()["rules"] == ["nope"]
