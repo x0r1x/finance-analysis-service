@@ -51,7 +51,7 @@ async def test_models_add_candidates_and_decisions_feed_learning(settings, redis
     assert len(bindings) == sum(1 for row in rows if row["kind"] == "fact")
     with_candidates = [row for row in bindings if json.loads(row["evidence_json"]).get("candidates")]
     assert with_candidates, "у строк без точной метки есть кандидаты моделей"
-    lexical = next(row for row in bindings if row["label_path_text"].endswith("CFADS"))
+    lexical = next(row for row in bindings if row["label_path_text"].endswith(" › CFADS"))
     assert json.loads(lexical["evidence_json"])["label"]["id"].startswith("cfads/")
     questions = await service.questions_view(RVI, Actor(), wait_sec=5)
     assert any(item["candidates"] for item in questions["questions"])
@@ -128,8 +128,8 @@ async def test_eval_and_pruned_concept_on_golden_book(settings, local_service, t
     report = await local_service.evaluator.run(package_of(document))
     summary = report["summary"]
     assert summary["books"] == 1 and summary["false_binding_rate"] == 0.0
-    # Две строки cfads → ambiguous, top-1 воздерживается. «Total debt service» — точная alt.
-    assert summary["top1"]["cfads"] == 0.0
+    # «CFADS» — сильное совпадение (вся подпись). «Total debt service» — точная alt.
+    assert summary["top1"]["cfads"] == 1.0
     assert summary["top1"]["debt_service"] == 1.0
     pruned = await local_service.evaluator.pruned(document, ["cfads"])
     assert pruned["cfads"] == {"rows": 1, "leaked": 0, "nil_recall": 1.0}

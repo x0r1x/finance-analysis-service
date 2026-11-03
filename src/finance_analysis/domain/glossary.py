@@ -206,15 +206,34 @@ class GlossaryPackage:
         return frozenset(self.concepts)
 
     def resolve(self, text: str) -> LabelHit | None:
-        found: list[LabelHit] = []
-        for key in label_keys(text):
-            hit = self._by_norm.get(key)
-            if hit is None or any(item.concept == hit.concept for item in found):
+        found = self.resolve_match(text)
+        return found[0] if found else None
+
+    def resolve_match(self, text: str) -> tuple[LabelHit, str] | None:
+        """Одно понятие и сила: exact — тело подписи, abbrev — только скобка.
+
+        Два ключа на разные понятия не привязываются. Тело, совпавшее вместе со
+        своей аббревиатурой, остаётся exact.
+        """
+
+        peeled = _peel(text)
+        body = _fold(peeled.body)
+        found: list[tuple[LabelHit, str]] = []
+        if body:
+            hit = self._by_norm.get(body)
+            if hit is not None:
+                found.append((hit, "exact"))
+        for abbrev in peeled.abbrevs:
+            key = _fold(abbrev)
+            if not key or key == body:
                 continue
-            found.append(hit)
-        if len(found) == 1:
-            return found[0]
-        return None
+            hit = self._by_norm.get(key)
+            if hit is None or any(item.concept == hit.concept for item, _strength in found):
+                continue
+            found.append((hit, "abbrev"))
+        if len({hit.concept for hit, _strength in found}) != 1:
+            return None
+        return found[0]
 
     def display_label(self, concept: str, lang: str) -> str | None:
         return self.concepts[concept].pref.get(lang)

@@ -53,14 +53,46 @@ def test_packt_and_rvi_partition_fact_rows():
             assert debt["status"] == "bound" and debt["source"] == "inferred"
             cfads = _at(tables, bindings, "CFS", 14)
             assert cfads["concept"] == "cfads" and cfads["status"] == "bound" and cfads["is_primary"]
+            assert json.loads(cfads["evidence_json"])["match_strength"] == "exact"
+            # Оба тела после среза пояснения равны «capex»: два сильных, аббревиатуры тут нет.
+            capex = [row for row in bindings if row["concept"] == "capex"]
+            assert len(capex) == 2 and all(row["status"] == "ambiguous" for row in capex)
         else:
             service = _at(tables, bindings, "PF Model", 534)
             assert service["concept"] == "debt_service" and service["status"] == "bound" and service["is_primary"]
-            # §5.5: одна строка на понятие. Хвостовая аббревиатура (CFADS) склеивает две строки.
-            for number in (239, 532):
-                row = _at(tables, bindings, "PF Model", number)
-                assert row["concept"] == "cfads" and row["status"] == "ambiguous" and row["is_primary"] is False
+            ebitda = _at(tables, bindings, "PF Model", 497)
+            assert ebitda["concept"] == "ebitda" and ebitda["status"] == "bound" and ebitda["is_primary"]
+            assert json.loads(ebitda["evidence_json"])["match_strength"] == "exact"
+            weak_ebitda = _at(tables, bindings, "PF Model", 262)
+            assert weak_ebitda["status"] == "unknown" and weak_ebitda["is_primary"] is False
+            assert json.loads(weak_ebitda["evidence_json"])["candidates"][0]["reasons"] == ["abbrev"]
+            # 532 — вся подпись «CFADS», это сильное совпадение. 239 — тело «cashflow…» не равно pref
+            # «cash flow…», совпала только скобка, поэтому строка не делает понятие ambiguous.
+            exact_cfads = _at(tables, bindings, "PF Model", 532)
+            assert exact_cfads["concept"] == "cfads" and exact_cfads["status"] == "bound" and exact_cfads["is_primary"]
+            assert json.loads(exact_cfads["evidence_json"])["match_strength"] == "exact"
+            weak_cfads = _at(tables, bindings, "PF Model", 239)
+            assert weak_cfads["status"] == "unknown" and weak_cfads["concept"] is None
+            assert json.loads(weak_cfads["evidence_json"])["match_strength"] == "abbrev"
         assert all(row["phase"] is None for row in derived["period_semantics"])
+
+
+def test_abbrev_does_not_compete_with_exact_body():
+    catalog = load_catalog()
+    rows = [
+        {"kind": "fact", "binding_key": "exact", "label": "EBITDA", "sign": None},
+        {"kind": "fact", "binding_key": "weak", "label": "Operating Income or Loss (EBITDA)", "sign": None},
+        {"kind": "fact", "binding_key": "only", "label": "Whatever else (CFADS)", "sign": None},
+        {"kind": "fact", "binding_key": "a", "label": "Left (DSCR)", "sign": None},
+        {"kind": "fact", "binding_key": "b", "label": "Right (DSCR)", "sign": None},
+    ]
+    got = assign_rows(rows, [], catalog)
+    assert got["exact"].status == "bound" and got["exact"].is_primary and got["exact"].evidence["match_strength"] == "exact"
+    assert got["weak"].status == "unknown" and got["weak"].evidence["match_strength"] == "abbrev"
+    assert got["weak"].evidence["candidates"][0]["concept"] == "ebitda"
+    assert got["only"].status == "bound" and got["only"].evidence["match_strength"] == "abbrev"
+    assert got["a"].status == "ambiguous" and got["b"].status == "ambiguous"
+    assert got["a"].evidence["match_strength"] == "abbrev"
 
 
 def test_two_labels_are_ambiguous_and_confirmed_wins():

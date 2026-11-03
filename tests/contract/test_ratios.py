@@ -58,14 +58,8 @@ def _concept(row: dict, concept: str) -> dict:
 
 async def test_rvi_dscr_quotient_and_icr(local_service):
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
-    # Две строки cfads (§5.5): частное не считается, пока человек не выберет одну.
-    missing = await _ratios(local_service, ["dscr"])
-    assert missing["needs_input"][0] == {"kind": "concept", "reason": "ambiguous", "subject": "cfads"}
-    assert all(row.get("value") is None for row in missing["result_data"]["ratios"])
-
     cash = await _row(local_service, "CFADS")
     debt = await _row(local_service, "Total debt service")
-    # «Operating Income or Loss (EBITDA)» делит ebitda со строкой EBITDA. Метрика смотрит и на ebitda.
     ebitda = await _row(local_service, "EBITDA")
     await _set(
         local_service,
