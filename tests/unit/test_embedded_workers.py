@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
 
@@ -104,6 +106,68 @@ def test_a_killed_child_is_down_until_the_backoff_restarts_it(monkeypatch: pytes
         if name != victim:
             assert after[name] == pid
     stop_for_serve(workers)
+
+
+_HOLD_TERM = """
+import pathlib, signal, sys, time
+path = pathlib.Path(sys.argv[1])
+def mark(*_args):
+    path.write_text("term")
+    time.sleep(30)
+signal.signal(signal.SIGTERM, mark)
+path.with_suffix(".ready").write_text("up")
+time.sleep(60)
+"""
+
+
+def test_stop_signals_every_child_before_the_grace(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    def commands() -> list[tuple[str, list[str]]]:
+        return [
+            (name, [sys.executable, "-c", _HOLD_TERM, str(tmp_path / name)]) for name in _NAMES
+        ]
+
+    monkeypatch.setattr(embedded, "child_commands", commands)
+    workers = start_for_serve(_settings(FAS_EMBEDDED_WORKERS=True, SHUTDOWN_GRACE_SEC=5))
+    assert workers is not None
+    assert _wait_until(lambda: all((tmp_path / f"{name}.ready").exists() for name in _NAMES))
+    started = time.monotonic()
+    done = threading.Event()
+
+    def halt() -> None:
+        stop_for_serve(workers)
+        done.set()
+
+    threading.Thread(target=halt).start()
+    assert _wait_until(lambda: all((tmp_path / name).exists() for name in _NAMES), timeout=1)
+    assert time.monotonic() - started < 1.5
+    assert done.wait(timeout=15)
+
+
+def test_arm_parent_death_exits_when_the_spawning_pid_is_gone() -> None:
+    code = (
+        "import os\n"
+        "os.environ['FAS_EMBEDDED_CHILD'] = '1'\n"
+        "os.environ['FAS_PARENT_PID'] = '999999'\n"
+        "from finance_analysis.adapters.queue.embedded import arm_parent_death\n"
+        "arm_parent_death()\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], check=False, capture_output=True, text=True, timeout=30)
+    if sys.platform == "linux":
+        assert proc.returncode == 1, proc.stderr
+    else:
+        assert proc.returncode == 0, proc.stderr
+
+
+def test_arm_parent_death_stays_when_the_parent_pid_matches() -> None:
+    code = (
+        "import os\n"
+        "os.environ['FAS_EMBEDDED_CHILD'] = '1'\n"
+        "os.environ['FAS_PARENT_PID'] = str(os.getppid())\n"
+        "from finance_analysis.adapters.queue.embedded import arm_parent_death\n"
+        "arm_parent_death()\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], check=False, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_main_starts_children_before_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:

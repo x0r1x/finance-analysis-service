@@ -31,7 +31,7 @@ cp .env.example .env
 
 Локальный override сам поднимает `redis`, `minio`, `finance-analysis` и `finance-context`. Прод — только `deploy/docker-compose.yml`, Redis и MinIO он не запускает. Redis — `redis:8.6.7-alpine` на `127.0.0.1:6379`. База `1` — FAS, `0` — билдер, `2` — агент, `15` — pytest. В MinIO один бакет, `finance-context`, порты `127.0.0.1:9000` и `127.0.0.1:9001`. FAS пишет под префиксом `fas/`. Тома — `finance_redis-data` и `finance_minio-data`. Compose репозитория finance-context-builder рядом не поднимать: он публикует те же порты MinIO.
 
-Прод, только приложение. Redis тогда берётся из `.env`:
+Прод, только приложение. Redis тогда берётся из `.env`. Этот адрес должен резолвиться внутри контейнера. `127.0.0.1` из примера — процесс на хосте, контейнер его отвергает:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --build --wait

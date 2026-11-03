@@ -16,6 +16,7 @@ services:
       FAS_HOST: 0.0.0.0
       FAS_PORT: "8080"
       FAS_EMBEDDED_WORKERS: "true"
+      FAS_IN_CONTAINER: "true"
       BUILDER_BASE_URL: ""
     volumes:
       - fas-data:/data

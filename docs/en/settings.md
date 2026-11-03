@@ -19,7 +19,8 @@ Seven names are accepted and stored, and the process does not read them: `WREN_E
 | `FAS_HOST` | `127.0.0.1` | Address `uvicorn` binds. Compose sets `0.0.0.0` inside the container and publishes only `127.0.0.1:8088`. |
 | `FAS_PORT` | `8080` | Port `uvicorn` binds. |
 | `BUILDER_BASE_URL` | empty | Base URL of the builder HTTP API. Empty makes every builder call fail at once with "BUILDER_BASE_URL не задан". Production Compose sets an empty string so a copied `.env` cannot point the container at itself. The local override sets `http://finance-context:8080`. |
-| `FAS_EMBEDDED_WORKERS` | `false` | `true` starts four `fas-worker` processes and `fas-scheduler` as children of `fas-api`. `false` leaves the queues to processes you start. Compose sets `true`. |
+| `FAS_EMBEDDED_WORKERS` | `false` | `true` starts four `fas-worker` processes and `fas-scheduler` as children of `fas-api`. `false` leaves the queues to processes you start. Compose sets `true`. A child exits when the pid that spawned it is no longer its parent, unless that parent is PID 1. |
+| `FAS_IN_CONTAINER` | `false` | Compose sets `true`. A Redis host of `127.0.0.1`, `localhost`, or `::1` then fails startup. Leave it unset for `uv run fas-api`. |
 | `FAS_EMBEDDED_RESTART_BACKOFF_SEC` | `1` | Seconds a supervisor waits before it starts a dead embedded child again. Must be greater than 0. |
 | `FAS_ADMIN_TOKEN` | empty | Empty allows glossary release writes. Any other value requires the request header `x-admin-token` to match it. |
 | `FAS_READ_ONLY` | `false` | `true` makes the object store refuse writes. The conditional-write self-test is skipped. |
@@ -40,7 +41,7 @@ S3 is on only when `FAS_S3_BUCKET`, `FAS_S3_ACCESS_KEY`, and `FAS_S3_SECRET_KEY`
 | `FAS_S3_ACCESS_KEY` | empty | Access key. One of the three fields that turn S3 on. |
 | `FAS_S3_SECRET_KEY` | empty | Secret key. One of the three fields that turn S3 on. |
 | `FAS_S3_REGION` | `us-east-1` | Region passed to Wren `s3_file`. `minio_file` does not receive it. The local Compose MinIO is `ap-northeast-1`, so that value has to be set for that server. |
-| `FAS_S3_SSL` | follows the endpoint | Unset becomes `false` when `FAS_S3_ENDPOINT` is set, and `true` otherwise. An explicit `true` or `false` is kept. Wren `minio_file` uses it as `ssl_enabled`. |
+| `FAS_S3_SSL` | follows the endpoint | Unset is `false` only for an `http://` endpoint. An empty endpoint, `https://`, or a host with no scheme stays `true`. An explicit `true` or `false` is kept. Wren `minio_file` uses it as `ssl_enabled`. |
 
 ## Models
 

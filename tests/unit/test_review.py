@@ -65,6 +65,38 @@ def test_s3_ssl_follows_endpoint():
         FAS_S3_SSL=True,
     )
     assert explicit.fas_s3_ssl is True
+    https = Settings(
+        _env_file=None,
+        FAS_REDIS_URL="redis://unused",
+        FAS_S3_ENDPOINT="https://minio.example:9000",
+        FAS_S3_BUCKET="finance-context",
+        FAS_S3_ACCESS_KEY="key",
+        FAS_S3_SECRET_KEY="secret",
+    )
+    assert https.fas_s3_ssl is True
+    bare = Settings(
+        _env_file=None,
+        FAS_REDIS_URL="redis://unused",
+        FAS_S3_ENDPOINT="minio.example:9000",
+        FAS_S3_BUCKET="finance-context",
+        FAS_S3_ACCESS_KEY="key",
+        FAS_S3_SECRET_KEY="secret",
+    )
+    assert bare.fas_s3_ssl is True
+
+
+def test_container_rejects_loopback_redis():
+    host = Settings(_env_file=None, FAS_REDIS_URL="redis://127.0.0.1:6379/1", FAS_IN_CONTAINER=False)
+    assert host.fas_in_container is False
+    for url in (
+        "redis://127.0.0.1:6379/1",
+        "redis://user:pass@localhost:6379/1",
+        "redis://[::1]:6379/1",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, FAS_REDIS_URL=url, FAS_IN_CONTAINER=True)
+    remote = Settings(_env_file=None, FAS_REDIS_URL="redis://redis:6379/1", FAS_IN_CONTAINER=True)
+    assert remote.fas_redis_url == "redis://redis:6379/1"
 
 
 def test_s3_url_without_credentials_is_rejected(monkeypatch):
@@ -111,7 +143,7 @@ def test_expand_ref_caps_rectangle():
 def test_slo_requires_a_clean_run():
     import importlib.util
 
-    path = ROOT / "deploy" / "k6" / "run_baseline.py"
+    path = ROOT / "scripts" / "k6" / "run_baseline.py"
     spec = importlib.util.spec_from_file_location("fas_k6_baseline", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -128,12 +160,12 @@ def test_slo_requires_a_clean_run():
 
 def test_k6_setup_waits_until_the_book_is_ready():
     for name in ("s1.js", "s2.js"):
-        text = (ROOT / "deploy" / "k6" / name).read_text(encoding="utf-8")
+        text = (ROOT / "scripts" / "k6" / name).read_text(encoding="utf-8")
         assert "status === 202" not in text.split("export default")[0]
         assert "operations/" in text
         assert 'r.status === 200' in text
-    assert "checks:" in (ROOT / "deploy" / "k6" / "s1.js").read_text(encoding="utf-8")
-    assert "checks:" in (ROOT / "deploy" / "k6" / "s2.js").read_text(encoding="utf-8")
+    assert "checks:" in (ROOT / "scripts" / "k6" / "s1.js").read_text(encoding="utf-8")
+    assert "checks:" in (ROOT / "scripts" / "k6" / "s2.js").read_text(encoding="utf-8")
 
 
 def _guard(tmp_path):

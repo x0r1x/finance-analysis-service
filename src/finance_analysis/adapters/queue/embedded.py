@@ -41,14 +41,19 @@ def child_commands() -> list[tuple[str, list[str]]]:
 def arm_parent_death() -> None:
     """``SIGKILL`` this process when its parent dies.
 
-    A parent that is already PID 1 is the container entrypoint, not a dead
-    parent. ``PR_SET_PDEATHSIG`` is cleared on fork, so the child calls this
-    itself. If the parent dies during the call, no signal is delivered.
+    ``FAS_PARENT_PID`` is the pid that spawned this child. If that pid is
+    already gone, the child was reparented to PID 1 during import and must
+    exit. A parent that really is PID 1 is the container entrypoint.
+    ``PR_SET_PDEATHSIG`` is cleared on fork, so the child calls this itself.
+    If the parent dies during the call, no signal is delivered.
     """
 
     if os.environ.get("FAS_EMBEDDED_CHILD") != "1" or sys.platform != "linux":
         return
+    spawned = os.environ.get("FAS_PARENT_PID")
     parent = os.getppid()
+    if spawned and int(spawned) != parent:
+        os._exit(1)
     if parent <= 1:
         return
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -99,16 +104,30 @@ class EmbeddedWorkers:
         return found
 
     def stop(self) -> None:
-        """SIGTERM every child, wait the grace period, then SIGKILL the group."""
+        """SIGTERM every live child, wait the grace period once, then SIGKILL the rest."""
 
         self._stop.set()
         with self._lock:
             slots = dict(self._slots)
             for name in self._slots:
                 self._slots[name] = None
-        for proc in slots.values():
-            if proc is not None:
-                _shutdown_proc(proc, self.settings.shutdown_grace_sec)
+        live = [proc for proc in slots.values() if proc is not None and proc.poll() is None]
+        for proc in live:
+            _signal_group(proc, signal.SIGTERM)
+        deadline = time.monotonic() + self.settings.shutdown_grace_sec
+        for proc in live:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                proc.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                pass
+        for proc in live:
+            if proc.poll() is None:
+                _signal_group(proc, signal.SIGKILL)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _LOGGER.error("embedded child pid=%s did not exit after SIGKILL", proc.pid)
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self.settings.shutdown_grace_sec + self.settings.fas_embedded_restart_backoff_sec + 5)
@@ -209,32 +228,32 @@ def _executable_argv(script: str, args: list[str]) -> list[str]:
 def _child_env() -> dict[str, str]:
     env = os.environ.copy()
     env["FAS_EMBEDDED_CHILD"] = "1"
+    env["FAS_PARENT_PID"] = str(os.getpid())
     return env
 
 
 def _shutdown_proc(proc: subprocess.Popen[bytes], grace_sec: float) -> None:
+    """One child that lost the race with ``stop``. The batch path is ``EmbeddedWorkers.stop``."""
+
     if proc.poll() is not None:
         return
-    _signal(proc.pid, signal.SIGTERM)
+    _signal_group(proc, signal.SIGTERM)
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=grace_sec)
+    except subprocess.TimeoutExpired:
+        _signal_group(proc, signal.SIGKILL)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _LOGGER.error("embedded child pid=%s did not exit after SIGKILL", proc.pid)
+
+
+def _signal_group(proc: subprocess.Popen[bytes], sig: int) -> None:
+    _signal(proc.pid, sig)
+    try:
+        os.killpg(proc.pid, sig)
     except (ProcessLookupError, PermissionError, OSError):
         pass
-    deadline = time.monotonic() + grace_sec
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            break
-        time.sleep(0.05)
-    if proc.poll() is None:
-        _signal(proc.pid, signal.SIGKILL)
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        _LOGGER.error("embedded child pid=%s did not exit after SIGKILL", proc.pid)
 
 
 def _signal(pid: int, sig: int) -> None:

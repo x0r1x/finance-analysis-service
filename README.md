@@ -31,7 +31,7 @@ The process refuses to start without `FAS_REDIS_URL`, and it refuses a Redis old
 
 The local override starts `redis`, `minio`, `finance-analysis`, and `finance-context`. Production uses only `deploy/docker-compose.yml` and does not start Redis or MinIO. Redis is `redis:8.6.7-alpine` on `127.0.0.1:6379`, database `1` for FAS (`0` builder, `2` agent, `15` pytest). MinIO has one bucket, `finance-context`, on `127.0.0.1:9000` and `127.0.0.1:9001`. FAS writes under the prefix `fas/`. Volumes are `finance_redis-data` and `finance_minio-data`. Do not start the finance-context-builder Compose while this stack is up. That file publishes the same MinIO ports.
 
-Production, the app only. Redis then comes from `.env`:
+Production, the app only. Redis then comes from `.env`. That URL has to resolve inside the container. `127.0.0.1` in the example is the host process, and the container rejects it:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --build --wait
