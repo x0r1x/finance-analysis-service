@@ -35,6 +35,7 @@ from finance_analysis.domain.book import (
     ReportNotReady,
     sha256_bytes,
 )
+from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.cover_metrics import (
     BASES,
     DIRECTIONS,
@@ -59,7 +60,7 @@ from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.mapping import absent_in_journal
-from finance_analysis.domain.metrics import _primaries, coverage_ratio
+from finance_analysis.domain.metrics import _primaries
 from finance_analysis.domain.model_type import (
     applicability,
     applicable_metrics,
@@ -71,7 +72,17 @@ from finance_analysis.plugins.rules.coverage import (
 )
 
 ANALYSIS_TYPES = ("audit", "ratios", "impact", "full")
-RATIO_METRICS = ("dscr", "icr", "adscr", "dscr_min", "dscr_avg", "llcr", "plcr")
+RATIO_METRICS = (
+    "dscr",
+    "icr",
+    "adscr",
+    "dscr_min",
+    "dscr_avg",
+    "llcr",
+    "plcr",
+    "net_debt_ebitda",
+    "escrow_coverage",
+)
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs")
 # `scope` из §3.2: списки и одиночные значения.
@@ -625,6 +636,9 @@ class Analyses:
         needs = []
         warnings = []
         uses = []
+        money = frozenset(name for name, item in svc.catalog.concepts.items() if item.unit == "money")
+        profile_ref = target.head.versions.get("profile")
+        variant_of = svc.model_types.types[verdict.primary].variants if verdict.primary in svc.model_types.types else {}
         for metric in metrics:
             use = applicability(svc.model_types, labels, metric)
             if use == "not_applicable":
@@ -644,7 +658,16 @@ class Analyses:
             elif metric == "adscr":
                 result = adscr(direction=direction, **common)
             else:
-                result = coverage_ratio(metric=metric, **common)
+                result = select_ratio(
+                    metric,
+                    variant_of.get(metric),
+                    common,
+                    profile=body,
+                    profile_ref=profile_ref if isinstance(profile_ref, str) else None,
+                    composed=svc.model_types.composed,
+                    concepts=svc.catalog.ids,
+                    money=money,
+                )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
                 warnings.append({"code": "input_absent", "params": {"metric": metric}})
@@ -652,7 +675,12 @@ class Analyses:
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
             computed.extend({**row, "metric": metric} for row in result["rows"])
-            uses.append({"metric": metric, "applicability": use})
+            entry = {"metric": metric, "applicability": use}
+            if result.get("definition_source"):
+                entry["definition_source"] = result["definition_source"]
+            if result.get("definition_ref"):
+                entry["definition_ref"] = result["definition_ref"]
+            uses.append(entry)
         if verdict.source == "unresolved":
             warnings.append(
                 {

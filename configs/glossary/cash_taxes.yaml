@@ -1,0 +1,7 @@
+concept: cash_taxes
+pref:
+  en: "Cash income tax paid"
+  ru: "Налог на прибыль уплаченный"
+definition:
+  en: "Income tax paid in cash"
+  ru: "Налог на прибыль, уплаченный деньгами"

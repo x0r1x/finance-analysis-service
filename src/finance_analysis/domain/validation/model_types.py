@@ -25,6 +25,7 @@ def validate_model_types(
     *,
     concepts: frozenset[str],
     metric_inputs: dict[str, MetricInputs],
+    variant_inputs: dict[str, dict[str, MetricInputs]] | None = None,
 ) -> None:
     if "other" not in types:
         raise ModelTypeInvalid("нет типа other")
@@ -38,7 +39,7 @@ def validate_model_types(
         seen.add(type_id)
         _signals(type_id, body.get("signals"))
         required = _concepts(type_id, body.get("required_concepts"), concepts)
-        _metrics(type_id, body.get("metrics"), required, metric_inputs)
+        _metrics(type_id, body.get("metrics"), required, metric_inputs, variant_inputs or {})
         parent = body.get("inherits")
         if parent is not None and parent not in types:
             raise ModelTypeInvalid(f"{type_id}: inherits {parent} не найден")
@@ -91,7 +92,13 @@ def _concepts(type_id: str, raw, concepts: frozenset[str]) -> frozenset[str]:
     return frozenset(raw)
 
 
-def _metrics(type_id: str, raw, required: frozenset[str], metric_inputs: dict[str, MetricInputs]) -> None:
+def _metrics(
+    type_id: str,
+    raw,
+    required: frozenset[str],
+    metric_inputs: dict[str, MetricInputs],
+    variant_inputs: dict[str, dict[str, MetricInputs]],
+) -> None:
     if not isinstance(raw, dict) or not raw:
         raise ModelTypeInvalid(f"{type_id}: metrics пуст")
     for name, body in raw.items():
@@ -100,9 +107,12 @@ def _metrics(type_id: str, raw, required: frozenset[str], metric_inputs: dict[st
         use = _use(body)
         if use not in _USES:
             raise ModelTypeInvalid(f"{type_id}: use {name} вне списка")
+        variant = body.get("variant") if isinstance(body, dict) else None
+        if variant is not None and variant not in variant_inputs.get(name, {}):
+            raise ModelTypeInvalid(f"{type_id}: вариант {name}.{variant} не объявлен")
         if use != "required" or name == "*":
             continue
-        spec = metric_inputs[name]
+        spec = variant_inputs.get(name, {}).get(variant, metric_inputs[name]) if variant else metric_inputs[name]
         missing = sorted(concept for concept in spec.all_of if concept not in required)
         if spec.one_of and not (spec.one_of & required):
             missing.append("one_of:" + "|".join(sorted(spec.one_of)))

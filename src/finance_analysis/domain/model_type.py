@@ -24,12 +24,28 @@ class TypeSpec:
     signals: tuple[Signal, ...]
     required_concepts: frozenset[str]
     metrics: dict[str, str]
+    variants: dict[str, str]
 
 
 @dataclass(frozen=True)
 class MetricInputs:
     all_of: frozenset[str]
     one_of: frozenset[str]
+
+
+@dataclass(frozen=True)
+class Side:
+    plus: tuple[str, ...]
+    minus: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Composed:
+    """Числитель и знаменатель из понятий каталога и окно `LTM` или `period`."""
+
+    numerator: Side
+    denominator: Side
+    window: str
 
 
 @dataclass(frozen=True)
@@ -41,6 +57,8 @@ class ModelTypeCatalog:
     metric_inputs: dict[str, MetricInputs]
     documents: dict[str, dict]
     compatible: frozenset[frozenset[str]]
+    composed: dict[str, Composed]
+    variant_inputs: dict[str, dict[str, MetricInputs]]
 
     @property
     def ids(self) -> frozenset[str]:

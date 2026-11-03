@@ -95,8 +95,11 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         before = len(pool) - len(dropped)
         assert (alias, before, len(subjects)) == {"packt": ("packt", 86, 0), "rvi": ("rvi", 221, 0)}[alias]
         ratios = await _ratios(local_service, job)
-        hidden = [item for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"]
-        assert hidden == [], alias
+        hidden = sorted(
+            item["metric"] for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"
+        )
+        # Новые метрики среза 2 на project_finance не считаются. Вопросы и привязки из-за них не меняются.
+        assert hidden == ["escrow_coverage", "net_debt_ebitda"], alias
         assert ratios["model_type"]["primary"] == "project_finance"
         assert ratios["versions"]["model_types"] == local_service.model_types.version
         concepts = sorted({row.get("effective_concept") for row in dropped})
@@ -185,15 +188,35 @@ async def test_profile_model_type_default_has_no_numbers(app):
             json={"model_type_default": {"labels": ["corporate"], "primary": "corporate", "score": 0.9}},
         )
         assert numbered.status_code == 400, numbered.text
+        numbered_definition = await client.put(
+            "/v1/profiles/desk",
+            headers={**HEADERS, "If-None-Match": "*"},
+            json={
+                "dscr_definition": {
+                    "numerator": {"plus": ["ebitda"], "minus": ["cash_taxes"]},
+                    "denominator": {"plus": ["interest"]},
+                    "window": "LTM",
+                    "threshold": 1.2,
+                }
+            },
+        )
+        assert numbered_definition.status_code == 400, numbered_definition.text
+        definition = {
+            "numerator": {"plus": ["ebitda"], "minus": ["cash_taxes", "capex"]},
+            "denominator": {"plus": ["interest", "principal"]},
+            "window": "LTM",
+            "basis_ref": "кредитный договор, п. 4.2",
+        }
         created = await client.put(
             "/v1/profiles/desk",
             headers={**HEADERS, "If-None-Match": "*"},
-            json={"model_type_default": {"labels": ["corporate"], "primary": "corporate"}},
+            json={"model_type_default": {"labels": ["corporate"], "primary": "corporate"}, "dscr_definition": definition},
         )
         assert created.status_code == 200, created.text
         body = await client.get("/v1/profiles/desk", headers=HEADERS)
         assert body.status_code == 200, body.text
         assert body.json()["body"]["model_type_default"] == {"labels": ["corporate"], "primary": "corporate"}
+        assert body.json()["body"]["dscr_definition"] == definition
 
 
 async def test_concept_answer_keeps_question_id_and_binds_the_row(local_service):

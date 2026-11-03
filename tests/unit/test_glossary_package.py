@@ -29,6 +29,10 @@ _IDS = frozenset(
         "target_dscr",
         "dscr",
         "icr",
+        "cash_taxes",
+        "net_debt",
+        "dscr_covenant",
+        "escrow_balance",
     }
 )
 
