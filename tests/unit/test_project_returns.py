@@ -141,9 +141,51 @@ def test_project_finance_book_that_also_has_npv_stays_project_finance():
         gap=0.15,
     )
     assert got.primary == "project_finance"
-    assert got.scores["investment_project"] == 0.5
+    assert got.scores["investment_project"] == 0.0
     assert got.scores["ppp_concession"] == 0.0
     assert applicability(catalog, got.labels, "npv") == "not_applicable"
+
+
+def test_a_three_statement_book_with_npv_stays_corporate():
+    catalog = _catalog()
+    got = infer(
+        catalog,
+        bound=frozenset({"npv", "irr", "discount_rate", "ebitda", "interest"}),
+        sheets=frozenset({"Income statement", "Balance sheet", "Cash flow"}),
+        accept=0.6,
+        gap=0.15,
+    )
+    assert got.confident is True
+    assert got.primary == "corporate"
+    assert got.labels == ("corporate",)
+    assert applicability(catalog, got.labels, "npv") == "not_applicable"
+
+
+def test_ppp_and_escrow_keep_their_type_beside_an_investment_score():
+    catalog = _catalog()
+    ppp = infer(
+        catalog,
+        bound=frozenset({"grantor_payment", "npv", "irr", "discount_rate"}),
+        sheets=frozenset(),
+        accept=0.6,
+        gap=0.15,
+    )
+    escrow = infer(
+        catalog,
+        bound=frozenset({"escrow_balance", "npv", "irr", "discount_rate"}),
+        sheets=frozenset(),
+        accept=0.6,
+        gap=0.15,
+    )
+    assert ppp.confident is True and ppp.primary == "ppp_concession" and ppp.labels == ("ppp_concession",)
+    assert escrow.confident is True and escrow.primary == "development_escrow"
+
+
+def test_an_empty_book_does_not_score_investment_just_because_debt_is_absent():
+    catalog = _catalog()
+    got = infer(catalog, bound=frozenset(), sheets=frozenset({"Model"}), accept=0.6, gap=0.15)
+    assert got.scores["investment_project"] == 0.0
+    assert got.confident is False
 
 
 def test_toll_road_min_dscr_matches_the_published_minimum():

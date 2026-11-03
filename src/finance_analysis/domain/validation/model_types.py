@@ -62,6 +62,11 @@ def _signals(type_id: str, raw) -> None:
         total += float(weight)
         if item["kind"] in _CONCEPT_KINDS and not item.get("concepts"):
             raise ModelTypeInvalid(f"{type_id}: {item['kind']} без понятий")
+        absent = item.get("absent")
+        if absent is not None and (
+            not isinstance(absent, list) or any(not isinstance(name, str) or not name for name in absent)
+        ):
+            raise ModelTypeInvalid(f"{type_id}: absent — список id понятий")
         if item["kind"] == "sheets_any":
             _sheet_groups(type_id, item.get("groups"))
     if type_id != "other" and total <= 0:

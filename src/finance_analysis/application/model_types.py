@@ -132,7 +132,8 @@ def load_metric_catalog(
 def _signal(type_id: str, raw: dict) -> Signal:
     concepts = tuple(str(item) for item in raw.get("concepts") or [])
     groups = tuple(tuple(str(name) for name in group) for group in raw.get("groups") or [])
-    return Signal(str(raw["kind"]), float(raw["weight"]), concepts, groups)
+    absent = tuple(str(item) for item in raw.get("absent") or [])
+    return Signal(str(raw["kind"]), float(raw["weight"]), concepts, groups, absent)
 
 
 def _use(body) -> str:
@@ -201,7 +202,8 @@ def _check_formula_concepts(
 def _check_signal_concepts(documents: dict[str, dict], concepts: frozenset[str]) -> None:
     for type_id, body in documents.items():
         for signal in body.get("signals") or []:
-            unknown = [check_concept_id(str(name)) for name in signal.get("concepts") or [] if str(name) not in concepts]
+            named = [*(signal.get("concepts") or []), *(signal.get("absent") or [])]
+            unknown = [check_concept_id(str(name)) for name in named if str(name) not in concepts]
             if unknown:
                 raise ModelTypeInvalid(f"{type_id}: понятие признака вне каталога: {', '.join(unknown)}")
 

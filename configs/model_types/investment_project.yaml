@@ -5,9 +5,7 @@ title:
 signals:
   - kind: concepts_bound_all
     concepts: [npv, irr, discount_rate]
-    weight: 1
-  - kind: concepts_absent_all
-    concepts: [debt_service]
+    absent: [debt_service]
     weight: 1
 required_concepts: [project_fcf, discount_rate]
 metrics:
