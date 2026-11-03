@@ -94,6 +94,13 @@ TRACE_DEPTH = 8
 TRACE_DEPTH_MAX = 32
 
 
+def _dscr_variant(catalog, verdict) -> str | None:
+    primary = verdict.primary
+    if not primary or primary not in catalog.types:
+        return None
+    return catalog.types[primary].variants.get("dscr")
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -450,6 +457,7 @@ class Analyses:
             profile=await self._profile(target.head),
             absent=await self._absent(job_id, target),
             applicable_metrics=live,
+            dscr_variant=_dscr_variant(self.service.model_types, verdict),
         )
 
     async def _absent(self, job_id: str, target: Target) -> frozenset[str]:
@@ -913,6 +921,7 @@ class Analyses:
             profile=profile or {},
             absent=absent,
             applicable_metrics=live,
+            dscr_variant=_dscr_variant(self.service.model_types, verdict),
         )
         found = run_rules(rules, data)
         return [item for item in found if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]

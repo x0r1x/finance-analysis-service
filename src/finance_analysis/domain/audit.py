@@ -134,6 +134,8 @@ class AuditInput:
     absent: frozenset[str] = frozenset()
     # Метрики, применимые к типу модели. None — фильтр выключен, правила видят весь каталог.
     applicable_metrics: frozenset[str] | None = None
+    # Вариант DSCR подтверждённого типа. None — вызывающий не назвал вариант, формула базы.
+    dscr_variant: str | None = None
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:
@@ -207,6 +209,14 @@ class AuditInput:
         link = self.link_cells.get(cell)
         row_key = link.row_key if link and link.row_key in self.rows_by_key else None
         return Location(cell, row_key, None, None)
+
+
+def project_finance_dscr(data: AuditInput) -> bool:
+    """Правила CFADS ÷ debt service. Ковенантный вариант их не запускает."""
+
+    if data.applicable_metrics is not None and "dscr" not in data.applicable_metrics:
+        return False
+    return data.dscr_variant in (None, "pf")
 
 
 @dataclass(frozen=True)
