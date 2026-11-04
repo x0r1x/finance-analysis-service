@@ -215,6 +215,25 @@ def test_icr_reference_uses_the_coverage_row_on_the_calculation_axis():
     assert ambiguous[0].params["message"] == "На оси расчёта ICR несколько справочных строк покрытия. Сверка не выполнена."
 
 
+def test_statement_reference_reports_when_actual_periods_are_unknown():
+    data = AuditInput(
+        rows=[{"row_key": "model", "binding_key": "model"}, {"row_key": "form", "binding_key": "form"}],
+        periods=[_period(), {**_period(), "period_id": "q"}],
+        facts=[
+            {**_fact("model", "100"), "cell_id": "ДДС!B10"},
+            {**_fact("form", "110"), "cell_id": "ОФР!B10"},
+        ],
+        bindings=[
+            _binding("revenue", "model"),
+            _binding("revenue", "form", is_primary=False, evidence={"role": "reference"}),
+        ],
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert len(found) == 1
+    assert found[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
+    assert STATEMENT_REFERENCE.check(AuditInput(periods=[_period()])) == []
+
+
 def test_actual_quarter_compares_a_model_primary_with_a_reference_statement():
     period = {**_period(), "marker_class": "actual"}
     plan = {**_period(), "period_id": "plan", "marker_class": "estimate"}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 from finance_analysis.domain.audit import (
@@ -21,6 +22,7 @@ _INCOMPLETE_NUMERATOR = "справочный расчёт книги непол
 _ICR_DIVERGENCE = "Справочный коэффициент книги расходится с расчётом FAS."
 _ICR_AMBIGUOUS = "На оси расчёта ICR несколько справочных строк покрытия. Сверка не выполнена."
 _STATEMENT_DIVERGENCE = "Строка модели расходится с отчётной формой на фактическом квартале."
+_ACTUAL_UNKNOWN = "фактические периоды не определены, сверка с отчётностью не выполнена"
 _STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income", "interest")
 
 
@@ -432,6 +434,13 @@ class StatementReference(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         actual = [period for period in data.periods if period.get("marker_class") == "actual"]
         if not actual:
+            if data.periods and _has_statement_pair(data):
+                return [
+                    self.finding(
+                        data,
+                        params={"cause": "actual_unknown", "message": _ACTUAL_UNKNOWN},
+                    )
+                ]
             return []
         findings = []
         for concept in _STATEMENT_CONCEPTS:
@@ -476,8 +485,33 @@ class StatementReference(Rule):
         return findings
 
 
+def _has_statement_pair(data: AuditInput) -> bool:
+    """Есть основная строка и строка-ссылка одного понятия отчётности."""
+
+    for concept in _STATEMENT_CONCEPTS:
+        primary = _primary(data, concept)
+        if primary is None:
+            continue
+        for row in data.bindings:
+            if row.get("row_key") == primary.get("row_key"):
+                continue
+            if (row.get("effective_concept") or row.get("concept")) != concept:
+                continue
+            if _role(row) == "reference" and row.get("status") in _BOUND:
+                return True
+    return False
+
+
 def _role(row: dict) -> str | None:
     evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    if not evidence:
+        raw = row.get("evidence_json")
+        if isinstance(raw, str) and raw:
+            try:
+                loaded = json.loads(raw)
+            except json.JSONDecodeError:
+                loaded = {}
+            evidence = loaded if isinstance(loaded, dict) else {}
     return evidence.get("role") or row.get("role")
 
 
