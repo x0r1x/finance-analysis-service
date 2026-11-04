@@ -47,7 +47,20 @@ async def _absent(redis, key: str) -> None:
     raise AssertionError(f"ключ {key} не удалён")
 
 
+async def _validate_op(local_service) -> dict:
+    return await local_service.create_op(
+        "glossary.validate",
+        None,
+        Actor(),
+        {"stage": "glossary.transition"},
+    )
+
+
 async def test_transition_refreshes_heartbeat_until_it_finishes(app, local_service, redis_runtime):
+    from types import SimpleNamespace
+
+    from finance_analysis.adapters.queue.tasks import _beat
+
     local_service.settings.op_heartbeat_sec = 0.05
     started = asyncio.Event()
     release = asyncio.Event()
@@ -60,33 +73,46 @@ async def test_transition_refreshes_heartbeat_until_it_finishes(app, local_servi
     local_service.glossary.gate = gate
     async with _client(app) as client:
         version, etag, before = await _release(client)
-        posted = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": etag},
-            json={"version": version, "status": "active"},
+        op = await _validate_op(local_service)
+        key = f"fas:op:{op['id']}:hb"
+        stop = asyncio.Event()
+        beater = asyncio.create_task(
+            _beat(SimpleNamespace(settings=local_service.settings, redis=redis_runtime.redis), op["id"], 1, stop)
         )
-        assert posted.status_code == 202, posted.text
-        op_id = posted.json()["id"]
-        key = f"fas:op:{op_id}:hb"
-        await asyncio.wait_for(started.wait(), 5)
-        first = await redis_runtime.redis.get(key)
-        await asyncio.sleep(0.12)
-        second = await redis_runtime.redis.get(key)
-        assert first and second and first != second
-        release.set()
-        done = await local_service.wait_op(op_id, 30_000)
-        assert done["status"] == "succeeded", done
-        after = await client.get("/v1/glossary", headers=HEADERS)
-        assert after.json()["active"] == version
-        assert after.json()["seq"] != before["seq"]
+        task = asyncio.create_task(
+            local_service.perform_glossary_transition(
+                version, "active", etag, force=False, reason=None, op_id=op["id"]
+            )
+        )
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            first = await redis_runtime.redis.get(key)
+            await asyncio.sleep(0.12)
+            second = await redis_runtime.redis.get(key)
+            assert first and second and first != second
+            release.set()
+            result = await task
+            assert result["status"] == "active"
+            done = await local_service.finish_op(op["id"], "succeeded", result=result)
+            assert done["status"] == "succeeded", done
+            after = await client.get("/v1/glossary", headers=HEADERS)
+            assert after.json()["active"] == version
+            assert after.json()["seq"] != before["seq"]
+        finally:
+            release.set()
+            stop.set()
+            beater.cancel()
+            await asyncio.gather(beater, task, return_exceptions=True)
+            await redis_runtime.redis.delete(key)
         await _absent(redis_runtime.redis, key)
 
 
 async def test_closed_operation_does_not_activate_the_release(app, local_service):
+    op = await _validate_op(local_service)
+
     async def gate(_version: str) -> dict:
-        running = await local_service.list_ops(kind="glossary.validate", job_id=None, status="running")
         await local_service.finish_op(
-            running[0]["id"],
+            op["id"],
             "failed",
             error={"code": "dependency_unavailable", "detail": "нет метки живости"},
         )
@@ -95,13 +121,11 @@ async def test_closed_operation_does_not_activate_the_release(app, local_service
     local_service.glossary.gate = gate
     async with _client(app) as client:
         version, etag, before = await _release(client)
-        posted = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": etag},
-            json={"version": version, "status": "active"},
+        result = await local_service.perform_glossary_transition(
+            version, "active", etag, force=False, reason=None, op_id=op["id"]
         )
-        assert posted.status_code == 202, posted.text
-        done = await local_service.wait_op(posted.json()["id"], 30_000)
+        assert result == {"skipped": True}
+        done = await local_service.get_op(op["id"])
         assert done["status"] == "failed", done
         assert done["error"]["code"] == "dependency_unavailable"
         after = await client.get("/v1/glossary", headers=HEADERS)
@@ -111,21 +135,20 @@ async def test_closed_operation_does_not_activate_the_release(app, local_service
 
 
 async def test_cancel_flag_alone_blocks_the_head_write(app, local_service, redis_runtime):
+    op = await _validate_op(local_service)
+
     async def gate(_version: str) -> dict:
-        running = await local_service.list_ops(kind="glossary.validate", job_id=None, status="running")
-        await redis_runtime.cache_set(f"fas:op:{running[0]['id']}:cancel", b"1", 60)
+        await redis_runtime.cache_set(f"fas:op:{op['id']}:cancel", b"1", 60)
         return _PASSED
 
     local_service.glossary.gate = gate
     async with _client(app) as client:
         version, etag, before = await _release(client)
-        posted = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": etag},
-            json={"version": version, "status": "active"},
+        result = await local_service.perform_glossary_transition(
+            version, "active", etag, force=False, reason=None, op_id=op["id"]
         )
-        assert posted.status_code == 202, posted.text
-        done = await local_service.wait_op(posted.json()["id"], 30_000)
+        assert result == {"skipped": True}
+        done = await local_service.get_op(op["id"])
         assert done["status"] == "cancelled", done
         after = await client.get("/v1/glossary", headers=HEADERS)
         assert after.json()["active"] == before["active"]
@@ -144,30 +167,36 @@ async def test_http_cancel_during_shadow_does_not_activate(app, local_service):
     local_service.glossary.gate = gate
     async with _client(app) as client:
         version, etag, before = await _release(client)
-        posted = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": etag},
-            json={"version": version, "status": "canary"},
+        op = await _validate_op(local_service)
+        task = asyncio.create_task(
+            local_service.perform_glossary_transition(
+                version, "canary", etag, force=False, reason=None, op_id=op["id"]
+            )
         )
-        assert posted.status_code == 202, posted.text
-        op_id = posted.json()["id"]
-        await asyncio.wait_for(started.wait(), 5)
-        cancelled = await client.post(f"/v1/operations/{op_id}:cancel", headers=HEADERS)
-        assert cancelled.status_code == 200, cancelled.text
-        assert cancelled.json()["status"] == "cancelled"
-        release.set()
-        done = await local_service.wait_op(op_id, 30_000)
-        assert done["status"] == "cancelled", done
-        after = await client.get("/v1/glossary", headers=HEADERS)
-        assert after.json()["canary"] == before["canary"]
-        assert after.json()["seq"] == before["seq"]
-        assert after.json()["active"] != version
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            cancelled = await client.post(f"/v1/operations/{op['id']}:cancel", headers=HEADERS)
+            assert cancelled.status_code == 200, cancelled.text
+            assert cancelled.json()["status"] == "cancelled"
+            release.set()
+            result = await task
+            assert result == {"skipped": True}
+            done = await local_service.get_op(op["id"])
+            assert done["status"] == "cancelled", done
+            after = await client.get("/v1/glossary", headers=HEADERS)
+            assert after.json()["canary"] == before["canary"]
+            assert after.json()["seq"] == before["seq"]
+            assert after.json()["active"] != version
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_cancel_during_proposal_shadow_does_not_accept(app, local_service, redis_runtime):
+    op = await _validate_op(local_service)
+
     async def gate(_version: str) -> dict:
-        running = await local_service.list_ops(kind="glossary.validate", job_id=None, status="running")
-        await redis_runtime.cache_set(f"fas:op:{running[0]['id']}:cancel", b"1", 60)
+        await redis_runtime.cache_set(f"fas:op:{op['id']}:cancel", b"1", 60)
         return _PASSED
 
     local_service.glossary.gate = gate
@@ -180,13 +209,12 @@ async def test_cancel_during_proposal_shadow_does_not_accept(app, local_service,
         )
         assert made.status_code == 200, made.text
         proposal_id = made.json()["id"]
-        posted = await client.post(
-            "/v1/glossary/proposals:decide",
-            headers=HEADERS,
-            json={"decisions": [{"id": proposal_id, "decision": "accept"}]},
+        result = await local_service.perform_proposal_decision(
+            [{"id": proposal_id, "decision": "accept"}],
+            op_id=op["id"],
         )
-        assert posted.status_code == 202, posted.text
-        done = await local_service.wait_op(posted.json()["id"], 30_000)
+        assert result == {"skipped": True}
+        done = await local_service.get_op(op["id"])
         assert done["status"] == "cancelled", done
         after = await client.get("/v1/glossary", headers=HEADERS)
         assert after.json()["active"] == before.json()["active"]
@@ -226,26 +254,32 @@ async def test_second_transition_is_glossary_busy(app, local_service):
     local_service.glossary.gate = gate
     async with _client(app) as client:
         version, etag, _before = await _release(client)
-        first = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": etag},
-            json={"version": version, "status": "active"},
+        op = await _validate_op(local_service)
+        task = asyncio.create_task(
+            local_service.perform_glossary_transition(
+                version, "active", etag, force=False, reason=None, op_id=op["id"]
+            )
         )
-        assert first.status_code == 202, first.text
-        await asyncio.wait_for(started.wait(), 5)
-        began = asyncio.get_running_loop().time()
-        second = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": "h-999"},
-            json={"version": version, "status": "active"},
-        )
-        elapsed = asyncio.get_running_loop().time() - began
-        assert elapsed < 1
-        assert second.status_code == 409, second.text
-        assert second.json()["code"] == "glossary_busy"
-        release.set()
-        done = await local_service.wait_op(first.json()["id"], 30_000)
-        assert done["status"] == "succeeded", done
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            began = asyncio.get_running_loop().time()
+            second = await client.post(
+                "/v1/glossary/transitions",
+                headers={**HEADERS, "If-Match": "h-999"},
+                json={"version": version, "status": "active"},
+            )
+            elapsed = asyncio.get_running_loop().time() - began
+            assert elapsed < 1
+            assert second.status_code == 409, second.text
+            assert second.json()["code"] == "glossary_busy"
+            release.set()
+            result = await task
+            assert result["status"] == "active"
+            done = await local_service.finish_op(op["id"], "succeeded", result=result)
+            assert done["status"] == "succeeded", done
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_running_remap_rejects_a_transition(app, local_service):
@@ -261,6 +295,28 @@ async def test_running_remap_rejects_a_transition(app, local_service):
         assert asyncio.get_running_loop().time() - began < 1
         assert posted.status_code == 409, posted.text
         assert posted.json()["code"] == "glossary_busy"
+
+
+async def test_replayed_transition_succeeds_when_the_head_is_already_there(app, local_service):
+    async with _client(app) as client:
+        version, etag, _before = await _release(client)
+        first = await local_service.perform_glossary_transition(
+            version, "active", etag, force=False, reason=None
+        )
+        assert first["status"] == "active"
+        settled = await client.get("/v1/glossary", headers=HEADERS)
+        replay = await local_service.perform_glossary_transition(
+            version, "active", etag, force=False, reason=None
+        )
+        assert replay["status"] == "active"
+        assert replay["state"]["active"] == version
+        again = await client.get("/v1/glossary", headers=HEADERS)
+        assert again.json()["seq"] == settled.json()["seq"]
+        assert again.headers["etag"] == settled.headers["etag"]
+        with pytest.raises(PreconditionFailed):
+            await local_service.perform_glossary_transition(
+                version, "canary", etag, force=False, reason=None
+            )
 
 
 async def test_bad_status_is_409_and_force_without_reason_is_400(app):

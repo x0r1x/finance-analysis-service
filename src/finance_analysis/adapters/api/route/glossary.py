@@ -6,6 +6,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 from finance_analysis.adapters.api.http import actor
+from finance_analysis.adapters.queue.names import GLOSSARY
 from finance_analysis.application.glossary_store import (
     check_transition_request,
     state_of,
@@ -98,7 +99,13 @@ def register(app, settings, *, svc, write, read) -> None:
             await svc().reject_glossary_busy()
             await gloss.require_match(match)
             return await svc().begin_glossary_transition(
-                version, status, match, force=force, reason=reason, actor=actor(request)
+                version,
+                status,
+                match,
+                force=force,
+                reason=reason,
+                actor=actor(request),
+                queue=GLOSSARY,
             )
 
         return await write(request, run)
@@ -139,7 +146,7 @@ def register(app, settings, *, svc, write, read) -> None:
                 isinstance(item, dict) and item.get("decision") == "accept" for item in decisions
             )
             if accepts:
-                return await svc().begin_proposal_decision(decisions, actor(request))
+                return await svc().begin_proposal_decision(decisions, actor(request), queue=GLOSSARY)
             result = await gloss.decide_proposals(decisions)
             await svc().learning.proposals_rejected(result.pop("rejected", []))
             return result

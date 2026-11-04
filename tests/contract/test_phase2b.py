@@ -74,7 +74,7 @@ async def test_models_add_candidates_and_decisions_feed_learning(settings, redis
     assert unmapped and all(row["job_id"] == RVI for row in unmapped)
 
 
-async def test_shadow_gate_blocks_regression_over_http(settings, local_service, redis_runtime):
+async def test_shadow_gate_blocks_regression_over_http(settings, local_service, redis_runtime, task_workers):
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
     await local_service.settle()
     app = create_app(settings, service=local_service, support=redis_runtime)

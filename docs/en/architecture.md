@@ -26,7 +26,7 @@ Those five processes are children of `fas-api` in the `finance-analysis` contain
 | maintenance | `fas-worker --queue fas:maintenance` |
 | scheduler | `fas-scheduler` |
 
-The code registers scheduled work on two of those queues. `fas:batch` runs unmapped clustering, glossary mine, and recalibration. `fas:maintenance` runs compaction, GC of incomplete builds, and operation reconcile. A `fas.run` payload names its queue or lands on `fas:interactive`. Analysis work that returns `202`, including `full`, stays in the API process. See [analyses](analyses.md).
+The code registers scheduled work on two of those queues. `fas:batch` runs unmapped clustering, glossary mine, and recalibration. `fas:maintenance` runs compaction, GC of incomplete builds, and operation reconcile. A `fas.run` payload names its queue or lands on `fas:interactive`. A glossary transition (`glossary.validate`) runs on the `fas:glossary` worker. Mapping inference (`mapping.infer`) runs on the `fas:interactive` worker. Analysis work that returns `202`, including `full`, stays in the API process. See [analyses](analyses.md).
 
 ## Query engine
 
