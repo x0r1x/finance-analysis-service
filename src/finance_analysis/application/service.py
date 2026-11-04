@@ -69,6 +69,7 @@ from finance_analysis.domain.errors import (
     BuilderUnstable,
     DependencyUnavailable,
     FasError,
+    GlossaryBusy,
     InvalidArgument,
     NotFound,
     PreconditionFailed,
@@ -1992,6 +1993,19 @@ class FasService:
             return False
         current = await self.get_op(op_id)
         return current["status"] not in {"succeeded", "failed", "cancelled"}
+
+    async def reject_glossary_busy(self) -> None:
+        """Не пускает второй переход, пока идёт операция по глоссарию.
+
+        `glossary.validate` и `glossary.remap` видны без замка хранилища.
+        Если такая операция уже выполняется, метод поднимает ошибку 409
+        `glossary_busy`. Запрос возвращается сразу и не ждёт, пока теневая
+        проверка отпустит замок.
+        """
+
+        for kind in ("glossary.validate", "glossary.remap"):
+            if await self.list_ops(kind=kind, job_id=None, status="running"):
+                raise GlossaryBusy("уже идёт операция по глоссарию")
 
     async def _close_cancelled_glossary(self, op_id: str) -> None:
         """Закрывает операцию как отменённую, если запись глоссария уже пропущена.

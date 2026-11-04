@@ -95,6 +95,7 @@ def register(app, settings, *, svc, write, read) -> None:
             force = bool(body.get("force"))
             reason = body.get("reason")
             check_transition_request(status, version, force=force, reason=reason)
+            await svc().reject_glossary_busy()
             await gloss.require_match(match)
             return await svc().begin_glossary_transition(
                 version, status, match, force=force, reason=reason, actor=actor(request)

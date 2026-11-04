@@ -8,6 +8,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from finance_analysis.adapters.api.app import create_app
+from finance_analysis.domain.book import Actor
+from finance_analysis.domain.errors import PreconditionFailed
 
 pytestmark = pytest.mark.asyncio
 HEADERS = {"X-User-Id": "alex", "X-Client-Id": "desk"}
@@ -190,4 +192,74 @@ async def test_cancel_during_proposal_shadow_does_not_accept(app, local_service,
         assert after.json()["active"] == before.json()["active"]
         proposal = await client.get(f"/v1/glossary/proposals/{proposal_id}", headers=HEADERS)
         assert proposal.json()["status"] == "open"
+
+
+async def test_require_match_does_not_wait_on_the_shadow_lock(local_service):
+    await local_service.glossary.ensure()
+    hold = asyncio.Event()
+    acquired = asyncio.Event()
+
+    async def occupy() -> None:
+        async with local_service.glossary._lock:
+            acquired.set()
+            await hold.wait()
+
+    task = asyncio.create_task(occupy())
+    await asyncio.wait_for(acquired.wait(), 5)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(PreconditionFailed):
+        await local_service.glossary.require_match("h-999")
+    assert asyncio.get_running_loop().time() - started < 0.5
+    hold.set()
+    await task
+
+
+async def test_second_transition_is_glossary_busy(app, local_service):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gate(_version: str) -> dict:
+        started.set()
+        await release.wait()
+        return _PASSED
+
+    local_service.glossary.gate = gate
+    async with _client(app) as client:
+        version, etag, _before = await _release(client)
+        first = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": etag},
+            json={"version": version, "status": "active"},
+        )
+        assert first.status_code == 202, first.text
+        await asyncio.wait_for(started.wait(), 5)
+        began = asyncio.get_running_loop().time()
+        second = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": "h-999"},
+            json={"version": version, "status": "active"},
+        )
+        elapsed = asyncio.get_running_loop().time() - began
+        assert elapsed < 1
+        assert second.status_code == 409, second.text
+        assert second.json()["code"] == "glossary_busy"
+        release.set()
+        done = await local_service.wait_op(first.json()["id"], 30_000)
+        assert done["status"] == "succeeded", done
+
+
+async def test_running_remap_rejects_a_transition(app, local_service):
+    async with _client(app) as client:
+        version, etag, _before = await _release(client)
+        await local_service.create_op("glossary.remap", None, Actor(), {})
+        began = asyncio.get_running_loop().time()
+        posted = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": etag},
+            json={"version": version, "status": "active"},
+        )
+        assert asyncio.get_running_loop().time() - began < 1
+        assert posted.status_code == 409, posted.text
+        assert posted.json()["code"] == "glossary_busy"
+
 
