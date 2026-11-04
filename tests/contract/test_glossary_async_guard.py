@@ -106,3 +106,88 @@ async def test_closed_operation_does_not_activate_the_release(app, local_service
         assert after.json()["active"] == before["active"]
         assert after.json()["seq"] == before["seq"]
         assert after.json()["active"] != version
+
+
+async def test_cancel_flag_alone_blocks_the_head_write(app, local_service, redis_runtime):
+    async def gate(_version: str) -> dict:
+        running = await local_service.list_ops(kind="glossary.validate", job_id=None, status="running")
+        await redis_runtime.cache_set(f"fas:op:{running[0]['id']}:cancel", b"1", 60)
+        return _PASSED
+
+    local_service.glossary.gate = gate
+    async with _client(app) as client:
+        version, etag, before = await _release(client)
+        posted = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": etag},
+            json={"version": version, "status": "active"},
+        )
+        assert posted.status_code == 202, posted.text
+        done = await local_service.wait_op(posted.json()["id"], 30_000)
+        assert done["status"] == "cancelled", done
+        after = await client.get("/v1/glossary", headers=HEADERS)
+        assert after.json()["active"] == before["active"]
+        assert after.json()["seq"] == before["seq"]
+
+
+async def test_http_cancel_during_shadow_does_not_activate(app, local_service):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gate(_version: str) -> dict:
+        started.set()
+        await release.wait()
+        return _PASSED
+
+    local_service.glossary.gate = gate
+    async with _client(app) as client:
+        version, etag, before = await _release(client)
+        posted = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": etag},
+            json={"version": version, "status": "canary"},
+        )
+        assert posted.status_code == 202, posted.text
+        op_id = posted.json()["id"]
+        await asyncio.wait_for(started.wait(), 5)
+        cancelled = await client.post(f"/v1/operations/{op_id}:cancel", headers=HEADERS)
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "cancelled"
+        release.set()
+        done = await local_service.wait_op(op_id, 30_000)
+        assert done["status"] == "cancelled", done
+        after = await client.get("/v1/glossary", headers=HEADERS)
+        assert after.json()["canary"] == before["canary"]
+        assert after.json()["seq"] == before["seq"]
+        assert after.json()["active"] != version
+
+
+async def test_cancel_during_proposal_shadow_does_not_accept(app, local_service, redis_runtime):
+    async def gate(_version: str) -> dict:
+        running = await local_service.list_ops(kind="glossary.validate", job_id=None, status="running")
+        await redis_runtime.cache_set(f"fas:op:{running[0]['id']}:cancel", b"1", 60)
+        return _PASSED
+
+    local_service.glossary.gate = gate
+    async with _client(app) as client:
+        before = await client.get("/v1/glossary", headers=HEADERS)
+        made = await client.post(
+            "/v1/glossary/proposals",
+            headers=HEADERS,
+            json={"concept": "cfads", "kind": "alt", "lang": "en", "text": "черновик отмены"},
+        )
+        assert made.status_code == 200, made.text
+        proposal_id = made.json()["id"]
+        posted = await client.post(
+            "/v1/glossary/proposals:decide",
+            headers=HEADERS,
+            json={"decisions": [{"id": proposal_id, "decision": "accept"}]},
+        )
+        assert posted.status_code == 202, posted.text
+        done = await local_service.wait_op(posted.json()["id"], 30_000)
+        assert done["status"] == "cancelled", done
+        after = await client.get("/v1/glossary", headers=HEADERS)
+        assert after.json()["active"] == before.json()["active"]
+        proposal = await client.get(f"/v1/glossary/proposals/{proposal_id}", headers=HEADERS)
+        assert proposal.json()["status"] == "open"
+

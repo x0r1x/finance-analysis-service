@@ -1841,7 +1841,8 @@ class FasService:
         переход не исполняет. Пока операция выполняется, обновляется метка
         живости в Redis (heartbeat, ключ `fas:op:{id}:hb`) с интервалом
         `OP_HEARTBEAT_SEC`. Если проверка зависших операций уже закрыла
-        операцию, голова глоссария не меняется и успех в операцию не пишется.
+        операцию или клиент поставил флаг отмены `fas:op:{id}:cancel`, голова
+        глоссария не меняется и успех в операцию не пишется.
 
         `version` — версия релиза. `status` — целевой статус: `canary`,
         `active` или `rejected`. `if_match` — заголовок If-Match; сверка
@@ -1870,6 +1871,7 @@ class FasService:
         async def _run() -> None:
             try:
                 if not await self._glossary_writable(op["id"]):
+                    await self._close_cancelled_glossary(op["id"])
                     return
                 result = await self.glossary.transition(
                     version,
@@ -1880,6 +1882,7 @@ class FasService:
                     may_commit=lambda: self._glossary_writable(op["id"]),
                 )
                 if result.get("skipped"):
+                    await self._close_cancelled_glossary(op["id"])
                     return
                 remap = await self.begin_remap()
                 ref = remap.get("operation")
@@ -1909,9 +1912,9 @@ class FasService:
         Операция проводит теневую проверку принятых правок: сравнивает новый
         глоссарий с активным на загруженных книгах. Пока она выполняется,
         обновляется та же метка живости. Если проверка зависших операций уже
-        закрыла операцию, релиз не активируется и успех не пишется. Если
-        проверка прошла, активируется один общий релиз и запускается пересчёт
-        книг. Если проверка нашла регресс, предложения остаются открытыми с
+        закрыла операцию или стоит флаг отмены `fas:op:{id}:cancel`, релиз не
+        активируется и успех не пишется. Если проверка прошла, активируется
+        один общий релиз и запускается пересчёт книг. Если проверка нашла регресс, предложения остаются открытыми с
         пометкой `blocked: glossary_regression`, а операция завершается
         успешно: отказ записан в результате, а не как провал. Ошибка решения,
         например отсутствующее или уже решённое предложение, закрывает
@@ -1924,11 +1927,13 @@ class FasService:
         async def _run() -> None:
             try:
                 if not await self._glossary_writable(op["id"]):
+                    await self._close_cancelled_glossary(op["id"])
                     return
                 result = await self.glossary.decide_proposals(
                     decisions, may_commit=lambda: self._glossary_writable(op["id"])
                 )
                 if result.get("skipped"):
+                    await self._close_cancelled_glossary(op["id"])
                     return
                 await self.learning.proposals_rejected(result.pop("rejected", []))
                 release = result.get("release") or {}
@@ -1979,12 +1984,26 @@ class FasService:
         """Можно ли ещё менять глоссарий от имени этой операции.
 
         Проверка зависших операций могла уже записать статус `failed`.
-        Поздняя активация оставила бы новый релиз при проваленной операции,
-        и повторный запрос получил бы `stale_parent` или недопустимый переход.
+        Клиент мог поставить флаг `fas:op:{id}:cancel`. В обоих случаях
+        поздняя активация оставила бы новый релиз при закрытой операции.
+        """
+
+        if await self.support.cache_get(f"fas:op:{op_id}:cancel"):
+            return False
+        current = await self.get_op(op_id)
+        return current["status"] not in {"succeeded", "failed", "cancelled"}
+
+    async def _close_cancelled_glossary(self, op_id: str) -> None:
+        """Закрывает операцию как отменённую, если запись глоссария уже пропущена.
+
+        Отмена сначала ставит флаг, и только потом помечает операцию. Если
+        статус ещё `running`, здесь он становится `cancelled`. Уже закрытую
+        операцию, в том числе проваленную проверкой зависания, метод не трогает.
         """
 
         current = await self.get_op(op_id)
-        return current["status"] not in {"succeeded", "failed", "cancelled"}
+        if current["status"] == "running":
+            await self.finish_op(op_id, "cancelled")
 
     async def infer_mapping(self, job_id: str, actor: Actor) -> Accepted:
         op = await self.create_op("mapping.infer", job_id, actor, {})
