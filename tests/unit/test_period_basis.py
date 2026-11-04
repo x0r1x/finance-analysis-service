@@ -208,6 +208,19 @@ def test_ltm_formula_slides_across_years_and_a_reset_or_cross_row_does_not():
     ) == ("period", "default")
 
 
+def test_the_tail_for_the_year_does_not_block_a_year_to_date_formula():
+    periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1", "2025Q2"]
+    calendar = _quarter_calendar(periods)
+    series = {("ax", period): 1 for period in periods}
+    assert classify_period_basis(
+        _row("r", "Проценты за год"), calendar=calendar, links=_running_links(reset=True), series=series
+    ) == ("ytd", "formula")
+    assert classify_period_basis(_row("a", "Выручка за год"), calendar=None, links=None, series=None) == (
+        "period",
+        "default",
+    )
+
+
 def test_a_sum_from_the_model_start_does_not_restart_in_the_next_year():
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1", "2025Q2"]
     calendar = _quarter_calendar(periods)

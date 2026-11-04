@@ -165,13 +165,17 @@ def covered_months(series: dict, calendar: dict | None) -> tuple[str | None, int
 
 
 def _label_forces_period(label: str) -> bool:
-    """Хвост «за квартал» или «за период» оставляет `period`. Формула его не отменяет."""
+    """Хвост «за квартал» или «за период» оставляет `period`. Формула его не отменяет.
+
+    Хвост «за год» таким запретом не является: нарастающий итог по формуле
+    при нём сохраняется.
+    """
 
     feature = label_features(label).period
     if not feature or _phrase_ltm(feature):
         return False
     folded = label_scan(feature)
-    tails = {label_scan(item) for item in ("за кв.", "за кв", "за квартал", "за период", "за год")}
+    tails = {label_scan(item) for item in ("за кв.", "за кв", "за квартал", "за период")}
     return folded in tails
 
 
