@@ -172,6 +172,26 @@ def test_debt_parents_mark_a_component_when_there_is_no_formula():
     assert "role" not in nest["child"].evidence
 
 
+def test_product_under_a_debt_parent_is_a_component_when_the_total_is_not_a_sum():
+    assert debt_instrument("Kredit senior")
+    assert debt_instrument("Transh A")
+    assert not debt_instrument("Itogo")
+    assert not debt_instrument("Kreditor")
+    rows = [
+        _row("total", "Interest", sheet="Debt", parent_label="Itogo"),
+        _row("senior", "Interest", sheet="Debt", parent_label="Kredit senior", formula="=B10*C5"),
+        _row("tranche", "Interest", sheet="Debt", parent_label="Transh A", formula="=B11*C5"),
+    ]
+    got = _assigned(rows)
+    assert got["total"].is_primary
+    assert got["senior"].evidence["role"] == "component"
+    assert got["senior"].evidence["component_of"] == "total"
+    assert got["tranche"].evidence["role"] == "component"
+    assert got["senior"].is_primary is False
+    assert got["tranche"].is_primary is False
+    assert got["senior"].status == "bound"
+
+
 def test_payables_and_a_trench_are_not_debt_parents():
     assert debt_instrument("Кредиты и займы")
     assert debt_instrument("Кредит senior")
