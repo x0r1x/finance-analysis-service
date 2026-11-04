@@ -91,9 +91,12 @@ async def test_shadow_gate_blocks_regression_over_http(settings, local_service, 
         blocked = await client.post(
             "/v1/glossary/transitions", headers={**HEADERS, "If-Match": etag}, json={"version": version, "status": "active"}
         )
-        assert blocked.status_code == 409, blocked.text
-        assert blocked.json()["code"] == "glossary_regression"
-        assert f"coverage_down:{RVI}" in blocked.json()["shadow"]["reasons"]
+        assert blocked.status_code == 202, blocked.text
+        failed = await local_service.wait_op(blocked.json()["id"], 120_000)
+        assert failed["status"] == "failed", failed
+        assert failed["error"]["code"] == "glossary_regression"
+        assert failed["error"]["type"] == "urn:fas:problem:glossary_regression"
+        assert f"coverage_down:{RVI}" in failed["error"]["shadow"]["reasons"]
         view = await client.get(f"/v1/glossary/releases/{version}", headers=HEADERS)
         assert view.json()["shadow"]["passed"] is False
         no_reason = await client.post(
@@ -105,7 +108,9 @@ async def test_shadow_gate_blocks_regression_over_http(settings, local_service, 
             headers={**HEADERS, "If-Match": etag},
             json={"version": version, "status": "active", "force": True, "reason": "методолог: метка снята осознанно"},
         )
-        assert forced.status_code == 200, forced.text
+        assert forced.status_code == 202, forced.text
+        done = await local_service.wait_op(forced.json()["id"], 120_000)
+        assert done["status"] == "succeeded", done
         events = (await client.get("/v1/glossary/events", headers=HEADERS)).json()["events"]
         assert events[-1]["force"] is True and events[-1]["reason"]
         labels = (await client.get("/v1/glossary/labels", headers=HEADERS, params={"q": "денежный поток"})).json()["labels"]

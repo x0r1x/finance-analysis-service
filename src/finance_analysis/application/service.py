@@ -7,6 +7,7 @@ import contextvars
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -67,6 +68,8 @@ from finance_analysis.domain.errors import (
     AlreadyExists,
     BuilderUnstable,
     DependencyUnavailable,
+    FasError,
+    GlossaryBusy,
     InvalidArgument,
     NotFound,
     PreconditionFailed,
@@ -114,6 +117,33 @@ _YEAR_ONLY = re.compile(r"^(\d{4})$")
 class Accepted:
     operation: dict
     retry_after: int = 1
+
+
+def _operation_problem(exc: BaseException) -> dict:
+    """Собирает тело ошибки операции в той же форме, что ответ problem+json.
+
+    `exc` — исключение, которым завершился фоновый шаг. Если это ошибка
+    домена, словарь получает поля `type`, `title`, `status`, `detail`,
+    `code`, `retryable` и дополнительные поля исключения. Для любого другого
+    исключения остаются `code` со значением `failed` и текст ошибки.
+    Вызывающий код записывает словарь в поле `error` операции со статусом
+    `failed`.
+    """
+
+    if not isinstance(exc, FasError):
+        return {"code": "failed", "detail": str(exc)}
+    body = {
+        "type": f"urn:fas:problem:{exc.code}",
+        "title": exc.title,
+        "status": exc.status,
+        "detail": exc.detail,
+        "code": exc.code,
+        "retryable": exc.retryable,
+    }
+    for key, value in exc.extra.items():
+        if key not in body:
+            body[key] = value
+    return body
 
 
 class _LockTimeout(Exception):
@@ -1791,6 +1821,203 @@ class FasService:
             return rows
         public = await self._coverage_public(job_id, head)
         return {"build_key": head.build_key, "rows": rows, **public}
+
+    async def begin_glossary_transition(
+        self,
+        version: str,
+        status: str,
+        if_match: str | None,
+        *,
+        force: bool,
+        reason: str | None,
+        actor: Actor,
+    ) -> Accepted:
+        """Ставит переход релиза глоссария в фоновую операцию и возвращает её.
+
+        Теневая проверка (сравнение нового глоссария с активным на загруженных
+        книгах) и запись нового статуса не укладываются в синхронный предел
+        запроса. Метод не выполняет переход сам. Он создаёт операцию
+        `glossary.validate` и запускает её в процессе API, тем же способом, что
+        и подбор сопоставления `mapping.infer`. Воркер очереди Taskiq этот
+        переход не исполняет. Пока операция выполняется, обновляется метка
+        живости в Redis (heartbeat, ключ `fas:op:{id}:hb`) с интервалом
+        `OP_HEARTBEAT_SEC`. Если проверка зависших операций уже закрыла
+        операцию или клиент поставил флаг отмены `fas:op:{id}:cancel`, голова
+        глоссария не меняется и успех в операцию не пишется.
+
+        `version` — версия релиза. `status` — целевой статус: `canary`,
+        `active` или `rejected`. `if_match` — заголовок If-Match; сверка
+        повторяется уже внутри операции, под замком, в момент записи.
+        Если `force` равен истине, активация разрешена даже когда теневая
+        проверка нашла регресс, но только вместе с непустым `reason`.
+        `actor` — пользователь и клиент, от имени которых записывается операция.
+
+        Возвращает `Accepted`: тело операции. HTTP-слой отвечает 202 и
+        заголовками `Operation-Location` и `Retry-After`. Успешная операция
+        записывает новый статус релиза и запускает пересчёт книг
+        (`glossary.remap`). Регресс без `force` завершает операцию со статусом
+        `failed` и ошибкой `glossary_regression`. Устаревший родитель релиза
+        (`stale_parent`) тоже завершает операцию со статусом `failed`. Любая
+        другая ошибка перехода закрывает операцию со статусом `failed`.
+        """
+
+        op = await self.create_op(
+            "glossary.validate",
+            None,
+            actor,
+            {"version": version, "status": status, "force": force, "reason": reason},
+        )
+        stop, beater = self._watch_glossary(op["id"])
+
+        async def _run() -> None:
+            try:
+                if not await self._glossary_writable(op["id"]):
+                    await self._close_cancelled_glossary(op["id"])
+                    return
+                result = await self.glossary.transition(
+                    version,
+                    status,
+                    if_match,
+                    force=force,
+                    reason=reason,
+                    may_commit=lambda: self._glossary_writable(op["id"]),
+                )
+                if result.get("skipped"):
+                    await self._close_cancelled_glossary(op["id"])
+                    return
+                remap = await self.begin_remap()
+                ref = remap.get("operation")
+                result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
+                await self.finish_op(op["id"], "succeeded", result=result)
+            except Exception as exc:  # noqa: BLE001 — ошибка перехода не выходит наружу, операция закрывается как failed
+                await self.finish_op(op["id"], "failed", error=_operation_problem(exc))
+            finally:
+                await self._stop_glossary_watch(op["id"], stop, beater)
+
+        self.spawn(_run())
+        return Accepted(op)
+
+    async def begin_proposal_decision(self, decisions: list, actor: Actor) -> Accepted:
+        """Ставит принятие пакета предложений в ту же фоновую операцию, что и переход релиза.
+
+        `decisions` — список решений. В каждом элементе указаны идентификатор
+        предложения и решение `accept` или `reject`. Новый текст метки и
+        понятие можно не передавать. `actor` — пользователь и клиент, от имени
+        которых записывается операция. Сюда попадает только пакет, в котором
+        есть хотя бы одно принятие. Пакет из одних отказов маршрут обрабатывает
+        синхронно и этот метод не вызывает. Заголовок If-Match для решения
+        предложений не сверяется.
+
+        Возвращает `Accepted`: тело операции `glossary.validate`. HTTP-слой
+        отвечает 202 и заголовками `Operation-Location` и `Retry-After`.
+        Операция проводит теневую проверку принятых правок: сравнивает новый
+        глоссарий с активным на загруженных книгах. Пока она выполняется,
+        обновляется та же метка живости. Если проверка зависших операций уже
+        закрыла операцию или стоит флаг отмены `fas:op:{id}:cancel`, релиз не
+        активируется и успех не пишется. Если проверка прошла, активируется
+        один общий релиз и запускается пересчёт книг. Если проверка нашла регресс, предложения остаются открытыми с
+        пометкой `blocked: glossary_regression`, а операция завершается
+        успешно: отказ записан в результате, а не как провал. Ошибка решения,
+        например отсутствующее или уже решённое предложение, закрывает
+        операцию со статусом `failed`.
+        """
+
+        op = await self.create_op("glossary.validate", None, actor, {"proposals": len(decisions)})
+        stop, beater = self._watch_glossary(op["id"])
+
+        async def _run() -> None:
+            try:
+                if not await self._glossary_writable(op["id"]):
+                    await self._close_cancelled_glossary(op["id"])
+                    return
+                result = await self.glossary.decide_proposals(
+                    decisions, may_commit=lambda: self._glossary_writable(op["id"])
+                )
+                if result.get("skipped"):
+                    await self._close_cancelled_glossary(op["id"])
+                    return
+                await self.learning.proposals_rejected(result.pop("rejected", []))
+                release = result.get("release") or {}
+                if release.get("status") == "active":
+                    remap = await self.begin_remap()
+                    ref = remap.get("operation")
+                    result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
+                await self.finish_op(op["id"], "succeeded", result=result)
+            except Exception as exc:  # noqa: BLE001 — ошибка решения не выходит наружу, операция закрывается как failed
+                await self.finish_op(op["id"], "failed", error=_operation_problem(exc))
+            finally:
+                await self._stop_glossary_watch(op["id"], stop, beater)
+
+        self.spawn(_run())
+        return Accepted(op)
+
+    def _watch_glossary(self, op_id: str) -> tuple[asyncio.Event, asyncio.Task]:
+        stop = asyncio.Event()
+        return stop, self.spawn(self._beat_op(op_id, stop))
+
+    async def _beat_op(self, op_id: str, stop: asyncio.Event) -> None:
+        """Пишет метку живости операции (heartbeat), пока фоновый шаг глоссария не закончился.
+
+        Проверка зависших операций закрывает неидемпотентную операцию без ключа
+        `fas:op:{id}:hb`, если с создания прошло больше `OP_STALE_SEC`.
+        Повторно ставить `glossary.validate` нельзя: шаг записал бы успех без
+        записи релиза. Поэтому живой шаг сам обновляет ключ с интервалом
+        `OP_HEARTBEAT_SEC`.
+        """
+
+        interval = max(float(self.settings.op_heartbeat_sec), 0.05)
+        ttl = max(int(interval * 2), 1)
+        key = f"fas:op:{op_id}:hb"
+        while not stop.is_set():
+            await self.support.cache_set(key, f"0:{time.time()}".encode(), ttl)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except TimeoutError:
+                continue
+
+    async def _stop_glossary_watch(self, op_id: str, stop: asyncio.Event, beater: asyncio.Task) -> None:
+        stop.set()
+        beater.cancel()
+        await asyncio.gather(beater, return_exceptions=True)
+        await self.support.cache_delete(f"fas:op:{op_id}:hb")
+
+    async def _glossary_writable(self, op_id: str) -> bool:
+        """Можно ли ещё менять глоссарий от имени этой операции.
+
+        Проверка зависших операций могла уже записать статус `failed`.
+        Клиент мог поставить флаг `fas:op:{id}:cancel`. В обоих случаях
+        поздняя активация оставила бы новый релиз при закрытой операции.
+        """
+
+        if await self.support.cache_get(f"fas:op:{op_id}:cancel"):
+            return False
+        current = await self.get_op(op_id)
+        return current["status"] not in {"succeeded", "failed", "cancelled"}
+
+    async def reject_glossary_busy(self) -> None:
+        """Не пускает второй переход, пока идёт операция по глоссарию.
+
+        `glossary.validate` и `glossary.remap` видны без замка хранилища.
+        Если такая операция уже выполняется, метод поднимает ошибку 409
+        `glossary_busy`. Запрос возвращается сразу и не ждёт, пока теневая
+        проверка отпустит замок.
+        """
+
+        for kind in ("glossary.validate", "glossary.remap"):
+            if await self.list_ops(kind=kind, job_id=None, status="running"):
+                raise GlossaryBusy("уже идёт операция по глоссарию")
+
+    async def _close_cancelled_glossary(self, op_id: str) -> None:
+        """Закрывает операцию как отменённую, если запись глоссария уже пропущена.
+
+        Отмена сначала ставит флаг, и только потом помечает операцию. Если
+        статус ещё `running`, здесь он становится `cancelled`. Уже закрытую
+        операцию, в том числе проваленную проверкой зависания, метод не трогает.
+        """
+
+        current = await self.get_op(op_id)
+        if current["status"] == "running":
+            await self.finish_op(op_id, "cancelled")
 
     async def infer_mapping(self, job_id: str, actor: Actor) -> Accepted:
         op = await self.create_op("mapping.infer", job_id, actor, {})

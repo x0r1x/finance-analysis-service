@@ -5,7 +5,11 @@ from __future__ import annotations
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
-from finance_analysis.application.glossary_store import state_of
+from finance_analysis.adapters.api.http import actor
+from finance_analysis.application.glossary_store import (
+    check_transition_request,
+    state_of,
+)
 from finance_analysis.domain.errors import Forbidden
 
 
@@ -86,15 +90,16 @@ def register(app, settings, *, svc, write, read) -> None:
     async def glossary_transition(request: Request):
         async def run(gloss, body, match):
             _admin(request)
-            result = await gloss.transition(
-                body.get("version"),
-                str(body.get("status") or ""),
-                match,
-                force=bool(body.get("force")),
-                reason=body.get("reason"),
+            status = str(body.get("status") or "")
+            version = body.get("version")
+            force = bool(body.get("force"))
+            reason = body.get("reason")
+            check_transition_request(status, version, force=force, reason=reason)
+            await svc().reject_glossary_busy()
+            await gloss.require_match(match)
+            return await svc().begin_glossary_transition(
+                version, status, match, force=force, reason=reason, actor=actor(request)
             )
-            await svc().begin_remap()
-            return result
 
         return await write(request, run)
 
@@ -129,10 +134,14 @@ def register(app, settings, *, svc, write, read) -> None:
     async def glossary_decide(request: Request):
         async def run(gloss, body, _match):
             _admin(request)
-            result = await gloss.decide_proposals(body.get("decisions") or [])
+            decisions = body.get("decisions") or []
+            accepts = isinstance(decisions, list) and any(
+                isinstance(item, dict) and item.get("decision") == "accept" for item in decisions
+            )
+            if accepts:
+                return await svc().begin_proposal_decision(decisions, actor(request))
+            result = await gloss.decide_proposals(decisions)
             await svc().learning.proposals_rejected(result.pop("rejected", []))
-            if (result.get("release") or {}).get("status") == "active":
-                await svc().begin_remap()
             return result
 
         return await write(request, run)

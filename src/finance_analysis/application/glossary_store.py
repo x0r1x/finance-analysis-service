@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import yaml
@@ -137,6 +138,25 @@ class GlossaryStore:
                 return {"dry_run": True, "diff": diff, "state": state_of(head)}
             return await self._commit(head, etag, updated, ops, parent=parent, source=source, diff=diff, activate=False)
 
+    async def require_match(self, if_match: str | None) -> None:
+        """Сверяет If-Match с головой глоссария, не дожидаясь теневой проверки.
+
+        Теневая проверка держит замок хранилища всё своё время. Этот метод
+        читает голову без этого замка, чтобы второй запрос не ждал её и не
+        обрывался по дедлайну запроса. `if_match` — значение заголовка
+        If-Match. Если заголовка нет, поднимается ошибка 428. Если метка не
+        совпала с `h-{seq}`, поднимается ошибка 412. Голову метод не меняет.
+        Если головы ещё нет, метод один раз создаёт её под замком: это
+        короткая запись, не теневая проверка. В момент записи перехода метка
+        сверяется ещё раз уже под замком.
+        """
+
+        head, _etag = await self._read()
+        if head is None:
+            async with self._lock:
+                head, _etag = await self._ensure_locked()
+        self._match(head, if_match)
+
     async def transition(
         self,
         version: str | None,
@@ -145,19 +165,17 @@ class GlossaryStore:
         *,
         force: bool = False,
         reason: str | None = None,
+        may_commit: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict:
-        if status not in {"canary", "active", "rejected"}:
-            raise InvalidTransition("переход только в canary, active или rejected")
-        if not version:
-            raise InvalidArgument("нужна version")
-        if force and not (isinstance(reason, str) and reason.strip()):
-            raise InvalidArgument("force требует reason")
+        check_transition_request(status, version, force=force, reason=reason)
         async with self._lock:
             head, etag = await self._ensure_locked()
             self._match(head, if_match)
             if status == "canary":
-                return await self._to_canary(head, etag, version, force=force, reason=reason)
+                return await self._to_canary(head, etag, version, force=force, reason=reason, may_commit=may_commit)
             if status == "rejected":
+                if not await _write_allowed(may_commit):
+                    return {"skipped": True}
                 return await self._reject(head, etag, version, reason=reason)
             report = None
             if version != head.get("previous"):
@@ -167,6 +185,8 @@ class GlossaryStore:
                         "доля ложных привязок выросла или покрытие упало",
                         extra={"version": version, "shadow": _shadow_summary(report)},
                     )
+            if not await _write_allowed(may_commit):
+                return {"skipped": True}
             result = await self._activate(head, etag, version, forced={"reason": reason} if force else None)
             if report is not None:
                 result["shadow"] = _shadow_summary(report)
@@ -509,7 +529,7 @@ class GlossaryStore:
             raise NotFound("предложение не найдено")
         return found
 
-    async def decide_proposals(self, decisions: list) -> dict:
+    async def decide_proposals(self, decisions: list, *, may_commit: Callable[[], Awaitable[bool]] | None = None) -> dict:
         if not isinstance(decisions, list):
             raise InvalidArgument("decisions должен быть списком")
         async with self._lock:
@@ -536,6 +556,8 @@ class GlossaryStore:
             release = None
             shadow = None
             if accepted_ops:
+                if not await _write_allowed(may_commit):
+                    return {"skipped": True}
                 head, head_etag = await self._ensure_locked()
                 document = await self._document(head["active"])
                 updated = apply_ops(document, accepted_ops)
@@ -549,6 +571,9 @@ class GlossaryStore:
                 if report is not None:
                     shadow = _shadow_summary(report)
                 if report is None or report.get("passed"):
+                    if not await _write_allowed(may_commit):
+                        # Кандидат уже записан. Операцию закрыла проверка зависших операций: голову не активируем.
+                        return {"skipped": True}
                     fresh, fresh_etag = await self._read()
                     release = await self._activate(fresh, fresh_etag, ready["version"], source="proposal")
                 else:
@@ -714,7 +739,16 @@ class GlossaryStore:
                 found = item.get("status")
         return found
 
-    async def _to_canary(self, head: dict, etag: str | None, version: str, *, force: bool, reason: str | None) -> dict:
+    async def _to_canary(
+        self,
+        head: dict,
+        etag: str | None,
+        version: str,
+        *,
+        force: bool,
+        reason: str | None,
+        may_commit: Callable[[], Awaitable[bool]] | None = None,
+    ) -> dict:
         if version == head.get("active") or self._status(head, version) in {"rejected", "active", "retired"}:
             raise InvalidTransition("в canary только готовый релиз", extra={"version": version, "state": state_of(head)})
         record = await self._release_record(version)
@@ -727,6 +761,8 @@ class GlossaryStore:
                 "доля ложных привязок выросла или покрытие упало",
                 extra={"version": version, "shadow": _shadow_summary(report)},
             )
+        if not await _write_allowed(may_commit):
+            return {"skipped": True}
         history = []
         for item in head.get("history") or []:
             row = dict(item)
@@ -964,6 +1000,40 @@ def _proposal_op(found: dict, text: str) -> dict:
         "новое понятие и метки профиля принимаются только релизом администратора",
         extra={"id": found["id"], "type": kind_of},
     )
+
+
+async def _write_allowed(may_commit: Callable[[], Awaitable[bool]] | None) -> bool:
+    """Решает, можно ли менять голову глоссария после теневой проверки.
+
+    `may_commit` передаёт операция. Если проверка зависших операций уже
+    закрыла её или клиент поставил флаг отмены, запись пропускается: иначе
+    релиз стал бы активным, а клиент видел бы отмену или провал. Если
+    вызывающий код проверку не передал, запись разрешена, как у прямого
+    вызова из обучения.
+    """
+
+    if may_commit is None:
+        return True
+    return bool(await may_commit())
+
+
+def check_transition_request(status: str, version: str | None, *, force: bool, reason: str | None) -> None:
+    """Проверяет тело запроса на переход релиза до постановки операции.
+
+    `status` — целевой статус: `canary`, `active` или `rejected`. `version` —
+    непустой идентификатор релиза. `force` разрешает переход несмотря на
+    регресс только вместе с непустым `reason`. Метод ничего не записывает.
+    Статус вне этих трёх значений поднимает ошибку недопустимого перехода.
+    Пустая версия и `force` без причины поднимают ошибку некорректного
+    аргумента.
+    """
+
+    if status not in {"canary", "active", "rejected"}:
+        raise InvalidTransition("переход только в canary, active или rejected")
+    if not version:
+        raise InvalidArgument("нужна version")
+    if force and not (isinstance(reason, str) and reason.strip()):
+        raise InvalidArgument("force требует reason")
 
 
 def _shadow_summary(report: dict) -> dict:

@@ -3,11 +3,13 @@ pref:
   en: "EBIT"
   ru: "EBIT"
 alt:
+  en:
+    - "Earnings before interest and taxes"
+    - "Earnings before interest and tax"
   ru:
-    - "Операционная прибыль"
-    - "Операционная прибыль (убыток)"
-    - "Прибыль (убыток) от реализации"
-    - "Прибыль (убыток) от продаж"
+    - "Прибыль до вычета процентов и налогов"
+    - "Прибыль до уплаты процентов и налогов"
+    - "Прибыль до процентов и налогов"
 definition:
   en: "Earnings before interest and tax"
   ru: "Прибыль до процентов и налога"
