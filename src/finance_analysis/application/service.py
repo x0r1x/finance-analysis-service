@@ -40,7 +40,12 @@ from finance_analysis.application.metrics import (
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.application.operations import append_event, create_op, read_op
 from finance_analysis.application.ports import Models
-from finance_analysis.application.project import derive_rows, prepare_rows, project
+from finance_analysis.application.project import (
+    attach_graph_links,
+    derive_rows,
+    prepare_rows,
+    project,
+)
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.application.sheet_roles import sheet_roles_version
 from finance_analysis.application.tools import build_tools
@@ -593,6 +598,11 @@ class FasService:
             "dim_row": await self._dataset_rows(job_id, past, "dim_row"),
             "dim_period": await self._dataset_rows(job_id, past, "dim_period"),
         }
+        try:
+            links = await self._dataset_rows(job_id, past, "graph_links")
+        except (NotFound, StopIteration):
+            links = []
+        projected = attach_graph_links(projected, links)
         facts = await self._dataset_rows(job_id, past, "fact_observation")
         events = [event for event in await self.guard.read_all(job_id) if int(event["seq"]) <= head.state_seq]
         derived = await self._derive(
@@ -603,7 +613,7 @@ class FasService:
             versions=dict(head.versions),
             events=events,
             facts=facts,
-            links=None,
+            links=projected.get("graph_links"),
             learn=False,
         )
         attempt = str(ULID())
@@ -1460,6 +1470,7 @@ class FasService:
             links = await self._dataset_rows(job_id, head, "graph_links")
         except (NotFound, StopIteration):
             links = []
+        projected = attach_graph_links(projected, links)
         derived = await self._derive(
             job_id,
             projected,

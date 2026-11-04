@@ -400,6 +400,18 @@ def prepare_rows(projected: dict[str, list[dict]], events: list[dict], glossary,
     return prepared
 
 
+def attach_graph_links(projected: dict, links: list[dict] | None) -> dict:
+    """Кладёт загруженные связи на проекцию.
+
+    Первая загрузка уже передаёт `graph_links` внутри проекции. Повторная
+    свёртка и расчёт прошлой сборки читают формулы оттуда же. Без связей
+    на проекции способ показа, поставленный по формуле, теряется, и строка
+    снова становится `period`.
+    """
+
+    return {**projected, "graph_links": list(links or [])}
+
+
 def derive_rows(
     projected: dict[str, list[dict]],
     *,

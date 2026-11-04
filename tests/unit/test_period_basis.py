@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import date, timedelta
 from decimal import Decimal
 
+from finance_analysis.application.project import attach_graph_links
+from finance_analysis.application.service import FasService
 from finance_analysis.domain.cover_metrics import adscr
 from finance_analysis.domain.mapping import _by_basis
 from finance_analysis.domain.metrics import coverage_ratio
@@ -98,6 +101,27 @@ def test_one_formula_cell_does_not_retag_the_row_and_a_balance_stays_period():
         _row("bal", "Debt", parent_label="нарастающим итогом"), calendar=calendar, links=copied, series=balance
     )
     assert headed == ("ytd", "header")
+
+
+def test_a_later_derive_keeps_formula_links_on_the_projection():
+    periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]
+    calendar = _quarter_calendar(periods)
+    series = {("ax", period): 1 for period in periods}
+    links = _running_links(reset=True)
+    bare = {"dim_period": []}
+    assert "graph_links" not in bare
+    projected = attach_graph_links(bare, links)
+    assert projected["graph_links"] == links
+    assert classify_period_basis(_row("r", "Выручка"), calendar=calendar, links=projected["graph_links"], series=series) == (
+        "ytd",
+        "formula",
+    )
+    assert classify_period_basis(_row("r", "Выручка"), calendar=calendar, links=bare.get("graph_links"), series=series) == (
+        "period",
+        "default",
+    )
+    assert "attach_graph_links" in inspect.getsource(FasService.derive_for_build)
+    assert "attach_graph_links" in inspect.getsource(FasService._fold_derived)
 
 
 def test_a_column_header_applies_only_when_every_numeric_column_agrees():
