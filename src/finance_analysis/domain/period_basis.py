@@ -33,12 +33,13 @@ def classify_period_basis(row: dict, *, calendar: dict | None, links: list[dict]
     label = str(row.get("label") or "")
     if _label_ltm(label):
         return "ltm", "label"
-    headers = _header_text(row, calendar, series)
-    if _phrase_ltm(headers):
+    row_header = _row_header(row)
+    columns = _column_headers(series, calendar)
+    if _phrase_ltm(row_header) or _columns_agree(columns, _phrase_ltm):
         return "ltm", "header"
     if _ltm_formula(row, links, calendar, series):
         return "ltm", "formula"
-    if _phrase_ytd(headers):
+    if _phrase_ytd(row_header) or _columns_agree(columns, _phrase_ytd):
         return "ytd", "header"
     if _ytd_formula(row, links, calendar, series):
         return "ytd", "formula"
@@ -157,13 +158,28 @@ def _phrase_ytd(text: str) -> bool:
     return any(phrase in folded for phrase in _YTD)
 
 
-def _header_text(row: dict, calendar: dict | None, series: dict | None) -> str:
+def _row_header(row: dict) -> str:
+    """Заголовок листа и раздела. Колонка сюда не входит: она относится только к себе."""
+
     parts = [row.get("sheet"), row.get("parent_label")]
     parts.extend(_path(row))
+    return " ".join(str(part) for part in parts if part)
+
+
+def _column_headers(series: dict | None, calendar: dict | None) -> list[str]:
+    headers = []
     for key in series or {}:
         meta = (calendar or {}).get(key) or {}
-        parts.append(meta.get("header_text"))
-    return " ".join(str(part) for part in parts if part)
+        headers.append(str(meta.get("header_text") or ""))
+    return headers
+
+
+def _columns_agree(headers: list[str], phrase) -> bool:
+    """Способ показа колонки ставится строке, только если все числовые колонки совпали."""
+
+    if not headers or any(not text for text in headers):
+        return False
+    return all(phrase(text) for text in headers)
 
 
 def _path(row: dict) -> list[str]:

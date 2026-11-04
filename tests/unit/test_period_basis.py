@@ -100,6 +100,23 @@ def test_one_formula_cell_does_not_retag_the_row_and_a_balance_stays_period():
     assert headed == ("ytd", "header")
 
 
+def test_a_column_header_applies_only_when_every_numeric_column_agrees():
+    periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]
+    series = {("ax", period): 10 * (index + 1) for index, period in enumerate(periods)}
+    calendar = _quarter_calendar(periods)
+    calendar[("ax", "2024Q4")] = {**calendar[("ax", "2024Q4")], "header_text": "Итого с начала года проекта"}
+    assert classify_period_basis(_row("a", "Interest"), calendar=calendar, links=None, series=series) == ("period", "default")
+    calendar[("ax", "2024Q4")] = {**calendar[("ax", "2024Q4")], "header_text": "LTM"}
+    assert classify_period_basis(_row("a", "Interest"), calendar=calendar, links=None, series=series) == ("period", "default")
+    for period in periods:
+        calendar[("ax", period)] = {**calendar[("ax", period)], "header_text": "LTM"}
+    assert classify_period_basis(_row("a", "Interest"), calendar=calendar, links=None, series=series) == ("ltm", "header")
+    assert classify_period_basis(_row("a", "Interest", sheet="нарастающим итогом"), calendar=None, links=None, series=None) == (
+        "ytd",
+        "header",
+    )
+
+
 def test_a_series_that_only_grows_stays_period():
     growing = {("ax", str(index)): index + 1 for index in range(4)}
     assert classify_period_basis(_row("a", "Выручка"), calendar=_calendar({"a": growing}), links=None, series=growing) == (
