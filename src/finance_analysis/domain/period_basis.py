@@ -22,12 +22,20 @@ _LTM_WORD = re.compile(r"(?<!\w)ltm(?!\w)")
 _GRAIN_MONTHS = {"year": 12, "model_year": 12, "half": 6, "half_year": 6, "quarter": 3, "month": 1}
 
 
-def classify_period_basis(row: dict, *, calendar: dict | None, links: list[dict] | None, series: dict | None) -> tuple[str, str]:
+def classify_period_basis(
+    row: dict,
+    *,
+    calendar: dict | None,
+    links: list[dict] | None,
+    series: dict | None,
+    facts: list[dict] | None = None,
+) -> tuple[str, str]:
     """Возвращает способ показа и источник: `label`, `header`, `formula` или `default`.
 
     `row` — fact-строка. `calendar` сопоставляет `(axis_id, period_id)` с зерном,
-    датами и текстом заголовка колонки. `links` — рёбра графа формул. `series` —
-    значения строки, чтобы заголовок колонки читался только там, где есть число.
+    датами и текстом заголовка колонки.     `links` — рёбра графа формул. `series` — значения строки, чтобы заголовок
+    колонки читался только там, где есть число. `facts` добавляет в карту
+    ячейку введённого числа: у неё есть `cell_id`, но нет формулы.
     """
 
     label = str(row.get("label") or "")
@@ -37,11 +45,11 @@ def classify_period_basis(row: dict, *, calendar: dict | None, links: list[dict]
     columns = _column_headers(series, calendar)
     if _phrase_ltm(row_header) or _columns_agree(columns, _phrase_ltm):
         return "ltm", "header"
-    if _ltm_formula(row, links, calendar, series):
+    if _ltm_formula(row, links, calendar, series, facts):
         return "ltm", "formula"
     if _phrase_ytd(row_header) or _columns_agree(columns, _phrase_ytd):
         return "ytd", "header"
-    if _ytd_formula(row, links, calendar, series):
+    if _ytd_formula(row, links, calendar, series, facts):
         return "ytd", "formula"
     return "period", "default"
 
@@ -198,7 +206,13 @@ def _path(row: dict) -> list[str]:
     return []
 
 
-def _ltm_formula(row: dict, links: list[dict] | None, calendar: dict | None, series: dict | None) -> bool:
+def _ltm_formula(
+    row: dict,
+    links: list[dict] | None,
+    calendar: dict | None,
+    series: dict | None,
+    facts: list[dict] | None = None,
+) -> bool:
     """Сумма четырёх кварталов ставит `ltm`, только если так устроена каждая колонка периода.
 
     Одна итоговая колонка года, которая складывает четыре квартала, строку не
@@ -210,7 +224,7 @@ def _ltm_formula(row: dict, links: list[dict] | None, calendar: dict | None, ser
     grain, keys = _period_keys(series, calendar)
     if grain != "quarter" or not keys:
         return False
-    located = _located(links)
+    located = _located(links, facts)
     by_period = _formulas_by_period(links, str(row.get("row_key") or ""))
     for key in keys:
         formulas = by_period.get(str(key[1])) or []
@@ -253,7 +267,13 @@ def _four_quarters(metas: list[dict]) -> bool:
     return len(months) == 12 and months == whole
 
 
-def _ytd_formula(row: dict, links: list[dict] | None, calendar: dict | None, series: dict | None) -> bool:
+def _ytd_formula(
+    row: dict,
+    links: list[dict] | None,
+    calendar: dict | None,
+    series: dict | None,
+    facts: list[dict] | None = None,
+) -> bool:
     """Нарастающий итог по формуле: каждый период после первого в году прибавляет предыдущую ячейку.
 
     Одной такой ячейки мало. Копирование предыдущей ячейки без сложения — перенос
@@ -267,7 +287,7 @@ def _ytd_formula(row: dict, links: list[dict] | None, calendar: dict | None, ser
     if not grain or not keys:
         return False
     row_key = str(row.get("row_key") or "")
-    located = _located(links)
+    located = _located(links, facts)
     by_period = _formulas_by_period(links, row_key)
     if _copies_previous(by_period, row_key, located, calendar):
         return False
@@ -383,9 +403,17 @@ def _formulas(links: list[dict], row_key: str) -> dict[str, dict]:
     return found
 
 
-def _located(links: list[dict]) -> dict[str, tuple[str, str]]:
+def _located(links: list[dict] | None, facts: list[dict] | None = None) -> dict[str, tuple[str, str]]:
+    """Ячейка → строка и период. Введённое число берётся из факта, формула — из связи."""
+
     found: dict[str, tuple[str, str]] = {}
-    for link in links:
+    for fact in facts or []:
+        cell = fact.get("cell_id")
+        row_key = fact.get("row_key")
+        period_id = fact.get("period_id")
+        if cell and row_key and period_id:
+            found[str(cell)] = (str(row_key), str(period_id))
+    for link in links or []:
         cell = link.get("cell")
         row_key = link.get("row_key")
         period_id = link.get("period_id")

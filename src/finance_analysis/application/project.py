@@ -446,6 +446,7 @@ def derive_rows(
             periods=_values_by_row(facts),
             links=projected.get("graph_links"),
             calendar=_calendar(projected.get("dim_period")),
+            facts=facts,
         )
         assigned = verify_numeric(assigned, prepared, _values_by_row(facts))
     else:

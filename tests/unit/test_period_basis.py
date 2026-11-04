@@ -103,6 +103,36 @@ def test_one_formula_cell_does_not_retag_the_row_and_a_balance_stays_period():
     assert headed == ("ytd", "header")
 
 
+def test_a_typed_opening_cell_is_visible_to_the_running_total():
+    periods = ["2024H1", "2024H2", "2025H1", "2025H2"]
+    calendar = {}
+    for index, period in enumerate(periods):
+        year = 2024 + index // 2
+        start = date(year, 1, 1) if index % 2 == 0 else date(year, 7, 1)
+        end = date(year, 6, 30) if index % 2 == 0 else date(year, 12, 31)
+        calendar[("ax", period)] = {
+            "grain": "half",
+            "period_start": start,
+            "period_end": end,
+            "period_index": index,
+            "calendar_year": year,
+        }
+    series = {("ax", period): 1 for period in periods}
+    links = [
+        _formula_link("S!C1", "r", "2024H2", "=B1+5", "S!B1"),
+        _formula_link("S!E1", "r", "2025H2", "=D1+5", "S!D1"),
+    ]
+    facts = [
+        {"cell_id": "S!B1", "row_key": "r", "period_id": "2024H1"},
+        {"cell_id": "S!D1", "row_key": "r", "period_id": "2025H1"},
+    ]
+    assert classify_period_basis(_row("r", "Выручка"), calendar=calendar, links=links, series=series) == ("period", "default")
+    assert classify_period_basis(_row("r", "Выручка"), calendar=calendar, links=links, series=series, facts=facts) == (
+        "ytd",
+        "formula",
+    )
+
+
 def test_a_later_derive_keeps_formula_links_on_the_projection():
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]
     calendar = _quarter_calendar(periods)

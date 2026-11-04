@@ -64,6 +64,7 @@ def assign_rows(
     periods: dict[str, dict[tuple[str, str], Decimal]] | None = None,
     links: list[dict] | None = None,
     calendar: dict | None = None,
+    facts: list[dict] | None = None,
 ) -> dict[str, Assignment]:
     human, ignored, absent = _decisions(events)
     draft: list[tuple[dict, Assignment]] = []
@@ -83,7 +84,7 @@ def assign_rows(
         draft.append((row, item))
     _mark_references(draft, links, periods, roles)
     _mark_facets(draft, links)
-    _mark_basis(draft, periods, calendar, links)
+    _mark_basis(draft, periods, calendar, links, facts)
     _one_primary(draft, roles, periods, filtered, calendar)
     total = sum((abs_by_row or {}).values()) or 0
     assigned = {}
@@ -729,12 +730,18 @@ def _by_period(rows: list[dict], periods: dict | None, calendar: dict | None = N
     return [row for row in rows if id(row) not in drop], True
 
 
-def _mark_basis(draft, periods: dict | None, calendar: dict | None, links: list[dict] | None) -> None:
+def _mark_basis(
+    draft,
+    periods: dict | None,
+    calendar: dict | None,
+    links: list[dict] | None,
+    facts: list[dict] | None = None,
+) -> None:
     """Пишет способ показа в строку и в evidence. Fact-строка без ytd и ltm получает period."""
 
     for index, (row, item) in enumerate(draft):
         series = (periods or {}).get(str(row.get("row_key") or ""))
-        basis, source = classify_period_basis(row, calendar=calendar, links=links, series=series)
+        basis, source = classify_period_basis(row, calendar=calendar, links=links, series=series, facts=facts)
         row["period_basis"] = basis
         row["period_basis_source"] = source
         evidence = {**item.evidence, "period_basis": basis, "period_basis_source": source}
