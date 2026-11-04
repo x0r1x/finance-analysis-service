@@ -15,10 +15,11 @@ from finance_analysis.domain.model_type import sheet_name_key
 
 # Относительный допуск 0,01 % и пол абсолютной единицы 1e-6.
 # Ряд из одних нулей сюда не попадает: его снимает отдельное правило.
+# Множитель ссылки — только 1, тысяча или миллион.
 _RELATIVE = Decimal("0.0001")
 _ABSOLUTE = Decimal("0.000001")
-_SCALE_MIN = -6
-_SCALE_MAX = 6
+_UNIT_SCALE = frozenset({Decimal(1), Decimal(1000), Decimal(1_000_000)})
+_UNIT_FACTORS = (Decimal(1000), Decimal(1_000_000))
 _NUMBER = r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?"
 _SHEET = r"(?:'(?:[^']|'')+'|[^\s'!][^'!]*)"
 _A1 = re.compile(
@@ -49,8 +50,8 @@ def formula_reference(
     `formula` — текст формулы A1 или R1C1. `default_sheet` — лист самой
     строки, если в формуле лист не назван. `origin_row` — номер строки
     формулы; он нужен для относительной ссылки R1C1. Допускается умножение
-    или деление на константу масштаба, степень десяти от 10^-6 до 10^6,
-    кроме единицы. Сумма, функция и ссылка на две ячейки дают `None`.
+    или деление только на 1, 1000 или 1 000 000. Множитель 1,1 или 10 даёт
+    `None`. Сумма, функция и ссылка на две ячейки тоже дают `None`.
     """
 
     text = str(formula or "").strip()
@@ -126,8 +127,8 @@ def values_match(source: dict, copy: dict) -> bool:
     источника: более длинный ряд не считается копией. Хотя бы одно общее
     значение должно быть ненулевым. Числа совпадают, если разница не больше
     0,01 % большего модуля и не меньше абсолютного пола 1e-6. Если прямой ряд
-    не совпал, проверяется один множитель: степень десяти от 10^-6 до 10^6,
-    кроме единицы. Нуль обязан остаться нулём.
+    не совпал, допускается один множитель 1000 или 1 000 000 в любую сторону.
+    Нуль обязан остаться нулём.
     """
 
     overlap = set(source) & set(copy)
@@ -138,11 +139,8 @@ def values_match(source: dict, copy: dict) -> bool:
         return False
     if all(_close(left, right) for left, right in pairs):
         return True
-    for power in range(_SCALE_MIN, _SCALE_MAX + 1):
-        if power == 0:
-            continue
-        factor = Decimal(10) ** power
-        if all(_scaled(left, right, factor) for left, right in pairs):
+    for factor in _UNIT_FACTORS:
+        if all(_unit_scaled(left, right, factor) for left, right in pairs):
             return True
     return False
 
@@ -216,18 +214,13 @@ def _scale_ok(op: str | None, number: str | None) -> bool:
         value = Decimal(number)
     except ArithmeticError:
         return False
-    if value <= 0:
-        return False
-    power = value.adjusted()
-    if power == 0 or not _SCALE_MIN <= power <= _SCALE_MAX:
-        return False
-    return value == Decimal(10) ** power
+    return value in _UNIT_SCALE
 
 
-def _scaled(source: Decimal, copied: Decimal, factor: Decimal) -> bool:
+def _unit_scaled(source: Decimal, copied: Decimal, factor: Decimal) -> bool:
     if source == 0 or copied == 0:
         return source == 0 and copied == 0
-    return _close(source, copied / factor)
+    return _close(source * factor, copied) or _close(source, copied * factor)
 
 
 def _close(left: Decimal, right: Decimal) -> bool:

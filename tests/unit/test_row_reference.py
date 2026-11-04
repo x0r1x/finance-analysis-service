@@ -46,6 +46,24 @@ def test_scale_factor_keeps_the_reference():
     assert formula_reference("=C10+C11", default_sheet="Model") is None
 
 
+def test_scale_other_than_one_or_a_unit_is_not_a_reference():
+    assert formula_reference("=C10*1", default_sheet="Model") == ("Model", 10)
+    assert formula_reference("=C10*1000", default_sheet="Model") == ("Model", 10)
+    assert formula_reference("=C10/1000000", default_sheet="Model") == ("Model", 10)
+    assert formula_reference("=C10*1.1", default_sheet="Model") is None
+    assert formula_reference("=Other!C10*1.1", default_sheet="Model") is None
+    assert formula_reference("=C10*10", default_sheet="Model") is None
+    assert not values_match({"a": Decimal(10)}, {"a": Decimal("1.1")})
+    assert not values_match({"a": Decimal(10)}, {"a": Decimal(1)})
+    assert values_match({"a": Decimal(1_000_000)}, {"a": Decimal(1)})
+    rows = [
+        _row("src", "Interest", sheet="Model", row_num=10),
+        _row("uplift", "Interest", sheet="Notes", row_num=4, formula="=Model!C10*1.1"),
+    ]
+    got = _assigned(rows)
+    assert "role" not in got["uplift"].evidence
+
+
 def test_cross_sheet_link_and_r1c1_point_at_the_source_row():
     parsed = formula_reference("='Денежные потоки'!C38", default_sheet="Outputs")
     assert parsed == ("Денежные потоки", 38)
