@@ -455,6 +455,7 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
       derived/{derive_key}/a/{attempt}/coverage.parquet   # отчёт покрытия, одна строка на (статус, важность) (§5.10.3)
       derived/{derive_key}/a/{attempt}/questions.parquet  # пакет вопросов книги (§5.10.5)
       # derive_key = sha256(canonical{state_seq, glossary_version, taxonomy_version, calibrator_version, embed_model, rerank_model, clm_model, profile_version, fas_derive_version, model_types_version, model_type_seq, sheet_roles_version})[:16]
+      # fas_derive_version — sha256 объявленных файлов свёртки, не ручной счётчик (domain/derive_fingerprint.py).
       results/{analysis_id}/result.json | run.parquet | findings.parquet | ratios.parquet | report.md   # result.json пишется последним (put_if_absent)
     _state/
       log/{seq:020d}.json                     # журнал книги: решения и системные записи (put_if_absent; номер = порядок, с 0.21)
@@ -482,7 +483,7 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
 ```
 
 - **`build_key`** = `sha256(job_id › summary_etag › fas_projection_version)[:16]`. Пересборка builder на месте даёт новый `summary_etag` → новый `build_key` → новая папка; старая остаётся навсегда как история (§4.10).
-- **`derive_key`** (с 0.21) — хеш всех входов производного состояния (формула в схеме выше). Любой вход, от которого зависят inferred-привязки, семантика и покрытие, входит в ключ. Поэтому один и тот же путь никогда не получает другого содержимого, а ленивое построение для прошлой сборки, canary-книги или нового профиля пишет в новую папку. `fas_derive_version` сейчас `2`. `sheet_roles_version` — sha256 ролей листа [:16]: формы из групп `sheets_any` в `configs/model_types/corporate.yaml` и списки `configs/sheet_roles.yaml`.
+- **`derive_key`** (с 0.21) — хеш всех входов производного состояния (формула в схеме выше). Любой вход, от которого зависят inferred-привязки, семантика и покрытие, входит в ключ. Поэтому один и тот же путь никогда не получает другого содержимого, а ленивое построение для прошлой сборки, canary-книги или нового профиля пишет в новую папку. `fas_derive_version` — sha256 файлов из `PACKAGE_SOURCES` и `CONFIG_SOURCES`, а не ручной счётчик: правка этих файлов сама меняет ключ. Код читается из установленного пакета, конфиги — из каталога с таксономией, поэтому подпись пути в рабочей копии и в образе одна. Версия глоссария остаётся отдельным входом, потому что релиз не входит в этот список. `sheet_roles_version` тоже остаётся: это sha256 уже разобранных ролей листа [:16], а не байтов файла. Формы берутся из групп `sheets_any` в `configs/model_types/corporate.yaml`, списки — из `configs/sheet_roles.yaml`.
 - **Изменяемое** состояние (подтверждения) хранится по `job_id`, а не по `build_key`, и ссылается на строки через `binding_key`. Поэтому оно переживает дрейф `row_key`.
 - **Видимость.** Читатели находят сборку только через `_head.json`, а он меняется последним и через CAS. Листинг для обнаружения не используется. Так решается вопрос согласованности листинга и полузаписанных папок.
 

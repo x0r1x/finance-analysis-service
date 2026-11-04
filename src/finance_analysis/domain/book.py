@@ -8,11 +8,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from finance_analysis.domain.derive_fingerprint import derive_fingerprint
+
 FAS_VERSION = "0.23.0"
 FAS_SCHEMA_VERSION = "1.0"
 FAS_PROJECTION_VERSION = "2"
-# 5: способ показа периода и покрытие по месяцам одного зерна меняют выбор основной строки.
-FAS_DERIVE_VERSION = "5"
 SEP = "›"
 
 _WS = re.compile(r"\s+")
@@ -59,11 +59,18 @@ def derive_key_for(
     rerank_model: str,
     clm_model: str,
     profile_version: str,
-    fas_derive_version: str = FAS_DERIVE_VERSION,
+    fas_derive_version: str | None = None,
     model_types_version: str = "none",
     model_type_seq: int = 0,
     sheet_roles_version: str = "none",
 ) -> str:
+    """Возвращает ключ производного состояния.
+
+    `fas_derive_version` — отпечаток файлов свёртки. Если аргумент не передан,
+    берётся отпечаток текущего репозитория. Остальные аргументы — прежние
+    входы ключа, включая версию глоссария и `sheet_roles_version`.
+    """
+
     payload = {
         "state_seq": state_seq,
         "glossary_version": glossary_version,
@@ -73,7 +80,7 @@ def derive_key_for(
         "rerank_model": rerank_model,
         "clm_model": clm_model,
         "profile_version": profile_version,
-        "fas_derive_version": fas_derive_version,
+        "fas_derive_version": derive_fingerprint() if fas_derive_version is None else fas_derive_version,
         "model_types_version": model_types_version,
         "model_type_seq": model_type_seq,
         "sheet_roles_version": sheet_roles_version,
