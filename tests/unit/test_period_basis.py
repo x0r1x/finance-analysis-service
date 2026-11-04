@@ -635,6 +635,66 @@ def test_a_merged_block_title_reaches_every_row_until_the_next_title():
     book.close()
 
 
+def test_quarter_index_prefix_is_ytd_and_a_sum_that_does_not_restart_is_not():
+    periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1", "2025Q2"]
+    calendar = _quarter_calendar(periods)
+    cells = {period: f"CF!C{index}" for index, period in enumerate(periods, start=1)}
+    source = [_formula_link(cell, "flow", period, None, None) for period, cell in cells.items()]
+    series = {("ax", period): 1 for period in periods}
+    growing = _prefix_links(periods, cells, choice=None)
+    assert classify_period_basis(_row("cum", "Проценты"), calendar=calendar, links=source + growing, series=series) == (
+        "ytd",
+        "formula",
+    )
+    chosen = _prefix_links(periods, cells, choice="IF")
+    assert classify_period_basis(_row("cum", "Проценты"), calendar=calendar, links=source + chosen, series=series) == (
+        "ytd",
+        "formula",
+    )
+    picked = _prefix_links(periods, cells, choice="CHOOSE")
+    assert classify_period_basis(_row("cum", "Проценты"), calendar=calendar, links=source + picked, series=series) == (
+        "ytd",
+        "formula",
+    )
+    carried = []
+    for index, period in enumerate(periods):
+        for offset in range(index + 1):
+            carried.append(_formula_link(f"PL!Y{index}", "cum", period, "=SUM(start)", cells[periods[offset]]))
+    assert classify_period_basis(_row("cum", "Проценты"), calendar=calendar, links=source + carried, series=series) == (
+        "period",
+        "default",
+    )
+
+
+def _prefix_links(periods: list[str], cells: dict[str, str], *, choice: str | None) -> list[dict]:
+    """Первые k периодов года одной строки. Следующий год начинается заново."""
+
+    links = []
+    by_year: dict[str, list[str]] = {}
+    for period in periods:
+        by_year.setdefault(period[:4], []).append(period)
+    index = 0
+    for year_periods in by_year.values():
+        for quarter, period in enumerate(year_periods, start=1):
+            prefix = [cells[item] for item in year_periods[:quarter]]
+            if choice == "IF":
+                added = "+".join(prefix)
+                text = f"=IF(Q!H{index + 1}={quarter},{added},0)"
+            elif choice == "CHOOSE":
+                branches = []
+                for size in range(1, len(year_periods) + 1):
+                    branches.append("+".join(cells[item] for item in year_periods[:size]))
+                text = f"=CHOOSE(Q!H{index + 1},{','.join(branches)})"
+            elif len(prefix) == 1:
+                text = f"={prefix[0]}"
+            else:
+                text = f"=SUM({prefix[0]}:{prefix[-1]})"
+            for ref in prefix:
+                links.append(_formula_link(f"PL!Y{index}", "cum", period, text, ref))
+            index += 1
+    return links
+
+
 def _rows_of(sheet) -> list[dict]:
     """Строки листа: заголовок в A/B или в объединённой ячейке, числа правее."""
 

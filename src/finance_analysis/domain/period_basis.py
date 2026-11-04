@@ -358,9 +358,11 @@ def _ytd_formula(
     """Нарастающий итог по формуле этой строки или одной строки-источника.
 
     Либо каждый период после первого в году прибавляет предыдущую ячейку, либо
-    формула складывает периоды с начала этого года и в следующем году начинается
-    заново. Одной такой ячейки мало. Копирование предыдущей ячейки без сложения —
-    перенос остатка или штопор, а не нарастающий итог.
+    колонка квартала k складывает первые k периодов одной строки-источника и
+    в следующем году начинается заново. Номер квартала может стоять в заголовке
+    колонки: ветка IF или CHOOSE, либо растущий диапазон SUM. Одной такой ячейки
+    мало. Копирование предыдущей ячейки без сложения — перенос остатка или
+    штопор, а не нарастающий итог.
     """
 
     if not links or not calendar:
@@ -439,7 +441,7 @@ def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]
                     return False
                 prefix = year_ids[: year_ids.index(period_id) + 1]
                 formulas = by_period.get(period_id) or []
-                matched = any(_matches_window(formula, located, prefix) for formula in formulas)
+                matched = any(_covers_prefix(formula, located, prefix) for formula in formulas)
                 if len(prefix) < 2:
                     if formulas and not matched:
                         return False
@@ -452,6 +454,178 @@ def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]
             elif len(ids) >= 2:
                 return False
     return qualified
+
+
+def _covers_prefix(formula: dict, located: dict, prefix: list[str]) -> bool:
+    """Колонка k складывает первые k периодов одной строки-источника.
+
+    IF и CHOOSE смотрят ветку номера квартала, а не все ветки сразу. Ссылка на
+    номер квартала в этой колонке суммой не считается. Голая ссылка первого
+    квартала — сумма из одного периода.
+    """
+
+    text = str(formula.get("formula") or "")
+    if _is_choice(text):
+        branch = _branch_for_quarter(text, len(prefix))
+        if branch is None:
+            return False
+        refs = _branch_cells(branch, str(formula.get("cell") or ""))
+        if not refs:
+            return False
+        return _periods_are_prefix(refs, located, prefix)
+    if len(prefix) > 1 and not _sums_formula(formula):
+        return False
+    return _periods_are_prefix(list(formula.get("refs") or []), located, prefix)
+
+
+def _periods_are_prefix(refs: list[str], located: dict, prefix: list[str]) -> bool:
+    by_row: dict[str, list[str]] = {}
+    current = prefix[-1]
+    for ref in refs:
+        target = located.get(ref)
+        if target is None:
+            continue
+        row_key, period_id = target
+        by_row.setdefault(str(row_key), []).append(str(period_id))
+    wanted = sorted(prefix)
+    matched = [row for row, periods in by_row.items() if sorted(periods) == wanted]
+    if len(matched) != 1:
+        return False
+    for row, periods in by_row.items():
+        if row in matched:
+            continue
+        if any(period != current for period in periods):
+            return False
+    return True
+
+
+def _is_choice(text: str) -> bool:
+    folded = text.casefold()
+    return "if(" in folded or "choose(" in folded
+
+
+def _branch_for_quarter(text: str, quarter: int) -> str | None:
+    """Ветка IF или CHOOSE для квартала с номером `quarter` внутри года."""
+
+    body = text.strip()
+    if body.startswith("="):
+        body = body[1:].strip()
+    choose = _call_args(body, "CHOOSE")
+    if choose is not None:
+        if quarter < 1 or len(choose) <= quarter or not _CELL_FIND.search(choose[0]):
+            return None
+        return choose[quarter]
+    return _if_branch(body, quarter)
+
+
+def _if_branch(text: str, quarter: int) -> str | None:
+    args = _call_args(text, "IF")
+    if not args or len(args) < 2:
+        return None
+    number = _compared_number(args[0])
+    if number == quarter:
+        return args[1]
+    if len(args) < 3:
+        return None
+    nested = _if_branch(args[2], quarter)
+    if nested is not None:
+        return nested
+    if number is not None and quarter == number + 1 and _call_args(args[2], "IF") is None:
+        return args[2]
+    return None
+
+
+def _compared_number(condition: str) -> int | None:
+    match = re.search(r"=\s*(\d+)", condition)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _call_args(text: str, name: str) -> list[str] | None:
+    match = re.match(rf"(?i){name}\s*\(", text.strip())
+    if match is None:
+        return None
+    depth = 1
+    args: list[str] = []
+    buf: list[str] = []
+    for char in text[match.end() :]:
+        if char == "(":
+            depth += 1
+            buf.append(char)
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                args.append("".join(buf).strip())
+                return args
+            buf.append(char)
+        elif char in {",", ";"} and depth == 1:
+            args.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(char)
+    return None
+
+
+_CELL_FIND = re.compile(
+    r"(?:(?P<sheet>'(?:[^']|'')+'|[^'\s!=+()*/,;]+)!)?"
+    r"\$?(?P<col>[A-Za-z]{1,3})\$?(?P<row>\d+)"
+)
+_RANGE_FIND = re.compile(
+    r"(?:(?P<sheet>'(?:[^']|'')+'|[^'\s!=+()*/,;]+)!)?"
+    r"\$?(?P<c1>[A-Za-z]{1,3})\$?(?P<r1>\d+)\s*:\s*"
+    r"\$?(?P<c2>[A-Za-z]{1,3})\$?(?P<r2>\d+)"
+)
+
+
+def _branch_cells(branch: str, origin: str) -> list[str]:
+    """Адреса ячеек ветки. Диапазон раскрывается, лист берётся из формулы."""
+
+    default_sheet = origin.split("!", 1)[0] if "!" in origin else ""
+    found: list[str] = []
+    covered: list[tuple[int, int]] = []
+    for match in _RANGE_FIND.finditer(branch):
+        covered.append((match.start(), match.end()))
+        found.extend(_range_cells(match, default_sheet))
+    for match in _CELL_FIND.finditer(branch):
+        if any(start <= match.start() < end for start, end in covered):
+            continue
+        found.append(_cell_id(match.group("sheet"), match.group("col"), match.group("row"), default_sheet))
+    return found
+
+
+def _range_cells(match: re.Match[str], default_sheet: str) -> list[str]:
+    sheet = _sheet_of(match.group("sheet"), default_sheet)
+    c1, c2 = sorted((_col_index(match.group("c1")), _col_index(match.group("c2"))))
+    r1, r2 = sorted((int(match.group("r1")), int(match.group("r2"))))
+    if c2 - c1 > 64 or r2 - r1 > 64:
+        return []
+    return [f"{sheet}!{_col_letters(col)}{row}" for row in range(r1, r2 + 1) for col in range(c1, c2 + 1)]
+
+
+def _cell_id(sheet: str | None, col: str, row: str, default_sheet: str) -> str:
+    return f"{_sheet_of(sheet, default_sheet)}!{col.lstrip('$').upper()}{row.lstrip('$')}"
+
+
+def _sheet_of(sheet: str | None, default_sheet: str) -> str:
+    if not sheet:
+        return default_sheet
+    return sheet[1:-1].replace("''", "'") if sheet.startswith("'") else sheet
+
+
+def _col_index(letters: str) -> int:
+    number = 0
+    for char in letters.upper():
+        number = number * 26 + ord(char) - 64
+    return number
+
+
+def _col_letters(number: int) -> str:
+    letters = ""
+    while number:
+        number, rest = divmod(number - 1, 26)
+        letters = chr(65 + rest) + letters
+    return letters
 
 
 def _matches_window(formula: dict, located: dict, expected: list[str]) -> bool:
@@ -556,6 +730,7 @@ def _formulas(links: list[dict], row_key: str) -> dict[str, dict]:
                 "formula": link.get("formula"),
                 "formula_class": link.get("formula_class"),
                 "period_id": link.get("period_id"),
+                "cell": cell,
                 "refs": set(),
             },
         )
