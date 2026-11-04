@@ -19,6 +19,7 @@ from finance_analysis.domain.metrics import (
     _groups,
     _payment,
     _primaries,
+    _scale_policy,
     _sums,
     absent_concepts,
     aligned_keys,
@@ -175,8 +176,9 @@ def adscr(
         return {**dscr, "metric": "adscr"}
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
-    cfads = _sums(facts, primaries["cfads"], aligned, periods)
-    debt = _sums(facts, primaries["debt_service"], aligned, periods)
+    sheet = _scale_policy(facts, [primaries["cfads"], primaries["debt_service"]]) == "sheet"
+    cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
+    debt = _sums(facts, primaries["debt_service"], aligned, periods, sheet=sheet)
     rows: list[dict] = []
     warnings = list(dscr["warnings"])
     for axis in sorted(_axes_of(facts, primaries["debt_service"])):
@@ -273,8 +275,9 @@ def dscr_reductions(
         return {**dscr, "metric": metric}
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
-    cfads = _sums(facts, primaries["cfads"], aligned, periods)
-    debt = _sums(facts, primaries["debt_service"], aligned, periods)
+    sheet = _scale_policy(facts, [primaries["cfads"], primaries["debt_service"]]) == "sheet"
+    cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
+    debt = _sums(facts, primaries["debt_service"], aligned, periods, sheet=sheet)
     by_axis: dict[str, list[dict]] = {}
     for row in dscr["rows"]:
         if row["status"] == "computed":
@@ -289,7 +292,12 @@ def dscr_reductions(
         with localcontext() as ctx:
             _ctx(ctx)
             mean = quantize_ratio(sum((row["value"] for row in computed), Decimal(0)) / len(computed))
-            keys = [aligned.get((axis, pid), (axis, pid)) for pid in tested]
+            covered: list[str] = []
+            for row in computed:
+                for period_id in row.get("window") or [row["period_id"]]:
+                    if period_id not in covered:
+                        covered.append(period_id)
+            keys = [aligned.get((axis, pid), (axis, pid)) for pid in covered]
             earned_keys = keys_for_basis(keys, primaries["cfads"])
             paid_keys = keys_for_basis(keys, primaries["debt_service"])
             paid = sum((_payment(debt[key], sign_convention) for key in paid_keys), Decimal(0))
@@ -453,7 +461,7 @@ _CITED = {
     "dscr_avg": ("cfads", "debt_service"),
     "llcr": ("cfads",),
     "plcr": ("cfads",),
-    "icr": ("interest",),
+    "icr": ("ebitda", "ebit", "interest"),
 }
 
 
@@ -465,6 +473,11 @@ def ratio_cells(row: dict, facts: list[dict], bindings: list[dict], periods: lis
 
     if row.get("status") != "computed" or row.get("axis_id") is None:
         return []
+    named = row.get("components") or {}
+    cited_cells = [cell for group in named.values() if isinstance(group, list) for cell in group]
+    if cited_cells:
+        wanted_cells = set(cited_cells)
+        return [fact for fact in facts if fact.get("cell_id") in wanted_cells]
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
     axis = row["axis_id"]

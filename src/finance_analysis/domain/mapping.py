@@ -16,6 +16,7 @@ from finance_analysis.domain.components import component_records, scenario_of
 from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import (
+    apply_block_titles,
     classify_period_basis,
     covered_months,
     grain_span,
@@ -66,6 +67,7 @@ def assign_rows(
     calendar: dict | None = None,
     facts: list[dict] | None = None,
 ) -> dict[str, Assignment]:
+    apply_block_titles(rows)
     human, ignored, absent = _decisions(events)
     draft: list[tuple[dict, Assignment]] = []
     filtered: dict[str, list[dict]] = {}
@@ -482,11 +484,17 @@ def _without_parts(draft, indexes: list[int]) -> list[int]:
     total = _has_total(draft, concept)
     dropped_component = False
     dropped_scenario = False
+    # Единственная квартальная часть остаётся в пуле, если итоги — только ytd.
+    # Иначе каскад не видит period и оставляет нарастающий итог.
+    rescue = _period_component(draft, indexes)
     kept: list[int] = []
     for index in indexes:
         row, item = draft[index]
         part = item.evidence.get("role") == "component"
         alt = item.evidence.get("scenario") == "alt"
+        if index in rescue:
+            kept.append(index)
+            continue
         if not part and not alt:
             kept.append(index)
             continue
@@ -506,6 +514,32 @@ def _without_parts(draft, indexes: list[int]) -> list[int]:
             reason = "component" if dropped_component else "scenario"
             draft[kept[0]] = (row, replace(item, evidence={**item.evidence, "selection": reason}))
     return kept
+
+
+def _period_component(draft, indexes: list[int]) -> set[int]:
+    """Одна часть со способом `period`, если итог рядом только нарастающий.
+
+    `draft` — пары строки и привязки. `indexes` — кандидаты одного понятия.
+    Часть возвращается в пул, только когда она одна несёт способ `period`,
+    а остальные итоги — `ytd`. Подтверждённый итог со способом `period` часть
+    не возвращает. Пустой ответ оставляет прежнее отсечение частей.
+    """
+
+    def basis(index: int) -> str:
+        return str(draft[index][0].get("period_basis") or "")
+
+    def role(index: int) -> str:
+        return str(draft[index][1].evidence.get("role") or "")
+
+    parts = [index for index in indexes if role(index) == "component" and basis(index) == "period"]
+    period_total = [
+        index
+        for index in indexes
+        if role(index) not in {"component", "reference"} and basis(index) == "period"
+    ]
+    if len(parts) == 1 and not period_total:
+        return {parts[0]}
+    return set()
 
 
 def _has_total(draft, concept: str | None) -> bool:

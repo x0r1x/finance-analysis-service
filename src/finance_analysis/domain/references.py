@@ -158,7 +158,7 @@ def summed_row_refs(formula: str | None, *, default_sheet: str) -> tuple[tuple[s
     лист `Notes`. Повтор одной строки в ответе не дублируется.
     """
 
-    text = str(formula or "").strip()
+    text = _strip_lookups(str(formula or "").strip())
     if not text or not (_SUM.search(text) or "+" in text):
         return None
     found: list[tuple[str, int]] = []
@@ -182,7 +182,38 @@ def summed_row_refs(formula: str | None, *, default_sheet: str) -> tuple[tuple[s
         if any(start <= match.start() < end for start, end in spans):
             continue
         add(_sheet_name(match.group("sheet"), default_sheet), int(match.group("row")))
+    # Одна строка на нескольких периодах — свёртка во времени, а не сумма частей.
+    if len(found) < 2:
+        return None
     return tuple(found)
+
+
+_LOOKUP = re.compile(r"(?i)\b(?:LEFT|RIGHT|MID|LEN|ЛЕВСИМВ|ПРАВСИМВ|ДЛСТР)\s*\(")
+
+
+def _strip_lookups(text: str) -> str:
+    """Убирает LEFT/LEN: ячейка номера квартала не является слагаемым."""
+
+    while True:
+        match = _LOOKUP.search(text)
+        if match is None:
+            return text
+        end = _close_paren(text, match.end() - 1)
+        if end is None:
+            return text[: match.start()] + text[match.end() :]
+        text = text[: match.start()] + text[end:]
+
+
+def _close_paren(text: str, open_index: int) -> int | None:
+    depth = 0
+    for index in range(open_index, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
 
 
 def values_match(source: dict, copy: dict) -> bool:

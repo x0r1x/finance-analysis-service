@@ -16,12 +16,18 @@ from finance_analysis.domain.cover_metrics import (
     grain_months,
 )
 from finance_analysis.domain.metrics import (
+    MIXED_BASIS,
+    PARTIAL_DENOMINATOR,
+    SCALE_UNCONFIRMED,
+    _assume_sheet_units,
     _axes_of,
+    _flow_basis,
     _payment,
     _primaries,
     _sums,
     aligned_keys,
     coverage_ratio,
+    unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
 from finance_analysis.domain.period_basis import basis_of
@@ -170,25 +176,59 @@ def composed_ratio(
     if missing:
         return missing
     primaries = _primaries(bindings, absent)
-    aligned = aligned_keys(periods)
-    series = {name: _sums(facts, primaries[name], aligned, periods) for name in dict.fromkeys(needed)}
-    basis = {name: basis_of(primaries[name])[0] for name in series}
-    home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
     inputs = list(dict.fromkeys(needed))
+    if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
+        return _refused(metric, periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)
+    flow = {_flow_basis(primaries[name]) for name in inputs}
+    reconciled = formula.window == "LTM" or (formula.window == "period" and _rolls(primaries, formula))
+    if len(flow) > 1 and not reconciled:
+        return _refused(metric, periods, "basis_mismatch", MIXED_BASIS, inputs)
+    warnings: list[dict] = []
+    sheet = _assume_sheet_units(facts, [primaries[name] for name in inputs], warnings)
+    aligned = aligned_keys(periods)
+    series = {
+        name: _sums(facts, primaries[name], aligned, periods, sheet=sheet) for name in dict.fromkeys(needed)
+    }
+    basis = {name: basis_of(primaries[name])[0] for name in series}
+    roll = formula.window == "period" and _rolls(primaries, formula)
+    window_name = "LTM" if roll else formula.window
+    home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
     rows = []
     for axis in sorted(_axes_of(facts, primaries[home_name])):
         ordered = _ordered(periods, axis)
+        axis_keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in ordered]
+        debt_on_axis = metric != "net_debt_ebitda" or any(key in series["net_debt"] for key in axis_keys)
         for period in ordered:
             marker = period.get("marker_class")
             if marker_class and marker and marker != marker_class:
                 continue
-            keys, window, problem = _span(formula.window, ordered, period, aligned, axis)
+            keys, window, problem = _span(window_name, ordered, period, aligned, axis)
+            if problem and not debt_on_axis:
+                rows.append(
+                    _line(metric, period, None, "input_absent", "input_absent", inputs, window, message=_NET_DEBT_ABSENT)
+                )
+                continue
             if problem:
-                rows.append(_line(metric, period, None, "not_computed", problem, inputs, window))
+                message = PARTIAL_DENOMINATOR if roll and problem == "partial_window" else None
+                rows.append(_line(metric, period, None, "not_computed", problem, inputs, window, message=message))
                 continue
             if metric == "net_debt_ebitda":
                 numerator = _ending(keys, series, "net_debt")
                 denominator = _part(keys, series, "ebitda", sign_convention, False, basis)
+                if numerator is None and not any(key in series["net_debt"] for key in keys):
+                    rows.append(
+                        _line(
+                            metric,
+                            period,
+                            None,
+                            "input_absent",
+                            "input_absent",
+                            inputs,
+                            window,
+                            message=_NET_DEBT_ABSENT,
+                        )
+                    )
+                    continue
             else:
                 numerator = _total(keys, series, formula.numerator, sign_convention, pay_plus=False, basis=basis)
                 denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True, basis=basis)
@@ -200,7 +240,35 @@ def composed_ratio(
                 rows.append(_line(metric, period, None, status, "zero_denominator", inputs, window))
                 continue
             rows.append(_line(metric, period, _ratio(numerator, denominator), "computed", None, inputs, window))
-    return {"metric": metric, "rows": rows, "needs_input": [], "warnings": [], "status": "succeeded"}
+    status = "succeeded"
+    message = None
+    absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
+    if absent and not any(row["status"] == "computed" for row in rows):
+        status = "input_absent"
+        message = _NET_DEBT_ABSENT
+    elif roll and rows and not any(row["status"] == "computed" for row in rows):
+        if any(row.get("reason") == "partial_window" for row in rows):
+            status = "partial_window"
+            message = PARTIAL_DENOMINATOR
+    result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
+    if message:
+        result["message"] = message
+    return result
+
+
+def _rolls(primaries: dict, formula: Composed) -> bool:
+    """Числитель `ltm` и знаменатель за период: знаменатель собирается окном LTM.
+
+    Привязка строк не меняется. Окно уже заданное как LTM здесь не подменяется.
+    """
+
+    numerator = [*formula.numerator.plus, *formula.numerator.minus]
+    denominator = [*formula.denominator.plus, *formula.denominator.minus]
+    if not numerator or not denominator:
+        return False
+    if any(_flow_basis(primaries[name]) != "ltm" for name in numerator):
+        return False
+    return all(_flow_basis(primaries[name]) == "period" for name in denominator)
 
 
 def select_ratio(
@@ -303,8 +371,34 @@ def _part(keys, series: dict, name: str, convention: str, pay: bool, basis: dict
     return total
 
 
-def _line(metric, period, value, status, reason, inputs, window) -> dict:
-    return {
+_NET_DEBT_ABSENT = (
+    "Чистый долг не содержит значений на оси, по которой считается отношение к EBITDA. "
+    "Коэффициент не рассчитан."
+)
+
+
+def _refused(metric: str, periods: list[dict], status: str, message: str, inputs: list[str]) -> dict:
+    """Явный статус вместо числа, когда основания или масштаб нельзя свести."""
+
+    period = periods[0] if periods else None
+    if period is None:
+        row = {
+            "metric": metric,
+            "axis_id": None,
+            "period_id": None,
+            "value": None,
+            "status": status,
+            "reason": status,
+            "message": message,
+            "inputs": inputs,
+        }
+    else:
+        row = _line(metric, period, None, status, status, inputs, None, message=message)
+    return {"metric": metric, "rows": [row], "needs_input": [], "warnings": [], "status": status, "message": message}
+
+
+def _line(metric, period, value, status, reason, inputs, window, message: str | None = None) -> dict:
+    row = {
         "metric": metric,
         "axis_id": period["axis_id"],
         "period_id": period["period_id"],
@@ -316,6 +410,9 @@ def _line(metric, period, value, status, reason, inputs, window) -> dict:
         "inputs": inputs,
         "window": window,
     }
+    if message:
+        row["message"] = message
+    return row
 
 
 def _mismatch(rows, facts, bindings, periods, absent) -> list[dict]:

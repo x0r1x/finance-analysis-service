@@ -277,6 +277,7 @@ def _citation(data: AuditInput, location: Location) -> dict | None:
         "value": _decimal_text(fact.get("value_dec")),
         "value_status": fact.get("value_status"),
         "normalized_value": _decimal_text(fact.get("normalized_value")),
+        "scale_factor": fact.get("scale_factor"),
         "binding_key": row.get("binding_key"),
     }
 
@@ -296,6 +297,7 @@ def _fact_citation(fact: dict, row: dict) -> dict:
         "value": _decimal_text(fact.get("value_dec")),
         "value_status": fact.get("value_status"),
         "normalized_value": _decimal_text(fact.get("normalized_value")),
+        "scale_factor": fact.get("scale_factor"),
         "binding_key": row.get("binding_key"),
     }
 
@@ -614,6 +616,7 @@ class Analyses:
         bindings = await svc._dataset_rows(job_id, pinned, "bindings")
         facts = await svc._dataset_rows(job_id, pinned, "fact_observation")
         periods = await svc._dataset_rows(job_id, pinned, "dim_period")
+        facts = _with_row_scale(facts, await _dim_rows(svc, job_id, pinned))
         try:
             semantics = await svc._dataset_rows(job_id, pinned, "period_semantics")
         except (NotFound, StopIteration):
@@ -1434,6 +1437,33 @@ def _origins(data: AuditInput, spec: dict) -> list[str]:
     if not cells:
         raise NotFound("строка не найдена", extra={"row_key": row_key})
     return cells[:TRACE_CELLS]
+
+
+async def _dim_rows(svc, job_id: str, pinned) -> list[dict]:
+    try:
+        return await svc._dataset_rows(job_id, pinned, "dim_row")
+    except (NotFound, StopIteration):
+        return []
+
+
+def _with_row_scale(facts: list[dict], rows: list[dict]) -> list[dict]:
+    """Масштаб строки нужен коэффициенту: в факте его нет, он лежит в `dim_row`."""
+
+    scale_of = {
+        str(row.get("row_key")): row.get("scale_factor")
+        for row in rows
+        if row.get("row_key") and row.get("scale_factor") not in (None, "")
+    }
+    if not scale_of:
+        return facts
+    stamped = []
+    for fact in facts:
+        if fact.get("scale_factor") not in (None, ""):
+            stamped.append(fact)
+            continue
+        scale = scale_of.get(str(fact.get("row_key")))
+        stamped.append(fact if scale is None else {**fact, "scale_factor": scale})
+    return stamped
 
 
 def _ratio_rows(got: dict) -> tuple[list[dict], list[dict]]:
