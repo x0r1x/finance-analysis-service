@@ -1,0 +1,9 @@
+concept: terminal_value
+pref:
+  en: "Terminal value of the forecast"
+  ru: "Терминальная стоимость прогноза"
+alt:
+  en: ["Terminal value"]
+definition:
+  en: "Book row used to classify the model. This slice does not calculate it."
+  ru: "Строка книги для классификации модели. В этом срезе не считается."

@@ -71,6 +71,55 @@ cases:
     expect:
       kind: question
       reason: unknown
+  - id: halyard
+    source: workbook
+    book: halyard/project_halyard.recalc_libreoffice.xlsx
+    expect:
+      kind: type
+      primary: lbo_ma
+      labels: [lbo_ma]
+  - id: meridian
+    source: workbook
+    book: meridian/meridian_dcf.recalc_libreoffice.xlsx
+    expect:
+      kind: type
+      primary: dcf_valuation
+      labels: [dcf_valuation]
+  - id: debtlens
+    source: workbook
+    book: debtlens/DebtLens_Underwriting_Model.xlsx
+    expect:
+      kind: type
+      primary: real_estate_income
+      labels: [real_estate_income]
+  - id: solar_dogu
+    source: workbook
+    book: solar/Solar Financial Model.xlsx
+    expect:
+      kind: type
+      primary: renewables_dpm
+      labels: [renewables_dpm]
+  - id: lease_portfolio
+    source: workbook
+    book: leasing/lease_portfolio.recalc_libreoffice.xlsx
+    expect:
+      kind: type
+      primary: bank_leasing
+      labels: [bank_leasing]
+  - id: purchase_price_allocation
+    source: bound
+    bound: [purchase_price_allocation]
+    sheets: [Deal]
+    expect:
+      kind: question
+      reason: unknown
+  - id: sources_without_exit
+    source: bound
+    bound: [sources_and_uses, moic]
+    sheets: [Sources & Uses]
+    expect:
+      kind: question
+      reason: unknown
   - id: development_escrow
     source: workbook
     book: escrow/development_escrow_214.recalc_libreoffice.xlsx

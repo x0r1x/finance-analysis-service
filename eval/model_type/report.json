@@ -24,15 +24,20 @@
       "question_hit": null,
       "reason": null,
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 0.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
-        "project_finance": 1.0
+        "project_finance": 1.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
       "top1": "project_finance",
       "top1_score": 1.0,
-      "top2": "corporate",
+      "top2": "bank_leasing",
       "top2_score": 0.0
     },
     {
@@ -58,15 +63,20 @@
       "question_hit": null,
       "reason": null,
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 0.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
-        "project_finance": 1.0
+        "project_finance": 1.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
       "top1": "project_finance",
       "top1_score": 1.0,
-      "top2": "corporate",
+      "top2": "bank_leasing",
       "top2_score": 0.0
     },
     {
@@ -80,7 +90,7 @@
         "reason": null
       },
       "false_positives": [],
-      "gap": 1.0,
+      "gap": 0.5,
       "id": "toll_road",
       "labels": [
         "project_finance"
@@ -92,16 +102,21 @@
       "question_hit": null,
       "reason": null,
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 0.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.5,
         "ppp_concession": 0.0,
-        "project_finance": 1.0
+        "project_finance": 1.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
       "top1": "project_finance",
       "top1_score": 1.0,
-      "top2": "corporate",
-      "top2_score": 0.0
+      "top2": "lbo_ma",
+      "top2_score": 0.5
     },
     {
       "confident": true,
@@ -114,7 +129,7 @@
         "reason": null
       },
       "false_positives": [],
-      "gap": 1.0,
+      "gap": 0.5,
       "id": "port",
       "labels": [
         "investment_project"
@@ -126,16 +141,21 @@
       "question_hit": null,
       "reason": null,
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 0.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 1.0,
+        "lbo_ma": 0.5,
         "ppp_concession": 0.0,
-        "project_finance": 0.0
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
       "top1": "investment_project",
       "top1_score": 1.0,
-      "top2": "corporate",
-      "top2_score": 0.0
+      "top2": "lbo_ma",
+      "top2_score": 0.5
     },
     {
       "confident": true,
@@ -162,11 +182,16 @@
       "question_hit": null,
       "reason": null,
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 0.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.0,
         "ppp_concession": 1.0,
-        "project_finance": 1.0
+        "project_finance": 1.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
       "top1": "ppp_concession",
       "top1_score": 1.0,
@@ -196,15 +221,20 @@
       "question_hit": null,
       "reason": null,
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 1.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
-        "project_finance": 0.0
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
       "top1": "corporate",
       "top1_score": 1.0,
-      "top2": "development_escrow",
+      "top2": "bank_leasing",
       "top2_score": 0.0
     },
     {
@@ -226,11 +256,16 @@
       "question_hit": true,
       "reason": "ambiguous",
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 1.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
-        "project_finance": 1.0
+        "project_finance": 1.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
       "top1": "corporate",
       "top1_score": 1.0,
@@ -251,20 +286,255 @@
       "labels": [],
       "meets_accept": false,
       "meets_gap": false,
-      "primary": "corporate",
+      "primary": "bank_leasing",
       "primary_hit": null,
       "question_hit": true,
       "reason": "unknown",
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 0.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
-        "project_finance": 0.0
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
-      "top1": "corporate",
+      "top1": "bank_leasing",
       "top1_score": 0.0,
-      "top2": "development_escrow",
+      "top2": "corporate",
+      "top2_score": 0.0
+    },
+    {
+      "confident": false,
+      "expected": {
+        "kind": "question",
+        "labels": [],
+        "primary": null,
+        "reason": "unknown"
+      },
+      "false_positives": [],
+      "gap": 0.5,
+      "id": "partial_npv",
+      "labels": [],
+      "meets_accept": false,
+      "meets_gap": true,
+      "primary": "lbo_ma",
+      "primary_hit": null,
+      "question_hit": true,
+      "reason": "unknown",
+      "scores": {
+        "bank_leasing": 0.0,
+        "corporate": 0.0,
+        "dcf_valuation": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "lbo_ma": 0.5,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
+      },
+      "top1": "lbo_ma",
+      "top1_score": 0.5,
+      "top2": "bank_leasing",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "lbo_ma"
+        ],
+        "primary": "lbo_ma",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "halyard",
+      "labels": [
+        "lbo_ma"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "lbo_ma",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "bank_leasing": 0.0,
+        "corporate": 0.0,
+        "dcf_valuation": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "lbo_ma": 1.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
+      },
+      "top1": "lbo_ma",
+      "top1_score": 1.0,
+      "top2": "bank_leasing",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "dcf_valuation"
+        ],
+        "primary": "dcf_valuation",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "meridian",
+      "labels": [
+        "dcf_valuation"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "dcf_valuation",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "bank_leasing": 0.0,
+        "corporate": 0.0,
+        "dcf_valuation": 1.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "lbo_ma": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
+      },
+      "top1": "dcf_valuation",
+      "top1_score": 1.0,
+      "top2": "bank_leasing",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "real_estate_income"
+        ],
+        "primary": "real_estate_income",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "debtlens",
+      "labels": [
+        "real_estate_income"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "real_estate_income",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "bank_leasing": 0.0,
+        "corporate": 0.0,
+        "dcf_valuation": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "lbo_ma": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0,
+        "real_estate_income": 1.0,
+        "renewables_dpm": 0.0
+      },
+      "top1": "real_estate_income",
+      "top1_score": 1.0,
+      "top2": "bank_leasing",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "renewables_dpm"
+        ],
+        "primary": "renewables_dpm",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "solar_dogu",
+      "labels": [
+        "renewables_dpm"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "renewables_dpm",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "bank_leasing": 0.0,
+        "corporate": 0.0,
+        "dcf_valuation": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "lbo_ma": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 1.0
+      },
+      "top1": "renewables_dpm",
+      "top1_score": 1.0,
+      "top2": "bank_leasing",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "bank_leasing"
+        ],
+        "primary": "bank_leasing",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "lease_portfolio",
+      "labels": [
+        "bank_leasing"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "bank_leasing",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "bank_leasing": 1.0,
+        "corporate": 0.0,
+        "dcf_valuation": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "lbo_ma": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
+      },
+      "top1": "bank_leasing",
+      "top1_score": 1.0,
+      "top2": "corporate",
       "top2_score": 0.0
     },
     {
@@ -277,24 +547,64 @@
       },
       "false_positives": [],
       "gap": 0.0,
-      "id": "partial_npv",
+      "id": "purchase_price_allocation",
       "labels": [],
       "meets_accept": false,
       "meets_gap": false,
-      "primary": "corporate",
+      "primary": "bank_leasing",
       "primary_hit": null,
       "question_hit": true,
       "reason": "unknown",
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 0.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
-        "project_finance": 0.0
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
-      "top1": "corporate",
+      "top1": "bank_leasing",
       "top1_score": 0.0,
-      "top2": "development_escrow",
+      "top2": "corporate",
+      "top2_score": 0.0
+    },
+    {
+      "confident": false,
+      "expected": {
+        "kind": "question",
+        "labels": [],
+        "primary": null,
+        "reason": "unknown"
+      },
+      "false_positives": [],
+      "gap": 0.5,
+      "id": "sources_without_exit",
+      "labels": [],
+      "meets_accept": false,
+      "meets_gap": true,
+      "primary": "lbo_ma",
+      "primary_hit": null,
+      "question_hit": true,
+      "reason": "unknown",
+      "scores": {
+        "bank_leasing": 0.0,
+        "corporate": 0.0,
+        "dcf_valuation": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "lbo_ma": 0.5,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
+      },
+      "top1": "lbo_ma",
+      "top1_score": 0.5,
+      "top2": "bank_leasing",
       "top2_score": 0.0
     },
     {
@@ -320,24 +630,37 @@
       "question_hit": null,
       "reason": null,
       "scores": {
+        "bank_leasing": 0.0,
         "corporate": 0.0,
+        "dcf_valuation": 0.0,
         "development_escrow": 1.0,
         "investment_project": 0.0,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
-        "project_finance": 0.0
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
       },
       "top1": "development_escrow",
       "top1_score": 1.0,
-      "top2": "corporate",
+      "top2": "bank_leasing",
       "top2_score": 0.0
     }
   ],
   "gap": 0.15,
   "summary": {
     "decision_accuracy": 1.0,
-    "decisions_correct": 10,
+    "decisions_correct": 17,
     "false_positives": {
+      "bank_leasing": {
+        "count": 0,
+        "rate": 0.0
+      },
       "corporate": {
+        "count": 0,
+        "rate": 0.0
+      },
+      "dcf_valuation": {
         "count": 0,
         "rate": 0.0
       },
@@ -346,6 +669,10 @@
         "rate": 0.0
       },
       "investment_project": {
+        "count": 0,
+        "rate": 0.0
+      },
+      "lbo_ma": {
         "count": 0,
         "rate": 0.0
       },
@@ -360,13 +687,21 @@
       "project_finance": {
         "count": 0,
         "rate": 0.0
+      },
+      "real_estate_income": {
+        "count": 0,
+        "rate": 0.0
+      },
+      "renewables_dpm": {
+        "count": 0,
+        "rate": 0.0
       }
     },
-    "n": 10,
+    "n": 17,
     "primary_accuracy": 1.0,
-    "primary_correct": 7,
-    "question_rate": 0.3,
-    "questions": 3,
-    "typed": 7
+    "primary_correct": 12,
+    "question_rate": 0.29411764705882354,
+    "questions": 5,
+    "typed": 12
   }
 }

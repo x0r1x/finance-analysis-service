@@ -1,0 +1,9 @@
+concept: lease_interest_income
+pref:
+  en: "Lessor interest income"
+  ru: "Процентный доход лизингодателя"
+alt:
+  en: ["Interest income"]
+definition:
+  en: "Book row used to classify the model. This slice does not calculate it."
+  ru: "Строка книги для классификации модели. В этом срезе не считается."

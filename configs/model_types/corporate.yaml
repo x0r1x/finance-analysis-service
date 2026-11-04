@@ -5,9 +5,9 @@ title:
 signals:
   - kind: sheets_any
     groups:
-      - [ОПиУ, P&L, "Income statement"]
-      - [Баланс, "Balance sheet"]
-      - [ДДС, "Cash flow"]
+      - [ОПиУ, ОФР, P&L, "Income statement", "Отчет о финансовых результатах"]
+      - [Баланс, "Balance sheet", "Бухгалтерский баланс"]
+      - [ДДС, ОДДС, "Cash flow", "Cash flow statement", "Денежные потоки", "Движение денежных средств", "Отчет о движении денежных средств"]
     weight: 1
 required_concepts: [ebitda, interest]
 metrics:

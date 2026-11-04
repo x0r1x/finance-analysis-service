@@ -112,3 +112,63 @@ concepts:
   payback:
     kind: measure
     unit: count
+  sources_and_uses:
+    kind: measure
+    unit: money
+  exit_enterprise_value:
+    kind: measure
+    unit: money
+  moic:
+    kind: ratio
+    unit: ratio
+  lbo_leverage:
+    kind: ratio
+    unit: ratio
+  wacc:
+    kind: parameter
+    unit: ratio
+  terminal_value:
+    kind: measure
+    unit: money
+  enterprise_value:
+    kind: measure
+    unit: money
+  equity_value:
+    kind: measure
+    unit: money
+  noi:
+    kind: measure
+    unit: money
+  cap_rate:
+    kind: parameter
+    unit: ratio
+  vacancy:
+    kind: parameter
+    unit: ratio
+  installed_capacity:
+    kind: measure
+    unit: count
+  energy_generation:
+    kind: measure
+    unit: count
+  capacity_factor:
+    kind: parameter
+    unit: ratio
+  degradation:
+    kind: parameter
+    unit: ratio
+  energy_tariff:
+    kind: parameter
+    unit: money
+  purchase_price_allocation:
+    kind: measure
+    unit: money
+  lease_interest_income:
+    kind: measure
+    unit: money
+  npl_share:
+    kind: ratio
+    unit: ratio
+  provision_coverage:
+    kind: ratio
+    unit: ratio
