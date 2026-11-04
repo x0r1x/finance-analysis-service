@@ -131,7 +131,8 @@ def values_match(source: dict, copy: dict) -> bool:
     не является совпадением. Периоды копии должны быть подмножеством периодов
     источника: более длинный ряд не считается копией. Хотя бы одно общее
     значение должно быть ненулевым. Числа совпадают, если разница не больше
-    0,01 % большего модуля и не меньше абсолютного пола 1e-6. Если прямой ряд
+    0,01 % большего из двух модулей и не меньше абсолютного пола 1e-6. Для
+    чисел меньше единицы пол не раздувается до 0,0001. Если прямой ряд
     не совпал, допускается один множитель 1000 или 1 000 000 в любую сторону.
     Нуль обязан остаться нулём.
     """
@@ -273,7 +274,9 @@ def _unit_scaled(source: Decimal, copied: Decimal, factor: Decimal) -> bool:
 
 def _close(left: Decimal, right: Decimal) -> bool:
     diff = abs(left - right)
-    span = max(abs(left), abs(right), Decimal(1))
+    span = max(abs(left), abs(right))
+    if span == 0:
+        return True
     return diff <= max(_ABSOLUTE, _RELATIVE * span)
 
 

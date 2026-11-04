@@ -178,6 +178,26 @@ def test_shorter_statement_is_not_hidden_by_a_longer_paste():
     assert stated["debt"].is_primary is False
 
 
+def test_small_numbers_keep_the_relative_tolerance():
+    assert not values_match({"a": Decimal("0.05")}, {"a": Decimal("0.05009")})
+    assert not values_match(
+        {"a": Decimal(100), "b": Decimal(0)},
+        {"a": Decimal(100), "b": Decimal("0.00009")},
+    )
+    assert values_match({"a": Decimal(1000)}, {"a": Decimal("1000.05")})
+    periods = {
+        "pnl": {("ax", "1"): Decimal(100), ("ax", "2"): Decimal(0)},
+        "model": {("ax", "1"): Decimal(100), ("ax", "2"): Decimal("0.00009"), ("ax", "3"): Decimal(50)},
+    }
+    rows = [
+        _row("pnl", "Interest", sheet="P&L"),
+        _row("model", "Interest", sheet="Model"),
+    ]
+    got = _assigned(rows, periods=periods)
+    assert "role" not in got["pnl"].evidence
+    assert got["pnl"].is_primary
+
+
 def test_overlap_marks_only_the_shorter_row_and_rejects_an_empty_overlap():
     history = {("ax", "2023"): Decimal(10), ("ax", "2024"): Decimal(12)}
     forecast = {
