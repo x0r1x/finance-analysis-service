@@ -19,6 +19,8 @@ _BOUND = frozenset({"bound", "bound_with_warning"})
 _EMPTY_REFERENCE = "справочная строка пуста"
 _INCOMPLETE_NUMERATOR = "справочный расчёт книги неполон: числитель пуст"
 _ICR_DIVERGENCE = "Справочный коэффициент книги расходится с расчётом FAS."
+_STATEMENT_DIVERGENCE = "Строка модели расходится с отчётной формой на фактическом квартале."
+_STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income", "interest")
 
 
 def _primary(data: AuditInput, concept: str) -> dict | None:
@@ -305,6 +307,71 @@ def _named_cells(
     return cells
 
 
+class StatementReference(Rule):
+    """На фактических кварталах сверяет основную строку модели со строкой формы.
+
+    Строка формы остаётся reference. Правило не переносит основную строку.
+    """
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        actual = [period for period in data.periods if period.get("marker_class") == "actual"]
+        if not actual:
+            return []
+        findings = []
+        for concept in _STATEMENT_CONCEPTS:
+            primary = _primary(data, concept)
+            if primary is None:
+                continue
+            references = [
+                row
+                for row in data.bindings
+                if row.get("row_key")
+                and row.get("row_key") != primary.get("row_key")
+                and (row.get("effective_concept") or row.get("concept")) == concept
+                and _role(row) == "reference"
+                and row.get("status") in _BOUND
+            ]
+            model_values = _cached(data, primary["row_key"])
+            for ref in references:
+                reported = _cached(data, ref["row_key"])
+                for period in actual:
+                    key = (period["axis_id"], period["period_id"])
+                    left = _same_period(model_values, key)
+                    right = _same_period(reported, key)
+                    if left is None or right is None or _within(left, right):
+                        continue
+                    findings.append(
+                        self.finding(
+                            data,
+                            row_key=primary["row_key"],
+                            axis_id=period["axis_id"],
+                            period_id=period["period_id"],
+                            params={
+                                "concept": concept,
+                                "message": _STATEMENT_DIVERGENCE,
+                                "model": str(left),
+                                "reported": str(right),
+                                "cells": _named_cells(
+                                    data, primary["row_key"], ref["row_key"], [], period["period_id"]
+                                ),
+                            },
+                        )
+                    )
+        return findings
+
+
+def _role(row: dict) -> str | None:
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    return evidence.get("role") or row.get("role")
+
+
+def _within(left: Decimal, right: Decimal) -> bool:
+    scale = max(abs(left), abs(right))
+    if scale == 0:
+        return True
+    return abs(left - right) / scale <= _TOLERANCE
+
+
 class UnmappedInMetricChain(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         if not data.bindings:
@@ -340,6 +407,10 @@ class UnmappedInMetricChain(Rule):
         return findings
 
 
+STATEMENT_REFERENCE = StatementReference(
+    "statement_reference", "1", "quantitative", "low", ("actual quarter",),
+    "На факте строка модели сверена с отчётной формой", ROWS, 2,
+)
 ICR_REFERENCE = IcrReference(
     "icr_reference", "1", "quantitative", "low", ("ICR reference row",),
     "Справочный ICR книги сверен с расчётом FAS", ROWS_LINKS, 2,

@@ -14,6 +14,7 @@ from finance_analysis.plugins.rules.ratios import (
     ICR_REFERENCE,
     MARKER_MIX,
     RATIO_MISMATCH,
+    STATEMENT_REFERENCE,
     UNMAPPED_IN_METRIC_CHAIN,
 )
 
@@ -164,6 +165,37 @@ def test_icr_reference_distinguishes_an_empty_numerator_from_a_divergence():
     assert found[0].params["message"] == "справочный расчёт книги неполон: числитель пуст"
     assert "ДДС!B34" in found[0].params["cells"]
     assert "К!B41" in found[0].params["cells"]
+
+
+def test_actual_quarter_compares_a_model_primary_with_a_reference_statement():
+    period = {**_period(), "marker_class": "actual"}
+    plan = {**_period(), "period_id": "plan", "marker_class": "estimate"}
+    data = AuditInput(
+        rows=[{"row_key": "model", "binding_key": "model"}, {"row_key": "form", "binding_key": "form"}],
+        periods=[period, plan],
+        facts=[
+            {**_fact("model", "100"), "cell_id": "ДДС!B10"},
+            {**_fact("form", "110"), "cell_id": "ОФР!B10"},
+            {**_fact("model", "100", "plan"), "cell_id": "ДДС!C10"},
+            {**_fact("form", "50", "plan"), "cell_id": "ОФР!C10"},
+        ],
+        bindings=[
+            _binding("revenue", "model"),
+            _binding("revenue", "form", is_primary=False, evidence={"role": "reference"}),
+        ],
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert len(found) == 1
+    assert found[0].params["message"] == "Строка модели расходится с отчётной формой на фактическом квартале."
+    assert found[0].params["concept"] == "revenue"
+    assert found[0].locations[0].period_id == "p"
+    close = AuditInput(
+        rows=data.rows,
+        periods=[period],
+        facts=[{**_fact("model", "100"), "cell_id": "ДДС!B10"}, {**_fact("form", "100.1"), "cell_id": "ОФР!B10"}],
+        bindings=data.bindings,
+    )
+    assert STATEMENT_REFERENCE.check(close) == []
 
 
 def test_ratio_mismatch_and_marker_mix_and_pair_status():

@@ -26,6 +26,7 @@ from finance_analysis.plugins.rules.ratios import (
     ICR_REFERENCE,
     MARKER_MIX,
     RATIO_MISMATCH,
+    STATEMENT_REFERENCE,
     UNMAPPED_IN_METRIC_CHAIN,
 )
 from finance_analysis.plugins.rules.refs import (
@@ -86,6 +87,7 @@ RULES = (
     FORMULA_CLASS_MISMATCH,
     RATIO_MISMATCH,
     ICR_REFERENCE,
+    STATEMENT_REFERENCE,
     SCULPTING_DEVIATION,
     MARKER_MIX,
     PERIOD_GRAIN_MISMATCH,
