@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -164,10 +165,12 @@ class PeriodGrainMismatch(Rule):
 
 @dataclass(frozen=True)
 class MissingTotalRow(Rule):
-    """Понятие метрики отмечено `concept.absent`: итоговой строки в книге нет (§5.10.5).
+    """Итоговой строки понятия метрики нет (§5.5.2, §5.10.5).
 
-    Места — строки, привязанные к составу понятия (`composition` таксономии),
-    если они есть: из них агент может собрать вход через `…/expression`.
+    Первая причина — человек отметил `concept.absent`. Вторая — у понятия
+    есть части, а строки с ролью итога не осталось. Составная привязка не
+    создаётся: сумма частей в расчёт не идёт. Места — строки состава или
+    сами части.
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
@@ -195,7 +198,53 @@ class MissingTotalRow(Rule):
                     params={"concept": concept, "needed_by": needed, "components": list(parts)},
                 )
             )
+        seen = set(absent)
+        components: dict[str, list[dict]] = {}
+        for row in data.bindings:
+            concept = row.get("effective_concept")
+            if not concept or _binding_evidence(row).get("role") != "component":
+                continue
+            components.setdefault(str(concept), []).append(row)
+        primaries = _primaries(data.bindings, data.absent)
+        for concept, parts in sorted(components.items()):
+            if concept in seen or concept not in METRIC_INPUTS:
+                continue
+            primary = primaries.get(concept)
+            if primary is not None and _binding_evidence(primary).get("role") != "component":
+                continue
+            needed = [
+                metric
+                for metric in METRIC_INPUTS[concept]
+                if data.applicable_metrics is None or metric in data.applicable_metrics
+            ]
+            if not needed:
+                continue
+            findings.append(
+                self.finding(
+                    data,
+                    locations=[Location(None, row.get("row_key"), None, None) for row in parts if row.get("row_key")],
+                    subject=f"concept:{concept}",
+                    params={
+                        "concept": concept,
+                        "needed_by": needed,
+                        "components": [row.get("row_key") for row in parts if row.get("row_key")],
+                    },
+                )
+            )
         return findings
+
+
+def _binding_evidence(row: dict) -> dict:
+    raw = row.get("evidence_json")
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw:
+        return {}
+    try:
+        found = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return found if isinstance(found, dict) else {}
 
 
 SCULPTING_DEVIATION = SculptingDeviation(

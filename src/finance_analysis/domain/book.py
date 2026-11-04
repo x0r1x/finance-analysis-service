@@ -11,8 +11,8 @@ from datetime import date, datetime
 FAS_VERSION = "0.23.0"
 FAS_SCHEMA_VERSION = "1.0"
 FAS_PROJECTION_VERSION = "2"
-# 3: роль reference и нулевые строки меняют выбор основной строки, поэтому книга считается заново.
-FAS_DERIVE_VERSION = "3"
+# 4: роль component и сценарий alt меняют выбор основной строки, поэтому книга считается заново.
+FAS_DERIVE_VERSION = "4"
 SEP = "›"
 
 _WS = re.compile(r"\s+")

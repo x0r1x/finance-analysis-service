@@ -125,7 +125,11 @@ def _candidates(
         key = row.get("binding_key")
         if not isinstance(key, str) or (key, concept) in rejected:
             continue
-        hit = _hit(row, _evidence(row.get("evidence_json")), concept)
+        evidence = _evidence(row.get("evidence_json"))
+        # Часть итога и ссылка в пакет вопросов не входят (§5.5.2).
+        if evidence.get("role") in {"component", "reference"}:
+            continue
+        hit = _hit(row, evidence, concept)
         if hit is None:
             continue
         score = _score(hit, row)

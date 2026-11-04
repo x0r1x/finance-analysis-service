@@ -37,6 +37,15 @@ _R1C1 = re.compile(
 _CELL = re.compile(
     rf"^(?:(?P<sheet>{_SHEET})!)?\$?(?P<col>[A-Za-z]{{1,3}})\$?(?P<row>\d+)$"
 )
+_SUM = re.compile(r"\bSUM\s*\(", re.IGNORECASE)
+_RANGE = re.compile(
+    rf"(?:(?P<sheet>{_SHEET})!)?"
+    rf"\$?(?P<c1>[A-Za-z]{{1,3}})\$?(?P<r1>\d+)\s*:\s*"
+    rf"\$?(?P<c2>[A-Za-z]{{1,3}})\$?(?P<r2>\d+)"
+)
+_CELL_FIND = re.compile(
+    rf"(?:(?P<sheet>{_SHEET})!)?\$?(?P<col>[A-Za-z]{{1,3}})\$?(?P<row>\d+)"
+)
 
 
 def formula_reference(
@@ -122,6 +131,54 @@ def link_target(
     if not target or target == own:
         return None
     return target
+
+
+def referenced_row(cell: str, *, default_sheet: str) -> tuple[str, int] | None:
+    """Лист и номер строки по адресу ячейки.
+
+    `cell` — адрес вроде `C10` или `Debt!C10`. `default_sheet` подставляется,
+    если лист в адресе не назван. Неадрес возвращает `None`.
+    """
+
+    parsed = _cell_address(cell, default_sheet)
+    if parsed is None:
+        return None
+    return parsed[0], parsed[1]
+
+
+def summed_row_refs(formula: str | None, *, default_sheet: str) -> tuple[tuple[str, int], ...] | None:
+    """Строки, которые формула складывает в итог.
+
+    `formula` — текст формулы. `default_sheet` — лист строки, если в ссылке
+    лист не назван. Сумма — это `SUM` или знак «+». Одна ссылка, произведение
+    и множитель вроде 1,1 суммой не являются: метод возвращает `None`.
+    Диапазон `C10:C12` раскрывается в строки 10, 11 и 12. Повтор одной строки
+    в ответе не дублируется.
+    """
+
+    text = str(formula or "").strip()
+    if not text or not (_SUM.search(text) or "+" in text):
+        return None
+    found: list[tuple[str, int]] = []
+    spans: list[tuple[int, int]] = []
+
+    def add(sheet: str, number: int) -> None:
+        item = (sheet, number)
+        if number >= 1 and item not in found:
+            found.append(item)
+
+    for match in _RANGE.finditer(text):
+        sheet = _sheet_name(match.group("sheet"), default_sheet)
+        start, end = int(match.group("r1")), int(match.group("r2"))
+        lo, hi = (start, end) if start <= end else (end, start)
+        for number in range(lo, hi + 1):
+            add(sheet, number)
+        spans.append(match.span())
+    for match in _CELL_FIND.finditer(text):
+        if any(start <= match.start() < end for start, end in spans):
+            continue
+        add(_sheet_name(match.group("sheet"), default_sheet), int(match.group("row")))
+    return tuple(found)
 
 
 def values_match(source: dict, copy: dict) -> bool:
