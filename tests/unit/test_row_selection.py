@@ -187,6 +187,19 @@ def test_period_coverage_on_one_axis_picks_the_longer_row_and_is_silent_under_on
     assert tied["long"].status == "ambiguous" and tied["short"].status == "ambiguous"
 
 
+def test_period_coverage_is_silent_when_two_axes_are_shared():
+    rows = [
+        _row("forecast", "Interest", sheet="Model"),
+        _row("actuals", "Interest", sheet="Notes"),
+    ]
+    periods = {
+        "forecast": {("actual", str(i)): 1 for i in range(2)} | {("forecast", str(i)): 0 for i in range(30)},
+        "actuals": {("actual", str(i)): 1 for i in range(10)} | {("forecast", str(i)): 0 for i in range(2)},
+    }
+    got = _assigned(rows, periods=periods)
+    assert got["forecast"].status == "ambiguous" and got["actuals"].status == "ambiguous"
+
+
 def test_period_coverage_does_not_compare_different_axes():
     rows = [
         _row("wide", "Interest", sheet="Model"),

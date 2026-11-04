@@ -393,11 +393,10 @@ def _by_period(rows: list[dict], periods: dict | None):
         axes = {axis for axis, _period in series}
         counted.append((axes, series, row))
     common = set.intersection(*(axes for axes, _series, _row in counted))
-    if not common:
+    if len(common) != 1:
         return rows, False
-    counts = []
-    for _axes, series, row in counted:
-        counts.append((sum(1 for axis, _period in series if axis in common), row))
+    axis = next(iter(common))
+    counts = [(sum(1 for item_axis, _period in series if item_axis == axis), row) for _axes, series, row in counted]
     best = max(count for count, _row in counts)
     if all(best - count < 1 for count, _row in counts):
         return rows, False
