@@ -19,6 +19,7 @@ from finance_analysis.domain.model_type_eval import (
 )
 from tests.books import job_id
 from tests.k3_expect import assert_confident_primary
+from tests.workbook_labels import resolved_workbook
 
 pytestmark = pytest.mark.eval
 
@@ -36,6 +37,8 @@ def _expectation(raw: dict) -> Expectation:
 async def _inputs(service, case: dict) -> tuple[frozenset[str], frozenset[str]]:
     if case["source"] == "bound":
         return frozenset(case.get("bound") or ()), frozenset(case.get("sheets") or ())
+    if case["source"] == "workbook":
+        return resolved_workbook(case["book"])
     job = job_id(case["alias"])
     await service.perform_load(job, actor=Actor(), fence=1)
     head = (await service._read_head(job))[0]

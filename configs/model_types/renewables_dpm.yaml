@@ -1,0 +1,22 @@
+id: renewables_dpm
+title:
+  ru: "Проектное финансирование ВИЭ"
+  en: "Renewables project finance"
+signals:
+  # Голая метка PPA не входит: в M&A это распределение цены покупки.
+  - kind: concepts_bound_any
+    concepts: [installed_capacity, energy_generation, capacity_factor, degradation, energy_tariff]
+    weight: 1
+required_concepts: [installed_capacity, energy_generation]
+metrics:
+  dscr: {use: optional, variant: pf}
+  dscr_min: {use: optional}
+  dscr_avg: {use: optional}
+  adscr: {use: not_applicable}
+  llcr: {use: not_applicable}
+  plcr: {use: not_applicable}
+  icr: {use: not_applicable}
+  net_debt_ebitda: {use: not_applicable}
+  escrow_coverage: {use: not_applicable}
+  npv: {use: not_applicable}
+  irr: {use: not_applicable}

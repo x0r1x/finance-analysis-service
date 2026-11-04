@@ -1,0 +1,9 @@
+concept: energy_generation
+pref:
+  en: "Expected annual generation"
+  ru: "Ожидаемая годовая выработка"
+alt:
+  en: ["Annual Energy per year"]
+definition:
+  en: "Book row used to classify the model. This slice does not calculate it."
+  ru: "Строка книги для классификации модели. В этом срезе не считается."
