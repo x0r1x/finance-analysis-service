@@ -66,6 +66,10 @@ def test_covered_file_changes_the_fingerprint(tmp_path: Path):
     mapping = _checkout(tmp_path, "domain/mapping.py")
     mapping.write_bytes(mapping.read_bytes() + b"\nreturn 2\n")
     assert derive_fingerprint(tmp_path) != left
+    again = derive_fingerprint(tmp_path)
+    pipeline = _checkout(tmp_path, "application/mapping_pipeline.py")
+    pipeline.write_bytes(pipeline.read_bytes() + b"\nreturn 2\n")
+    assert derive_fingerprint(tmp_path) != again
 
 
 def test_unrelated_file_does_not_change_the_fingerprint(tmp_path: Path):

@@ -40,6 +40,7 @@ PACKAGE_SOURCES = (
     "application/project.py",
     "application/sheet_roles.py",
     "application/catalog.py",
+    "application/mapping_pipeline.py",
 )
 CONFIG_SOURCES = (
     "configs/sheet_roles.yaml",
