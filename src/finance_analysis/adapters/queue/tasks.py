@@ -162,6 +162,16 @@ async def _begin_run(rt, op_id: str) -> tuple[str, int]:
     limit = rt.settings.task_retry_max + 1
     if attempt > limit:
         return "poison", attempt
+    # Закрытую операцию повтор задачи не открывает заново. Иначе проверка
+    # зависших операций уже записала отказ, а поздний воркер переписал бы
+    # книгу и мог бы поставить успех.
+    try:
+        current = await read_op(rt.store, op_id)
+    except (FasError, OSError, ValueError, TypeError):
+        current = None
+    if current and is_terminal(current.get("status", "")):
+        await rt.redis.decr(key)
+        return "skip", attempt
     await append_event(rt.store, op_id, {"type": "run.started", "status": "running", "run_attempt": attempt})
     return "run", attempt
 
@@ -218,9 +228,9 @@ async def _service_stage(name: str, args: dict, op_id: str) -> dict:
     """Выполняет шаг глоссария или подбора на сервисе воркера.
 
     `name` — имя шага из задачи. `args` — аргументы, которые API положило
-    в `stage_args`. `op_id` — операция. Для перехода релиза и решения
-    предложений идентификатор передаётся в метод, чтобы запись головы не
-    случилась после отмены. Подбор сопоставления идентификатор не принимает.
+    в `stage_args`. `op_id` — операция. Идентификатор передаётся в метод,
+    чтобы запись головы не случилась после отмены и после того, как
+    проверка зависших операций уже закрыла операцию.
 
     Успех возвращает словарь с полем `result`: туда кладётся ответ домена,
     даже если в нём есть свой `status` (например `active`). Иначе проверка
@@ -236,8 +246,7 @@ async def _service_stage(name: str, args: dict, op_id: str) -> dict:
     service = await _mine_service()
     method = getattr(service, _SERVICE_STAGES[name])
     call = dict(args)
-    if name != "mapping.infer":
-        call["op_id"] = op_id
+    call["op_id"] = op_id
     try:
         value = await method(**call)
     except Exception as exc:  # noqa: BLE001 — ошибка шага закрывает операцию и не уходит в повтор Taskiq
