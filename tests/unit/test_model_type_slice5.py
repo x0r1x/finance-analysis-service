@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from finance_analysis.application.catalog import load_catalog
 from finance_analysis.domain.model_type import infer
+from tests.workbook_labels import resolved_workbook
 
 
 def _catalog():
@@ -66,6 +68,24 @@ def test_dcf_real_estate_and_leasing_need_their_full_set():
     assert estate.primary == "real_estate_income"
     assert noi.confident is False
     assert lease.primary == "bank_leasing" and lease.labels == ("bank_leasing",)
+
+
+def test_fixture_workbooks_classify_from_their_own_labels():
+    """Тип берётся из подписей книги, а не из вручную перечисленных id."""
+    package = load_catalog()
+    assert package.resolve("IRR") is None
+    expect = {
+        "halyard/project_halyard.recalc_libreoffice.xlsx": "lbo_ma",
+        "meridian/meridian_dcf.recalc_libreoffice.xlsx": "dcf_valuation",
+        "debtlens/DebtLens_Underwriting_Model.xlsx": "real_estate_income",
+        "solar/Solar Financial Model.xlsx": "renewables_dpm",
+        "leasing/lease_portfolio.recalc_libreoffice.xlsx": "bank_leasing",
+    }
+    catalog = _catalog()
+    for book, primary in expect.items():
+        bound, sheets = resolved_workbook(book)
+        got = infer(catalog, bound=bound, sheets=sheets, accept=0.6, gap=0.15)
+        assert got.confident is True and got.primary == primary and got.labels == (primary,), book
 
 
 def test_project_finance_book_does_not_become_a_new_type():

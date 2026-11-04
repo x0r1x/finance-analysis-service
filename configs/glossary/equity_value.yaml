@@ -2,6 +2,8 @@ concept: equity_value
 pref:
   en: "Equity value after the bridge"
   ru: "Стоимость капитала после моста"
+alt:
+  en: ["Equity value"]
 definition:
   en: "Book row used to classify the model. This slice does not calculate it."
   ru: "Строка книги для классификации модели. В этом срезе не считается."

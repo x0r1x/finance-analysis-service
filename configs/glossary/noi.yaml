@@ -2,6 +2,8 @@ concept: noi
 pref:
   en: "Net operating income of the property"
   ru: "Чистый операционный доход объекта"
+alt:
+  en: ["Net operating income", "Year 1 net operating income"]
 definition:
   en: "Book row used to classify the model. This slice does not calculate it."
   ru: "Строка книги для классификации модели. В этом срезе не считается."

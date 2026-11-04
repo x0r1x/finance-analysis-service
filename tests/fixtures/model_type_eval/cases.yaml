@@ -72,41 +72,36 @@ cases:
       kind: question
       reason: unknown
   - id: halyard
-    source: bound
-    bound: [sources_and_uses, exit_enterprise_value, moic, irr, lbo_leverage]
-    sheets: [Assumptions, Sources & Uses, Returns]
+    source: workbook
+    book: halyard/project_halyard.recalc_libreoffice.xlsx
     expect:
       kind: type
       primary: lbo_ma
       labels: [lbo_ma]
   - id: meridian
-    source: bound
-    bound: [wacc, terminal_value, enterprise_value, equity_value]
-    sheets: [Inputs, WACC, DCF]
+    source: workbook
+    book: meridian/meridian_dcf.recalc_libreoffice.xlsx
     expect:
       kind: type
       primary: dcf_valuation
       labels: [dcf_valuation]
   - id: debtlens
-    source: bound
-    bound: [noi, cap_rate, vacancy]
-    sheets: [Summary, Assumptions, Operating Forecast]
+    source: workbook
+    book: debtlens/DebtLens_Underwriting_Model.xlsx
     expect:
       kind: type
       primary: real_estate_income
       labels: [real_estate_income]
   - id: solar_dogu
-    source: bound
-    bound: [installed_capacity, energy_generation, degradation, energy_tariff]
-    sheets: [Model]
+    source: workbook
+    book: solar/Solar Financial Model.xlsx
     expect:
       kind: type
       primary: renewables_dpm
       labels: [renewables_dpm]
   - id: lease_portfolio
-    source: bound
-    bound: [lease_interest_income, npl_share, provision_coverage]
-    sheets: [Schedule, Summary]
+    source: workbook
+    book: leasing/lease_portfolio.recalc_libreoffice.xlsx
     expect:
       kind: type
       primary: bank_leasing

@@ -2,6 +2,8 @@ concept: enterprise_value
 pref:
   en: "Enterprise value before the equity bridge"
   ru: "Стоимость предприятия до перехода к капиталу"
+alt:
+  en: ["Enterprise value"]
 definition:
   en: "Book row used to classify the model. This slice does not calculate it."
   ru: "Строка книги для классификации модели. В этом срезе не считается."
