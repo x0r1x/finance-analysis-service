@@ -74,7 +74,7 @@ def assign_rows(
         elif found is not None and found.degraded:
             item = replace(item, evidence={**item.evidence, "degraded": list(found.degraded)})
         draft.append((row, item))
-    _mark_references(draft, links, periods)
+    _mark_references(draft, links, periods, roles)
     _one_primary(draft, roles, periods, filtered)
     total = sum((abs_by_row or {}).values()) or 0
     assigned = {}
@@ -360,7 +360,7 @@ def _named(name: str, aliases: tuple[str, ...]) -> bool:
     return any(folded == sheet_name_key(alias) for alias in aliases)
 
 
-def _mark_references(draft, links, periods) -> None:
+def _mark_references(draft, links, periods, roles: SheetRoles | None) -> None:
     """Помечает строки, которые только повторяют другую строку того же понятия.
 
     Сначала берётся формула: одна ссылка на ячейку, в том числе на другой
@@ -402,7 +402,7 @@ def _mark_references(draft, links, periods) -> None:
             key = str(key)
             if key in targets or row.get("formula") or row.get("has_formula"):
                 continue
-            target = _copy_target(row, rows, periods, targets)
+            target = _copy_target(row, rows, periods, targets, roles)
             if target:
                 targets[key] = target
     for index, (row, item) in enumerate(draft):
@@ -415,13 +415,15 @@ def _mark_references(draft, links, periods) -> None:
         )
 
 
-def _copy_target(row, rows, periods, targets: dict[str, str]) -> str | None:
+def _copy_target(row, rows, periods, targets: dict[str, str], roles: SheetRoles | None) -> str | None:
     """Возвращает источник вставленной копии или `None`.
 
     `row` — строка без формулы. `rows` — другие кандидаты того же понятия.
     `periods` — значения по периодам. Копией считается только ряд, чьи периоды
-    строго входят в периоды другого ряда, а значения на них совпали. Более
-    длинный ряд остаётся итогом. Одинаковый набор периодов копией не считается.
+    строго входят в периоды другого ряда и чья роль листа не лучше роли
+    источника. Строка формы поэтому не прячется за более длинным листом без
+    роли. Более длинный ряд остаётся итогом. Одинаковый набор периодов копией
+    не считается.
     """
 
     if not periods:
@@ -438,7 +440,7 @@ def _copy_target(row, rows, periods, targets: dict[str, str]) -> str | None:
         source = periods.get(other_key) or {}
         if not values_match(source, own):
             continue
-        if set(own) < set(source):
+        if set(own) < set(source) and not _better_sheet(row, other, roles):
             found.append(other_key)
     if not found:
         return None
@@ -448,6 +450,19 @@ def _copy_target(row, rows, periods, targets: dict[str, str]) -> str | None:
     if followed and followed != own_key:
         return followed
     return chosen
+
+
+def _better_sheet(copy: dict, source: dict, roles: SheetRoles | None) -> bool:
+    """Строка-копия лежит на листе, который каскад предпочитает листу источника.
+
+    `copy` и `source` — строки книги. `roles` — роли листов. Метод возвращает
+    истину, если у копии роль лучше: форма лучше листа без роли, а лист без
+    роли лучше допущений. Без ролей метод возвращает ложь.
+    """
+
+    if roles is None:
+        return False
+    return _ROLE_RANK[_sheet_role(copy, roles)] < _ROLE_RANK[_sheet_role(source, roles)]
 
 
 def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None, marks: dict | None = None):

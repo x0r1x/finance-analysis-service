@@ -140,6 +140,44 @@ def test_pasted_copy_matches_within_tolerance_and_scale():
     assert "role" not in got["other"].evidence
 
 
+def test_shorter_statement_is_not_hidden_by_a_longer_paste():
+    periods = {
+        "pnl": {("ax", "1"): Decimal(10), ("ax", "2"): Decimal(20)},
+        "model": {
+            ("ax", "1"): Decimal(10),
+            ("ax", "2"): Decimal(20),
+            ("ax", "3"): Decimal(30),
+            ("ax", "4"): Decimal(40),
+        },
+    }
+    rows = [
+        _row("pnl", "Interest", sheet="P&L"),
+        _row("model", "Interest", sheet="Model"),
+    ]
+    got = _assigned(rows, periods=periods)
+    assert "role" not in got["pnl"].evidence
+    assert got["pnl"].is_primary
+    assert got["model"].is_primary is False
+    different = {
+        "pnl": {("ax", "1"): Decimal(10), ("ax", "2"): Decimal(20)},
+        "model": {("ax", "1"): Decimal(10), ("ax", "2"): Decimal(99)},
+    }
+    kept = _assigned(rows, periods=different)
+    assert kept["pnl"].is_primary and kept["pnl"].evidence["selection"] == "formula"
+    equal = {
+        "pnl": {("ax", "1"): Decimal(10), ("ax", "2"): Decimal(20)},
+        "debt": {("ax", "1"): Decimal(10), ("ax", "2"): Decimal(20)},
+    }
+    formula_rows = [
+        _row("pnl", "Interest", sheet="P&L"),
+        _row("debt", "Interest", sheet="Debt", has_formula=True, formula="=B8*C5"),
+    ]
+    stated = _assigned(formula_rows, periods=equal)
+    assert "role" not in stated["pnl"].evidence
+    assert stated["pnl"].is_primary
+    assert stated["debt"].is_primary is False
+
+
 def test_overlap_marks_only_the_shorter_row_and_rejects_an_empty_overlap():
     history = {("ax", "2023"): Decimal(10), ("ax", "2024"): Decimal(12)}
     forecast = {
