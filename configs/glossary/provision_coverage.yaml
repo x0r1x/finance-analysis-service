@@ -1,0 +1,7 @@
+concept: provision_coverage
+pref:
+  en: "Lease loss provision coverage"
+  ru: "Покрытие резервом убытков по лизингу"
+definition:
+  en: "Book row used to classify the model. This slice does not calculate it."
+  ru: "Строка книги для классификации модели. В этом срезе не считается."

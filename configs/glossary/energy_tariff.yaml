@@ -1,0 +1,7 @@
+concept: energy_tariff
+pref:
+  en: "Contracted energy tariff"
+  ru: "Тариф по договору на энергию"
+definition:
+  en: "Book row used to classify the model. This slice does not calculate it."
+  ru: "Строка книги для классификации модели. В этом срезе не считается."

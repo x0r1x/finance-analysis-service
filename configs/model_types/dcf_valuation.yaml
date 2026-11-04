@@ -1,0 +1,21 @@
+id: dcf_valuation
+title:
+  ru: "Оценка DCF"
+  en: "DCF valuation"
+signals:
+  - kind: concepts_bound_all
+    concepts: [wacc, terminal_value, enterprise_value, equity_value]
+    weight: 1
+required_concepts: [wacc, terminal_value, enterprise_value, equity_value]
+metrics:
+  dscr: {use: not_applicable}
+  dscr_min: {use: not_applicable}
+  dscr_avg: {use: not_applicable}
+  adscr: {use: not_applicable}
+  llcr: {use: not_applicable}
+  plcr: {use: not_applicable}
+  icr: {use: not_applicable}
+  net_debt_ebitda: {use: not_applicable}
+  escrow_coverage: {use: not_applicable}
+  npv: {use: not_applicable}
+  irr: {use: not_applicable}
