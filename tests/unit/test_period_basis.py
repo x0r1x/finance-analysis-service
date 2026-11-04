@@ -535,6 +535,21 @@ def test_icr_states_when_the_numerator_basis_or_axis_does_not_fit():
     )
     assert fitted["rows"][0]["status"] == "computed"
     assert fitted["rows"][0]["value"] == Decimal("4.0000000000")
+    early = _quarters(2024, 4)
+    late = _quarters(2025, 4)
+    for index, period in enumerate(late):
+        period["period_index"] = index + 4
+    split = coverage_ratio(
+        metric="icr",
+        **_common(
+            early + late,
+            _series("e", early, ["40", "40", "40", "40"]) + _series("i", late, ["-10", "-10", "-10", "-10"]),
+            [_binding("ebitda", "e"), _binding("interest", "i")],
+        ),
+    )
+    assert split["status"] == "input_absent"
+    assert split["rows"]
+    assert "оси процентов" in split["message"]
 
 
 def test_ltm_row_is_taken_as_is_and_not_summed_over_four_quarters():

@@ -185,15 +185,16 @@ def _flow_basis(binding: dict) -> str:
 
 
 def _numerator_misses_axis(numerator: dict, denominator: dict, periods: list[dict], aligned: dict, home: set[str]) -> bool:
-    """У процентов есть значения, а на их оси числителя нет."""
+    """У процентов есть значения, но ни один период не содержит обе стороны."""
 
     seen_denominator = False
     for period in periods:
         if period["axis_id"] not in home:
             continue
         key = aligned.get((period["axis_id"], period["period_id"]), (period["axis_id"], period["period_id"]))
-        if key in denominator:
-            seen_denominator = True
+        if key not in denominator:
+            continue
+        seen_denominator = True
         if key in numerator:
             return False
     return seen_denominator
