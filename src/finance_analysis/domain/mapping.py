@@ -14,6 +14,7 @@ from finance_analysis.domain.calibration import (
 from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
 from finance_analysis.domain.model_type import sheet_name_key
+from finance_analysis.domain.references import blank_series, link_target, values_match
 
 MATERIAL_SHARE = 0.05
 _NOT_MONEY = frozenset({"%", "percent", "rate", "ratio", "x", "count", "years", "date"})
@@ -55,6 +56,7 @@ def assign_rows(
     calibrator: Calibrator | None = None,
     roles: SheetRoles | None = None,
     periods: dict[str, dict[tuple[str, str], Decimal]] | None = None,
+    links: list[dict] | None = None,
 ) -> dict[str, Assignment]:
     human, ignored, absent = _decisions(events)
     draft: list[tuple[dict, Assignment]] = []
@@ -72,6 +74,7 @@ def assign_rows(
         elif found is not None and found.degraded:
             item = replace(item, evidence={**item.evidence, "degraded": list(found.degraded)})
         draft.append((row, item))
+    _mark_references(draft, links, periods, roles)
     _one_primary(draft, roles, periods, filtered)
     total = sum((abs_by_row or {}).values()) or 0
     assigned = {}
@@ -248,7 +251,16 @@ def _one_primary(
                     continue
                 row, item = draft[index]
                 draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
-            winner, reason, tie, left = _cascade([draft[index][0] for index in exact], roles, periods)
+            marks = {
+                str(draft[index][0].get("row_key")): {
+                    "role": draft[index][1].evidence.get("role"),
+                    "zero": periods is not None and blank_series(periods.get(str(draft[index][0].get("row_key")))),
+                }
+                for index in exact
+            }
+            winner, reason, tie, left = _cascade(
+                [draft[index][0] for index in exact], roles, periods, marks
+            )
             concept = draft[exact[0]][1].concept
             if winner is not None and _blocked_assumptions(winner, roles, concept, filtered or {}):
                 winner, reason, tie = None, None, ["sheet_role"]
@@ -336,12 +348,123 @@ def _named(name: str, aliases: tuple[str, ...]) -> bool:
     return any(folded == sheet_name_key(alias) for alias in aliases)
 
 
-def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None):
-    """Оставшиеся строки, причина единственного победителя и причины ничьей."""
+def _mark_references(draft, links, periods, roles: SheetRoles | None) -> None:
+    """Помечает строки, которые только повторяют другую строку того же понятия.
+
+    Сначала берётся формула: одна ссылка на ячейку, в том числе на другой
+    лист, и та же ссылка с умножением или делением на степень десяти.
+    Затем строка без формулы, чьи значения совпали с более сильным
+    кандидатом. В `evidence` пишутся `role` со значением `reference` и
+    `reference_of` с `row_key` источника. Статус строки здесь не меняется.
+    """
+
+    cells: dict[tuple[str, int], str] = {}
+    for row, _item in draft:
+        number = row.get("row_num")
+        sheet = row.get("sheet")
+        if isinstance(number, int) and not isinstance(number, bool) and sheet and row.get("row_key"):
+            cells[(sheet_name_key(str(sheet)), number)] = str(row["row_key"])
+    grouped: dict[str, list] = {}
+    for link in links or []:
+        key = link.get("row_key")
+        if key:
+            grouped.setdefault(str(key), []).append(link)
+    targets: dict[str, str] = {}
+    for row, _item in draft:
+        target = link_target(row, grouped.get(str(row.get("row_key") or "")), cells)
+        if target:
+            targets[str(row["row_key"])] = target
+    groups: dict[str, list] = {}
+    for row, item in draft:
+        if item.concept and item.is_primary and item.status in {"bound", "bound_with_warning"}:
+            groups.setdefault(item.concept, []).append(row)
+    for rows in groups.values():
+        for row in rows:
+            key = str(row["row_key"])
+            if key in targets or row.get("formula") or row.get("has_formula"):
+                continue
+            target = _copy_target(row, rows, periods, targets, roles)
+            if target:
+                targets[key] = target
+    for index, (row, item) in enumerate(draft):
+        target = targets.get(str(row.get("row_key") or ""))
+        if not target:
+            continue
+        draft[index] = (
+            row,
+            replace(item, evidence={**item.evidence, "role": "reference", "reference_of": target}),
+        )
+
+
+def _copy_target(row, rows, periods, targets: dict[str, str], roles: SheetRoles | None) -> str | None:
+    """Возвращает источник вставленной копии или `None`.
+
+    `row` — строка без формулы. `rows` — другие кандидаты того же понятия.
+    `periods` — значения по периодам. Источник сильнее, если у него больше
+    периодов, своя формула или лист формы против листа без роли. Одинаковые
+    ряды без такого различия копиями не считаются.
+    """
+
+    if not periods:
+        return None
+    own_key = str(row["row_key"])
+    own = periods.get(own_key) or {}
+    if blank_series(own):
+        return None
+    found = []
+    for other in rows:
+        other_key = str(other["row_key"])
+        if other_key == own_key:
+            continue
+        source = periods.get(other_key) or {}
+        if not values_match(source, own):
+            continue
+        if _stronger_source(other, row, source, own, roles):
+            found.append(other_key)
+    if not found:
+        return None
+    plain = [key for key in found if key not in targets]
+    chosen = min(plain or found)
+    followed = targets.get(chosen)
+    if followed and followed != own_key:
+        return followed
+    return chosen
+
+
+def _stronger_source(source: dict, copy: dict, source_values: dict, copy_values: dict, roles: SheetRoles | None) -> bool:
+    """Источник ли это для копии с уже совпавшими значениями.
+
+    Короткий ряд копирует длинный. Ряд без формулы копирует ряд с формулой.
+    При равном наборе периодов лист формы остаётся источником, а лист итогов,
+    допущений или лист без роли становится ссылкой. Иначе метод возвращает ложь.
+    """
+
+    if set(copy_values) < set(source_values):
+        return True
+    if set(copy_values) != set(source_values):
+        return False
+    if source.get("formula") or source.get("has_formula"):
+        return True
+    if roles is None:
+        return False
+    return _ROLE_RANK[_sheet_role(source, roles)] < _ROLE_RANK[_sheet_role(copy, roles)]
+
+
+def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None, marks: dict | None = None):
+    """Оставшиеся строки, причина единственного победителя и причины ничьей.
+
+    Сначала снимаются строки, у которых все значения нулевые или пустые,
+    если рядом есть ненулевая строка. Затем снимаются ссылки `reference`,
+    если осталась строка, которая не является ссылкой. Ненулевая ссылка
+    поэтому побеждает пустую строку, а обычная строка побеждает ссылку.
+    Дальше идут прежние шаги: роль листа, формула, итог и покрытие периодов.
+    """
 
     current = list(rows)
     tie: list[str] = []
     steps = (
+        ("zero", lambda items: _by_zero(items, marks)),
+        ("reference", lambda items: _by_reference(items, marks)),
         ("sheet_role", lambda items: _by_role(items, roles)),
         ("formula", lambda items: _by_formula(items, roles)),
         ("aggregate", lambda items: _by_aggregate(items)),
@@ -357,6 +480,24 @@ def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None):
                 return current[0], name, tie, current
             tie.append(name)
     return None, None, tie, current
+
+
+def _by_zero(rows: list[dict], marks: dict | None):
+    if not marks:
+        return rows, False
+    alive = [row for row in rows if not (marks.get(str(row.get("row_key"))) or {}).get("zero")]
+    if alive and len(alive) < len(rows):
+        return alive, True
+    return rows, False
+
+
+def _by_reference(rows: list[dict], marks: dict | None):
+    if not marks:
+        return rows, False
+    plain = [row for row in rows if (marks.get(str(row.get("row_key"))) or {}).get("role") != "reference"]
+    if plain and len(plain) < len(rows):
+        return plain, True
+    return rows, False
 
 
 def _by_role(rows: list[dict], roles: SheetRoles | None):

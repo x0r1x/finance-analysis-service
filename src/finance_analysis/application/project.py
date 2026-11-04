@@ -416,6 +416,7 @@ def derive_rows(
             calibrator=calibrator,
             roles=load_sheet_roles(),
             periods=_values_by_row(facts),
+            links=projected.get("graph_links"),
         )
         assigned = verify_numeric(assigned, prepared, _values_by_row(facts))
     else:

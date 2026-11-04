@@ -166,7 +166,7 @@ def test_same_indent_total_and_parent_fall_through_to_coverage():
     ]
     periods = {
         "line": {("ax", str(i)): 1 for i in range(20)},
-        "total": {("ax", str(i)): 1 for i in range(2)},
+        "total": {("ax", str(i)): 9 for i in range(2)},
     }
     got = _assigned(rows, periods=periods)
     assert got["line"].is_primary and got["line"].evidence["selection"] == "period_coverage"
@@ -189,7 +189,7 @@ def test_period_coverage_on_one_axis_picks_the_longer_row_and_is_silent_under_on
     ]
     periods = {
         "long": {("ax", str(i)): 1 for i in range(5)},
-        "short": {("ax", str(i)): 1 for i in range(3)},
+        "short": {("ax", str(i)): 4 for i in range(3)},
     }
     got = _assigned(rows, periods=periods)
     assert got["long"].is_primary and got["long"].evidence["selection"] == "period_coverage"
@@ -220,7 +220,7 @@ def test_missing_series_scores_zero_on_the_one_axis():
         _row("empty", "Interest", sheet="Notes"),
     ]
     got = _assigned(rows, periods={"long": {("ax", str(i)): 1 for i in range(12)}})
-    assert got["long"].is_primary and got["long"].evidence["selection"] == "period_coverage"
+    assert got["long"].is_primary and got["long"].evidence["selection"] == "zero"
     assert got["empty"].is_primary is False
     trio = [
         _row("wide", "Interest", sheet="Model"),
@@ -229,7 +229,7 @@ def test_missing_series_scores_zero_on_the_one_axis():
     ]
     periods = {
         "wide": {("ax", str(i)): 1 for i in range(10)},
-        "short": {("ax", str(i)): 1 for i in range(2)},
+        "short": {("ax", str(i)): 4 for i in range(2)},
         "other": {("side", str(i)): 1 for i in range(8)},
     }
     again = _assigned(trio, periods=periods)
