@@ -619,9 +619,53 @@ def test_mixed_basis_or_unconfirmed_scale_is_a_status_not_a_number():
             ],
         ),
     )
-    assert uneven["status"] == "scale_unconfirmed"
-    assert uneven["message"] == SCALE_UNCONFIRMED
-    assert all(row["value"] is None for row in uneven["rows"])
+    assert uneven["rows"][-1]["status"] == "computed"
+    assert uneven["rows"][-1]["value"] == Decimal("1000.0000000000")
+    foreign = dict(periods[0])
+    foreign["axis_id"] = "foreign"
+    foreign["period_id"] = "foreign-1"
+    ratio_period = dict(periods[-1])
+    ratio_period["axis_id"] = "ratios"
+    ratio_period["period_id"] = "R4"
+    contradicted = coverage_ratio(
+        metric="icr",
+        **_common(
+            [foreign, ratio_period],
+            [
+                {
+                    "row_key": "e",
+                    "axis_id": "ratios",
+                    "period_id": "R4",
+                    "value_dec": Decimal(40),
+                    "normalized_value": Decimal(15),
+                    "scale_factor": 1000,
+                    "cell_id": "Ratios!C4",
+                },
+                {
+                    "row_key": "i",
+                    "axis_id": "cf",
+                    "period_id": periods[-1]["period_id"],
+                    "value_dec": Decimal(-10),
+                    "normalized_value": Decimal(-10),
+                    "scale_factor": 1000,
+                    "cell_id": "CF!D5",
+                },
+            ],
+            [
+                _binding("ebitda", "e", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    assert contradicted["status"] == "scale_unconfirmed"
+    assert contradicted["message"] == SCALE_UNCONFIRMED
+    refused = contradicted["rows"][0]
+    assert refused["value"] is None
+    assert refused["axis_id"] == "ratios"
+    assert refused["components"]["ebitda"] == ["Ratios!C4"]
+    assert refused["components"]["interest"] == ["CF!D5"]
+    assert refused["scale_factor"]["ebitda"] == 1000
+    assert refused["scale_factor"]["interest"] == 1000
     formula = Composed(Side(("ebitda",), ()), Side(("interest",), ()), "period")
     composed = composed_ratio(
         "icr",

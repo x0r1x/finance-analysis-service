@@ -103,10 +103,21 @@ def coverage_ratio(
             "status": "missing_input",
         }
     denominator_name = "debt_service" if metric == "dscr" else "interest"
-    if unconfirmed_scale(facts, [primaries[numerator_name], primaries[denominator_name]]):
-        return _explained(metric, periods, "scale_unconfirmed", SCALE_UNCONFIRMED, warnings)
     numerator_basis = _flow_basis(primaries[numerator_name])
     denominator_basis = _flow_basis(primaries[denominator_name])
+    named = {numerator_name: primaries[numerator_name], denominator_name: primaries[denominator_name]}
+    if unconfirmed_scale(facts, list(named.values())):
+        components, scales = _scale_bundle(facts, named)
+        return _explained(
+            metric,
+            periods,
+            "scale_unconfirmed",
+            SCALE_UNCONFIRMED,
+            warnings,
+            home=_home_period(facts, primaries[numerator_name], periods),
+            components=components,
+            scales=scales,
+        )
     if numerator_basis == "ltm" and denominator_basis == "period":
         return _ltm_numerator(
             metric,
@@ -254,6 +265,10 @@ def _ltm_numerator(
             numerator_name: _component_cells(facts, numerator_binding, [period]),
             denominator_name: _component_cells(facts, denominator_binding, window),
         }
+        row["scale_factor"] = {
+            numerator_name: _stored_scale(facts, numerator_binding),
+            denominator_name: _stored_scale(facts, denominator_binding),
+        }
         rows.append(row)
         computed = True
     if not rows:
@@ -291,10 +306,24 @@ def _as_date(value) -> date | None:
     return None
 
 
-def _explained(metric: str, periods: list[dict], status: str, message: str, warnings: list[dict]) -> dict:
-    """Один явный исход вместо пустого списка строк."""
+def _explained(
+    metric: str,
+    periods: list[dict],
+    status: str,
+    message: str,
+    warnings: list[dict],
+    *,
+    home: dict | None = None,
+    components: dict | None = None,
+    scales: dict | None = None,
+) -> dict:
+    """Один явный исход вместо пустого списка строк.
 
-    period = periods[0] if periods else None
+    Ось — ось числителя, если она известна. Ячейки и масштаб остаются в строке,
+    чтобы отказ можно было сверить с книгой.
+    """
+
+    period = home if home is not None else (periods[0] if periods else None)
     if period is None:
         row = {
             "metric": metric,
@@ -310,6 +339,10 @@ def _explained(metric: str, periods: list[dict], status: str, message: str, warn
     else:
         row = _row(metric, period, None, status, status)
         row["message"] = message
+    if components is not None:
+        row["components"] = components
+    if scales is not None:
+        row["scale_factor"] = scales
     return {"metric": metric, "rows": [row], "needs_input": [], "warnings": warnings, "status": status, "message": message}
 
 
@@ -445,15 +478,49 @@ def _component_cells(facts: list[dict], binding: dict, periods: list[dict]) -> l
 
 
 def unconfirmed_scale(facts: list[dict], bindings: list[dict]) -> bool:
-    """Масштаб нельзя подтвердить: стороны в разных единицах или число спорит со шкалой.
+    """Число строки спорит с её масштабом.
 
-    Без `scale_factor` у обеих сторон остаётся прежний расчёт. Шкала 1 — уже базовые единицы.
+    Отсутствие масштаба у одной стороны отказом не является: берётся нормализованное
+    значение, а заданный масштаб применяется к числу на листе до деления.
     """
 
-    kinds = {_scale_kind(facts, binding) for binding in bindings}
-    if "unconfirmed" in kinds:
-        return True
-    return "raw" in kinds and "base" in kinds
+    return any(_scale_kind(facts, binding) == "unconfirmed" for binding in bindings)
+
+
+def _home_period(facts: list[dict], binding: dict, periods: list[dict]) -> dict | None:
+    """Первый период оси числителя. Чужая ось в начале списка периодов не годится."""
+
+    axes = {fact.get("axis_id") for fact in facts if fact.get("row_key") == binding.get("row_key")}
+    for period in periods:
+        if period.get("axis_id") in axes:
+            return period
+    return None
+
+
+def _scale_bundle(facts: list[dict], named: dict[str, dict]) -> tuple[dict, dict]:
+    components = {}
+    scales = {}
+    for name, binding in named.items():
+        cells: list[str] = []
+        for fact in facts:
+            if fact.get("row_key") != binding.get("row_key"):
+                continue
+            cell = fact.get("cell_id")
+            if cell and str(cell) not in cells:
+                cells.append(str(cell))
+        components[name] = cells
+        scales[name] = _stored_scale(facts, binding)
+    return components, scales
+
+
+def _stored_scale(facts: list[dict], binding: dict):
+    for fact in facts:
+        if fact.get("row_key") != binding.get("row_key"):
+            continue
+        scale = fact.get("scale_factor")
+        if scale not in (None, ""):
+            return scale
+    return None
 
 
 def _scale_kind(facts: list[dict], binding: dict) -> str:

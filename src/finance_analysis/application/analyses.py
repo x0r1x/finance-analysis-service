@@ -277,6 +277,7 @@ def _citation(data: AuditInput, location: Location) -> dict | None:
         "value": _decimal_text(fact.get("value_dec")),
         "value_status": fact.get("value_status"),
         "normalized_value": _decimal_text(fact.get("normalized_value")),
+        "scale_factor": fact.get("scale_factor"),
         "binding_key": row.get("binding_key"),
     }
 
@@ -296,6 +297,7 @@ def _fact_citation(fact: dict, row: dict) -> dict:
         "value": _decimal_text(fact.get("value_dec")),
         "value_status": fact.get("value_status"),
         "normalized_value": _decimal_text(fact.get("normalized_value")),
+        "scale_factor": fact.get("scale_factor"),
         "binding_key": row.get("binding_key"),
     }
 

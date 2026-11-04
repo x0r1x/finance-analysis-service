@@ -1165,6 +1165,7 @@ class FasService:
                 "value": _decimal_text(row["value_dec"]),
                 "value_status": row["value_status"],
                 "normalized_value": _decimal_text(row["normalized_value"]),
+                "scale_factor": row.get("scale_factor"),
             }
             for row in rows
         ]
@@ -2727,6 +2728,7 @@ def _citation(row: dict) -> dict:
         "value": _decimal_text(row.get("value_dec")),
         "value_status": row.get("value_status"),
         "normalized_value": _decimal_text(row.get("normalized_value")),
+        "scale_factor": row.get("scale_factor"),
     }
 
 

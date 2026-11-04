@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from finance_analysis.domain.cover_metrics import ratio_cells
+from finance_analysis.domain.metrics import coverage_ratio
 from finance_analysis.domain.period_basis import classify_period_basis
 from tests.unit.test_row_selection import _assigned, _row
 
@@ -37,7 +40,7 @@ def _col(index: int) -> str:
     number = index
     while number:
         number, rest = divmod(number - 1, 26)
-        letters = chr(64 + rest) + letters
+        letters = chr(65 + rest) + letters
     return letters
 
 
@@ -336,3 +339,44 @@ def test_synthetic_book_tags_the_income_statement_as_year_to_date():
     assert got["balance-a"].is_primary is False
     assert got["balance-b"].is_primary is False
     assert got["balance-a"].status != "ambiguous"
+    assert got["ratios-ebitda"].evidence["period_basis"] == "ltm"
+    periods = [
+        {"axis_id": axis, "period_id": period_id, **meta}
+        for (axis, period_id), meta in model["calendar"].items()
+    ]
+    bindings = [
+        _ratio_binding("ebitda", "ratios-ebitda", got["ratios-ebitda"]),
+        _ratio_binding("interest", "cf-interest", got["cf-interest"]),
+    ]
+    result = coverage_ratio(
+        metric="icr",
+        facts=model["facts"],
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+    )
+    last = next(row for row in result["rows"] if row["period_id"] == "ratios-2025Q4")
+    assert last["status"] == "computed"
+    assert last["axis_id"] == "ratios"
+    assert last["value"] == Decimal("1.0000000000")
+    assert len(last["components"]["interest"]) == 4
+    assert last["components"]["ebitda"]
+    assert last["scale_factor"]["interest"] == 1000
+    cited = ratio_cells(last, model["facts"], bindings, periods, frozenset())
+    assert {item["cell_id"] for item in cited} == set(last["components"]["interest"]) | set(last["components"]["ebitda"])
+
+
+def _ratio_binding(concept: str, key: str, item) -> dict:
+    return {
+        "effective_concept": concept,
+        "row_key": key,
+        "status": "bound",
+        "is_primary": True,
+        "evidence_json": json.dumps(
+            {
+                "period_basis": item.evidence["period_basis"],
+                "period_basis_source": item.evidence["period_basis_source"],
+            }
+        ),
+    }
