@@ -50,7 +50,8 @@ def test_packt_and_rvi_partition_fact_rows():
         labels = {row["binding_key"]: row["label"] for row in tables["dim_row"]}
         if alias == "packt":
             debt = next(row for row in bindings if labels[row["binding_key"]] == "Debt service")
-            assert debt["status"] == "bound" and debt["source"] == "inferred"
+            # Interest и principal теперь основные, и ряд сходится с debt service, поэтому источник verified.
+            assert debt["status"] == "bound" and debt["source"] == "verified"
             cfads = _at(tables, bindings, "CFS", 14)
             assert cfads["concept"] == "cfads" and cfads["status"] == "bound" and cfads["is_primary"]
             assert json.loads(cfads["evidence_json"])["match_strength"] == "exact"
