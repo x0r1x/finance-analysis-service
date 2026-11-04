@@ -32,6 +32,7 @@ _IDEMPOTENT = {"book.load", "glossary.remap"}
 _SERVICE_STAGES = {
     "glossary.transition": "perform_glossary_transition",
     "glossary.decide": "perform_proposal_decision",
+    "glossary.remap": "perform_glossary_remap",
     "mapping.infer": "perform_mapping_infer",
 }
 

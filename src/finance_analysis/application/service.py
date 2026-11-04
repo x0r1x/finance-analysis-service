@@ -7,6 +7,7 @@ import contextvars
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -2213,47 +2214,157 @@ class FasService:
         return {"jobs": changed, "remaining": remaining, "glossary": state["active"], "cursor": changed[-1] if changed else cursor}
 
     async def begin_remap(self) -> dict:
+        """Запускает пересчёт книг на новый глоссарий и возвращает первую пачку.
+
+        Если пересчёт уже выполняется, метод возвращает эту операцию и новую
+        не создаёт. Иначе создаёт операцию `glossary.remap`. В полезной
+        нагрузке лежит шаг `glossary.remap` и очередь `fas:glossary`, чтобы
+        проверка зависших операций смогла продолжить работу, а не засчитать
+        пустой повтор успехом. Первая пачка не длиннее `REMAP_BATCH_BOOKS`.
+        Если книги ещё остались, метод записывает курсор в нагрузку и
+        продолжает в фоне. Успех пишется только когда хвоста больше нет.
+        Пока идёт пачка, обновляется метка живости `fas:op:{id}:hb`.
+        """
+
         running = await self.list_ops(kind="glossary.remap", job_id=None, status="running")
         if running:
             return {"operation": running[0], "jobs": [], "remaining": None, "busy": True}
-        op = await self.create_op("glossary.remap", None, Actor(user_id="system"), {})
+        op = await self.create_op(
+            "glossary.remap",
+            None,
+            Actor(user_id="system"),
+            {"stage": "glossary.remap", "stage_args": {}, "queue": "fas:glossary"},
+        )
+        stop = asyncio.Event()
+        beater = asyncio.create_task(self._beat_op(op["id"], stop))
+        handed = False
         try:
-            batch = await self.remap_glossary(limit=self.settings.remap_batch_books)
-        except Exception as exc:
-            await self.finish_op(op["id"], "failed", error={"detail": str(exc)})
-            raise
-        if not batch["remaining"]:
-            await self.finish_op(op["id"], "succeeded", result={"jobs": batch["jobs"], "glossary": batch["glossary"]})
+            try:
+                batch = await self.remap_glossary(limit=self.settings.remap_batch_books)
+            except Exception as exc:
+                await self.finish_op(op["id"], "failed", error={"detail": str(exc)})
+                raise
+            if not batch["remaining"]:
+                await self.finish_op(
+                    op["id"], "succeeded", result={"jobs": batch["jobs"], "glossary": batch["glossary"]}
+                )
+                return {**batch, "operation": op["id"], "busy": False}
+            await self._note_remap_cursor(op["id"], batch["cursor"], len(batch["remaining"]))
+            self.spawn(self._remap_rest(op["id"]))
+            handed = True
             return {**batch, "operation": op["id"], "busy": False}
+        finally:
+            stop.set()
+            beater.cancel()
+            await asyncio.gather(beater, return_exceptions=True)
+            if not handed:
+                await self.support.cache_delete(f"fas:op:{op['id']}:hb")
+
+    async def _note_remap_cursor(self, op_id: str, cursor: str | None, remaining: int) -> None:
+        """Записывает курсор пересчёта в результат и в полезную нагрузку.
+
+        `op_id` — операция `glossary.remap`. `cursor` — последняя уже
+        обработанная книга. `remaining` — сколько книг ещё не брали в эту
+        пачку. Проверка зависших операций читает нагрузку и с этого курсора
+        продолжает шаг, а не начинает пустой успех.
+        """
+
         await append_event(
             self.store,
-            op["id"],
-            {"result": {"cursor": batch["cursor"], "remaining": len(batch["remaining"])}},
+            op_id,
+            {
+                "result": {"cursor": cursor, "remaining": remaining},
+                "payload": {
+                    "stage": "glossary.remap",
+                    "stage_args": {"cursor": cursor},
+                    "queue": "fas:glossary",
+                },
+            },
         )
-        self.spawn(self._remap_rest(op["id"]))
-        return {**batch, "operation": op["id"], "busy": False}
 
     async def _remap_rest(self, op_id: str) -> None:
+        """Доделывает хвост пересчёта и закрывает операцию только в конце.
+
+        `op_id` — операция `glossary.remap`. Метод продолжает с курсора,
+        который записала первая пачка. Если операция уже закрыта, метод
+        выходит и не пишет успех. Ошибка хвоста закрывает операцию со
+        статусом `failed`.
+        """
+
+        try:
+            result = await self.perform_glossary_remap(op_id=op_id)
+            if result.get("skipped"):
+                return
+            await self.finish_op(
+                op_id, "succeeded", result={"jobs": result.get("jobs"), "glossary": result.get("glossary")}
+            )
+        except Exception as exc:  # noqa: BLE001 — хвост ремапа закрывает операцию
+            await self.finish_op(op_id, "failed", error={"detail": str(exc)})
+
+    async def perform_glossary_remap(self, cursor: str | None = None, *, op_id: str | None = None) -> dict:
+        """Доводит пересчёт книг до конца и возвращает итог.
+
+        `cursor` — последняя уже обработанная книга. Если его нет, метод
+        берёт курсор из полезной нагрузки операции или из последнего
+        результата. `op_id` — операция `glossary.remap`. Пока в ответе пачки
+        есть хвост, метод не возвращает управление и обновляет метку живости.
+        Вызывающий код записывает успех только по этому возврату, когда
+        хвоста уже нет. Если операция закрыта или отменена, метод возвращает
+        `{"skipped": True}` и голову книг дальше не меняет. В конце проходит
+        книги ещё раз без курсора: курсор не возвращается назад, и релиз
+        посередине пачки иначе оставил бы ранние книги на старой цели.
+        """
+
+        if op_id and cursor is None:
+            current = await self.get_op(op_id)
+            args = ((current.get("payload") or {}).get("stage_args") or {})
+            cursor = args.get("cursor") or (current.get("result") or {}).get("cursor")
+        stop = asyncio.Event()
+        beater = asyncio.create_task(self._beat_op(op_id, stop)) if op_id else None
         try:
             while True:
-                current = await self.get_op(op_id)
-                if current["status"] != "running":
-                    return
+                if op_id:
+                    current = await self.get_op(op_id)
+                    if current["status"] != "running":
+                        return {"skipped": True}
+                batch = await self.remap_glossary(limit=self.settings.remap_batch_books, cursor=cursor)
+                if not batch["remaining"]:
+                    await self.remap_glossary()
+                    return {"jobs": batch["jobs"], "glossary": batch["glossary"], "remaining": []}
+                cursor = batch["cursor"]
+                if op_id:
+                    await self._note_remap_cursor(op_id, cursor, len(batch["remaining"]))
                 rate = self.settings.remap_books_per_min
                 if rate > 0:
                     await asyncio.sleep(self.settings.remap_batch_books / rate * 60)
-                cursor = (current.get("result") or {}).get("cursor")
-                batch = await self.remap_glossary(limit=self.settings.remap_batch_books, cursor=cursor)
-                if not batch["remaining"]:
-                    # Курсор не возвращается назад: релиз посередине батча оставлял ранние книги на старой цели.
-                    await self.remap_glossary()
-                    await self.finish_op(op_id, "succeeded", result={"jobs": batch["jobs"], "glossary": batch["glossary"]})
-                    return
-                await append_event(
-                    self.store, op_id, {"result": {"cursor": batch["cursor"], "remaining": len(batch["remaining"])}}
-                )
-        except Exception as exc:  # noqa: BLE001 — хвост ремапа закрывает операцию
-            await self.finish_op(op_id, "failed", error={"detail": str(exc)})
+        finally:
+            stop.set()
+            if beater is not None:
+                beater.cancel()
+                await asyncio.gather(beater, return_exceptions=True)
+                if op_id:
+                    await self.support.cache_delete(f"fas:op:{op_id}:hb")
+
+    async def _beat_op(self, op_id: str, stop: asyncio.Event) -> None:
+        """Обновляет метку живости операции, пока идёт пересчёт книг.
+
+        `op_id` — операция. `stop` — событие, после которого цикл кончается.
+        Проверка зависших операций закрывает операцию без ключа
+        `fas:op:{id}:hb`, если с создания прошло больше `OP_STALE_SEC`.
+        Пересчёт нескольких пачек длится дольше этого срока. Метод пишет ключ
+        с интервалом `OP_HEARTBEAT_SEC`, чтобы живой пересчёт не поставили в
+        очередь заново. Ничего не возвращает.
+        """
+
+        interval = max(float(self.settings.op_heartbeat_sec), 0.05)
+        ttl = max(int(interval * 2), 1)
+        key = f"fas:op:{op_id}:hb"
+        while not stop.is_set():
+            await self.support.cache_set(key, f"0:{time.time()}".encode(), ttl)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except TimeoutError:
+                continue
 
     async def _calibrator_ok(self, body: dict) -> bool:
         state = await self.glossary.peek()
