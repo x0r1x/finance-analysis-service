@@ -89,6 +89,16 @@ async def read_op(store, op_id: str) -> dict:
             body["result"] = event["result"]
         if "error" in event:
             body["error"] = event["error"]
+        if isinstance(event.get("payload"), dict):
+            # Поздний курсор пересчёта дописывается в нагрузку, чтобы повтор
+            # задачи увидел шаг и место, с которого продолжать.
+            merged = dict(body.get("payload") or {})
+            for key, value in event["payload"].items():
+                if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    merged[key] = {**merged[key], **value}
+                else:
+                    merged[key] = value
+            body["payload"] = merged
         if "run_attempt" in event:
             body["run_attempt"] = event["run_attempt"]
         body["updated_at"] = event.get("at", body["updated_at"])
