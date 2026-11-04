@@ -318,3 +318,11 @@ def test_synthetic_book_tags_the_income_statement_as_year_to_date():
         label_path=[_TITLE, _SUBTOTAL, _PL_INTEREST.strip()],
     )
     assert classify_period_basis(bare, calendar=None, links=None, series=None) == ("ytd", "header")
+    formula_only = _row("pl-interest", _PL_INTEREST.strip(), sheet="PL", row_num=17, label_path=[_SUBTOTAL])
+    assert classify_period_basis(
+        formula_only,
+        calendar=model["calendar"],
+        links=model["links"],
+        series=model["series"]["pl-interest"],
+        facts=model["facts"],
+    ) == ("ytd", "formula")

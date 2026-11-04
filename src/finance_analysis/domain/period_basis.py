@@ -483,7 +483,12 @@ def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]
                     return False
                 prefix = year_ids[: year_ids.index(period_id) + 1]
                 formulas = by_period.get(period_id) or []
-                matched = any(_covers_prefix(formula, located, prefix, calendar) for formula in formulas)
+                current = next((item for _index, pid, item in order if pid == period_id), None)
+                quarter = _quarter_number(current)
+                matched = any(
+                    _covers_prefix(formula, located, prefix, calendar, quarter=quarter, year=year)
+                    for formula in formulas
+                )
                 if len(prefix) < 2:
                     if formulas and not matched:
                         return False
@@ -498,7 +503,55 @@ def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]
     return qualified
 
 
-def _covers_prefix(formula: dict, located: dict, prefix: list[str], calendar: dict) -> bool:
+def _quarter_number(meta: dict | None) -> int | None:
+    """Номер квартала по концу периода, иначе по тексту заголовка «N кв.»."""
+
+    if not meta:
+        return None
+    grain = str(meta.get("grain") or "").lower()
+    end = _as_date(meta.get("period_end"))
+    if end is not None and grain == "quarter":
+        return (end.month - 1) // 3 + 1
+    match = re.match(r"\s*(\d+)\s*кв", str(meta.get("header_text") or "").casefold())
+    if match is None:
+        return None
+    number = int(match.group(1))
+    if 1 <= number <= 4:
+        return number
+    return None
+
+
+def _quarter_slots(calendar: dict, year: int, quarter: int) -> list[tuple]:
+    """Концы кварталов 1..`quarter` этого года. Ось значения не имеет."""
+
+    found = []
+    seen: set[tuple] = set()
+    for meta in (calendar or {}).values():
+        if _year_of(meta) != year:
+            continue
+        number = _quarter_number(meta)
+        if number is None or not 1 <= number <= quarter:
+            continue
+        end = _as_date(meta.get("period_end"))
+        if end is None:
+            continue
+        slot = ("end", end)
+        if slot in seen:
+            continue
+        seen.add(slot)
+        found.append(slot)
+    return sorted(found)
+
+
+def _covers_prefix(
+    formula: dict,
+    located: dict,
+    prefix: list[str],
+    calendar: dict,
+    *,
+    quarter: int | None = None,
+    year: int | None = None,
+) -> bool:
     """Колонка k складывает первые k периодов одной строки-источника.
 
     IF и CHOOSE, в том числе «ЕСЛИ» и «ВЫБОР», смотрят ветку номера квартала.
@@ -508,19 +561,28 @@ def _covers_prefix(formula: dict, located: dict, prefix: list[str], calendar: di
     """
 
     text = str(formula.get("formula") or "")
+    number = quarter if quarter is not None else len(prefix)
+    slots = _quarter_slots(calendar, year, number) if year is not None and quarter is not None else None
     if _is_choice(text):
-        branch = _branch_for_quarter(text, len(prefix))
+        branch = _branch_for_quarter(text, number)
         refs = _branch_cells(branch, str(formula.get("cell") or "")) if branch else []
-        if refs and _periods_are_prefix(refs, located, prefix, calendar):
+        if refs and _periods_are_prefix(refs, located, prefix, calendar, slots=slots):
             return True
         if refs:
             return False
     if len(prefix) > 1 and not _sums_formula(formula) and not _is_choice(text):
         return False
-    return _periods_are_prefix(list(formula.get("refs") or []), located, prefix, calendar)
+    return _periods_are_prefix(list(formula.get("refs") or []), located, prefix, calendar, slots=slots)
 
 
-def _periods_are_prefix(refs: list[str], located: dict, prefix: list[str], calendar: dict) -> bool:
+def _periods_are_prefix(
+    refs: list[str],
+    located: dict,
+    prefix: list[str],
+    calendar: dict,
+    *,
+    slots: list[tuple] | None = None,
+) -> bool:
     by_row: dict[str, list[str]] = {}
     current = _slot(calendar, prefix[-1])
     for ref in refs:
@@ -529,7 +591,7 @@ def _periods_are_prefix(refs: list[str], located: dict, prefix: list[str], calen
             continue
         row_key, period_id = target
         by_row.setdefault(str(row_key), []).append(str(period_id))
-    wanted = sorted(_slot(calendar, period_id) for period_id in prefix)
+    wanted = list(slots) if slots else sorted(_slot(calendar, period_id) for period_id in prefix)
     matched = [row for row, periods in by_row.items() if sorted(_slot(calendar, period_id) for period_id in periods) == wanted]
     if len(matched) != 1:
         return False
