@@ -167,6 +167,54 @@ def test_icr_reference_distinguishes_an_empty_numerator_from_a_divergence():
     assert "К!B41" in found[0].params["cells"]
 
 
+def test_icr_reference_uses_the_coverage_row_on_the_calculation_axis():
+    periods = [_period("p"), {**_period(), "period_id": "q"}]
+    other = [
+        {**_period("p"), "axis_id": "Outputs!r1"},
+        {**_period("q"), "axis_id": "Outputs!r1"},
+    ]
+    data = AuditInput(
+        rows=[{"row_key": key, "binding_key": key} for key in ("book", "out", "e", "i")],
+        periods=[*periods, *other],
+        facts=[
+            {**_fact("e", "40", "p"), "cell_id": "К!B41"},
+            {**_fact("e", "40", "q"), "cell_id": "К!C41"},
+            {**_fact("i", "10", "p"), "cell_id": "ДДС!B38"},
+            {**_fact("i", "10", "q"), "cell_id": "ДДС!C38"},
+            {**_fact("book", "4", "p"), "cell_id": "К!B28"},
+            {**_fact("book", "9", "q"), "cell_id": "К!C28"},
+            {**_fact("out", "1", "p"), "axis_id": "Outputs!r1", "cell_id": "Outputs!B58"},
+            {**_fact("out", "1", "q"), "axis_id": "Outputs!r1", "cell_id": "Outputs!C58"},
+        ],
+        bindings=[_binding("ebitda", "e"), _binding("interest", "i"), _binding("icr", "out")],
+        links=[
+            {"row_key": "book", "ref_cell": "К!B41"},
+            {"row_key": "book", "ref_cell": "ДДС!B38"},
+            {"row_key": "book", "ref_cell": "К!C41"},
+            {"row_key": "book", "ref_cell": "ДДС!C38"},
+        ],
+    )
+    found = ICR_REFERENCE.check(data)
+    assert [item.params["cause"] for item in found] == ["mismatch"]
+    assert found[0].locations[0].row_key == "book"
+    assert found[0].locations[0].period_id == "q"
+    assert found[0].locations[0].axis_id == "Sheet!r1"
+    second = AuditInput(
+        rows=data.rows + [{"row_key": "other", "binding_key": "other"}],
+        periods=data.periods,
+        facts=data.facts + [{**_fact("other", "8", "p"), "cell_id": "К!B29"}, {**_fact("other", "8", "q"), "cell_id": "К!C29"}],
+        bindings=data.bindings,
+        links=data.links
+        + [
+            {"row_key": "other", "ref_cell": "К!B41"},
+            {"row_key": "other", "ref_cell": "ДДС!B38"},
+        ],
+    )
+    ambiguous = ICR_REFERENCE.check(second)
+    assert len(ambiguous) == 1
+    assert ambiguous[0].params["message"] == "На оси расчёта ICR несколько справочных строк покрытия. Сверка не выполнена."
+
+
 def test_actual_quarter_compares_a_model_primary_with_a_reference_statement():
     period = {**_period(), "marker_class": "actual"}
     plan = {**_period(), "period_id": "plan", "marker_class": "estimate"}

@@ -19,6 +19,7 @@ _BOUND = frozenset({"bound", "bound_with_warning"})
 _EMPTY_REFERENCE = "справочная строка пуста"
 _INCOMPLETE_NUMERATOR = "справочный расчёт книги неполон: числитель пуст"
 _ICR_DIVERGENCE = "Справочный коэффициент книги расходится с расчётом FAS."
+_ICR_AMBIGUOUS = "На оси расчёта ICR несколько справочных строк покрытия. Сверка не выполнена."
 _STATEMENT_DIVERGENCE = "Строка модели расходится с отчётной формой на фактическом квартале."
 _STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income", "interest")
 
@@ -172,9 +173,8 @@ class IcrReference(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         if data.applicable_metrics is not None and "icr" not in data.applicable_metrics:
             return []
-        model = _primary(data, "icr")
         ebitda = _primary(data, "ebitda")
-        if model is None or ebitda is None or not data.periods:
+        if ebitda is None or not data.periods:
             return []
         interest = _primary(data, "interest")
         computed = {}
@@ -186,34 +186,56 @@ class IcrReference(Rule):
                     phases[(row["axis_id"], row["period_id"])] = phase
             result = coverage_ratio(
                 metric="icr",
-                facts=data.facts,
+                facts=_scaled_facts(data),
                 bindings=data.bindings,
                 periods=data.periods,
                 period_phase=phases,
                 explicit_phases=bool(phases),
             )
             computed = {(row["axis_id"], row["period_id"]): row for row in result["rows"] if row.get("value") is not None}
-        cached = _cached(data, model["row_key"])
+        fas_axes = {axis for axis, _period in computed}
+        if not fas_axes:
+            fas_axes = _row_axes(data, ebitda["row_key"])
+        reference = _coverage_reference(data, fas_axes, None if interest is None else interest["row_key"])
+        if reference is None:
+            return []
+        if reference == "ambiguous":
+            return [
+                self.finding(
+                    data,
+                    params={"cause": "ambiguous", "message": _ICR_AMBIGUOUS},
+                )
+            ]
+        model_key = reference
+        ref_axes = _row_axes(data, model_key) & fas_axes or _row_axes(data, model_key)
+        if not ref_axes:
+            ref_axes = {period["axis_id"] for period in data.periods if period.get("axis_id")}
+        cached = _cached(data, model_key)
         source = _cached(data, ebitda["row_key"])
-        children = [row for row in _child_rows(data, model["row_key"]) if interest is None or row != interest["row_key"]]
+        children = [row for row in _child_rows(data, model_key) if interest is None or row != interest["row_key"]]
         findings = []
+        seen: set[str] = set()
         for period in data.periods:
-            key = (period["axis_id"], period["period_id"])
+            if period["axis_id"] not in ref_axes:
+                continue
+            period_id = period["period_id"]
+            if period_id in seen:
+                continue
+            seen.add(period_id)
+            key = (period["axis_id"], period_id)
             book = cached.get(key)
             source_value = _same_period(source, key)
-            if _blank(book) and _numerator_blank(data, children, period["period_id"]) and source_value is not None:
+            if _blank(book) and _numerator_blank(data, children, period_id) and source_value is not None:
                 findings.append(
                     self.finding(
                         data,
-                        row_key=model["row_key"],
+                        row_key=model_key,
                         axis_id=period["axis_id"],
-                        period_id=period["period_id"],
+                        period_id=period_id,
                         params={
                             "cause": "empty_numerator",
                             "message": _INCOMPLETE_NUMERATOR,
-                            "cells": _named_cells(
-                                data, model["row_key"], ebitda["row_key"], children, period["period_id"]
-                            ),
+                            "cells": _named_cells(data, model_key, ebitda["row_key"], children, period_id),
                         },
                     )
                 )
@@ -222,9 +244,9 @@ class IcrReference(Rule):
                 findings.append(
                     self.finding(
                         data,
-                        row_key=model["row_key"],
+                        row_key=model_key,
                         axis_id=period["axis_id"],
-                        period_id=period["period_id"],
+                        period_id=period_id,
                         params={"cause": "empty_source", "message": _EMPTY_REFERENCE, "cells": []},
                     )
                 )
@@ -235,9 +257,9 @@ class IcrReference(Rule):
             findings.append(
                 self.finding(
                     data,
-                    row_key=model["row_key"],
+                    row_key=model_key,
                     axis_id=period["axis_id"],
-                    period_id=period["period_id"],
+                    period_id=period_id,
                     params={
                         "cause": "mismatch",
                         "message": _ICR_DIVERGENCE,
@@ -247,6 +269,100 @@ class IcrReference(Rule):
                 )
             )
         return findings
+
+
+def _scaled_facts(data: AuditInput) -> list[dict]:
+    """Масштаб строки из проекции, как в расчёте коэффициентов.
+
+    В факте масштаба нет: он лежит в строке. Без него нормализованная EBITDA
+    делится на проценты в единицах листа, и справочный ICR расходится в тысячу раз.
+    """
+
+    scale_of = {
+        str(row.get("row_key")): row.get("scale_factor")
+        for row in data.rows
+        if row.get("row_key") and row.get("scale_factor") not in (None, "")
+    }
+    if not scale_of:
+        return data.facts
+    stamped = []
+    for fact in data.facts:
+        if fact.get("scale_factor") not in (None, ""):
+            stamped.append(fact)
+            continue
+        scale = scale_of.get(str(fact.get("row_key")))
+        stamped.append(fact if scale is None else {**fact, "scale_factor": scale})
+    return stamped
+
+
+def _row_axes(data: AuditInput, row_key: str) -> set[str]:
+    return {fact.get("axis_id") for fact in data.facts if fact.get("row_key") == row_key and fact.get("axis_id")}
+
+
+def _bound_rows(data: AuditInput, concept: str) -> list[str]:
+    found = []
+    for row in data.bindings:
+        if row.get("status") not in _BOUND:
+            continue
+        if (row.get("effective_concept") or row.get("concept")) != concept or not row.get("row_key"):
+            continue
+        if row["row_key"] not in found:
+            found.append(row["row_key"])
+    return found
+
+
+def _coverage_reference(data: AuditInput, fas_axes: set[str], interest_key: str | None) -> str | None:
+    """Строка покрытия на оси расчёта FAS.
+
+    Сначала берётся формула, которая делит строку EBITDA на строку процентов.
+    Если такой формулы нет, берётся привязка `icr` на той же оси. Строка `icr`
+    на другой оси, в том числе на листе итогов, справочником не становится.
+    Несколько кандидатов одного вида дают одну пометку неоднозначности.
+    """
+
+    ebitda_keys = set(_bound_rows(data, "ebitda"))
+    if not fas_axes:
+        labeled = _bound_rows(data, "icr")
+        if len(labeled) > 1:
+            return "ambiguous"
+        return labeled[0] if labeled else None
+    formula_rows = []
+    if interest_key and ebitda_keys:
+        children = _children_by_row(data)
+        for row_key, refs in children.items():
+            if row_key in ebitda_keys or row_key == interest_key:
+                continue
+            if interest_key not in refs or not (refs & ebitda_keys):
+                continue
+            if not (_row_axes(data, row_key) & fas_axes):
+                continue
+            if row_key not in formula_rows:
+                formula_rows.append(row_key)
+    if len(formula_rows) > 1:
+        return "ambiguous"
+    if len(formula_rows) == 1:
+        return formula_rows[0]
+    labeled = [
+        row_key
+        for row_key in _bound_rows(data, "icr")
+        if _row_axes(data, row_key) & fas_axes
+    ]
+    if len(labeled) > 1:
+        return "ambiguous"
+    if len(labeled) == 1:
+        return labeled[0]
+    return None
+
+
+def _children_by_row(data: AuditInput) -> dict[str, set[str]]:
+    by_cell = {fact.get("cell_id"): fact.get("row_key") for fact in data.facts if fact.get("cell_id")}
+    found: dict[str, set[str]] = {}
+    for link in data.links:
+        parent = link.get("row_key")
+        child = by_cell.get(link.get("ref_cell"))
+        if parent and child:
+            found.setdefault(parent, set()).add(child)
+    return found
 
 
 def _blank(value: Decimal | None) -> bool:
