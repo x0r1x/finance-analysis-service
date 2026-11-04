@@ -160,6 +160,16 @@ class DeadlineExceeded(FasError):
     title = "Истек дедлайн"
 
 
+class Interrupted(FasError):
+    code = "interrupted"
+    status = 503
+    retryable = True
+    title = "Операция прервана"
+
+    def __init__(self) -> None:
+        super().__init__("операция прервана перезапуском")
+
+
 class AlreadyExists(FasError):
     """Внутренняя ошибка хранилища: объект уже есть. Наружу не отдаётся как есть."""
 
