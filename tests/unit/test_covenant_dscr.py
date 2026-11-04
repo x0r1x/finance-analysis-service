@@ -650,6 +650,25 @@ def test_icr_uses_accrued_interest_before_paid_interest():
     assert paid["warnings"][-1]["params"]["message"] == INTEREST_BASIS_FALLBACK
 
 
+def test_corporate_dscr_names_each_missing_input():
+    from finance_analysis.application.analyses import _absent_params
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    got = composed_ratio(
+        "dscr",
+        catalog.composed["dscr.corporate_covenant"],
+        facts=[_fact("e", "Y1", "100"), _fact("i", "Y1", "-10"), _fact("p", "Y1", "5")],
+        bindings=[_bind("ebitda", "e"), _bind("interest", "i"), _bind("principal", "p")],
+        periods=[_year()],
+    )
+    params = _absent_params("dscr", got)
+    assert params["inputs"] == ["cash_taxes", "capex"]
+    assert params["message"] == "Для расчёта DSCR не хватает понятий: cash_taxes, capex."
+    quiet = _absent_params("llcr", {"needs_input": [{"subject": "cfads"}]})
+    assert quiet == {"metric": "llcr"}
+
+
 def test_pf_dscr_without_debt_service_names_the_missing_input():
     from finance_analysis.domain.metrics import coverage_ratio
 
@@ -668,6 +687,9 @@ def test_pf_dscr_without_debt_service_names_the_missing_input():
     )
     assert no_cfads["status"] == "missing_input"
     assert no_cfads["needs_input"][0]["subject"] == "cfads"
+    from finance_analysis.application.analyses import _absent_params
+
+    assert _absent_params("dscr", no_cfads)["message"] == "Для расчёта DSCR не хватает понятий: cfads."
     no_principal = coverage_ratio(
         metric="dscr",
         facts=[_fact("c", "Y1", "40"), _fact("i", "Y1", "-10"), _fact("d", "Y1", "100")],

@@ -128,17 +128,22 @@ def _missing(metric: str, bindings: list[dict], needed: tuple[str, ...], absent:
             for row in bindings
             if row.get("status") == "ambiguous" and row.get("effective_concept") in needed
         ]
+    names = [name for name in needed if name not in primaries]
     if ambiguous:
-        return _result(
+        result = _result(
             metric, [], needs=[{"kind": "concept", "reason": "ambiguous", "subject": ambiguous[0]}], status="needs_input"
         )
+        result["missing_inputs"] = names or [ambiguous[0]]
+        return result
     marked = absent_concepts(bindings, absent)
     for name in needed:
         if name not in primaries:
             reason = "absent_in_book" if name in marked else "concept_unknown"
-            return _result(
+            result = _result(
                 metric, [], needs=[{"kind": "concept", "reason": reason, "subject": name}], status="missing_input"
             )
+            result["missing_inputs"] = names
+            return result
     return None
 
 

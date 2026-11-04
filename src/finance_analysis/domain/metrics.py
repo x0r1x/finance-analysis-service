@@ -138,6 +138,7 @@ def coverage_ratio(
             "metric": metric,
             "rows": [],
             "needs_input": [{"kind": "concept", "reason": "ambiguous", "subject": ambiguous[0]}],
+            "missing_inputs": missing or [ambiguous[0]],
             "warnings": warnings,
             "status": "needs_input",
         }
@@ -148,6 +149,7 @@ def coverage_ratio(
             "metric": metric,
             "rows": [],
             "needs_input": [{"kind": "concept", "reason": reason, "subject": subject}],
+            "missing_inputs": list(missing),
             "warnings": warnings,
             "status": "missing_input",
         }

@@ -101,6 +101,26 @@ def _dscr_variant(catalog, verdict) -> str | None:
     return confirmed_variants(catalog, verdict).get("dscr")
 
 
+def _absent_params(metric: str, result: dict) -> dict:
+    """Параметры пропуска необязательной метрики.
+
+    Для DSCR в параметры входят конкретные недостающие понятия и фраза,
+    которая их называет. Остальные метрики по-прежнему называют только себя.
+    """
+
+    params: dict = {"metric": metric}
+    if metric != "dscr":
+        return params
+    names = [str(name) for name in result.get("missing_inputs") or [] if name]
+    if not names:
+        names = [str(item["subject"]) for item in result.get("needs_input") or [] if item.get("subject")]
+    if not names:
+        return params
+    params["inputs"] = names
+    params["message"] = f"Для расчёта DSCR не хватает понятий: {', '.join(names)}."
+    return params
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -682,7 +702,7 @@ class Analyses:
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
-                warnings.append({"code": "input_absent", "params": {"metric": metric}})
+                warnings.append({"code": "input_absent", "params": _absent_params(metric, result)})
                 continue
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
