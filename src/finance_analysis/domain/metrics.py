@@ -104,7 +104,14 @@ def coverage_ratio(
     denominator = _sums(facts, primaries[denominator_name], aligned, periods)
     home = _axes_of(facts, primaries[denominator_name])
     if metric == "icr" and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
-        message = "Числитель ICR не содержит значений на оси процентов. Коэффициент не рассчитан."
+        raw = _sums(facts, primaries[numerator_name], aligned, None)
+        if not _numerator_misses_axis(raw, denominator, periods, aligned, home):
+            message = (
+                "Нарастающий итог числителя ICR не удалось перевести в значение за период. "
+                "Коэффициент не рассчитан."
+            )
+        else:
+            message = "Числитель ICR не содержит значений на оси процентов. Коэффициент не рассчитан."
         return _explained(metric, periods, "input_absent", message, warnings)
     rows = []
     for period in periods:

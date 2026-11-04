@@ -550,6 +550,26 @@ def test_icr_states_when_the_numerator_basis_or_axis_does_not_fit():
     assert split["status"] == "input_absent"
     assert split["rows"]
     assert "оси процентов" in split["message"]
+    span = _quarters(2024, 8)
+    ends = [span[3], span[7]]
+    wiped = coverage_ratio(
+        metric="icr",
+        **_common(
+            span,
+            _series("e", ends, ["40", "40"]) + _series("i", span, ["-10"] * 8),
+            [
+                _binding(
+                    "ebitda",
+                    "e",
+                    evidence_json=json.dumps({"period_basis": "ytd", "period_basis_source": "header"}),
+                ),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    assert wiped["status"] == "input_absent"
+    assert "не удалось перевести в значение за период" in wiped["message"]
+    assert "оси процентов" not in wiped["message"]
 
 
 def test_ltm_row_is_taken_as_is_and_not_summed_over_four_quarters():
