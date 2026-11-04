@@ -330,3 +330,9 @@ def test_synthetic_book_tags_the_income_statement_as_year_to_date():
     assert got["cf-interest"].evidence["period_basis"] == "period"
     assert got["cf-interest"].is_primary
     assert got["pl-interest"].is_primary is False
+    assert got["cf-debt"].evidence["match_strength"] == "exact"
+    assert got["cf-debt"].is_primary
+    assert got["cf-debt"].status == "bound"
+    assert got["balance-a"].is_primary is False
+    assert got["balance-b"].is_primary is False
+    assert got["balance-a"].status != "ambiguous"

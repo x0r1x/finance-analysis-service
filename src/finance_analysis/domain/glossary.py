@@ -237,10 +237,11 @@ class GlossaryPackage:
         return found[0] if found else None
 
     def resolve_match(self, text: str) -> tuple[LabelHit, str] | None:
-        """Одно понятие и сила: exact — тело подписи, stem — тело без хвоста в скобках, abbrev — только скобка.
+        """Одно понятие и сила: exact — тело подписи, abbrev — только скобка.
 
         Два ключа на разные понятия не привязываются. Тело, совпавшее вместе со
-        своей аббревиатурой, остаётся exact. Пояснение в скобках слабее точной метки.
+        своей аббревиатурой, остаётся exact. Голова подписи до пояснения в скобках
+        тоже exact, если она совпала с меткой глоссария.
         """
 
         peeled = _peel(text)
@@ -249,7 +250,7 @@ class GlossaryPackage:
         if body:
             hit = self._by_norm.get(body)
             if hit is not None:
-                found.append((hit, "stem" if peeled.stem else "exact"))
+                found.append((hit, "exact"))
         for abbrev in peeled.abbrevs:
             key = _fold(abbrev)
             if not key or key == body:

@@ -237,15 +237,6 @@ def _one_primary(
                     row, item = draft[index]
                     draft[index] = (row, _abbrev_aside(item))
                 indexes = strong
-        if len(indexes) >= 2:
-            # Хвост в скобках слабее точной метки: строка остаётся привязанной, но не основной.
-            weak = [index for index in indexes if _stem_only(draft[index][1])]
-            strong = [index for index in indexes if index not in weak]
-            if strong and weak:
-                for index in weak:
-                    row, item = draft[index]
-                    draft[index] = (row, _drop_primary(item))
-                indexes = strong
         indexes = _without_parts(draft, indexes)
         if len(indexes) < 2:
             _veto_assumptions(draft, indexes, roles, filtered or {})
@@ -326,10 +317,6 @@ def _exact_lexical(item: Assignment) -> bool:
 
 def _abbrev_only(item: Assignment) -> bool:
     return item.evidence.get("match_strength") == "abbrev" and item.source != "confirmed"
-
-
-def _stem_only(item: Assignment) -> bool:
-    return item.evidence.get("match_strength") == "stem" and item.source != "confirmed"
 
 
 def _abbrev_aside(item: Assignment) -> Assignment:
