@@ -272,6 +272,20 @@ def test_missing_series_scores_zero_on_the_one_axis():
     assert again["short"].is_primary is False and again["other"].is_primary is False
 
 
+def test_cash_capex_without_acquisitions_wins_by_quarterly_coverage():
+    rows = [
+        _row("short", "Капитальные затраты", sheet="Model"),
+        _row("cash", "Капитальные затраты без учета приобретений с учетом НДС за кв.", sheet="Notes"),
+    ]
+    periods = {
+        "short": {("left", str(i)): 1 for i in range(2)},
+        "cash": {("right", str(i)): 1 for i in range(8)},
+    }
+    got = _assigned(rows, periods=periods, calendar=_calendar(periods))
+    assert got["cash"].is_primary and got["cash"].evidence["selection"] == "period_coverage"
+    assert got["short"].is_primary is False
+
+
 def test_period_coverage_does_not_compare_quarters_with_years():
     rows = [
         _row("quarters", "Interest", sheet="Model"),
