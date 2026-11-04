@@ -12,6 +12,7 @@ from finance_analysis.domain.calibration import (
     heuristic_probability,
 )
 from finance_analysis.domain.candidates import Candidate, RowEvidence
+from finance_analysis.domain.components import component_records, scenario_of
 from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.references import blank_series, link_target, values_match
@@ -75,6 +76,7 @@ def assign_rows(
             item = replace(item, evidence={**item.evidence, "degraded": list(found.degraded)})
         draft.append((row, item))
     _mark_references(draft, links, periods, roles)
+    _mark_facets(draft, links)
     _one_primary(draft, roles, periods, filtered)
     total = sum((abs_by_row or {}).values()) or 0
     assigned = {}
@@ -214,17 +216,17 @@ def _one_primary(
         if item.is_primary and item.concept and item.status in {"bound", "bound_with_warning"}:
             owners.setdefault(item.concept, []).append(index)
     for indexes in list(owners.values()):
-        if len(indexes) < 2:
-            _veto_assumptions(draft, indexes, roles, filtered or {})
-            continue
         # Аббревиатура в скобке не спорит с телом той же метки (§5.5).
-        weak = [index for index in indexes if _abbrev_only(draft[index][1])]
-        strong = [index for index in indexes if index not in weak]
-        if strong and weak:
-            for index in weak:
-                row, item = draft[index]
-                draft[index] = (row, _abbrev_aside(item))
-            indexes = strong
+        # Её снимаем до частей и сценария, чтобы слабое совпадение не стало bound.
+        if len(indexes) >= 2:
+            weak = [index for index in indexes if _abbrev_only(draft[index][1])]
+            strong = [index for index in indexes if index not in weak]
+            if strong and weak:
+                for index in weak:
+                    row, item = draft[index]
+                    draft[index] = (row, _abbrev_aside(item))
+                indexes = strong
+        indexes = _without_parts(draft, indexes)
         if len(indexes) < 2:
             _veto_assumptions(draft, indexes, roles, filtered or {})
             continue
@@ -413,6 +415,102 @@ def _mark_references(draft, links, periods, roles: SheetRoles | None) -> None:
             row,
             replace(item, evidence={**item.evidence, "role": "reference", "reference_of": target}),
         )
+
+
+def _mark_facets(draft, links) -> None:
+    """Ставит роль component и сценарий до выбора основной строки.
+
+    `draft` — пары строки и привязки. `links` — рёбра графа формул. Часть
+    итога того же понятия теряет право быть единственным фактом: в `evidence`
+    пишутся `role`, `member`, `component_of` и, если это доказала формула,
+    `total_row`. Сценарий `alt` или `base` пишется каждой строке с понятием.
+    Статус здесь не меняется.
+    """
+
+    concepts: dict[str, str] = {}
+    skip: set[str] = set()
+    for row, item in draft:
+        key = str(row.get("row_key") or "")
+        if not key:
+            continue
+        if item.evidence.get("role") == "reference" or _abbrev_only(item):
+            skip.add(key)
+            continue
+        if item.concept and item.status in {"bound", "bound_with_warning", "ambiguous"}:
+            concepts[key] = item.concept
+    records = component_records(
+        [row for row, _item in draft],
+        concepts,
+        links,
+        skip=skip,
+    )
+    for index, (row, item) in enumerate(draft):
+        evidence = dict(item.evidence)
+        scenario = scenario_of(row)
+        if item.concept or scenario == "alt":
+            evidence["scenario"] = scenario
+        extra = records.get(str(row.get("row_key") or ""))
+        if extra and evidence.get("role") != "reference":
+            evidence.update(extra)
+        if evidence != item.evidence:
+            draft[index] = (row, replace(item, evidence=evidence))
+
+
+def _without_parts(draft, indexes: list[int]) -> list[int]:
+    """Убирает части итога и сценарий alt из пула основной строки.
+
+    `indexes` — кандидаты одного понятия, которые сейчас основные.
+    Строка с ролью `component` или со сценарием `alt` теряет `is_primary`.
+    Подтверждённая строка остаётся. Если подтверждена часть и итог того же
+    понятия найден, в `evidence` добавляется предупреждение
+    `component_over_total`. Статус не меняется. Если после отсечения осталась
+    одна неподтверждённая строка, причина пишется в `selection`.
+    """
+
+    if not indexes:
+        return indexes
+    concept = draft[indexes[0]][1].concept
+    total = _has_total(draft, concept)
+    dropped_component = False
+    dropped_scenario = False
+    kept: list[int] = []
+    for index in indexes:
+        row, item = draft[index]
+        part = item.evidence.get("role") == "component"
+        alt = item.evidence.get("scenario") == "alt"
+        if not part and not alt:
+            kept.append(index)
+            continue
+        if item.source == "confirmed":
+            if part and total:
+                warnings = [code for code in item.evidence.get("warnings") or [] if code != "component_over_total"]
+                warnings.append("component_over_total")
+                draft[index] = (row, replace(item, evidence={**item.evidence, "warnings": warnings}))
+            kept.append(index)
+            continue
+        dropped_component = dropped_component or part
+        dropped_scenario = dropped_scenario or alt
+        draft[index] = (row, _drop_primary(item))
+    if len(kept) == 1 and (dropped_component or dropped_scenario):
+        row, item = draft[kept[0]]
+        if item.source != "confirmed" and "selection" not in item.evidence:
+            reason = "component" if dropped_component else "scenario"
+            draft[kept[0]] = (row, replace(item, evidence={**item.evidence, "selection": reason}))
+    return kept
+
+
+def _has_total(draft, concept: str | None) -> bool:
+    """Есть ли у понятия итог, который не является частью или ссылкой."""
+
+    if not concept:
+        return False
+    for _row, item in draft:
+        if item.concept != concept or item.status not in {"bound", "bound_with_warning"}:
+            continue
+        if item.evidence.get("role") in {"component", "reference"}:
+            continue
+        return True
+    return False
 
 
 def _copy_target(row, rows, periods, targets: dict[str, str], roles: SheetRoles | None) -> str | None:
