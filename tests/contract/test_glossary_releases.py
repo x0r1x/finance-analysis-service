@@ -332,3 +332,46 @@ async def test_release_dry_run_query_agrees_with_body(app):
         assert made.json()["version"]
         state, _etag = await _state(client)
         assert state["seq"] == 2
+
+
+async def test_dry_run_query_changes_the_idempotency_key(app):
+    async with _client(app) as client:
+        _body, etag = await _state(client)
+        headers = {**HEADERS, "If-Match": etag, "Idempotency-Key": "dry-1"}
+        preview = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "true"},
+            json={"ops": [_PREF]},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["dry_run"] is True
+        replay = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "true"},
+            json={"ops": [_PREF]},
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == preview.json()
+        state, etag = await _state(client)
+        assert state["seq"] == 1
+
+        clash = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "false"},
+            json={"ops": [_PREF]},
+        )
+        assert clash.status_code == 422, clash.text
+        assert clash.json()["code"] == "idempotency_key_reused"
+        denied = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "false"},
+            json={"ops": [_PREF], "dry_run": True},
+        )
+        assert denied.status_code == 400, denied.text
+        assert denied.json()["code"] == "invalid_argument"
+        state, _etag = await _state(client)
+        assert state["seq"] == 1

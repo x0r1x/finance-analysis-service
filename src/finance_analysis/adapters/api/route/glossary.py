@@ -91,6 +91,13 @@ def register(app, settings, *, svc, write, read) -> None:
 
     @app.post("/v1/glossary/releases")
     async def glossary_release(request: Request, dry_run: str | None = None):
+        def fingerprint(raw: bytes, body: dict) -> bytes:
+            # Флаг участвует в ключе идемпотентности. Иначе повтор с тем же телом
+            # и другим ?dry_run= вернёт сохранённый ответ и не проверит расхождение.
+            flag = agreed_dry_run(dry_run, body)
+            mark = b"true" if flag else b"false"
+            return raw + b"\ndry_run=" + mark
+
         async def run(gloss, body, match):
             _admin(request)
             preview = agreed_dry_run(dry_run, body)
@@ -99,7 +106,7 @@ def register(app, settings, *, svc, write, read) -> None:
                 return await gloss.release([], match, dry_run=preview, source=source, document=body.get("document"))
             return await gloss.release(body.get("ops") or [], match, dry_run=preview, source=source)
 
-        return await write(request, run)
+        return await write(request, run, fingerprint=fingerprint)
 
     @app.get("/v1/glossary/releases/{version}")
     async def glossary_release_one(version: str, request: Request):
