@@ -1,7 +1,8 @@
 """Локальная проверка типа книги К3. В CI файла нет — тест пропускается.
 
-Ожидаемый тип лежит рядом с книгой в `.local.yaml` и в репозиторий не входит.
-Имя клиента в тесте не пишется.
+Привязки и primary лежат рядом с книгой в `.local.yaml` и в репозиторий не входят.
+Ожидаемый тип — corporate: primary в файле должен совпасть, вывод — уверенный
+с этой меткой. Имя клиента в тесте не пишется.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import yaml
 
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.domain.model_type import infer
+from tests.k3_expect import assert_confident_primary
 
 _PATH = os.environ.get("FAS_LOCAL_BOOK_K3")
 
@@ -37,4 +39,4 @@ def test_k3_type_matches_local_expectation():
         accept=0.6,
         gap=0.15,
     )
-    assert got.primary == primary
+    assert_confident_primary(got, primary)

@@ -60,6 +60,7 @@ pythonpath = ["."]
 markers = [
   "s3: needs an S3 API (moto or MinIO)",
   "minio: needs the MinIO server binary",
+  "eval: прогон точности типа модели; К3 в него не входит",
 ]
 
 [tool.importlinter]

@@ -1,0 +1,338 @@
+{
+  "accept": 0.6,
+  "cases": [
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "project_finance"
+        ],
+        "primary": "project_finance",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "packt",
+      "labels": [
+        "project_finance"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "project_finance",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "corporate": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 1.0
+      },
+      "top1": "project_finance",
+      "top1_score": 1.0,
+      "top2": "corporate",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "project_finance"
+        ],
+        "primary": "project_finance",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "rvi",
+      "labels": [
+        "project_finance"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "project_finance",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "corporate": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 1.0
+      },
+      "top1": "project_finance",
+      "top1_score": 1.0,
+      "top2": "corporate",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "project_finance"
+        ],
+        "primary": "project_finance",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "toll_road",
+      "labels": [
+        "project_finance"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "project_finance",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "corporate": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 1.0
+      },
+      "top1": "project_finance",
+      "top1_score": 1.0,
+      "top2": "corporate",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "investment_project"
+        ],
+        "primary": "investment_project",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "port",
+      "labels": [
+        "investment_project"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "investment_project",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "corporate": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 1.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0
+      },
+      "top1": "investment_project",
+      "top1_score": 1.0,
+      "top2": "corporate",
+      "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "ppp_concession",
+          "project_finance"
+        ],
+        "primary": "ppp_concession",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 0.0,
+      "id": "hybrid_ppp",
+      "labels": [
+        "ppp_concession",
+        "project_finance"
+      ],
+      "meets_accept": true,
+      "meets_gap": false,
+      "primary": "ppp_concession",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "corporate": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "ppp_concession": 1.0,
+        "project_finance": 1.0
+      },
+      "top1": "ppp_concession",
+      "top1_score": 1.0,
+      "top2": "project_finance",
+      "top2_score": 1.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "corporate"
+        ],
+        "primary": "corporate",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "corporate",
+      "labels": [
+        "corporate"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "corporate",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "corporate": 1.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0
+      },
+      "top1": "corporate",
+      "top1_score": 1.0,
+      "top2": "development_escrow",
+      "top2_score": 0.0
+    },
+    {
+      "confident": false,
+      "expected": {
+        "kind": "question",
+        "labels": [],
+        "primary": null,
+        "reason": "ambiguous"
+      },
+      "false_positives": [],
+      "gap": 0.0,
+      "id": "ambiguous_statements_and_debt",
+      "labels": [],
+      "meets_accept": true,
+      "meets_gap": false,
+      "primary": "corporate",
+      "primary_hit": null,
+      "question_hit": true,
+      "reason": "ambiguous",
+      "scores": {
+        "corporate": 1.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 1.0
+      },
+      "top1": "corporate",
+      "top1_score": 1.0,
+      "top2": "project_finance",
+      "top2_score": 1.0
+    },
+    {
+      "confident": false,
+      "expected": {
+        "kind": "question",
+        "labels": [],
+        "primary": null,
+        "reason": "unknown"
+      },
+      "false_positives": [],
+      "gap": 0.0,
+      "id": "ask_instead_of_other",
+      "labels": [],
+      "meets_accept": false,
+      "meets_gap": false,
+      "primary": "corporate",
+      "primary_hit": null,
+      "question_hit": true,
+      "reason": "unknown",
+      "scores": {
+        "corporate": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0
+      },
+      "top1": "corporate",
+      "top1_score": 0.0,
+      "top2": "development_escrow",
+      "top2_score": 0.0
+    },
+    {
+      "confident": false,
+      "expected": {
+        "kind": "question",
+        "labels": [],
+        "primary": null,
+        "reason": "unknown"
+      },
+      "false_positives": [],
+      "gap": 0.0,
+      "id": "partial_npv",
+      "labels": [],
+      "meets_accept": false,
+      "meets_gap": false,
+      "primary": "corporate",
+      "primary_hit": null,
+      "question_hit": true,
+      "reason": "unknown",
+      "scores": {
+        "corporate": 0.0,
+        "development_escrow": 0.0,
+        "investment_project": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0
+      },
+      "top1": "corporate",
+      "top1_score": 0.0,
+      "top2": "development_escrow",
+      "top2_score": 0.0
+    }
+  ],
+  "gap": 0.15,
+  "summary": {
+    "decision_accuracy": 1.0,
+    "decisions_correct": 9,
+    "false_positives": {
+      "corporate": {
+        "count": 0,
+        "rate": 0.0
+      },
+      "development_escrow": {
+        "count": 0,
+        "rate": 0.0
+      },
+      "investment_project": {
+        "count": 0,
+        "rate": 0.0
+      },
+      "other": {
+        "count": 0,
+        "rate": 0.0
+      },
+      "ppp_concession": {
+        "count": 0,
+        "rate": 0.0
+      },
+      "project_finance": {
+        "count": 0,
+        "rate": 0.0
+      }
+    },
+    "n": 9,
+    "primary_accuracy": 1.0,
+    "primary_correct": 6,
+    "question_rate": 0.3333333333333333,
+    "questions": 3,
+    "typed": 6
+  }
+}

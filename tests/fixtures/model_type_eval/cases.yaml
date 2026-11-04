@@ -1,0 +1,73 @@
+# Прогон типа модели. Пороги — те же, что FAS_MODEL_TYPE_ACCEPT и FAS_MODEL_TYPE_GAP.
+# Packt и RVI грузятся как книги: имена листов и привязки не подменяются.
+# К3 сюда не входит.
+accept: 0.6
+gap: 0.15
+cases:
+  - id: packt
+    source: book
+    alias: packt
+    expect:
+      kind: type
+      primary: project_finance
+      labels: [project_finance]
+  - id: rvi
+    source: book
+    alias: rvi
+    expect:
+      kind: type
+      primary: project_finance
+      labels: [project_finance]
+  - id: toll_road
+    source: bound
+    bound: [cfads, debt_service, npv, irr, discount_rate]
+    sheets: [Assumptions, Cash Flow, Returns]
+    expect:
+      kind: type
+      primary: project_finance
+      labels: [project_finance]
+  - id: port
+    source: bound
+    bound: [npv, irr, discount_rate, project_fcf]
+    sheets: [Inputs, Base Model, Scenarios]
+    expect:
+      kind: type
+      primary: investment_project
+      labels: [investment_project]
+  - id: hybrid_ppp
+    source: bound
+    bound: [grantor_payment, cfads, debt_service]
+    sheets: []
+    expect:
+      kind: type
+      primary: ppp_concession
+      labels: [ppp_concession, project_finance]
+  - id: corporate
+    source: bound
+    bound: []
+    sheets: [ОПиУ, Баланс, ДДС]
+    expect:
+      kind: type
+      primary: corporate
+      labels: [corporate]
+  - id: ambiguous_statements_and_debt
+    source: bound
+    bound: [cfads, debt_service]
+    sheets: [ОПиУ, Баланс, ДДС]
+    expect:
+      kind: question
+      reason: ambiguous
+  - id: ask_instead_of_other
+    source: bound
+    bound: []
+    sheets: [Notes]
+    expect:
+      kind: question
+      reason: unknown
+  - id: partial_npv
+    source: bound
+    bound: [npv, irr]
+    sheets: []
+    expect:
+      kind: question
+      reason: unknown
