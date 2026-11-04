@@ -319,6 +319,20 @@ async def test_release_dry_run_query_agrees_with_body(app):
         )
         assert odd.status_code == 400, odd.text
         assert odd.json()["code"] == "invalid_argument"
+        text = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [_PREF], "dry_run": "false"},
+        )
+        assert text.status_code == 400, text.text
+        assert text.json()["code"] == "invalid_argument"
+        quoted = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [_PREF], "dry_run": "true"},
+        )
+        assert quoted.status_code == 400, quoted.text
+        assert quoted.json()["code"] == "invalid_argument"
         state, etag = await _state(client)
         assert state["seq"] == 1
 

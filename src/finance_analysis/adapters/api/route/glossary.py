@@ -18,24 +18,23 @@ def agreed_dry_run(query: str | None, body: dict) -> bool:
     """Берёт флаг пробного прогона из строки запроса и из тела.
 
     `?dry_run=true` или `false` и поле `dry_run` в теле задают один и тот же
-    прогон. В теле годится логическое значение или такая же строка. Если задан
-    только один источник, берётся он. Если заданы оба и значения разные, запрос
-    отклоняется. Если не задан ни один, релиз записывается по-настоящему.
-    Строка сравнивается без учёта регистра.
+    прогон. В строке запроса это слова true и false без учёта регистра. В теле
+    годится только логическое значение: строка `"false"` не считается пробным
+    прогоном и не записывает релиз. Если задан только один источник, берётся он.
+    Если заданы оба и значения разные, запрос отклоняется. Если не задан ни
+    один, релиз записывается по-настоящему.
     """
 
-    from_query = _dry_run_flag(query) if query is not None else None
+    from_query = _query_flag(query) if query is not None else None
     if "dry_run" in body:
-        from_body = _dry_run_flag(body.get("dry_run"))
+        from_body = _body_flag(body.get("dry_run"))
         if from_query is not None and from_query is not from_body:
             raise InvalidArgument("dry_run в строке запроса и в теле не совпадают")
         return from_body
     return bool(from_query)
 
 
-def _dry_run_flag(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
+def _query_flag(value: object) -> bool:
     if isinstance(value, str):
         token = value.casefold()
         if token == "true":
@@ -43,6 +42,12 @@ def _dry_run_flag(value: object) -> bool:
         if token == "false":
             return False
     raise InvalidArgument("dry_run должен быть true или false")
+
+
+def _body_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise InvalidArgument("dry_run в теле должен быть логическим true или false")
 
 
 def register(app, settings, *, svc, write, read) -> None:
