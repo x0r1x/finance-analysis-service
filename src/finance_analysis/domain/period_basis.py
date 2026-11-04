@@ -1,10 +1,11 @@
 """Способ показа периода у fact-строки (§5.5.2).
 
 У строки, которая не `ytd` и не `ltm`, способ показа — `period`.
-`ytd` ставится только по заголовку или по формуле этой же строки, которая
-прибавляет предыдущую ячейку и сбрасывается в начале года. Форма ряда
-основанием не служит. `unknown` здесь не ставится: это обычный исход для
-строки без признака, и каскад считает его сильнее `ytd`.
+`ytd` ставится по заголовку или по формуле этой же строки, которая
+прибавляет предыдущую ячейку и сбрасывается в начале года. Явный заголовок
+сильнее формулы: формула его не отменяет. Форма ряда основанием не служит.
+`unknown` здесь не ставится: это обычный исход для строки без признака,
+и каскад считает его сильнее `ytd`.
 """
 
 from __future__ import annotations
@@ -43,12 +44,13 @@ def classify_period_basis(
         return "ltm", "label"
     row_header = _row_header(row)
     columns = _column_headers(series, calendar)
+    # Заголовок листа, раздела или согласованных колонок сильнее любой формулы.
+    if _phrase_ytd(row_header) or _columns_agree(columns, _phrase_ytd):
+        return "ytd", "header"
     if _phrase_ltm(row_header) or _columns_agree(columns, _phrase_ltm):
         return "ltm", "header"
     if _ltm_formula(row, links, calendar, series, facts):
         return "ltm", "formula"
-    if _phrase_ytd(row_header) or _columns_agree(columns, _phrase_ytd):
-        return "ytd", "header"
     if _ytd_formula(row, links, calendar, series, facts):
         return "ytd", "formula"
     return "period", "default"

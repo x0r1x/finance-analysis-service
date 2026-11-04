@@ -154,6 +154,26 @@ def test_a_later_derive_keeps_formula_links_on_the_projection():
     assert "attach_graph_links" in inspect.getsource(FasService._fold_derived)
 
 
+def test_a_ytd_header_wins_over_a_formula_that_looks_like_four_quarters():
+    periods = ["2024Q4", "2025Q4"]
+    calendar = _quarter_calendar(["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1", "2025Q2", "2025Q3", "2025Q4"])
+    links = []
+    for year in (2024, 2025):
+        for quarter in range(1, 5):
+            links.append(_formula_link(f"S!S{year}{quarter}", "src", f"{year}Q{quarter}", None, None))
+        for quarter in range(1, 5):
+            links.append(
+                _formula_link(f"S!Y{year}", "flow", f"{year}Q4", "=SUM(S1:S4)", f"S!S{year}{quarter}")
+            )
+    series = {("ax", period): 100 for period in periods}
+    row = _row("flow", "Проценты", parent_label="накопленным итогом за год")
+    assert classify_period_basis(row, calendar=calendar, links=links, series=series) == ("ytd", "header")
+    for period in periods:
+        calendar[("ax", period)] = {**calendar[("ax", period)], "header_text": "накопленным итогом за год"}
+    agreed = _row("flow", "Проценты")
+    assert classify_period_basis(agreed, calendar=calendar, links=links, series=series) == ("ytd", "header")
+
+
 def test_a_column_header_applies_only_when_every_numeric_column_agrees():
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]
     series = {("ax", period): 10 * (index + 1) for index, period in enumerate(periods)}
