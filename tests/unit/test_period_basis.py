@@ -756,6 +756,24 @@ def test_ltm_numerator_uses_a_full_denominator_window():
     assert rolled["rows"][0]["reason"] == "partial_window"
 
 
+def test_finance_costs_alias_does_not_replace_the_cascade_primary():
+    rows = [
+        _row("flow", "Interest", sheet="Cash flow"),
+        _row(
+            "alias",
+            "Финансовые расходы",
+            sheet="Отчет о финансовых результатах",
+            parent_label="накопленным итогом за год",
+        ),
+    ]
+    got = _assigned(rows)
+    assert got["alias"].concept == "interest"
+    assert got["alias"].evidence["period_basis"] == "ytd"
+    assert got["flow"].is_primary
+    assert got["flow"].evidence["selection"] == "period_basis"
+    assert got["alias"].is_primary is False
+
+
 def test_quarterly_component_interest_beats_the_cumulative_income_statement():
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1"]
     calendar = _quarter_calendar(periods)
