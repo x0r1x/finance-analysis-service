@@ -25,6 +25,7 @@ from finance_analysis.domain.metrics import (
     coverage_ratio,
     quantize_ratio,
 )
+from finance_analysis.domain.period_basis import keys_for_basis
 
 # Длина периода по `grain` оси builder. Неизвестный grain — длина неизвестна.
 GRAIN_MONTHS = {"year": 12, "model_year": 12, "half": 6, "half_year": 6, "quarter": 3, "month": 1}
@@ -174,8 +175,8 @@ def adscr(
         return {**dscr, "metric": "adscr"}
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
-    cfads = _sums(facts, primaries["cfads"], aligned)
-    debt = _sums(facts, primaries["debt_service"], aligned)
+    cfads = _sums(facts, primaries["cfads"], aligned, periods)
+    debt = _sums(facts, primaries["debt_service"], aligned, periods)
     rows: list[dict] = []
     warnings = list(dscr["warnings"])
     for axis in sorted(_axes_of(facts, primaries["debt_service"])):
@@ -196,13 +197,15 @@ def adscr(
                 rows.append(_row("adscr", period, None, "not_computed", "partial_window", direction=direction))
                 continue
             keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in window]
-            if any(key not in cfads or key not in debt for key in keys):
+            earned_keys = keys_for_basis(keys, primaries["cfads"])
+            paid_keys = keys_for_basis(keys, primaries["debt_service"])
+            if any(key not in cfads for key in earned_keys) or any(key not in debt for key in paid_keys):
                 rows.append(_row("adscr", period, None, "missing_input", "no_binding", direction=direction))
                 continue
             with localcontext() as ctx:
                 _ctx(ctx)
-                paid = sum((_payment(debt[key], sign_convention) for key in keys), Decimal(0))
-                earned = sum((cfads[key] for key in keys), Decimal(0))
+                paid = sum((_payment(debt[key], sign_convention) for key in paid_keys), Decimal(0))
+                earned = sum((cfads[key] for key in earned_keys), Decimal(0))
             if paid == 0:
                 rows.append(_row("adscr", period, None, "no_debt_service", "zero_denominator", direction=direction))
                 continue
@@ -251,7 +254,8 @@ def dscr_reductions(
     """`dscr_min` — минимум по тестовым периодам; `dscr_avg` — двумя способами.
 
     Среднее отдаётся как среднее отношений (`mean_of_ratios`) и как отношение
-    сумм (`ratio_of_sums`), с явным названием варианта (§5.7).
+    сумм (`ratio_of_sums`), с явным названием варианта (§5.7). Строка `ltm`
+    в отношение сумм входит один раз, на последний тестовый период.
     """
 
     dscr = coverage_ratio(
@@ -269,8 +273,8 @@ def dscr_reductions(
         return {**dscr, "metric": metric}
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
-    cfads = _sums(facts, primaries["cfads"], aligned)
-    debt = _sums(facts, primaries["debt_service"], aligned)
+    cfads = _sums(facts, primaries["cfads"], aligned, periods)
+    debt = _sums(facts, primaries["debt_service"], aligned, periods)
     by_axis: dict[str, list[dict]] = {}
     for row in dscr["rows"]:
         if row["status"] == "computed":
@@ -286,8 +290,10 @@ def dscr_reductions(
             _ctx(ctx)
             mean = quantize_ratio(sum((row["value"] for row in computed), Decimal(0)) / len(computed))
             keys = [aligned.get((axis, pid), (axis, pid)) for pid in tested]
-            paid = sum((_payment(debt[key], sign_convention) for key in keys), Decimal(0))
-            earned = sum((cfads[key] for key in keys), Decimal(0))
+            earned_keys = keys_for_basis(keys, primaries["cfads"])
+            paid_keys = keys_for_basis(keys, primaries["debt_service"])
+            paid = sum((_payment(debt[key], sign_convention) for key in paid_keys), Decimal(0))
+            earned = sum((cfads[key] for key in earned_keys), Decimal(0))
         base = {"axis_id": axis, "period_id": None}
         rows.append(_row(metric, base, mean, "computed", None, variant="mean_of_ratios", over=tested))
         rows.append(_row(metric, base, _ratio(earned, paid), "computed", None, variant="ratio_of_sums", over=tested))
@@ -325,10 +331,10 @@ def loan_life_ratio(
         return missing
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
-    cfads = _sums(facts, primaries["cfads"], aligned)
-    debt = _sums(facts, primaries["debt_service"], aligned)
-    balance = _sums(facts, primaries["debt_outstanding"], aligned)
-    rate_by_key = _sums(facts, primaries["discount_rate"], aligned)
+    cfads = _sums(facts, primaries["cfads"], aligned, periods)
+    debt = _sums(facts, primaries["debt_service"], aligned, periods)
+    balance = _sums(facts, primaries["debt_outstanding"], aligned, periods)
+    rate_by_key = _sums(facts, primaries["discount_rate"], aligned, periods)
     rates = sorted(set(rate_by_key.values()))
     warnings: list[dict] = []
     rows: list[dict] = []

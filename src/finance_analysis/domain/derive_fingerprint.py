@@ -19,13 +19,13 @@ import hashlib
 from functools import lru_cache
 from pathlib import Path
 
-# Выбор строки и роли листа живут в mapping.py. Отдельного модуля способа
-# показа периода ещё нет: когда он появится, его путь добавляется сюда.
-# Путь указан от каталога пакета, без `src/finance_analysis`: в образе
-# пакет лежит в site-packages, а не в дереве исходников.
+# Выбор строки и роли листа живут в mapping.py. Способ показа периода —
+# в period_basis.py. Путь указан от каталога пакета, без `src/finance_analysis`:
+# в образе пакет лежит в site-packages, а не в дереве исходников.
 PACKAGE_SOURCES = (
     "domain/derive_fingerprint.py",
     "domain/mapping.py",
+    "domain/period_basis.py",
     "domain/components.py",
     "domain/references.py",
     "domain/semantics.py",

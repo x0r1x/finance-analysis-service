@@ -24,6 +24,7 @@ from finance_analysis.domain.metrics import (
     coverage_ratio,
 )
 from finance_analysis.domain.model_type import Composed, Side
+from finance_analysis.domain.period_basis import basis_of
 from finance_analysis.domain.returns import project_return
 
 DEFAULT_DEFINITION_TEXT = "определение по умолчанию, не из договора"
@@ -170,7 +171,8 @@ def composed_ratio(
         return missing
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
-    series = {name: _sums(facts, primaries[name], aligned) for name in dict.fromkeys(needed)}
+    series = {name: _sums(facts, primaries[name], aligned, periods) for name in dict.fromkeys(needed)}
+    basis = {name: basis_of(primaries[name])[0] for name in series}
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
     inputs = list(dict.fromkeys(needed))
     rows = []
@@ -186,10 +188,10 @@ def composed_ratio(
                 continue
             if metric == "net_debt_ebitda":
                 numerator = _ending(keys, series, "net_debt")
-                denominator = _part(keys, series, "ebitda", sign_convention, False)
+                denominator = _part(keys, series, "ebitda", sign_convention, False, basis)
             else:
-                numerator = _total(keys, series, formula.numerator, sign_convention, pay_plus=False)
-                denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True)
+                numerator = _total(keys, series, formula.numerator, sign_convention, pay_plus=False, basis=basis)
+                denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True, basis=basis)
             if numerator is None or denominator is None:
                 rows.append(_line(metric, period, None, "missing_input", "no_binding", inputs, window))
                 continue
@@ -273,24 +275,27 @@ def _ending(keys, series: dict, name: str) -> Decimal | None:
     return series[name][keys[-1]]
 
 
-def _total(keys, series: dict, side: Side, convention: str, *, pay_plus: bool) -> Decimal | None:
+def _total(keys, series: dict, side: Side, convention: str, *, pay_plus: bool, basis: dict | None = None) -> Decimal | None:
     total = Decimal(0)
     for name in side.plus:
-        part = _part(keys, series, name, convention, pay_plus)
+        part = _part(keys, series, name, convention, pay_plus, basis)
         if part is None:
             return None
         total += part
     for name in side.minus:
-        part = _part(keys, series, name, convention, True)
+        part = _part(keys, series, name, convention, True, basis)
         if part is None:
             return None
         total -= part
     return total
 
 
-def _part(keys, series: dict, name: str, convention: str, pay: bool) -> Decimal | None:
+def _part(keys, series: dict, name: str, convention: str, pay: bool, basis: dict | None = None) -> Decimal | None:
+    """Складывает окно. Строка `ltm` берётся как есть на конец окна и не суммируется."""
+
+    chosen = keys[-1:] if basis and basis.get(name) == "ltm" and keys else keys
     total = Decimal(0)
-    for key in keys:
+    for key in chosen:
         if key not in series[name]:
             return None
         value = series[name][key]
@@ -319,7 +324,7 @@ def _mismatch(rows, facts, bindings, periods, absent) -> list[dict]:
     if book is None:
         return []
     aligned = aligned_keys(periods)
-    cached = _sums(facts, book, aligned)
+    cached = _sums(facts, book, aligned, periods)
     for row in rows:
         if row.get("value") is None:
             continue

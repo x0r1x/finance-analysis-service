@@ -15,6 +15,11 @@ from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.components import component_records, scenario_of
 from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
 from finance_analysis.domain.model_type import sheet_name_key
+from finance_analysis.domain.period_basis import (
+    classify_period_basis,
+    covered_months,
+    grain_span,
+)
 from finance_analysis.domain.references import blank_series, link_target, values_match
 
 MATERIAL_SHARE = 0.05
@@ -58,6 +63,8 @@ def assign_rows(
     roles: SheetRoles | None = None,
     periods: dict[str, dict[tuple[str, str], Decimal]] | None = None,
     links: list[dict] | None = None,
+    calendar: dict | None = None,
+    facts: list[dict] | None = None,
 ) -> dict[str, Assignment]:
     human, ignored, absent = _decisions(events)
     draft: list[tuple[dict, Assignment]] = []
@@ -77,7 +84,8 @@ def assign_rows(
         draft.append((row, item))
     _mark_references(draft, links, periods, roles)
     _mark_facets(draft, links)
-    _one_primary(draft, roles, periods, filtered)
+    _mark_basis(draft, periods, calendar, links, facts)
+    _one_primary(draft, roles, periods, filtered, calendar)
     total = sum((abs_by_row or {}).values()) or 0
     assigned = {}
     for row, item in draft:
@@ -210,6 +218,7 @@ def _one_primary(
     roles: SheetRoles | None = None,
     periods: dict | None = None,
     filtered: dict[str, list[dict]] | None = None,
+    calendar: dict | None = None,
 ) -> None:
     owners: dict[str, list[int]] = {}
     for index, (_row, item) in enumerate(draft):
@@ -258,7 +267,7 @@ def _one_primary(
                 for index in exact
             }
             winner, reason, tie, left = _cascade(
-                [draft[index][0] for index in exact], roles, periods, marks
+                [draft[index][0] for index in exact], roles, periods, marks, calendar
             )
             concept = draft[exact[0]][1].concept
             if winner is not None and _blocked_assumptions(winner, roles, concept, filtered or {}):
@@ -563,14 +572,21 @@ def _better_sheet(copy: dict, source: dict, roles: SheetRoles | None) -> bool:
     return _ROLE_RANK[_sheet_role(copy, roles)] < _ROLE_RANK[_sheet_role(source, roles)]
 
 
-def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None, marks: dict | None = None):
+def _cascade(
+    rows: list[dict],
+    roles: SheetRoles | None,
+    periods: dict | None,
+    marks: dict | None = None,
+    calendar: dict | None = None,
+):
     """Оставшиеся строки, причина единственного победителя и причины ничьей.
 
     Сначала снимается нулевая строка, но только если остаётся другой ненулевой
     итог. Единственный нулевой итог и нулевая строка рядом с одной ссылкой
     остаются. Затем снимаются ссылки `reference`, если осталась строка, которая
-    не является ссылкой. Дальше идут прежние шаги: роль листа, формула, итог
-    и покрытие периодов.
+    не является ссылкой. Дальше идут роль листа, формула и итог. Способ показа
+    снимает `ytd`, если рядом есть `period` или `unknown`. Затем покрытие
+    сравнивает месяцы у строк одного зерна.
     """
 
     current = list(rows)
@@ -581,7 +597,8 @@ def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None, m
         ("sheet_role", lambda items: _by_role(items, roles)),
         ("formula", lambda items: _by_formula(items, roles)),
         ("aggregate", lambda items: _by_aggregate(items)),
-        ("period_coverage", lambda items: _by_period(items, periods)),
+        ("period_basis", lambda items: _by_basis(items)),
+        ("period_coverage", lambda items: _by_period(items, periods, calendar)),
     )
     for name, step in steps:
         nxt, ran = step(current)
@@ -659,29 +676,76 @@ def _by_aggregate(rows: list[dict]):
     return [row for row in pool if _indent(row) == best], True
 
 
-def _by_period(rows: list[dict], periods: dict | None):
-    if not periods:
+def _by_basis(rows: list[dict]):
+    """Снимает `ytd`, если рядом есть строка `period` или `unknown`.
+
+    Строка `ltm` этим шагом не снимается. Без `ytd` или без более сильного
+    способа показа состав кандидатов не меняется.
+    """
+
+    def basis(row: dict) -> str:
+        return str(row.get("period_basis") or "unknown")
+
+    if not any(basis(row) == "ytd" for row in rows):
         return rows, False
-    counted = []
-    tally: dict[str, int] = {}
+    if not any(basis(row) in {"period", "unknown"} for row in rows):
+        return rows, False
+    kept = [row for row in rows if basis(row) != "ytd"]
+    return kept, len(kept) < len(rows)
+
+
+def _by_period(rows: list[dict], periods: dict | None, calendar: dict | None = None):
+    """Сравнивает число покрытых месяцев у строк одного зерна.
+
+    Ось в сравнении не участвует: квартальные строки разных осей сравниваются.
+    Восемь кварталов и шесть лет не сравниваются. Разница меньше одного периода
+    этого зерна победителя не даёт. Совпадение значений шаг не читает, поэтому
+    оно само по себе ничью не создаёт.
+    """
+
+    if not periods or not calendar:
+        return rows, False
+    scored = []
     for row in rows:
         series = periods.get(str(row.get("row_key") or "")) or {}
-        for axis in {item for item, _period in series}:
-            tally[axis] = tally.get(axis, 0) + 1
-        counted.append((series, row))
-    shared = [axis for axis, count in tally.items() if count >= 2]
-    axis = shared[0] if len(shared) == 1 else None
-    if axis is None and not shared:
-        populated = [series for series, _row in counted if series]
-        if len(populated) == 1 and len({item for item, _period in populated[0]}) == 1 and len(populated) < len(counted):
-            axis = next(iter(populated[0]))[0]
-    if axis is None:
+        grain, months = covered_months(series, calendar)
+        scored.append((grain, months, row))
+    drop: set[int] = set()
+    groups: dict[str, list[tuple[int, dict]]] = {}
+    for grain, months, row in scored:
+        if grain:
+            groups.setdefault(grain, []).append((months, row))
+    for grain, items in groups.items():
+        if len(items) < 2:
+            continue
+        span = grain_span(grain)
+        if span is None:
+            continue
+        best = max(months for months, _row in items)
+        for months, row in items:
+            if best - months >= span:
+                drop.add(id(row))
+    if not drop:
         return rows, False
-    counts = [(sum(1 for item_axis, _period in series if item_axis == axis), row) for series, row in counted]
-    best = max(count for count, _row in counts)
-    if all(best - count < 1 for count, _row in counts):
-        return rows, False
-    return [row for count, row in counts if best - count < 1], True
+    return [row for row in rows if id(row) not in drop], True
+
+
+def _mark_basis(
+    draft,
+    periods: dict | None,
+    calendar: dict | None,
+    links: list[dict] | None,
+    facts: list[dict] | None = None,
+) -> None:
+    """Пишет способ показа в строку и в evidence. Fact-строка без ytd и ltm получает period."""
+
+    for index, (row, item) in enumerate(draft):
+        series = (periods or {}).get(str(row.get("row_key") or ""))
+        basis, source = classify_period_basis(row, calendar=calendar, links=links, series=series, facts=facts)
+        row["period_basis"] = basis
+        row["period_basis_source"] = source
+        evidence = {**item.evidence, "period_basis": basis, "period_basis_source": source}
+        draft[index] = (row, replace(item, evidence=evidence))
 
 
 def _is_parent(row: dict, rows: list[dict]) -> bool:
