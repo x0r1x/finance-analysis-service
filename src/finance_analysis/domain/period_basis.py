@@ -36,11 +36,11 @@ def classify_period_basis(row: dict, *, calendar: dict | None, links: list[dict]
     headers = _header_text(row, calendar, series)
     if _phrase_ltm(headers):
         return "ltm", "header"
-    if _ltm_formula(row, links, calendar):
+    if _ltm_formula(row, links, calendar, series):
         return "ltm", "formula"
     if _phrase_ytd(headers):
         return "ytd", "header"
-    if _ytd_formula(row, links, calendar):
+    if _ytd_formula(row, links, calendar, series):
         return "ytd", "formula"
     return "period", "default"
 
@@ -182,24 +182,39 @@ def _path(row: dict) -> list[str]:
     return []
 
 
-def _ltm_formula(row: dict, links: list[dict] | None, calendar: dict | None) -> bool:
+def _ltm_formula(row: dict, links: list[dict] | None, calendar: dict | None, series: dict | None) -> bool:
+    """Сумма четырёх кварталов ставит `ltm`, только если так устроена каждая колонка периода.
+
+    Одна итоговая колонка года, которая складывает четыре квартала, строку не
+    переводит. Колонки другого зерна в этот счёт не входят.
+    """
+
     if not links or not calendar:
         return False
+    grain, keys = _period_keys(series, calendar)
+    if grain != "quarter" or not keys:
+        return False
     located = _located(links)
-    for formula in _formulas(links, str(row.get("row_key") or "")).values():
-        if not _sums_formula(formula):
+    by_period = _formulas_by_period(links, str(row.get("row_key") or ""))
+    for key in keys:
+        formulas = by_period.get(str(key[1])) or []
+        if not any(_four_quarter_formula(formula, located, calendar) for formula in formulas):
+            return False
+    return True
+
+
+def _four_quarter_formula(formula: dict, located: dict, calendar: dict) -> bool:
+    if not _sums_formula(formula):
+        return False
+    metas = []
+    for ref in formula["refs"]:
+        target = located.get(ref)
+        if target is None:
             continue
-        metas = []
-        for ref in formula["refs"]:
-            target = located.get(ref)
-            if target is None:
-                continue
-            meta = _meta_for(calendar, target[1])
-            if meta is not None:
-                metas.append(meta)
-        if _four_quarters(metas):
-            return True
-    return False
+        meta = _meta_for(calendar, target[1])
+        if meta is not None:
+            metas.append(meta)
+    return _four_quarters(metas)
 
 
 def _four_quarters(metas: list[dict]) -> bool:
@@ -222,42 +237,114 @@ def _four_quarters(metas: list[dict]) -> bool:
     return len(months) == 12 and months == whole
 
 
-def _ytd_formula(row: dict, links: list[dict] | None, calendar: dict | None) -> bool:
-    """Формула прибавляет предыдущую ячейку той же строки и в новом году так не делает."""
+def _ytd_formula(row: dict, links: list[dict] | None, calendar: dict | None, series: dict | None) -> bool:
+    """Нарастающий итог по формуле: каждый период после первого в году прибавляет предыдущую ячейку.
+
+    Одной такой ячейки мало. Копирование предыдущей ячейки без сложения — перенос
+    остатка или штопор, а не нарастающий итог. Такая строка остаётся `period`,
+    пока нарастающий итог не назван заголовком.
+    """
 
     if not links or not calendar:
         return False
+    grain, keys = _period_keys(series, calendar)
+    if not grain or not keys:
+        return False
     row_key = str(row.get("row_key") or "")
     located = _located(links)
-    formulas = _formulas(links, row_key)
+    by_period = _formulas_by_period(links, row_key)
+    if _copies_previous(by_period, row_key, located, calendar):
+        return False
+    wanted = {(str(axis), str(period_id)) for axis, period_id in keys}
     by_axis: dict[str, list[tuple[int, str, dict]]] = {}
     for (axis, period_id), meta in calendar.items():
+        if (str(axis), str(period_id)) not in wanted:
+            continue
         by_axis.setdefault(str(axis), []).append((int(meta.get("period_index") or 0), str(period_id), meta))
+    qualified = False
     for items in by_axis.values():
         items.sort()
-        previous = {period_id: items[index - 1][1] for index, (_order, period_id, _meta) in enumerate(items) if index}
-        adds: dict[str, bool] = {}
-        for formula in formulas.values():
-            period_id = str(formula.get("period_id") or "")
-            prior = previous.get(period_id)
-            adds[period_id] = bool(prior) and any(located.get(ref) == (row_key, prior) for ref in formula["refs"])
+        order = [period_id for _index, period_id, _meta in items]
+        previous = {period_id: order[index - 1] for index, period_id in enumerate(order) if index}
         years: dict[object, list[str]] = {}
-        for _order, period_id, meta in items:
+        for _index, period_id, meta in items:
             year = _year_of(meta)
             if year is None:
                 continue
             years.setdefault(year, []).append(period_id)
-        saw_add = False
-        reset = True
         for period_ids in years.values():
-            flags = [adds.get(period_id, False) for period_id in period_ids]
-            if any(flags[1:]):
-                saw_add = True
-                if flags[0]:
-                    reset = False
-        if saw_add and reset:
+            if len(period_ids) < 2:
+                continue
+            flags = [
+                _adds_previous(by_period.get(period_id) or [], row_key, previous.get(period_id), located)
+                for period_id in period_ids
+            ]
+            if flags[0] or not all(flags[1:]):
+                return False
+            qualified = True
+    return qualified
+
+
+def _adds_previous(formulas: list[dict], row_key: str, prior: str | None, located: dict) -> bool:
+    """Формула прибавляет предыдущую ячейку. Голая ссылка на неё сложением не считается."""
+
+    if not prior:
+        return False
+    for formula in formulas:
+        if not _sums_formula(formula):
+            continue
+        if any(located.get(ref) == (row_key, prior) for ref in formula["refs"]):
             return True
     return False
+
+
+def _copies_previous(by_period: dict, row_key: str, located: dict, calendar: dict) -> bool:
+    """Копирование предыдущей ячейки без сложения — остаток или штопор."""
+
+    by_axis: dict[str, list[str]] = {}
+    ranked = sorted(calendar.items(), key=lambda item: (str(item[0][0]), int(item[1].get("period_index") or 0)))
+    for (axis, period_id), _meta in ranked:
+        by_axis.setdefault(str(axis), []).append(str(period_id))
+    previous: dict[str, str] = {}
+    for period_ids in by_axis.values():
+        for index, period_id in enumerate(period_ids):
+            if index:
+                previous[period_id] = period_ids[index - 1]
+    for period_id, formulas in by_period.items():
+        prior = previous.get(str(period_id))
+        if not prior:
+            continue
+        for formula in formulas:
+            if _sums_formula(formula):
+                continue
+            if any(located.get(ref) == (row_key, prior) for ref in formula["refs"]):
+                return True
+    return False
+
+
+def _period_keys(series: dict | None, calendar: dict | None) -> tuple[str | None, set[tuple]]:
+    """Зерно и ключи колонок, в которых у строки есть число. Смешанное зерно пусто."""
+
+    if not series or not calendar:
+        return None, set()
+    grouped: dict[str, set[tuple]] = {}
+    for key in series:
+        meta = calendar.get(key) or {}
+        grain = str(meta.get("grain") or "").lower()
+        if not grain:
+            return None, set()
+        grouped.setdefault(grain, set()).add(key)
+    if len(grouped) != 1:
+        return None, set()
+    grain, keys = next(iter(grouped.items()))
+    return grain, keys
+
+
+def _formulas_by_period(links: list[dict], row_key: str) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for formula in _formulas(links, row_key).values():
+        grouped.setdefault(str(formula.get("period_id") or ""), []).append(formula)
+    return grouped
 
 
 def _formulas(links: list[dict], row_key: str) -> dict[str, dict]:

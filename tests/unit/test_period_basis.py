@@ -29,14 +29,32 @@ def test_ltm_comes_from_the_label_a_header_or_a_four_quarter_sum():
     assert classify_period_basis(headed, calendar=None, links=None, series=None) == ("ltm", "header")
     label_wins = _row("a", "EBITDA, LTM", parent_label="нарастающим итогом")
     assert classify_period_basis(label_wins, calendar=None, links=None, series=None) == ("ltm", "label")
-    periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]
-    calendar = _quarter_calendar(periods)
+    quarters = ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]
+    calendar = _quarter_calendar(quarters)
+    calendar[("ax", "2024")] = {
+        "grain": "year",
+        "period_start": date(2024, 1, 1),
+        "period_end": date(2024, 12, 31),
+        "period_index": 4,
+        "calendar_year": 2024,
+    }
     links = []
-    for index, period in enumerate(periods):
+    for index, period in enumerate(quarters):
         links.append(_formula_link(f"S!C{index}", "src", period, None, None))
-        links.append(_formula_link("S!D4", "ltm", "2024Q4", "=SUM(C1:C4)", f"S!C{index}"))
-    got = classify_period_basis(_row("ltm", "EBITDA"), calendar=calendar, links=links, series=None)
-    assert got == ("ltm", "formula")
+    for index, period in enumerate(quarters):
+        links.append(_formula_link("S!Y1", "flow", "2024", "=SUM(C1:C4)", f"S!C{index}"))
+    series = {("ax", period): 10 * (index + 1) for index, period in enumerate(quarters)}
+    series[("ax", "2024")] = 100
+    assert classify_period_basis(_row("flow", "CFADS"), calendar=calendar, links=links, series=series) == ("period", "default")
+    each = []
+    for index, period in enumerate(quarters):
+        each.append(_formula_link(f"S!L{index}", "ltm", period, "=SUM(C1:C4)", f"S!C{index}"))
+        # Каждая колонка квартала ссылается на четыре квартала источника.
+        for source in range(4):
+            each.append(_formula_link(f"S!L{index}", "ltm", period, "=SUM(C1:C4)", f"S!C{source}"))
+    assert classify_period_basis(
+        _row("ltm", "EBITDA"), calendar=calendar, links=links + each, series={("ax", period): 40 for period in quarters}
+    ) == ("ltm", "formula")
 
 
 def test_ytd_comes_only_from_a_header_or_a_formula_that_resets_each_year():
@@ -49,10 +67,37 @@ def test_ytd_comes_only_from_a_header_or_a_formula_that_resets_each_year():
     assert classify_period_basis(_row("a", "Выручка"), calendar=calendar, links=None, series=series) == ("ytd", "header")
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1", "2025Q2"]
     calendar = _quarter_calendar(periods)
+    series = {("ax", period): 1 for period in periods}
     links = _running_links(reset=True)
-    assert classify_period_basis(_row("r", "Выручка"), calendar=calendar, links=links, series=None) == ("ytd", "formula")
+    assert classify_period_basis(_row("r", "Выручка"), calendar=calendar, links=links, series=series) == ("ytd", "formula")
     continuous = _running_links(reset=False)
-    assert classify_period_basis(_row("r", "Выручка"), calendar=calendar, links=continuous, series=None) == ("period", "default")
+    assert classify_period_basis(_row("r", "Выручка"), calendar=calendar, links=continuous, series=series) == ("period", "default")
+
+
+def test_one_formula_cell_does_not_retag_the_row_and_a_balance_stays_period():
+    periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]
+    calendar = _quarter_calendar(periods)
+    series = {("ax", period): value for period, value in zip(periods, (10, 20, 30, 40), strict=True)}
+    links = [
+        _formula_link("S!A1", "r", "2024Q1", "=B1", "S!B1"),
+        _formula_link("S!A2", "r", "2024Q2", "=B2", "S!B2"),
+        _formula_link("S!A3", "r", "2024Q3", "=B3", "S!B3"),
+        _formula_link("S!A4", "r", "2024Q4", "=A3+B4", "S!A3"),
+        _formula_link("S!A4", "r", "2024Q4", "=A3+B4", "S!B4"),
+    ]
+    assert classify_period_basis(_row("r", "Interest"), calendar=calendar, links=links, series=series) == ("period", "default")
+    copied = []
+    for index, period in enumerate(periods):
+        if index == 0:
+            copied.append(_formula_link(f"S!C{index}", "bal", period, "=Open", "S!Open"))
+            continue
+        copied.append(_formula_link(f"S!C{index}", "bal", period, f"=C{index - 1}", f"S!C{index - 1}"))
+    balance = {("ax", period): value for period, value in zip(periods, (100, 100, 110, 110), strict=True)}
+    assert classify_period_basis(_row("bal", "Debt"), calendar=calendar, links=copied, series=balance) == ("period", "default")
+    headed = classify_period_basis(
+        _row("bal", "Debt", parent_label="нарастающим итогом"), calendar=calendar, links=copied, series=balance
+    )
+    assert headed == ("ytd", "header")
 
 
 def test_a_series_that_only_grows_stays_period():
