@@ -726,6 +726,15 @@ class FasService:
         raise NotFound("проекция для повторного derive не передана")
 
     async def _publish_head(self, job_id: str, body: dict, token: str | None, fence: int) -> None:
+        """Пишет голову по токену, прочитанному сейчас, а не по токену с начала загрузки.
+
+        `token` остаётся в подписи для вызывающих. После перезапуска контейнера
+        первая загрузка и пересчёт глоссария могут сменить голову, пока замок
+        уже не держится. Запись со старым токеном тогда падает с «токен не совпал»,
+        хотя свежий токен ещё позволяет записать голову с не меньшим fence.
+        """
+
+        del token
         current, current_token = await self._read_head(job_id)
         if current and fence < current.fence:
             raise PreconditionFailed("устаревший fencing-токен", extra={"fence": current.fence})
@@ -733,10 +742,17 @@ class FasService:
         if current is None:
             try:
                 await self.store.put_if_absent(keys.head_key(job_id), payload)
+                return
             except AlreadyExists:
-                await self.store.put_if_match(keys.head_key(job_id), payload, current_token or token or "")
-        else:
-            await self.store.put_if_match(keys.head_key(job_id), payload, token or current.token or "")
+                current, current_token = await self._read_head(job_id)
+                if current is None or fence < current.fence:
+                    raise PreconditionFailed(
+                        "устаревший fencing-токен",
+                        extra={"fence": current.fence if current else None},
+                    )
+        if not current_token:
+            raise PreconditionFailed("токен не совпал")
+        await self.store.put_if_match(keys.head_key(job_id), payload, current_token)
 
     async def _aligned_snapshot(self, job_id: str, etag: str) -> WorkbookSnapshot:
         for _ in range(3):
