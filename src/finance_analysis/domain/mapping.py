@@ -74,7 +74,7 @@ def assign_rows(
         elif found is not None and found.degraded:
             item = replace(item, evidence={**item.evidence, "degraded": list(found.degraded)})
         draft.append((row, item))
-    _mark_references(draft, links, periods, roles)
+    _mark_references(draft, links, periods)
     _one_primary(draft, roles, periods, filtered)
     total = sum((abs_by_row or {}).values()) or 0
     assigned = {}
@@ -348,14 +348,15 @@ def _named(name: str, aliases: tuple[str, ...]) -> bool:
     return any(folded == sheet_name_key(alias) for alias in aliases)
 
 
-def _mark_references(draft, links, periods, roles: SheetRoles | None) -> None:
+def _mark_references(draft, links, periods) -> None:
     """Помечает строки, которые только повторяют другую строку того же понятия.
 
     Сначала берётся формула: одна ссылка на ячейку, в том числе на другой
     лист, и та же ссылка с умножением или делением на степень десяти.
-    Затем строка без формулы, чьи значения совпали с более сильным
-    кандидатом. В `evidence` пишутся `role` со значением `reference` и
-    `reference_of` с `row_key` источника. Статус строки здесь не меняется.
+    Затем строка без формулы, чьи периоды строго входят в периоды другого
+    кандидата и чьи значения на них совпали. Более длинный ряд остаётся итогом.
+    В `evidence` пишутся `role` со значением `reference` и `reference_of` с
+    `row_key` источника. Статус строки здесь не меняется.
     """
 
     cells: dict[tuple[str, int], str] = {}
@@ -383,7 +384,7 @@ def _mark_references(draft, links, periods, roles: SheetRoles | None) -> None:
             key = str(row["row_key"])
             if key in targets or row.get("formula") or row.get("has_formula"):
                 continue
-            target = _copy_target(row, rows, periods, targets, roles)
+            target = _copy_target(row, rows, periods, targets)
             if target:
                 targets[key] = target
     for index, (row, item) in enumerate(draft):
@@ -396,13 +397,13 @@ def _mark_references(draft, links, periods, roles: SheetRoles | None) -> None:
         )
 
 
-def _copy_target(row, rows, periods, targets: dict[str, str], roles: SheetRoles | None) -> str | None:
+def _copy_target(row, rows, periods, targets: dict[str, str]) -> str | None:
     """Возвращает источник вставленной копии или `None`.
 
     `row` — строка без формулы. `rows` — другие кандидаты того же понятия.
-    `periods` — значения по периодам. Источник сильнее, если у него больше
-    периодов, своя формула или лист формы против листа без роли. Одинаковые
-    ряды без такого различия копиями не считаются.
+    `periods` — значения по периодам. Копией считается только ряд, чьи периоды
+    строго входят в периоды другого ряда, а значения на них совпали. Более
+    длинный ряд остаётся итогом. Одинаковый набор периодов копией не считается.
     """
 
     if not periods:
@@ -419,7 +420,7 @@ def _copy_target(row, rows, periods, targets: dict[str, str], roles: SheetRoles 
         source = periods.get(other_key) or {}
         if not values_match(source, own):
             continue
-        if _stronger_source(other, row, source, own, roles):
+        if set(own) < set(source):
             found.append(other_key)
     if not found:
         return None
@@ -429,25 +430,6 @@ def _copy_target(row, rows, periods, targets: dict[str, str], roles: SheetRoles 
     if followed and followed != own_key:
         return followed
     return chosen
-
-
-def _stronger_source(source: dict, copy: dict, source_values: dict, copy_values: dict, roles: SheetRoles | None) -> bool:
-    """Источник ли это для копии с уже совпавшими значениями.
-
-    Короткий ряд копирует длинный. Ряд без формулы копирует ряд с формулой.
-    При равном наборе периодов лист формы остаётся источником, а лист итогов,
-    допущений или лист без роли становится ссылкой. Иначе метод возвращает ложь.
-    """
-
-    if set(copy_values) < set(source_values):
-        return True
-    if set(copy_values) != set(source_values):
-        return False
-    if source.get("formula") or source.get("has_formula"):
-        return True
-    if roles is None:
-        return False
-    return _ROLE_RANK[_sheet_role(source, roles)] < _ROLE_RANK[_sheet_role(copy, roles)]
 
 
 def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None, marks: dict | None = None):

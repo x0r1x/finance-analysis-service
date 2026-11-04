@@ -91,6 +91,33 @@ def test_pasted_copy_matches_within_tolerance_and_scale():
     assert "role" not in got["other"].evidence
 
 
+def test_overlap_marks_only_the_shorter_row_and_rejects_an_empty_overlap():
+    history = {("ax", "2023"): Decimal(10), ("ax", "2024"): Decimal(12)}
+    forecast = {
+        ("ax", "2023"): Decimal(10),
+        ("ax", "2024"): Decimal(12),
+        ("ax", "2025"): Decimal(14),
+        ("ax", "2026"): Decimal(16),
+    }
+    assert values_match(forecast, history)
+    assert not values_match(history, forecast)
+    assert not values_match({("ax", "2021"): Decimal(10)}, {("ax", "2025"): Decimal(10)})
+    assert not values_match({}, {})
+    periods = {"history": history, "forecast": forecast, "other": {("ax", "2020"): Decimal(10)}}
+    rows = [
+        _row("history", "Interest", sheet="Model"),
+        _row("forecast", "Interest", sheet="Notes"),
+        _row("other", "Interest", sheet="Debt"),
+    ]
+    got = _assigned(rows, periods=periods)
+    assert got["history"].evidence["role"] == "reference"
+    assert got["history"].evidence["reference_of"] == "forecast"
+    assert got["history"].is_primary is False
+    assert got["forecast"].is_primary
+    assert "role" not in got["forecast"].evidence
+    assert "role" not in got["other"].evidence
+
+
 def test_equal_rows_without_a_stronger_source_stay_a_tie():
     periods = {
         "left": {("ax", "1"): Decimal(5), ("ax", "2"): Decimal(6)},
