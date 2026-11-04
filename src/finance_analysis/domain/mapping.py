@@ -16,6 +16,7 @@ from finance_analysis.domain.components import component_records, scenario_of
 from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import (
+    apply_block_titles,
     classify_period_basis,
     covered_months,
     grain_span,
@@ -66,6 +67,7 @@ def assign_rows(
     calendar: dict | None = None,
     facts: list[dict] | None = None,
 ) -> dict[str, Assignment]:
+    apply_block_titles(rows)
     human, ignored, absent = _decisions(events)
     draft: list[tuple[dict, Assignment]] = []
     filtered: dict[str, list[dict]] = {}

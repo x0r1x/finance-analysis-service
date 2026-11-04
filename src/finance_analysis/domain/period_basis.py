@@ -194,7 +194,11 @@ def _phrase_ltm(text: str) -> bool:
 
 
 def _phrase_ytd(text: str) -> bool:
-    """Фраза нарастающего итога заканчивает заголовок. Дальше допустимо только «за год»."""
+    """Фраза нарастающего итога заканчивает заголовок. Дальше допустимо только «за год».
+
+    Скобки и слова «указан» или «указаны» перед фразой заголовок не отменяют.
+    Продолжение вроде «проекта» фразу не включает.
+    """
 
     folded = label_scan(text)
     for phrase in _YTD:
@@ -204,11 +208,58 @@ def _phrase_ytd(text: str) -> bool:
             if index < 0:
                 break
             before = index == 0 or not folded[index - 1].isalnum()
-            after = folded[index + len(phrase) :].strip()
+            after = _ytd_tail(folded[index + len(phrase) :])
             if before and after in {"", "за год"}:
                 return True
             start = index + len(phrase)
     return False
+
+
+def _ytd_tail(text: str) -> str:
+    """Хвост заголовка без скобок и знаков препинания."""
+
+    cleaned = re.sub(r"[()\[\]«»\"'.,;:]", "", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def apply_block_titles(rows: list[dict]) -> None:
+    """Пишет заголовок блока в путь fact-строк под ним до следующего заголовка.
+
+    Заголовок стоит отдельной строкой: объединённая ячейка над блоком, текст
+    в столбце A или B, первые строки листа. Если в нём есть фраза нарастающего
+    итога, она доходит до способа показа каждой fact-строки ниже. Следующий
+    заголовок блока эту фразу закрывает. Привязка по `binding_key` не меняется.
+    """
+
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("sheet") or ""), []).append(row)
+    for sheet_rows in grouped.values():
+        sheet_rows.sort(key=lambda item: int(item.get("row_num") or item.get("row") or 0))
+        current: str | None = None
+        for row in sheet_rows:
+            if _is_block_title(row):
+                label = str(row.get("label") or "")
+                current = label if _phrase_ytd(label) else None
+                continue
+            if row.get("kind") != "fact" or not current or _phrase_ytd(_row_header(row)):
+                continue
+            path = _path(row)
+            if any(_phrase_ytd(part) for part in path):
+                continue
+            extended = [*path, current]
+            row["label_path"] = extended
+            row["label_path_json"] = json.dumps(extended, ensure_ascii=False)
+            if not row.get("parent_label"):
+                row["parent_label"] = current
+
+
+def _is_block_title(row: dict) -> bool:
+    """Строка без чисел с подписью открывает или закрывает блок."""
+
+    if row.get("kind") == "fact":
+        return False
+    return bool(str(row.get("label") or "").strip())
 
 
 def _row_header(row: dict) -> str:

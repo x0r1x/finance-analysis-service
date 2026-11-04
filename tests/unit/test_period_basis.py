@@ -7,6 +7,8 @@ import json
 from datetime import date, timedelta
 from decimal import Decimal
 
+from openpyxl import Workbook
+
 from finance_analysis.application.project import attach_graph_links
 from finance_analysis.application.service import FasService
 from finance_analysis.domain.cover_metrics import adscr, dscr_reductions
@@ -585,6 +587,83 @@ def test_ltm_row_is_taken_as_is_and_not_summed_over_four_quarters():
     computed = [row for row in result["rows"] if row["status"] == "computed"]
     assert computed
     assert computed[-1]["value"] == Decimal("1.0000000000")
+
+
+def test_a_parenthetical_year_to_date_title_is_a_header():
+    title = "ОПиУ (указан накопленным итогом за год)"
+    assert classify_period_basis(_row("a", "Проценты", parent_label=title), calendar=None, links=None, series=None) == (
+        "ytd",
+        "header",
+    )
+    stated = _row("a", "Проценты", parent_label="указаны накопленным итогом")
+    assert classify_period_basis(stated, calendar=None, links=None, series=None) == ("ytd", "header")
+    growing = _row("a", "Проценты", label_path=["(нарастающим итогом)"])
+    assert classify_period_basis(growing, calendar=None, links=None, series=None) == ("ytd", "header")
+    opened = _row("a", "Проценты", sheet="(с начала года)")
+    assert classify_period_basis(opened, calendar=None, links=None, series=None) == ("ytd", "header")
+    project = _row("a", "Проценты", parent_label="Итого с начала года проекта")
+    assert classify_period_basis(project, calendar=None, links=None, series=None) == ("period", "default")
+
+
+def test_a_merged_block_title_reaches_every_row_until_the_next_title():
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Отчет"
+    sheet.merge_cells("A1:F1")
+    sheet["A1"] = "ОПиУ (указан накопленным итогом за год)"
+    sheet["A3"] = "Проценты"
+    sheet["C3"] = 10
+    sheet["A4"] = "Выручка"
+    sheet["C4"] = 5
+    sheet["B6"] = "Движение денежных средств"
+    sheet["A7"] = "Проценты к уплате"
+    sheet["C7"] = 8
+    other = book.create_sheet("Первые")
+    other["B1"] = "указаны накопленным итогом"
+    other["A2"] = "Выручка"
+    other["C2"] = 1
+    other["A4"] = "Баланс"
+    other["A5"] = "Проценты"
+    other["C5"] = 2
+    got = _assigned(_rows_of(sheet) + _rows_of(other))
+    assert got["Отчет!3"].evidence["period_basis"] == "ytd"
+    assert got["Отчет!3"].evidence["period_basis_source"] == "header"
+    assert got["Отчет!4"].evidence["period_basis"] == "ytd"
+    assert got["Отчет!7"].evidence["period_basis"] == "period"
+    assert got["Первые!2"].evidence["period_basis"] == "ytd"
+    assert got["Первые!5"].evidence["period_basis"] == "period"
+    book.close()
+
+
+def _rows_of(sheet) -> list[dict]:
+    """Строки листа: заголовок в A/B или в объединённой ячейке, числа правее."""
+
+    merged: dict[tuple[int, int], object] = {}
+    for block in sheet.merged_cells.ranges:
+        value = sheet.cell(block.min_row, block.min_col).value
+        for row in range(block.min_row, block.max_row + 1):
+            for col in range(block.min_col, block.max_col + 1):
+                merged[(row, col)] = value
+    found = []
+    for index in range(1, sheet.max_row + 1):
+        texts = []
+        for col in (1, 2):
+            value = merged.get((index, col), sheet.cell(index, col).value)
+            if isinstance(value, str) and value.strip():
+                texts.append(value.strip())
+        numbers = [
+            sheet.cell(index, col).value
+            for col in range(3, sheet.max_column + 1)
+            if isinstance(sheet.cell(index, col).value, (int, float))
+        ]
+        if not texts:
+            continue
+        key = f"{sheet.title}!{index}"
+        if numbers:
+            found.append(_row(key, texts[0], sheet=sheet.title, row_num=index, kind="fact"))
+            continue
+        found.append(_row(key, texts[0], sheet=sheet.title, row_num=index, kind="abstract"))
+    return found
 
 
 def _quarter_calendar(periods: list[str]) -> dict:
