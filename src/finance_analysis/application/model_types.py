@@ -163,6 +163,7 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
 
         concepts = load_catalog().ids
     metric_inputs, variant_inputs, composed = load_metric_catalog()
+    interest_order = load_interest_order()
     _check_formula_concepts(metric_inputs, variant_inputs, concepts)
     _check_signal_concepts(documents, concepts)
     validate_model_types(
@@ -180,8 +181,37 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
         canonical_json({"common": common, "types": documents}).encode("utf-8")
     ).hexdigest()[:16]
     return ModelTypeCatalog(
-        types, str(default), version, concepts, metric_inputs, documents, compatible, composed, variant_inputs
+        types,
+        str(default),
+        version,
+        concepts,
+        metric_inputs,
+        documents,
+        compatible,
+        composed,
+        variant_inputs,
+        interest_order,
     )
+
+
+_INTEREST_NAMES = frozenset({"interest", "interest_paid"})
+
+
+def load_interest_order(path: Path | None = None) -> dict[str, tuple[str, ...]]:
+    """Порядок процентов из coverage.yaml. `interest_paid` в таксономию не входит."""
+
+    document = yaml.safe_load((path or metrics_file()).read_text(encoding="utf-8")) or {}
+    raw = document.get("interest_order") if isinstance(document, dict) else None
+    if not isinstance(raw, dict) or not raw:
+        raise ModelTypeInvalid("configs/metrics: нет interest_order")
+    order: dict[str, tuple[str, ...]] = {}
+    for key, names in raw.items():
+        if not isinstance(names, list) or not names or any(not isinstance(item, str) for item in names):
+            raise ModelTypeInvalid(f"interest_order.{key}: список имён")
+        if any(item not in _INTEREST_NAMES for item in names):
+            raise ModelTypeInvalid(f"interest_order.{key}: только interest и interest_paid")
+        order[str(key)] = tuple(str(item) for item in names)
+    return order
 
 
 def _check_formula_concepts(

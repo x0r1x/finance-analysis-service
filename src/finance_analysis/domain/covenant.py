@@ -27,6 +27,7 @@ from finance_analysis.domain.metrics import (
     _sums,
     aligned_keys,
     coverage_ratio,
+    interest_choice,
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
@@ -136,10 +137,16 @@ def covenant_dscr(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    interest_order: dict | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
         profile, profile_ref, default, concepts=concepts, money=money
     )
+    definition, fallback = _swap_interest(
+        definition, _primaries(bindings, absent), (interest_order or {}).get("corporate_covenant", ())
+    )
+    if fallback:
+        notes = [*notes, fallback]
     result = composed_ratio(
         "dscr",
         definition,
@@ -281,6 +288,7 @@ def select_ratio(
     composed: dict[str, Composed],
     concepts: frozenset[str],
     money: frozenset[str],
+    interest_order: dict | None = None,
 ) -> dict:
     """Вариант `corporate_covenant` считает определение из профиля или из каталога."""
 
@@ -305,6 +313,7 @@ def select_ratio(
             default=composed["dscr.corporate_covenant"],
             concepts=concepts,
             money=money,
+            interest_order=interest_order,
         )
     formula = composed.get(metric)
     if formula is not None:
@@ -318,7 +327,31 @@ def select_ratio(
             marker_class=common["marker_class"],
             absent=common["absent"],
         )
-    return coverage_ratio(metric=metric, **common)
+    return coverage_ratio(metric=metric, interest_order=interest_order, **common)
+
+
+def _swap_interest(formula: Composed, primaries: dict, order: tuple[str, ...] | list[str]) -> tuple[Composed, dict | None]:
+    """Подменяет начисленные проценты следующим именем порядка, если основной строки нет."""
+
+    names = (
+        *formula.numerator.plus,
+        *formula.numerator.minus,
+        *formula.denominator.plus,
+        *formula.denominator.minus,
+    )
+    if "interest" not in names or not order:
+        return formula, None
+    chosen, warning = interest_choice(primaries, order)
+    if chosen is None or chosen == "interest":
+        return formula, None
+
+    def replace(side: Side) -> Side:
+        return Side(
+            tuple(chosen if name == "interest" else name for name in side.plus),
+            tuple(chosen if name == "interest" else name for name in side.minus),
+        )
+
+    return Composed(replace(formula.numerator), replace(formula.denominator), formula.window), warning
 
 
 def _span(window: str, ordered: list[dict], period: dict, aligned: dict, axis: str):

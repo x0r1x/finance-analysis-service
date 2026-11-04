@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 _USES = {"required": 2, "optional": 1, "not_applicable": 0}
 # Уверенное противоречие профилю: чужой тип выше 0.8, указанный ниже 0.2.
@@ -60,6 +60,7 @@ class ModelTypeCatalog:
     compatible: frozenset[frozenset[str]]
     composed: dict[str, Composed]
     variant_inputs: dict[str, dict[str, MetricInputs]]
+    interest_order: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def ids(self) -> frozenset[str]:
