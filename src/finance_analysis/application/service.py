@@ -118,7 +118,15 @@ class Accepted:
 
 
 def _operation_problem(exc: BaseException) -> dict:
-    """Провал операции в той же форме, что problem+json у синхронного ответа."""
+    """Собирает тело ошибки операции в той же форме, что ответ problem+json.
+
+    `exc` — исключение, которым завершился фоновый шаг. Если это ошибка
+    домена, словарь получает поля `type`, `title`, `status`, `detail`,
+    `code`, `retryable` и дополнительные поля исключения. Для любого другого
+    исключения остаются `code` со значением `failed` и текст ошибки.
+    Вызывающий код записывает словарь в поле `error` операции со статусом
+    `failed`.
+    """
 
     if not isinstance(exc, FasError):
         return {"code": "failed", "detail": str(exc)}
@@ -1822,7 +1830,30 @@ class FasService:
         reason: str | None,
         actor: Actor,
     ) -> Accepted:
-        """Shadow и запись релиза не укладываются в SYNC_DEADLINE. Как mapping.infer: операция и spawn, не Taskiq."""
+        """Ставит переход релиза глоссария в фоновую операцию и возвращает её.
+
+        Теневая проверка (сравнение нового глоссария с активным на загруженных
+        книгах) и запись нового статуса не укладываются в синхронный предел
+        запроса. Метод не выполняет переход сам. Он создаёт операцию
+        `glossary.validate` и запускает её в процессе API, тем же способом, что
+        и подбор сопоставления `mapping.infer`. Воркер очереди Taskiq этот
+        переход не исполняет.
+
+        `version` — версия релиза. `status` — целевой статус: `canary`,
+        `active` или `rejected`. `if_match` — заголовок If-Match; сверка
+        повторяется уже внутри операции, под замком, в момент записи.
+        Если `force` равен истине, активация разрешена даже когда теневая
+        проверка нашла регресс, но только вместе с непустым `reason`.
+        `actor` — пользователь и клиент, от имени которых записывается операция.
+
+        Возвращает `Accepted`: тело операции. HTTP-слой отвечает 202 и
+        заголовками `Operation-Location` и `Retry-After`. Успешная операция
+        записывает новый статус релиза и запускает пересчёт книг
+        (`glossary.remap`). Регресс без `force` завершает операцию со статусом
+        `failed` и ошибкой `glossary_regression`. Устаревший родитель релиза
+        (`stale_parent`) тоже завершает операцию со статусом `failed`. Любая
+        другая ошибка перехода закрывает операцию со статусом `failed`.
+        """
 
         op = await self.create_op(
             "glossary.validate",
@@ -1838,14 +1869,34 @@ class FasService:
                 ref = remap.get("operation")
                 result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
                 await self.finish_op(op["id"], "succeeded", result=result)
-            except Exception as exc:  # noqa: BLE001 — любая ошибка перехода закрывает операцию
+            except Exception as exc:  # noqa: BLE001 — ошибка перехода не выходит наружу, операция закрывается как failed
                 await self.finish_op(op["id"], "failed", error=_operation_problem(exc))
 
         self.spawn(_run())
         return Accepted(op)
 
     async def begin_proposal_decision(self, decisions: list, actor: Actor) -> Accepted:
-        """Приём предложения гоняет тот же shadow, что и переход релиза."""
+        """Ставит принятие пакета предложений в ту же фоновую операцию, что и переход релиза.
+
+        `decisions` — список решений. В каждом элементе указаны идентификатор
+        предложения и решение `accept` или `reject`. Новый текст метки и
+        понятие можно не передавать. `actor` — пользователь и клиент, от имени
+        которых записывается операция. Сюда попадает только пакет, в котором
+        есть хотя бы одно принятие. Пакет из одних отказов маршрут обрабатывает
+        синхронно и этот метод не вызывает. Заголовок If-Match для решения
+        предложений не сверяется.
+
+        Возвращает `Accepted`: тело операции `glossary.validate`. HTTP-слой
+        отвечает 202 и заголовками `Operation-Location` и `Retry-After`.
+        Операция проводит теневую проверку принятых правок: сравнивает новый
+        глоссарий с активным на загруженных книгах. Если проверка прошла,
+        активируется один общий релиз и запускается пересчёт книг. Если
+        проверка нашла регресс, предложения остаются открытыми с пометкой
+        `blocked: glossary_regression`, а операция завершается успешно: отказ
+        записан в результате, а не как провал. Ошибка решения, например
+        отсутствующее или уже решённое предложение, закрывает операцию со
+        статусом `failed`.
+        """
 
         op = await self.create_op("glossary.validate", None, actor, {"proposals": len(decisions)})
 
@@ -1859,7 +1910,7 @@ class FasService:
                     ref = remap.get("operation")
                     result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
                 await self.finish_op(op["id"], "succeeded", result=result)
-            except Exception as exc:  # noqa: BLE001 — любая ошибка решения закрывает операцию
+            except Exception as exc:  # noqa: BLE001 — ошибка решения не выходит наружу, операция закрывается как failed
                 await self.finish_op(op["id"], "failed", error=_operation_problem(exc))
 
         self.spawn(_run())

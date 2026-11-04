@@ -138,7 +138,14 @@ class GlossaryStore:
             return await self._commit(head, etag, updated, ops, parent=parent, source=source, diff=diff, activate=False)
 
     async def require_match(self, if_match: str | None) -> None:
-        """Сверка If-Match до постановки операции: 428/412 остаются ответом запроса."""
+        """Сверяет заголовок If-Match с текущей головой глоссария до постановки операции.
+
+        `if_match` — значение заголовка If-Match. Метод читает голову под замком
+        и сравнивает её метку `h-{seq}` с этим значением. Если заголовка нет,
+        поднимается ошибка со статусом 428. Если метка не совпала, поднимается
+        ошибка со статусом 412. Состояние глоссария метод не меняет: эти ответы
+        остаются ответом самого HTTP-запроса, а не записью в операции.
+        """
 
         async with self._lock:
             head, _etag = await self._ensure_locked()
@@ -969,6 +976,16 @@ def _proposal_op(found: dict, text: str) -> dict:
 
 
 def check_transition_request(status: str, version: str | None, *, force: bool, reason: str | None) -> None:
+    """Проверяет тело запроса на переход релиза до постановки операции.
+
+    `status` — целевой статус: `canary`, `active` или `rejected`. `version` —
+    непустой идентификатор релиза. `force` разрешает переход несмотря на
+    регресс только вместе с непустым `reason`. Метод ничего не записывает.
+    Статус вне этих трёх значений поднимает ошибку недопустимого перехода.
+    Пустая версия и `force` без причины поднимают ошибку некорректного
+    аргумента.
+    """
+
     if status not in {"canary", "active", "rejected"}:
         raise InvalidTransition("переход только в canary, active или rejected")
     if not version:
