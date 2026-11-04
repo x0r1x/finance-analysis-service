@@ -1,0 +1,7 @@
+concept: deferred_tax_asset
+pref:
+  en: "Deferred tax assets"
+  ru: "Отложенные налоговые активы"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."

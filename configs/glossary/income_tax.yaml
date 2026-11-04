@@ -1,0 +1,7 @@
+concept: income_tax
+pref:
+  en: "Accrued income tax"
+  ru: "Налог на прибыль"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."
