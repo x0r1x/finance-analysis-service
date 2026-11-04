@@ -19,6 +19,7 @@ from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
     SCALE_UNCONFIRMED,
+    _assume_sheet_units,
     _axes_of,
     _flow_basis,
     _payment,
@@ -182,8 +183,12 @@ def composed_ratio(
     reconciled = formula.window == "LTM" or (formula.window == "period" and _rolls(primaries, formula))
     if len(flow) > 1 and not reconciled:
         return _refused(metric, periods, "basis_mismatch", MIXED_BASIS, inputs)
+    warnings: list[dict] = []
+    sheet = _assume_sheet_units(facts, [primaries[name] for name in inputs], warnings)
     aligned = aligned_keys(periods)
-    series = {name: _sums(facts, primaries[name], aligned, periods) for name in dict.fromkeys(needed)}
+    series = {
+        name: _sums(facts, primaries[name], aligned, periods, sheet=sheet) for name in dict.fromkeys(needed)
+    }
     basis = {name: basis_of(primaries[name])[0] for name in series}
     roll = formula.window == "period" and _rolls(primaries, formula)
     window_name = "LTM" if roll else formula.window
@@ -245,7 +250,7 @@ def composed_ratio(
         if any(row.get("reason") == "partial_window" for row in rows):
             status = "partial_window"
             message = PARTIAL_DENOMINATOR
-    result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": [], "status": status}
+    result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
     if message:
         result["message"] = message
     return result

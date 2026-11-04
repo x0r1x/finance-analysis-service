@@ -17,6 +17,7 @@ from finance_analysis.domain.mapping import _by_basis
 from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
+    SCALE_ASSUMED,
     SCALE_UNCONFIRMED,
     coverage_ratio,
 )
@@ -620,7 +621,8 @@ def test_mixed_basis_or_unconfirmed_scale_is_a_status_not_a_number():
         ),
     )
     assert uneven["rows"][-1]["status"] == "computed"
-    assert uneven["rows"][-1]["value"] == Decimal("1000.0000000000")
+    assert uneven["rows"][-1]["value"] == Decimal("0.0010000000")
+    assert uneven["warnings"] == [{"code": "scale_assumed", "params": {"message": SCALE_ASSUMED}}]
     foreign = dict(periods[0])
     foreign["axis_id"] = "foreign"
     foreign["period_id"] = "foreign-1"
@@ -680,6 +682,34 @@ def test_mixed_basis_or_unconfirmed_scale_is_a_status_not_a_number():
     assert composed["status"] == "basis_mismatch"
     assert composed["message"] == MIXED_BASIS
     assert all(row["value"] is None for row in composed["rows"])
+
+
+def test_dscr_with_one_scale_divides_the_sheet_figures():
+    periods = _quarters(2025, 1)
+    facts = [
+        {
+            "row_key": "c",
+            "axis_id": periods[0]["axis_id"],
+            "period_id": periods[0]["period_id"],
+            "value_dec": Decimal(40),
+            "normalized_value": Decimal(40000),
+            "scale_factor": 1000,
+        },
+        {
+            "row_key": "d",
+            "axis_id": periods[0]["axis_id"],
+            "period_id": periods[0]["period_id"],
+            "value_dec": Decimal(-10),
+            "normalized_value": Decimal(-10),
+        },
+    ]
+    bindings = [_binding("cfads", "c"), _binding("debt_service", "d")]
+    result = coverage_ratio(metric="dscr", **_common(periods, facts, bindings))
+    assert result["rows"][0]["value"] == Decimal("4.0000000000")
+    assert result["warnings"] == [{"code": "scale_assumed", "params": {"message": SCALE_ASSUMED}}]
+    reduced = dscr_reductions("dscr_avg", **_common(periods, facts, bindings))
+    ratio = next(row for row in reduced["rows"] if row.get("variant") == "ratio_of_sums")
+    assert ratio["value"] == Decimal("4.0000000000")
 
 
 def test_dscr_avg_ratio_of_sums_does_not_add_an_ltm_row():

@@ -13,7 +13,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from finance_analysis.domain.cover_metrics import ratio_cells
-from finance_analysis.domain.metrics import coverage_ratio
+from finance_analysis.domain.metrics import SCALE_ASSUMED, coverage_ratio
 from finance_analysis.domain.period_basis import classify_period_basis
 from tests.unit.test_row_selection import _assigned, _row
 
@@ -92,6 +92,7 @@ def _book():
         pl[f"{column}20"] = 1
 
     ratios["C1"] = "(рассчитаны за 12 месяцев)"
+    ratios["C2"] = "тыс."
     ratios["C3"] = "EBITDA"
     ratios["C5"] = "ICR"
     for index, (year, quarter) in enumerate(pl_periods, start=4):
@@ -140,7 +141,6 @@ def _model():
                     "value_dec": value,
                     "normalized_value": value,
                     "cell_id": cell,
-                    "scale_factor": 1000 if key == "cf-interest" else None,
                 }
             )
             series.setdefault(key, {})[("cf", period_id)] = value
@@ -254,6 +254,7 @@ def _model():
                 "period_id": period_id,
                 "value_dec": Decimal(40),
                 "normalized_value": Decimal(40000),
+                "scale_factor": 1000,
                 "cell_id": f"Ratios!{column}3",
             }
         )
@@ -362,7 +363,12 @@ def test_synthetic_book_tags_the_income_statement_as_year_to_date():
     assert last["value"] == Decimal("1.0000000000")
     assert len(last["components"]["interest"]) == 4
     assert last["components"]["ebitda"]
-    assert last["scale_factor"]["interest"] == 1000
+    assert last["scale_factor"]["ebitda"] == 1000
+    assert last["scale_factor"]["interest"] is None
+    assert result["warnings"] == [{"code": "scale_assumed", "params": {"message": SCALE_ASSUMED}}]
+    book, _cf_periods, _pl_periods = _book()
+    assert book["Ratios"]["C2"].value == "тыс."
+    assert all(book["CF"][f"{column}1"].value is None for column in "CDEFGHIJK")
     cited = ratio_cells(last, model["facts"], bindings, periods, frozenset())
     assert {item["cell_id"] for item in cited} == set(last["components"]["interest"]) | set(last["components"]["ebitda"])
 

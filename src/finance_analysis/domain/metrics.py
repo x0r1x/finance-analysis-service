@@ -21,6 +21,10 @@ PARTIAL_DENOMINATOR = (
     "Коэффициент не рассчитан."
 )
 SCALE_UNCONFIRMED = "Масштаб числителя и знаменателя не подтверждён. Коэффициент не рассчитан."
+SCALE_ASSUMED = (
+    "Масштаб одной стороны не подтверждён. Принято, что обе стороны выражены в единицах книги, "
+    "и коэффициент рассчитан по числам на листе."
+)
 MIXED_BASIS = "Способ показа числителя и знаменателя различается. Коэффициент не рассчитан."
 _BOUND = frozenset({"bound", "bound_with_warning"})
 # Источники привязки от человека: только они отменяют `concept.absent` (§5.10.5).
@@ -118,6 +122,12 @@ def coverage_ratio(
             components=components,
             scales=scales,
         )
+    if numerator_basis != denominator_basis and not (numerator_basis == "ltm" and denominator_basis == "period"):
+        message = MIXED_BASIS
+        if metric == "icr":
+            message = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name]) or MIXED_BASIS
+        return _explained(metric, periods, "basis_mismatch", message, warnings)
+    sheet = _assume_sheet_units(facts, list(named.values()), warnings)
     if numerator_basis == "ltm" and denominator_basis == "period":
         return _ltm_numerator(
             metric,
@@ -130,18 +140,14 @@ def coverage_ratio(
             period_phase=period_phase,
             explicit_phases=explicit_phases,
             marker_class=marker_class,
+            sheet=sheet,
         )
-    if numerator_basis != denominator_basis:
-        message = MIXED_BASIS
-        if metric == "icr":
-            message = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name]) or MIXED_BASIS
-        return _explained(metric, periods, "basis_mismatch", message, warnings)
     aligned = aligned_keys(periods)
-    numerator = _sums(facts, primaries[numerator_name], aligned, periods)
-    denominator = _sums(facts, primaries[denominator_name], aligned, periods)
+    numerator = _sums(facts, primaries[numerator_name], aligned, periods, sheet=sheet)
+    denominator = _sums(facts, primaries[denominator_name], aligned, periods, sheet=sheet)
     home = _axes_of(facts, primaries[denominator_name])
     if metric == "icr" and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
-        raw = _sums(facts, primaries[numerator_name], aligned, None)
+        raw = _sums(facts, primaries[numerator_name], aligned, None, sheet=sheet)
         if not _numerator_misses_axis(raw, denominator, periods, aligned, home):
             message = (
                 "Нарастающий итог числителя ICR не удалось перевести в значение за период. "
@@ -202,6 +208,7 @@ def _ltm_numerator(
     period_phase: dict,
     explicit_phases: bool,
     marker_class: str | None,
+    sheet: bool = False,
 ) -> dict:
     """Числитель `ltm` делится на сумму знаменателя за двенадцать месяцев до его конца.
 
@@ -213,8 +220,8 @@ def _ltm_numerator(
     from finance_analysis.domain.coverage import is_coverage_test_period
 
     aligned = aligned_keys(periods)
-    numerator = _sums(facts, numerator_binding, aligned, periods)
-    denominator = _sums(facts, denominator_binding, aligned, periods)
+    numerator = _sums(facts, numerator_binding, aligned, periods, sheet=sheet)
+    denominator = _sums(facts, denominator_binding, aligned, periods, sheet=sheet)
     numerator_axes = _axes_of(facts, numerator_binding)
     denominator_axes = _axes_of(facts, denominator_binding)
     ordered = _dated_periods([period for period in periods if period["axis_id"] in denominator_axes])
@@ -436,6 +443,8 @@ def _sums(
     binding: dict,
     aligned: dict | None = None,
     periods: list[dict] | None = None,
+    *,
+    sheet: bool = False,
 ) -> dict[tuple, Decimal]:
     """Сумма строки по ключу шкалы. Нарастающий итог переводится в значение за период.
 
@@ -450,7 +459,7 @@ def _sums(
     for fact in facts:
         if fact.get("row_key") != row_key:
             continue
-        number = _figure(fact)
+        number = _figure(fact, sheet=sheet)
         if number is None:
             continue
         own = (fact["axis_id"], fact["period_id"])
@@ -480,11 +489,30 @@ def _component_cells(facts: list[dict], binding: dict, periods: list[dict]) -> l
 def unconfirmed_scale(facts: list[dict], bindings: list[dict]) -> bool:
     """Число строки спорит с её масштабом.
 
-    Отсутствие масштаба у одной стороны отказом не является: берётся нормализованное
-    значение, а заданный масштаб применяется к числу на листе до деления.
+    Отсутствие масштаба у одной стороны отказом не является: тогда обе стороны
+    берутся числами на листе.
     """
 
     return any(_scale_kind(facts, binding) == "unconfirmed" for binding in bindings)
+
+
+def _assume_sheet_units(facts: list[dict], bindings: list[dict], warnings: list[dict]) -> bool:
+    """Масштаб умножает коэффициент, только если он есть у каждой стороны.
+
+    Иначе стороны считаются в единицах книги. Предупреждение одно на расчёт.
+    """
+
+    if _scale_policy(facts, bindings) != "sheet":
+        return False
+    warnings.append({"code": "scale_assumed", "params": {"message": SCALE_ASSUMED}})
+    return True
+
+
+def _scale_policy(facts: list[dict], bindings: list[dict]) -> str:
+    known = sum(_stored_scale(facts, binding) is not None for binding in bindings)
+    if known == 0 or known == len(bindings):
+        return "plain" if known == 0 else "apply"
+    return "sheet"
 
 
 def _home_period(facts: list[dict], binding: dict, periods: list[dict]) -> dict | None:
@@ -549,18 +577,20 @@ def _one_scale(fact: dict) -> str:
     return "unconfirmed"
 
 
-def _figure(fact: dict) -> Decimal | None:
-    """Величина ячейки в одной шкале со второй стороной коэффициента.
+def _figure(fact: dict, *, sheet: bool = False) -> Decimal | None:
+    """Величина ячейки.
 
-    Если `scale_factor` задан, а `normalized_value` всё ещё равен числу на листе,
-    число умножается на масштаб. Уже приведённое значение не умножается второй раз.
-    Без масштаба остаётся прежнее правило: нормализованное значение, иначе `value_dec`.
+    `sheet` берёт число на листе и не умножает его: так считается коэффициент,
+    когда масштаб известен не у каждой стороны. Иначе заданный масштаб применяется,
+    если нормализованное значение его ещё не учитывает.
     """
 
     raw = _decimal(fact.get("value_dec"))
     if raw is None:
         raw = _decimal(fact.get("value"))
     norm = _decimal(fact.get("normalized_value"))
+    if sheet:
+        return raw if raw is not None else norm
     scale = _scale(fact.get("scale_factor"))
     if scale is None or scale == 1:
         return norm if norm is not None else raw
