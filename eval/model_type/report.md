@@ -13,12 +13,13 @@
 | ambiguous_statements_and_debt | вопрос: ambiguous | вопрос: ambiguous | corporate 1.000 | project_finance 1.000 | 0.000 | да | нет | — |
 | ask_instead_of_other | вопрос: unknown | вопрос: unknown | corporate 0.000 | development_escrow 0.000 | 0.000 | нет | нет | — |
 | partial_npv | вопрос: unknown | вопрос: unknown | corporate 0.000 | development_escrow 0.000 | 0.000 | нет | нет | — |
+| development_escrow | development_escrow | development_escrow | development_escrow 1.000 | corporate 0.000 | 1.000 | да | да | — |
 
 ## Сводка
 
-- accuracy основного типа: 6/6 = 1.000
-- доля вопросов: 3/9 = 0.333
-- верные решения: 9/9 = 1.000
+- accuracy основного типа: 7/7 = 1.000
+- доля вопросов: 3/10 = 0.300
+- верные решения: 10/10 = 1.000
 
 | тип | ложные | доля |
 | --- | --- | --- |

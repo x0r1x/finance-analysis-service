@@ -1,0 +1,7 @@
+concept: effective_rate
+pref:
+  en: "Effective borrowing rate"
+  ru: "Эффективная ставка"
+definition:
+  en: "Loan rate blended from the book's base and special rates by escrow coverage. FAS does not compute the scale."
+  ru: "Ставка кредита от покрытия эскроу. Уровни задаёт книга; FAS шкалу не считает."
