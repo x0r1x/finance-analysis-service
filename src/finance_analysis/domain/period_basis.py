@@ -590,10 +590,12 @@ def _if_branch(text: str, quarter: int) -> str | None:
 
 
 def _compared_number(condition: str) -> int | None:
-    match = re.search(r"=\s*(\d+)", condition)
+    """Номер квартала в условии: `=1` или `="1"`."""
+
+    match = re.search(r'=\s*"(\d+)"|=\s*(\d+)\b', condition)
     if match is None:
         return None
-    return int(match.group(1))
+    return int(next(group for group in match.groups() if group is not None))
 
 
 def _call_args(text: str, name: str) -> list[str] | None:

@@ -1079,6 +1079,11 @@ def test_quarter_index_prefix_is_ytd_and_a_sum_that_does_not_restart_is_not():
         "ytd",
         "formula",
     )
+    quoted = _prefix_links(periods, cells, choice="QUOTED")
+    assert classify_period_basis(_row("cum", "Проценты"), calendar=calendar, links=source + quoted, series=series) == (
+        "ytd",
+        "formula",
+    )
     picked = _prefix_links(periods, cells, choice="CHOOSE")
     assert classify_period_basis(_row("cum", "Проценты"), calendar=calendar, links=source + picked, series=series) == (
         "ytd",
@@ -1108,6 +1113,9 @@ def _prefix_links(periods: list[str], cells: dict[str, str], *, choice: str | No
             if choice == "IF":
                 added = "+".join(prefix)
                 text = f"=IF(Q!H{index + 1}={quarter},{added},0)"
+            elif choice == "QUOTED":
+                added = "+".join(prefix)
+                text = f'=IF(LEFT(Q!H{index + 1},1)="{quarter}",{added},0)'
             elif choice == "CHOOSE":
                 branches = []
                 for size in range(1, len(year_periods) + 1):
