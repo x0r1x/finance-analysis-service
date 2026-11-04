@@ -31,6 +31,8 @@ def test_statement_roles_come_from_corporate_groups_without_a_second_copy():
     assert "P&L" in _ROLES.statement
     assert "Отчет о финансовых результатах" in _ROLES.statement
     assert "Допущения" in _ROLES.assumptions
+    assert "Предпосылки" in _ROLES.assumptions
+    assert "Предпосылки модели" in _ROLES.assumptions
     assert "Итоги" in _ROLES.outputs
 
 
@@ -60,6 +62,17 @@ def test_outputs_beat_an_unranked_sheet_and_assumptions():
     got = _assigned(rows)
     assert got["out"].is_primary and got["out"].evidence["selection"] == "sheet_role"
     assert got["plain"].is_primary is False
+
+
+def test_preconditions_sheet_is_assumptions_and_loses_to_a_statement():
+    rows = [
+        _row("form", "Interest", sheet="P&L"),
+        _row("asm", "Interest", sheet="Предпосылки"),
+        _row("model", "Interest", sheet="Предпосылки модели"),
+    ]
+    got = _assigned(rows)
+    assert got["form"].is_primary and got["form"].evidence["selection"] == "sheet_role"
+    assert got["asm"].is_primary is False and got["model"].is_primary is False
 
 
 def test_unranked_sheet_beats_assumptions():
