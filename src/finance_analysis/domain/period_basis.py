@@ -47,7 +47,7 @@ def classify_period_basis(
     # Согласованные колонки LTM сильнее заголовка раздела. Заголовок сильнее формулы.
     if _columns_agree(columns, _phrase_ltm):
         return "ltm", "header"
-    if _phrase_ytd(row_header) or _columns_agree(columns, _phrase_ytd):
+    if _header_ytd(row) or _columns_agree(columns, _phrase_ytd):
         return "ytd", "header"
     if _phrase_ltm(row_header):
         return "ltm", "header"
@@ -282,6 +282,26 @@ def _intermediate_heading(row: dict, block_id: str | None) -> bool:
         return True
     own = str(row.get("block_id") or "") or None
     return bool(block_id) and own == block_id
+
+
+def _header_ytd(row: dict) -> bool:
+    """Фраза нарастающего итога ищется в каждой части пути, а не в склеенной строке.
+
+    Хвост после фразы допускается только пустым или «за год». Склейка
+    «за год › следующий заголовок» этот хвост ломает, хотя часть пути фразу содержит.
+    """
+
+    return any(_phrase_ytd(part) for part in _header_parts(row))
+
+
+def _header_parts(row: dict) -> list[str]:
+    raw = [row.get("sheet"), row.get("parent_label"), *_path(row)]
+    parts: list[str] = []
+    for item in raw:
+        if not item:
+            continue
+        parts.extend(piece.strip() for piece in str(item).split("›") if piece.strip())
+    return parts
 
 
 def _row_header(row: dict) -> str:
