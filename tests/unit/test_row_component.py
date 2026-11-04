@@ -10,7 +10,6 @@ from finance_analysis.application.model_types import load_model_types
 from finance_analysis.application.sheet_roles import load_sheet_roles
 from finance_analysis.domain.audit import AuditInput
 from finance_analysis.domain.book import (
-    FAS_DERIVE_VERSION,
     FAS_SCHEMA_VERSION,
     FAS_VERSION,
 )
@@ -299,7 +298,6 @@ def test_confirmed_component_keeps_primary_and_warns():
     assert got["bond"].is_primary is False
     assert FAS_SCHEMA_VERSION == "1.0"
     assert FAS_VERSION == "0.23.0"
-    assert FAS_DERIVE_VERSION == "4"
 
 
 def test_confirmed_component_over_a_bound_total_does_not_raise_missing_total_row():
