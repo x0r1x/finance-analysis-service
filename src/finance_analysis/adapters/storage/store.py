@@ -39,6 +39,15 @@ def _reject_key(key: str) -> str:
     return key
 
 
+def _list_prefix(prefix: str) -> str:
+    """Каталог: хвостовой слэш не часть ключа, список идёт по префиксу каталога."""
+
+    safe = prefix.strip("/")
+    if safe:
+        _reject_key(safe)
+    return f"{safe}/" if safe else ""
+
+
 def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -200,13 +209,10 @@ class LocalStore(_StoreBase):
         return ObjMeta(key=key, size=len(data), etag=_hash(data), mtime=datetime.now(UTC))
 
     async def list(self, prefix: str) -> AsyncIterator[ObjMeta]:
-        safe = prefix.strip("/")
-        if safe:
-            _reject_key(safe) if "/" in safe or safe not in {".", ".."} else None
-            if ".." in safe.split("/"):
-                raise InvalidId("префикс недопустим")
+        scope = _list_prefix(prefix)
+        safe = scope.rstrip("/")
         try:
-            listed = await self._op.list(safe + "/" if safe else "", recursive=True)
+            listed = await self._op.list(scope, recursive=True)
         except OdalNotFound:
             return
         async for entry in listed:
@@ -333,9 +339,9 @@ class S3Store(_StoreBase):
         raise PreconditionFailed("токен не совпал", extra={"etag": token}) from last_error
 
     async def list(self, prefix: str) -> AsyncIterator[ObjMeta]:
-        safe = _reject_key(prefix) if prefix else ""
+        scope = _list_prefix(prefix)
         try:
-            listed = await self._op.list(safe, recursive=True)
+            listed = await self._op.list(scope, recursive=True)
         except OdalNotFound:
             return
         async for entry in listed:
