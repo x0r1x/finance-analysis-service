@@ -297,6 +297,27 @@ def test_a_ytd_header_wins_over_a_formula_that_looks_like_four_quarters():
     assert classify_period_basis(agreed, calendar=calendar, links=links, series=series) == ("ytd", "header")
 
 
+def test_a_longer_project_title_does_not_hide_a_trailing_window():
+    periods = [f"{year}Q{quarter}" for year in (2024, 2025) for quarter in range(1, 5)]
+    calendar = _quarter_calendar(periods)
+    cells = {period: f"S!C{index}" for index, period in enumerate(periods)}
+    source = [_formula_link(cells[period], "src", period, None, None) for period in periods]
+    links = []
+    shown = periods[3:]
+    for index, period in enumerate(periods):
+        if index < 3:
+            continue
+        for offset in range(index - 3, index + 1):
+            links.append(_formula_link(f"S!L{index}", "ltm", period, "=SUM(window)", cells[periods[offset]]))
+    series = {("ax", period): 40 for period in shown}
+    row = _row("ltm", "EBITDA", parent_label="Итого с начала года проекта")
+    assert classify_period_basis(row, calendar=calendar, links=source + links, series=series) == ("ltm", "formula")
+    for period in shown:
+        calendar[("ax", period)] = {**calendar[("ax", period)], "header_text": "за 12 месяцев"}
+    headed = _row("ltm", "EBITDA", parent_label="накопленным итогом за год")
+    assert classify_period_basis(headed, calendar=calendar, links=source + links, series=series) == ("ltm", "header")
+
+
 def test_a_column_header_applies_only_when_every_numeric_column_agrees():
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]
     series = {("ax", period): 10 * (index + 1) for index, period in enumerate(periods)}

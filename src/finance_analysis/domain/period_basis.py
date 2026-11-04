@@ -44,10 +44,12 @@ def classify_period_basis(
         return "ltm", "label"
     row_header = _row_header(row)
     columns = _column_headers(series, calendar)
-    # Заголовок листа, раздела или согласованных колонок сильнее любой формулы.
+    # Согласованные колонки LTM сильнее заголовка раздела. Заголовок сильнее формулы.
+    if _columns_agree(columns, _phrase_ltm):
+        return "ltm", "header"
     if _phrase_ytd(row_header) or _columns_agree(columns, _phrase_ytd):
         return "ytd", "header"
-    if _phrase_ltm(row_header) or _columns_agree(columns, _phrase_ltm):
+    if _phrase_ltm(row_header):
         return "ltm", "header"
     if _label_forces_period(label):
         return "period", "default"
@@ -188,8 +190,21 @@ def _phrase_ltm(text: str) -> bool:
 
 
 def _phrase_ytd(text: str) -> bool:
+    """Фраза нарастающего итога заканчивает заголовок. Дальше допустимо только «за год»."""
+
     folded = label_scan(text)
-    return any(phrase in folded for phrase in _YTD)
+    for phrase in _YTD:
+        start = 0
+        while True:
+            index = folded.find(phrase, start)
+            if index < 0:
+                break
+            before = index == 0 or not folded[index - 1].isalnum()
+            after = folded[index + len(phrase) :].strip()
+            if before and after in {"", "за год"}:
+                return True
+            start = index + len(phrase)
+    return False
 
 
 def _row_header(row: dict) -> str:
