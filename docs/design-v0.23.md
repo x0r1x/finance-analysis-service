@@ -452,7 +452,7 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
       derived/{derive_key}/a/{attempt}/bindings.parquet   # все fact-строки, включая unknown/ambiguous (§5.10.1)
       derived/{derive_key}/a/{attempt}/coverage.parquet   # отчёт покрытия, одна строка на (статус, важность) (§5.10.3)
       derived/{derive_key}/a/{attempt}/questions.parquet  # пакет вопросов книги (§5.10.5)
-      # derive_key = sha256(canonical{state_seq, glossary_version, taxonomy_version, calibrator_version, embed_model, rerank_model, clm_model, profile_version, fas_derive_version, model_types_version, model_type_seq})[:16]
+      # derive_key = sha256(canonical{state_seq, glossary_version, taxonomy_version, calibrator_version, embed_model, rerank_model, clm_model, profile_version, fas_derive_version, model_types_version, model_type_seq, sheet_roles_version})[:16]
       results/{analysis_id}/result.json | run.parquet | findings.parquet | ratios.parquet | report.md   # result.json пишется последним (put_if_absent)
     _state/
       log/{seq:020d}.json                     # журнал книги: решения и системные записи (put_if_absent; номер = порядок, с 0.21)
@@ -480,13 +480,13 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
 ```
 
 - **`build_key`** = `sha256(job_id › summary_etag › fas_projection_version)[:16]`. Пересборка builder на месте даёт новый `summary_etag` → новый `build_key` → новая папка; старая остаётся навсегда как история (§4.10).
-- **`derive_key`** (с 0.21) — хеш всех входов производного состояния (формула в схеме выше). Любой вход, от которого зависят inferred-привязки, семантика и покрытие, входит в ключ. Поэтому один и тот же путь никогда не получает другого содержимого, а ленивое построение для прошлой сборки, canary-книги или нового профиля пишет в новую папку.
+- **`derive_key`** (с 0.21) — хеш всех входов производного состояния (формула в схеме выше). Любой вход, от которого зависят inferred-привязки, семантика и покрытие, входит в ключ. Поэтому один и тот же путь никогда не получает другого содержимого, а ленивое построение для прошлой сборки, canary-книги или нового профиля пишет в новую папку. `fas_derive_version` сейчас `2`. `sheet_roles_version` — sha256 ролей листа [:16]: формы из групп `sheets_any` в `configs/model_types/corporate.yaml` и списки `configs/sheet_roles.yaml`.
 - **Изменяемое** состояние (подтверждения) хранится по `job_id`, а не по `build_key`, и ссылается на строки через `binding_key`. Поэтому оно переживает дрейф `row_key`.
 - **Видимость.** Читатели находят сборку только через `_head.json`, а он меняется последним и через CAS. Листинг для обнаружения не используется. Так решается вопрос согласованности листинга и полузаписанных папок.
 
 ### 4.3 Поток загрузки
 1. Читается `_head.json`, затем `GET /summary` с `If-None-Match: <summary_etag из manifest>` (без сохранённого ETag — без заголовка). Ответы:
-   - `304` → актуально (ETag кэшируется в Redis на `ETAG_TTL`);
+   - `304` → публикация builder актуальна (ETag кэшируется в Redis на `ETAG_TTL`). Производная голова сверяется отдельно: если `derive_key` текущих входов (версия свёртки и хеши конфигурации, включая каталог типов и роли листа) отличается от записанного, та же сборка сворачивается заново, проекция builder не читается повторно. Совпавший ключ переиспользуется;
    - `200` + `status=succeeded` → загрузка;
    - `200` + любой другой статус или `409 report_not_ready` → чтения по текущей сборке с `freshness_unknown`, ETag **не** сохраняется;
    - `404` → `book_not_found`, если сборки нет;
