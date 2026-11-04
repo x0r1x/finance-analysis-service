@@ -178,11 +178,18 @@ def composed_ratio(
     rows = []
     for axis in sorted(_axes_of(facts, primaries[home_name])):
         ordered = _ordered(periods, axis)
+        axis_keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in ordered]
+        debt_on_axis = metric != "net_debt_ebitda" or any(key in series["net_debt"] for key in axis_keys)
         for period in ordered:
             marker = period.get("marker_class")
             if marker_class and marker and marker != marker_class:
                 continue
             keys, window, problem = _span(formula.window, ordered, period, aligned, axis)
+            if problem and not debt_on_axis:
+                rows.append(
+                    _line(metric, period, None, "input_absent", "input_absent", inputs, window, message=_NET_DEBT_ABSENT)
+                )
+                continue
             if problem:
                 rows.append(_line(metric, period, None, "not_computed", problem, inputs, window))
                 continue
