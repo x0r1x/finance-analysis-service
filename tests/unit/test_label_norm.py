@@ -181,6 +181,19 @@ def test_ras_ifrs_labels_resolve(concept, label):
     assert load_catalog().resolve(label).concept == concept
 
 
+def test_interest_form_codes_bind_and_a_stray_number_does_not():
+    package = load_catalog()
+    assert package.resolve("070").concept == "interest"
+    assert package.resolve("2330").concept == "interest"
+    assert package.resolve("стр. 070").concept == "interest"
+    hit, strength = package.resolve_match("(070)")
+    assert hit.concept == "interest" and strength == "exact"
+    hit, strength = package.resolve_match("Проценты к уплате (2330)")
+    assert hit.concept == "interest" and strength == "exact"
+    assert package.resolve("Выручка (1000)") is None or package.resolve("Выручка (1000)").concept != "interest"
+    assert package.resolve("(1000)") is None
+
+
 def test_instruction_and_parenthetical_tail_match_more_weakly():
     package = load_catalog()
     raw = "Финансовые расходы (процентные расходы), укажите с '+'"

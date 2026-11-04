@@ -5,6 +5,8 @@ pref:
 alt:
   en: ["interest expense", "Debt interest"]
   ru: ["процентные платежи", "Проценты к уплате", "Финансовые расходы", "Процентные расходы"]
+hidden:
+  ru: ["070", "2330", "стр. 070", "стр. 2330"]
 definition:
-  en: "Scheduled interest"
-  ru: "Плановые проценты"
+  en: "Scheduled interest. Statement line codes 2330 and 070."
+  ru: "Плановые проценты. Коды строки формы: 2330 и 070."

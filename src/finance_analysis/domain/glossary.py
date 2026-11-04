@@ -44,6 +44,7 @@ _UNIT_INNER = re.compile(
     r"(?i)^(?:(?:тыс|млн|млрд)\.?\s*руб\.?|руб\.?|%|\$\s*'?\s*0{3}|(?:usd|eur|gbp|rub)\s*'?\s*(?:k|000)|k[£€$]|[£€$]\s*'?\s*0{3})$"
 )
 _ABBREV = re.compile(r"^[A-ZА-ЯЁ][A-ZА-ЯЁ0-9.]{1,14}$")
+_CODE = re.compile(r"^\d{3,4}$")
 _TOKEN = re.compile(r"[^\W\d_]+|\d+|%")
 
 
@@ -53,6 +54,7 @@ class _Peeled:
     unit: str | None
     period: str | None
     abbrevs: tuple[str, ...]
+    codes: tuple[str, ...] = ()
     stem: bool = False
 
 
@@ -94,6 +96,8 @@ def _paren(body: str) -> tuple[str, str, str] | None:
         return "unit", inner, rest
     if _ABBREV.match(inner):
         return "abbrev", inner, rest
+    if _CODE.match(inner):
+        return "code", inner, rest
     return "drop", inner, rest
 
 
@@ -111,6 +115,7 @@ def _peel(text: str) -> _Peeled:
     units: list[str] = []
     periods: list[str] = []
     abbrevs: list[str] = []
+    codes: list[str] = []
     stem = False
     while body:
         cut = _suffix(body, _PERIODS, "period") or _suffix(body, _UNITS, "unit") or _paren(body)
@@ -123,6 +128,8 @@ def _peel(text: str) -> _Peeled:
             units.append(fragment)
         elif kind == "abbrev":
             abbrevs.append(fragment)
+        elif kind == "code":
+            codes.append(fragment)
         elif kind == "drop":
             stem = True
         body = rest
@@ -131,6 +138,7 @@ def _peel(text: str) -> _Peeled:
         " ".join(reversed(units)) or None,
         " ".join(reversed(periods)) or None,
         tuple(reversed(abbrevs)),
+        tuple(reversed(codes)),
         stem,
     )
 
@@ -164,6 +172,10 @@ def label_keys(text: str) -> tuple[str, ...]:
         keys.append(body)
     for abbrev in peeled.abbrevs:
         key = _fold(abbrev)
+        if key and key not in keys:
+            keys.append(key)
+    for code in peeled.codes:
+        key = _fold(code)
         if key and key not in keys:
             keys.append(key)
     return tuple(keys)
@@ -259,6 +271,14 @@ class GlossaryPackage:
             if hit is None or any(item.concept == hit.concept for item, _strength in found):
                 continue
             found.append((hit, "abbrev"))
+        for code in peeled.codes:
+            key = _fold(code)
+            if not key or key == body:
+                continue
+            hit = self._by_norm.get(key)
+            if hit is None or any(item.concept == hit.concept for item, _strength in found):
+                continue
+            found.append((hit, "exact"))
         if len({hit.concept for hit, _strength in found}) != 1:
             return None
         return found[0]
