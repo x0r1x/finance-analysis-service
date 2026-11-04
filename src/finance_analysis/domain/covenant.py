@@ -26,6 +26,7 @@ from finance_analysis.domain.metrics import (
     _primaries,
     _sums,
     aligned_keys,
+    _component_cells,
     coverage_ratio,
     interest_choice,
     unconfirmed_scale,
@@ -199,6 +200,10 @@ def composed_ratio(
     basis = {name: basis_of(primaries[name])[0] for name in series}
     roll = formula.window == "period" and _rolls(primaries, formula)
     window_name = "LTM" if roll else formula.window
+    # Строка EBITDA со способом `ltm` уже покрывает двенадцать месяцев.
+    # Четыре квартала такой строки не складываются и не требуют полного окна.
+    ebitda_ltm = metric == "net_debt_ebitda" and basis.get("ebitda") == "ltm"
+    span_name = "period" if ebitda_ltm else window_name
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
     by_end = _stock_by_end(periods, aligned, series, "net_debt") if metric == "net_debt_ebitda" else {}
     rows = []
@@ -211,7 +216,7 @@ def composed_ratio(
             marker = period.get("marker_class")
             if marker_class and marker and marker != marker_class:
                 continue
-            keys, window, problem = _span(window_name, ordered, period, aligned, axis)
+            keys, window, problem = _span(span_name, ordered, period, aligned, axis)
             if problem and not debt_on_axis:
                 rows.append(
                     _line(metric, period, None, "input_absent", "input_absent", inputs, window, message=_NET_DEBT_ABSENT)
@@ -250,7 +255,14 @@ def composed_ratio(
                 status = "no_debt_service" if metric == "dscr" else "missing_input"
                 rows.append(_line(metric, period, None, status, "zero_denominator", inputs, window))
                 continue
-            rows.append(_line(metric, period, _ratio(numerator, denominator), "computed", None, inputs, window))
+            line = _line(metric, period, _ratio(numerator, denominator), "computed", None, inputs, window)
+            if metric == "net_debt_ebitda":
+                used = [period] if ebitda_ltm else [item for item in ordered if item["period_id"] in set(window or [])]
+                line["components"] = {
+                    "net_debt": _component_cells(facts, primaries["net_debt"], _same_end(periods, period)),
+                    "ebitda": _component_cells(facts, primaries["ebitda"], used or [period]),
+                }
+            rows.append(line)
     status = "succeeded"
     message = None
     absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
@@ -385,6 +397,25 @@ def _stock_by_end(periods: list[dict], aligned: dict, series: dict, name: str) -
         if end is not None and key in values:
             found[end] = values[key]
     return found
+
+
+def _same_end(periods: list[dict], period: dict) -> list[dict]:
+    """Периоды с той же датой конца, включая период оси коэффициента.
+
+    Остаток на другой оси цитируется по этой дате. Период без даты остаётся один.
+    """
+
+    end = period.get("period_end")
+    found = []
+    seen = set()
+    for item in periods:
+        own = (item.get("axis_id"), item.get("period_id"))
+        if own in seen:
+            continue
+        if own == (period.get("axis_id"), period.get("period_id")) or (end is not None and item.get("period_end") == end):
+            seen.add(own)
+            found.append(item)
+    return found or [period]
 
 
 def _ending(keys, series: dict, name: str) -> Decimal | None:

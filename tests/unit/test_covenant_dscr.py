@@ -406,6 +406,45 @@ def test_hybrid_of_escrow_and_project_finance_keeps_both_labels():
     assert catalog.types["corporate"].variants["dscr"] == "corporate_covenant"
 
 
+def test_ltm_ebitda_is_one_cell_and_cites_the_net_debt_cell():
+    import json
+
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    periods = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    debt_periods = [
+        {**period, "axis_id": "debt", "timeline_id": "debt", "period_id": f"D{index}"}
+        for index, period in enumerate(periods, start=1)
+    ]
+    facts = []
+    for index, ebitda in ((1, "10"), (2, "10"), (3, "10"), (4, "40")):
+        facts.append(_fact("e", f"Q{index}", ebitda, cell=f"E{index}"))
+        facts.append({**_fact("n", f"D{index}", "100", cell=f"N{index}"), "axis_id": "debt"})
+    ebitda = _bind("ebitda", "e")
+    ebitda["evidence_json"] = json.dumps({"period_basis": "ltm", "period_basis_source": "header"})
+    got = composed_ratio(
+        "net_debt_ebitda",
+        catalog.composed["net_debt_ebitda"],
+        facts=facts,
+        bindings=[_bind("net_debt", "n"), ebitda],
+        periods=[*periods, *debt_periods],
+    )
+    by_period = {row["period_id"]: row for row in got["rows"]}
+    assert by_period["Q1"]["status"] == "computed"
+    assert by_period["Q1"]["value"] == Decimal("10.0000000000")
+    assert by_period["Q4"]["status"] == "computed"
+    assert by_period["Q4"]["value"] == Decimal("2.5000000000")
+    assert by_period["Q4"]["window"] == ["Q4"]
+    cited = ratio_cells(by_period["Q4"], facts, [_bind("net_debt", "n"), ebitda], [*periods, *debt_periods], frozenset())
+    assert {item["cell_id"] for item in cited} == {"N4", "E4"}
+
+
 def test_net_debt_ebitda_uses_the_ending_stock_and_raw_ebitda():
     from finance_analysis.domain.covenant import composed_ratio
 
