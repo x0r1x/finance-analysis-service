@@ -1,0 +1,10 @@
+concept: total_assets
+pref:
+  en: "Balance sheet total"
+  ru: "ИТОГО АКТИВЫ"
+alt:
+  ru:
+    - "Баланс"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."

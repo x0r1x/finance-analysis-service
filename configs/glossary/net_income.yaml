@@ -1,0 +1,10 @@
+concept: net_income
+pref:
+  en: "Profit for the year"
+  ru: "Чистая прибыль (убыток)"
+alt:
+  ru:
+    - "Чистая прибыль (убыток) отчетного года"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."

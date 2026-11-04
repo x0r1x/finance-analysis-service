@@ -1,0 +1,10 @@
+concept: revenue
+pref:
+  en: "Net sales revenue"
+  ru: "Выручка"
+alt:
+  ru:
+    - "Выручка (нетто) от реализации товаров, продукции, работ, услуг (без НДС)"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."

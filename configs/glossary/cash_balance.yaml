@@ -1,0 +1,10 @@
+concept: cash_balance
+pref:
+  en: "Closing cash balance"
+  ru: "Остаток денежных средств на конец периода"
+alt:
+  ru:
+    - "Остаток денежных средств и денежных эквивалентов на конец отчетного периода"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."

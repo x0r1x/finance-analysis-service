@@ -155,3 +155,72 @@ concepts:
   provision_coverage:
     kind: ratio
     unit: ratio
+  revenue:
+    kind: measure
+    unit: money
+    expected_sign: inflow
+  cogs:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+  gross_profit:
+    kind: measure
+    unit: money
+  selling_expenses:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+  ebt:
+    kind: measure
+    unit: money
+  income_tax:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+  net_income:
+    kind: measure
+    unit: money
+  fixed_assets:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  intangibles:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  inventory:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  receivables:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  cash:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  cash_balance:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  share_capital:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  retained_earnings:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  total_assets:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  deferred_tax_asset:
+    kind: measure
+    unit: money
+    expected_sign: stock
+  deferred_tax_liability:
+    kind: measure
+    unit: money
+    expected_sign: stock

@@ -1,0 +1,7 @@
+concept: selling_expenses
+pref:
+  en: "Selling expenses"
+  ru: "Коммерческие расходы"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."
