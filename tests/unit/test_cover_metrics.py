@@ -104,6 +104,26 @@ def _by_period(result: dict) -> dict[str, dict]:
     return {row["period_id"]: row for row in result["rows"]}
 
 
+def test_llcr_with_one_scale_divides_the_sheet_figures():
+    periods, facts, bindings = _loan_book()
+    for fact in facts:
+        if fact["row_key"] != "c":
+            continue
+        fact["value_dec"] = fact["normalized_value"]
+        fact["normalized_value"] = fact["value_dec"] * 1000
+        fact["scale_factor"] = 1000
+    result = loan_life_ratio("llcr", **_common(periods, facts, bindings))
+    assert _by_period(result)["2025"]["value"] == LLCR_2025
+    assert any(
+        item.get("params", {}).get("message")
+        == (
+            "Масштаб одной стороны не подтверждён. Принято, что обе стороны выражены в единицах книги, "
+            "и коэффициент рассчитан по числам на листе."
+        )
+        for item in result["warnings"]
+    )
+
+
 def test_llcr_reperformed_and_not_computed_in_final_period():
     periods, facts, bindings = _loan_book()
     common = {"facts": facts, "bindings": bindings, "periods": periods, "period_phase": {}, "explicit_phases": False}
