@@ -74,6 +74,23 @@ concepts:
     kind: measure
     unit: money
     expected_sign: stock
+  escrowed_funds_rate:
+    kind: parameter
+    unit: ratio
+  escrow_inflow:
+    kind: measure
+    unit: money
+    expected_sign: inflow
+  escrow_disclosure:
+    kind: measure
+    unit: money
+    expected_sign: outflow
+  escrow_coverage:
+    kind: ratio
+    unit: ratio
+  effective_rate:
+    kind: ratio
+    unit: ratio
   grantor_payment:
     kind: measure
     unit: money

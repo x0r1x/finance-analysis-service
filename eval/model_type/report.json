@@ -606,12 +606,51 @@
       "top1_score": 0.5,
       "top2": "bank_leasing",
       "top2_score": 0.0
+    },
+    {
+      "confident": true,
+      "expected": {
+        "kind": "type",
+        "labels": [
+          "development_escrow"
+        ],
+        "primary": "development_escrow",
+        "reason": null
+      },
+      "false_positives": [],
+      "gap": 1.0,
+      "id": "development_escrow",
+      "labels": [
+        "development_escrow"
+      ],
+      "meets_accept": true,
+      "meets_gap": true,
+      "primary": "development_escrow",
+      "primary_hit": true,
+      "question_hit": null,
+      "reason": null,
+      "scores": {
+        "bank_leasing": 0.0,
+        "corporate": 0.0,
+        "dcf_valuation": 0.0,
+        "development_escrow": 1.0,
+        "investment_project": 0.0,
+        "lbo_ma": 0.0,
+        "ppp_concession": 0.0,
+        "project_finance": 0.0,
+        "real_estate_income": 0.0,
+        "renewables_dpm": 0.0
+      },
+      "top1": "development_escrow",
+      "top1_score": 1.0,
+      "top2": "bank_leasing",
+      "top2_score": 0.0
     }
   ],
   "gap": 0.15,
   "summary": {
     "decision_accuracy": 1.0,
-    "decisions_correct": 16,
+    "decisions_correct": 17,
     "false_positives": {
       "bank_leasing": {
         "count": 0,
@@ -658,11 +697,11 @@
         "rate": 0.0
       }
     },
-    "n": 16,
+    "n": 17,
     "primary_accuracy": 1.0,
-    "primary_correct": 11,
-    "question_rate": 0.3125,
+    "primary_correct": 12,
+    "question_rate": 0.29411764705882354,
     "questions": 5,
-    "typed": 11
+    "typed": 12
   }
 }

@@ -1,0 +1,7 @@
+concept: escrow_disclosure
+pref:
+  en: "Disclosure of escrow accounts"
+  ru: "Раскрытие эскроу"
+definition:
+  en: "Release of escrow after the commissioning permit, to the developer or to repay the loan"
+  ru: "Раскрытие эскроу после разрешения на ввод: застройщику или в погашение кредита (214-ФЗ ст. 15.5 ч. 6)"

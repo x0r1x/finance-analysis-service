@@ -3,10 +3,17 @@ title:
   ru: "Девелопмент со счетами эскроу (214-ФЗ)"
   en: "Development with escrow accounts"
 signals:
-  - kind: concepts_bound_all
-    concepts: [escrow_balance]
+  # Один сигнал: второй вес опустил бы книгу только с остатком ниже порога.
+  - kind: concepts_bound_any
+    concepts: [escrow_balance, escrowed_funds_rate]
     weight: 1
-required_concepts: [escrow_balance, debt_outstanding]
+required_concepts:
+  - escrow_balance
+  - debt_outstanding
+  - escrow_inflow
+  - escrow_disclosure
+  - escrow_coverage
+  - effective_rate
 metrics:
   escrow_coverage: {use: required}
   dscr: {use: optional, variant: pf}

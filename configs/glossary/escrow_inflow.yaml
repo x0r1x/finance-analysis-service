@@ -1,0 +1,7 @@
+concept: escrow_inflow
+pref:
+  en: "Inflows to escrow accounts"
+  ru: "Поступления на эскроу"
+definition:
+  en: "DDU payments deposited to the escrow account of the lending bank"
+  ru: "Платежи по ДДУ на счёт эскроу банка, выдавшего целевой кредит (214-ФЗ ст. 15.4)"

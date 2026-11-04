@@ -20,12 +20,13 @@
 | lease_portfolio | bank_leasing | bank_leasing | bank_leasing 1.000 | corporate 0.000 | 1.000 | да | да | — |
 | purchase_price_allocation | вопрос: unknown | вопрос: unknown | bank_leasing 0.000 | corporate 0.000 | 0.000 | нет | нет | — |
 | sources_without_exit | вопрос: unknown | вопрос: unknown | lbo_ma 0.500 | bank_leasing 0.000 | 0.500 | нет | да | — |
+| development_escrow | development_escrow | development_escrow | development_escrow 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
 
 ## Сводка
 
-- accuracy основного типа: 11/11 = 1.000
-- доля вопросов: 5/16 = 0.312
-- верные решения: 16/16 = 1.000
+- accuracy основного типа: 12/12 = 1.000
+- доля вопросов: 5/17 = 0.294
+- верные решения: 17/17 = 1.000
 
 | тип | ложные | доля |
 | --- | --- | --- |
