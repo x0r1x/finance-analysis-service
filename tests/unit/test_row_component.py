@@ -14,7 +14,7 @@ from finance_analysis.domain.book import (
     FAS_SCHEMA_VERSION,
     FAS_VERSION,
 )
-from finance_analysis.domain.components import scenario_of
+from finance_analysis.domain.components import debt_instrument, scenario_of
 from finance_analysis.domain.mapping import assign_rows
 from finance_analysis.domain.questions import concept_questions
 from finance_analysis.domain.references import referenced_row, summed_row_refs
@@ -170,6 +170,28 @@ def test_debt_parents_mark_a_component_when_there_is_no_formula():
     ]
     nest = _assigned(indented)
     assert "role" not in nest["child"].evidence
+
+
+def test_payables_and_a_trench_are_not_debt_parents():
+    assert debt_instrument("Кредиты и займы")
+    assert debt_instrument("Кредит senior")
+    assert debt_instrument("Транш A")
+    assert debt_instrument("credit line")
+    assert not debt_instrument("Кредиторская задолженность")
+    assert not debt_instrument("Аккредитив")
+    assert not debt_instrument("Незаёмные средства")
+    assert not debt_instrument("Траншея")
+    rows = [
+        _row("payables", "Проценты", sheet="Debt", parent_label="Кредиторская задолженность"),
+        _row("loans", "Проценты", sheet="Debt", parent_label="Кредиты и займы"),
+    ]
+    got = _assigned(rows)
+    assert got["payables"].is_primary
+    assert got["payables"].evidence["scenario"] == "base"
+    assert "role" not in got["payables"].evidence
+    assert got["loans"].evidence["role"] == "component"
+    assert got["loans"].evidence["component_of"] == "payables"
+    assert got["loans"].is_primary is False
 
 
 def test_stress_and_optimistic_blocks_leave_the_base_row():

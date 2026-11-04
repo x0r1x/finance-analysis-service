@@ -29,17 +29,16 @@ _ALT = (
     "upside",
 )
 # Родитель называет инструмент, а не просто повторяет метку.
+# «транш» сверяется отдельно: «траншея» этим списком не подходит.
 _DEBT = (
     "кредит",
     "заем",
     "облигац",
-    "транш",
     "loan",
     "bond",
     "tranche",
-    "credit line",
-    "creditline",
 )
+_TRANCHE_TAIL = frozenset({"", "а", "у", "ем", "е", "и", "ей", "ам", "ами", "ах"})
 
 
 def scenario_of(row: dict) -> str:
@@ -65,16 +64,29 @@ def scenario_of(row: dict) -> str:
 
 
 def debt_instrument(text: str | None) -> bool:
-    """Родитель называет кредит, заём, облигацию, линию или транш.
+    """Сообщает, называет ли родитель долговой инструмент.
 
-    `text` — подпись родителя. Слова ищутся без учёта регистра, `ё` как `е`.
-    Одной метки или одного словаря мало: это только проверка родителя.
+    `text` — подпись родителя. Сравнение идёт без учёта регистра, буква «ё»
+    читается как «е». Подходит слово, которое начинается с «кредит», «заём»,
+    «облигац», `loan`, `bond` или `tranche`, а также словосочетание
+    `credit line`. Слово «кредитор» кредитом не считается. «Аккредитив»,
+    «незаёмный» и «траншея» инструментом не являются. Метод проверяет только
+    родителя и не смотрит на метку строки.
     """
 
     folded = label_scan(str(text or ""))
     if not folded:
         return False
-    return any(word in folded for word in _DEBT)
+    if "credit line" in folded or "creditline" in folded:
+        return True
+    for word in _WORD.findall(folded):
+        if word.startswith("кредитор"):
+            continue
+        if word.startswith("транш") and word[len("транш") :] in _TRANCHE_TAIL:
+            return True
+        if any(word.startswith(stem) for stem in _DEBT):
+            return True
+    return False
 
 
 def component_records(
