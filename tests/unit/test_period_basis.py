@@ -839,6 +839,37 @@ def test_intermediate_heading_keeps_the_block_title_on_every_row():
     assert got["paid"].evidence["period_basis"] == "period"
 
 
+def test_quarterly_cash_flow_interest_beats_the_cumulative_block():
+    rows = [
+        _row("title", "ОПиУ (указан накопленным итогом за год)", sheet="ОПиУ", row_num=1, kind="abstract", block_id="is"),
+        _row(
+            "sub",
+            "Прибыль (убыток) от реализации",
+            sheet="ОПиУ",
+            row_num=8,
+            kind="abstract",
+            indent=1,
+            block_id="is",
+        ),
+        _row(
+            "cum",
+            "Interest",
+            sheet="ОПиУ",
+            row_num=12,
+            kind="fact",
+            block_id="is",
+            label_path=["Прибыль (убыток) от реализации"],
+        ),
+        _row("flow", "Interest", sheet="Cash flow", row_num=38, kind="fact"),
+    ]
+    got = _assigned(rows)
+    assert got["cum"].evidence["period_basis"] == "ytd"
+    assert got["flow"].evidence["period_basis"] == "period"
+    assert got["flow"].is_primary
+    assert got["flow"].evidence["selection"] == "period_basis"
+    assert got["cum"].is_primary is False
+
+
 def test_quarter_index_on_another_sheet_uses_the_header_cell():
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1"]
     source_ids = [f"cf-{period}" for period in periods]
