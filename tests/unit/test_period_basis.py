@@ -805,6 +805,76 @@ def test_quarterly_component_interest_beats_the_cumulative_income_statement():
     assert got["cum"].is_primary is False
 
 
+def test_intermediate_heading_keeps_the_block_title_on_every_row():
+    rows = [
+        _row("title", "ОПиУ (указан накопленным итогом за год)", sheet="ОПиУ", row_num=1, kind="abstract", block_id="is"),
+        _row("rev", "Выручка", sheet="ОПиУ", row_num=3, kind="fact", block_id="is"),
+        _row(
+            "sub",
+            "Прибыль (убыток) от реализации",
+            sheet="ОПиУ",
+            row_num=8,
+            kind="abstract",
+            indent=1,
+            block_id="is",
+        ),
+        _row(
+            "interest",
+            "Проценты",
+            sheet="ОПиУ",
+            row_num=12,
+            kind="fact",
+            block_id="is",
+            label_path=["Прибыль (убыток) от реализации", "ниже"],
+        ),
+        _row("next", "Движение денежных средств", sheet="ОПиУ", row_num=40, kind="abstract"),
+        _row("paid", "Проценты к уплате", sheet="ОПиУ", row_num=41, kind="fact"),
+    ]
+    got = _assigned(rows)
+    assert got["rev"].evidence["period_basis"] == "ytd"
+    assert got["rev"].evidence["period_basis_source"] == "header"
+    assert got["interest"].evidence["period_basis"] == "ytd"
+    assert got["interest"].evidence["period_basis_source"] == "header"
+    assert "ОПиУ (указан накопленным итогом за год)" in rows[3]["label_path"]
+    assert got["paid"].evidence["period_basis"] == "period"
+
+
+def test_quarter_index_on_another_sheet_uses_the_header_cell():
+    periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1"]
+    source_ids = [f"cf-{period}" for period in periods]
+    calendar = _quarter_calendar(periods)
+    for period, source_id in zip(periods, source_ids, strict=True):
+        calendar[("cf", source_id)] = dict(calendar[("ax", period)])
+        calendar[("hdr", f"h-{period}")] = dict(calendar[("ax", period)])
+    cells = {source_id: f"Cash flow!C{index}" for index, source_id in enumerate(source_ids, start=38)}
+    header_cells = {period: f"Календарь!{column}4" for period, column in zip(periods, "CDEFG", strict=True)}
+    links = [_formula_link(cell, "flow", source_id, None, None) for source_id, cell in cells.items()]
+    links.extend(
+        _formula_link(header_cells[period], "quarter", f"h-{period}", None, None) for period in periods
+    )
+    grouped: dict[str, list[str]] = {}
+    for period, source_id in zip(periods, source_ids, strict=True):
+        grouped.setdefault(period[:4], []).append((period, source_id))
+    offset = 0
+    for year_rows in grouped.values():
+        for quarter, (period, _source_id) in enumerate(year_rows, start=1):
+            prefix = [cells[source_id] for _period, source_id in year_rows[:quarter]]
+            added = "+".join(f"'{cell.split('!')[0]}'!{cell.split('!')[1]}" for cell in prefix)
+            if offset == len(periods) - 1:
+                text = f"=IF(Календарь!R4C7={quarter},{added},0)"
+            else:
+                text = f"=ЕСЛИ({header_cells[period]}={quarter},{added},0)"
+            for ref in prefix:
+                links.append(_formula_link(f"ОПиУ!G{offset + 10}", "cum", period, text, ref))
+            links.append(_formula_link(f"ОПиУ!G{offset + 10}", "cum", period, text, header_cells[period]))
+            offset += 1
+    series = {("ax", period): 1 for period in periods}
+    assert classify_period_basis(_row("cum", "Проценты"), calendar=calendar, links=links, series=series) == (
+        "ytd",
+        "formula",
+    )
+
+
 def test_quarter_index_prefix_is_ytd_and_a_sum_that_does_not_restart_is_not():
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1", "2025Q2"]
     calendar = _quarter_calendar(periods)

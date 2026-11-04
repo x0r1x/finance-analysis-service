@@ -237,10 +237,16 @@ def apply_block_titles(rows: list[dict]) -> None:
     for sheet_rows in grouped.values():
         sheet_rows.sort(key=lambda item: int(item.get("row_num") or item.get("row") or 0))
         current: str | None = None
+        block_id: str | None = None
         for row in sheet_rows:
-            if _is_block_title(row):
+            if _is_block_title(row) and not _intermediate_heading(row, block_id):
                 label = str(row.get("label") or "")
-                current = label if _phrase_ytd(label) else None
+                if _phrase_ytd(label):
+                    current = label
+                    block_id = str(row.get("block_id") or "") or None
+                else:
+                    current = None
+                    block_id = None
                 continue
             if row.get("kind") != "fact" or not current or _phrase_ytd(_row_header(row)):
                 continue
@@ -260,6 +266,22 @@ def _is_block_title(row: dict) -> bool:
     if row.get("kind") == "fact":
         return False
     return bool(str(row.get("label") or "").strip())
+
+
+def _intermediate_heading(row: dict, block_id: str | None) -> bool:
+    """Промежуточный итог внутри блока не закрывает заголовок блока.
+
+    Свой `label_path` строки на это не влияет: заголовок действует до следующего
+    заголовка блока. Вложенный заголовок — это отступ, непустой путь или тот же
+    `block_id`, что у открытого блока.
+    """
+
+    if _phrase_ytd(str(row.get("label") or "")):
+        return False
+    if int(row.get("indent") or 0) > 0 or _path(row):
+        return True
+    own = str(row.get("block_id") or "") or None
+    return bool(block_id) and own == block_id
 
 
 def _row_header(row: dict) -> str:
@@ -441,7 +463,7 @@ def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]
                     return False
                 prefix = year_ids[: year_ids.index(period_id) + 1]
                 formulas = by_period.get(period_id) or []
-                matched = any(_covers_prefix(formula, located, prefix) for formula in formulas)
+                matched = any(_covers_prefix(formula, located, prefix, calendar) for formula in formulas)
                 if len(prefix) < 2:
                     if formulas and not matched:
                         return False
@@ -456,52 +478,64 @@ def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]
     return qualified
 
 
-def _covers_prefix(formula: dict, located: dict, prefix: list[str]) -> bool:
+def _covers_prefix(formula: dict, located: dict, prefix: list[str], calendar: dict) -> bool:
     """Колонка k складывает первые k периодов одной строки-источника.
 
-    IF и CHOOSE смотрят ветку номера квартала, а не все ветки сразу. Ссылка на
-    номер квартала в этой колонке суммой не считается. Голая ссылка первого
-    квартала — сумма из одного периода.
+    IF и CHOOSE, в том числе «ЕСЛИ» и «ВЫБОР», смотрят ветку номера квартала.
+    Номер квартала может стоять в ячейке другой строки. Источник может быть
+    на другом листе: периоды сравниваются по дате, а не по тексту ключа.
+    Голая ссылка первого квартала — сумма из одного периода.
     """
 
     text = str(formula.get("formula") or "")
     if _is_choice(text):
         branch = _branch_for_quarter(text, len(prefix))
-        if branch is None:
+        refs = _branch_cells(branch, str(formula.get("cell") or "")) if branch else []
+        if refs and _periods_are_prefix(refs, located, prefix, calendar):
+            return True
+        if refs:
             return False
-        refs = _branch_cells(branch, str(formula.get("cell") or ""))
-        if not refs:
-            return False
-        return _periods_are_prefix(refs, located, prefix)
-    if len(prefix) > 1 and not _sums_formula(formula):
+    if len(prefix) > 1 and not _sums_formula(formula) and not _is_choice(text):
         return False
-    return _periods_are_prefix(list(formula.get("refs") or []), located, prefix)
+    return _periods_are_prefix(list(formula.get("refs") or []), located, prefix, calendar)
 
 
-def _periods_are_prefix(refs: list[str], located: dict, prefix: list[str]) -> bool:
+def _periods_are_prefix(refs: list[str], located: dict, prefix: list[str], calendar: dict) -> bool:
     by_row: dict[str, list[str]] = {}
-    current = prefix[-1]
+    current = _slot(calendar, prefix[-1])
     for ref in refs:
         target = located.get(ref)
         if target is None:
             continue
         row_key, period_id = target
         by_row.setdefault(str(row_key), []).append(str(period_id))
-    wanted = sorted(prefix)
-    matched = [row for row, periods in by_row.items() if sorted(periods) == wanted]
+    wanted = sorted(_slot(calendar, period_id) for period_id in prefix)
+    matched = [row for row, periods in by_row.items() if sorted(_slot(calendar, period_id) for period_id in periods) == wanted]
     if len(matched) != 1:
         return False
     for row, periods in by_row.items():
         if row in matched:
             continue
-        if any(period != current for period in periods):
+        if any(_slot(calendar, period_id) != current for period_id in periods):
             return False
     return True
 
 
+def _slot(calendar: dict, period_id: str) -> tuple:
+    """Период для сравнения между листами: дата конца, иначе сам ключ."""
+
+    for (_axis, pid), meta in (calendar or {}).items():
+        if str(pid) != str(period_id):
+            continue
+        end = _as_date((meta or {}).get("period_end"))
+        if end is not None:
+            return ("end", end)
+    return ("id", str(period_id))
+
+
 def _is_choice(text: str) -> bool:
-    folded = text.casefold()
-    return "if(" in folded or "choose(" in folded
+    folded = text.casefold().replace("ё", "е")
+    return any(token in folded for token in ("if(", "choose(", "если(", "выбор("))
 
 
 def _branch_for_quarter(text: str, quarter: int) -> str | None:
@@ -510,16 +544,16 @@ def _branch_for_quarter(text: str, quarter: int) -> str | None:
     body = text.strip()
     if body.startswith("="):
         body = body[1:].strip()
-    choose = _call_args(body, "CHOOSE")
+    choose = _call_args(body, "CHOOSE") or _call_args(body, "ВЫБОР")
     if choose is not None:
-        if quarter < 1 or len(choose) <= quarter or not _CELL_FIND.search(choose[0]):
+        if quarter < 1 or len(choose) <= quarter or not (_CELL_FIND.search(choose[0]) or _R1C1_FIND.search(choose[0])):
             return None
         return choose[quarter]
     return _if_branch(body, quarter)
 
 
 def _if_branch(text: str, quarter: int) -> str | None:
-    args = _call_args(text, "IF")
+    args = _call_args(text, "IF") or _call_args(text, "ЕСЛИ")
     if not args or len(args) < 2:
         return None
     number = _compared_number(args[0])
@@ -571,6 +605,11 @@ _CELL_FIND = re.compile(
     r"(?:(?P<sheet>'(?:[^']|'')+'|[^'\s!=+()*/,;]+)!)?"
     r"\$?(?P<col>[A-Za-z]{1,3})\$?(?P<row>\d+)"
 )
+_R1C1_FIND = re.compile(
+    r"(?:(?P<sheet>'(?:[^']|'')+'|[^'\s!=+()*/,;]+)!)?"
+    r"R(?P<row>\d+)C(?P<col>\d+)",
+    re.IGNORECASE,
+)
 _RANGE_FIND = re.compile(
     r"(?:(?P<sheet>'(?:[^']|'')+'|[^'\s!=+()*/,;]+)!)?"
     r"\$?(?P<c1>[A-Za-z]{1,3})\$?(?P<r1>\d+)\s*:\s*"
@@ -587,6 +626,12 @@ def _branch_cells(branch: str, origin: str) -> list[str]:
     for match in _RANGE_FIND.finditer(branch):
         covered.append((match.start(), match.end()))
         found.extend(_range_cells(match, default_sheet))
+    for match in _R1C1_FIND.finditer(branch):
+        if any(start <= match.start() < end for start, end in covered):
+            continue
+        covered.append((match.start(), match.end()))
+        sheet = _sheet_of(match.group("sheet"), default_sheet)
+        found.append(f"{sheet}!{_col_letters(int(match.group('col')))}{match.group('row')}")
     for match in _CELL_FIND.finditer(branch):
         if any(start <= match.start() < end for start, end in covered):
             continue
