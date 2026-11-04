@@ -7,6 +7,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from finance_analysis.application.sheet_roles import load_sheet_roles
 from finance_analysis.domain.book import (
     SnapshotAxis,
     SnapshotPeriod,
@@ -413,6 +414,8 @@ def derive_rows(
             abs_by_row={key: float(value) for key, value in _abs_by_row(facts).items()},
             evidence=evidence,
             calibrator=calibrator,
+            roles=load_sheet_roles(),
+            periods=_values_by_row(facts),
         )
         assigned = verify_numeric(assigned, prepared, _values_by_row(facts))
     else:

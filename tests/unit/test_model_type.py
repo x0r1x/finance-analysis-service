@@ -61,6 +61,14 @@ def test_russian_cash_flow_alias_with_ebitda_and_interest_is_corporate():
         gap=0.15,
     )
     assert official.confident is True and official.labels == ("corporate",)
+    folded = infer(
+        catalog,
+        bound=frozenset({"ebitda", "interest"}),
+        sheets=frozenset({"Отчёт о финансовых результатах", "Бухгалтерский баланс", "Отчёт о движении денежных средств"}),
+        accept=0.6,
+        gap=0.15,
+    )
+    assert folded.confident is True and folded.labels == ("corporate",)
 
 
 def test_three_statements_are_corporate_and_covenant_dscr_is_optional():

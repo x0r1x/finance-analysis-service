@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
@@ -12,6 +13,7 @@ from finance_analysis.domain.calibration import (
 )
 from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
+from finance_analysis.domain.model_type import sheet_name_key
 
 MATERIAL_SHARE = 0.05
 _NOT_MONEY = frozenset({"%", "percent", "rate", "ratio", "x", "count", "years", "date"})
@@ -19,6 +21,15 @@ _MONEY = frozenset({"money", "price"})
 MODEL_LABEL = "model:"
 AGREE_SHARE = Decimal("0.8")
 _HUMAN = frozenset({"concept.set", "concept.confirmed"})
+
+
+@dataclass(frozen=True)
+class SheetRoles:
+    """Роли листа для каскада. Формы приходят из групп corporate.yaml, не копируются."""
+
+    statement: tuple[str, ...]
+    outputs: tuple[str, ...]
+    assumptions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -42,20 +53,26 @@ def assign_rows(
     abs_by_row: dict[str, float] | None = None,
     evidence: dict[str, RowEvidence] | None = None,
     calibrator: Calibrator | None = None,
+    roles: SheetRoles | None = None,
+    periods: dict[str, dict[tuple[str, str], Decimal]] | None = None,
 ) -> dict[str, Assignment]:
     human, ignored, absent = _decisions(events)
     draft: list[tuple[dict, Assignment]] = []
+    filtered: dict[str, list[dict]] = {}
     for row in rows:
         if row.get("kind") != "fact":
             continue
         item = _one(row, human, ignored, absent, glossary)
+        missed = _statement_filtered(row, glossary, roles)
+        if missed:
+            filtered.setdefault(missed, []).append(row)
         found = (evidence or {}).get(row["binding_key"])
         if item.source == "inferred" and item.status == "unknown" and found is not None and not row.get("excluded"):
             item = decide(row, found, glossary, calibrator)
         elif found is not None and found.degraded:
             item = replace(item, evidence={**item.evidence, "degraded": list(found.degraded)})
         draft.append((row, item))
-    _one_primary(draft)
+    _one_primary(draft, roles, periods, filtered)
     total = sum((abs_by_row or {}).values()) or 0
     assigned = {}
     for row, item in draft:
@@ -183,13 +200,19 @@ def label_id(concept: str, kind: str, text: str) -> str:
     return f"{concept}/{kind}/{label_surface(text)}"
 
 
-def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
+def _one_primary(
+    draft: list[tuple[dict, Assignment]],
+    roles: SheetRoles | None = None,
+    periods: dict | None = None,
+    filtered: dict[str, list[dict]] | None = None,
+) -> None:
     owners: dict[str, list[int]] = {}
     for index, (_row, item) in enumerate(draft):
         if item.is_primary and item.concept and item.status in {"bound", "bound_with_warning"}:
             owners.setdefault(item.concept, []).append(index)
     for indexes in list(owners.values()):
         if len(indexes) < 2:
+            _veto_assumptions(draft, indexes, roles, filtered or {})
             continue
         # Аббревиатура в скобке не спорит с телом той же метки (§5.5).
         weak = [index for index in indexes if _abbrev_only(draft[index][1])]
@@ -200,6 +223,7 @@ def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
                 draft[index] = (row, _abbrev_aside(item))
             indexes = strong
         if len(indexes) < 2:
+            _veto_assumptions(draft, indexes, roles, filtered or {})
             continue
         confirmed = [index for index in indexes if draft[index][1].source == "confirmed"]
         if not confirmed:
@@ -217,6 +241,18 @@ def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
                 else:
                     draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
             continue
+        exact = [index for index in indexes if _exact_lexical(draft[index][1])]
+        if len(exact) == len(indexes) and len(exact) >= 2:
+            winner, reason, tie = _cascade([draft[index][0] for index in exact], roles, periods)
+            concept = draft[exact[0]][1].concept
+            if winner is not None and _blocked_assumptions(winner, roles, concept, filtered or {}):
+                winner, reason, tie = None, None, ["sheet_role"]
+            if winner is not None and reason:
+                chosen = next(index for index in exact if draft[index][0] is winner)
+                _keep(draft, exact, chosen, reason)
+                continue
+            _tie(draft, exact, tie)
+            continue
         drop = confirmed or indexes
         for index in drop:
             row, item = draft[index]
@@ -225,6 +261,10 @@ def _one_primary(draft: list[tuple[dict, Assignment]]) -> None:
 
 def _lexical(item: Assignment) -> bool:
     return bool(item.matched_label) and not str(item.matched_label).startswith(MODEL_LABEL)
+
+
+def _exact_lexical(item: Assignment) -> bool:
+    return _lexical(item) and not _abbrev_only(item)
 
 
 def _abbrev_only(item: Assignment) -> bool:
@@ -247,6 +287,206 @@ def _abbrev_aside(item: Assignment) -> Assignment:
         ],
     }
     return replace(item, concept=None, status="unknown", is_primary=False, matched_label=None, evidence=evidence)
+
+
+_ROLE_RANK = {"statement": 0, "outputs": 1, "unranked": 2, "assumptions": 3}
+
+
+def _statement_filtered(row: dict, glossary: GlossaryPackage, roles: SheetRoles | None) -> str | None:
+    """Точная метка на листе формы, которую стадия 4 сняла единицей или знаком."""
+
+    if roles is None or row.get("excluded") or _sheet_role(row, roles) != "statement":
+        return None
+    label = str(row.get("label") or "")
+    found = glossary.resolve_match(label)
+    if found is None:
+        return None
+    hit, strength = found
+    if strength != "exact":
+        return None
+    if structure_pass(row, glossary.concepts[hit.concept], label=label):
+        return None
+    return hit.concept
+
+
+def _sheet_role(row: dict, roles: SheetRoles) -> str:
+    name = str(row.get("sheet") or "")
+    if _named(name, roles.statement):
+        return "statement"
+    if _named(name, roles.outputs):
+        return "outputs"
+    if _named(name, roles.assumptions):
+        return "assumptions"
+    return "unranked"
+
+
+def _named(name: str, aliases: tuple[str, ...]) -> bool:
+    folded = sheet_name_key(name)
+    return any(folded == sheet_name_key(alias) for alias in aliases)
+
+
+def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None):
+    """Оставшиеся строки, причина единственного победителя и причины ничьей."""
+
+    current = list(rows)
+    tie: list[str] = []
+    steps = (
+        ("sheet_role", lambda items: _by_role(items, roles)),
+        ("formula", lambda items: _by_formula(items, roles)),
+        ("aggregate", lambda items: _by_aggregate(items)),
+        ("period_coverage", lambda items: _by_period(items, periods)),
+    )
+    for name, step in steps:
+        nxt, ran = step(current)
+        if not ran or len(current) < 2:
+            continue
+        if len(nxt) < len(current):
+            current = nxt
+            if len(current) == 1:
+                return current[0], name, tie
+            tie.append(name)
+        else:
+            tie.append(name)
+    return None, None, tie
+
+
+def _by_role(rows: list[dict], roles: SheetRoles | None):
+    if roles is None:
+        return rows, False
+    best = min(_ROLE_RANK[_sheet_role(row, roles)] for row in rows)
+    kept = []
+    for row in rows:
+        role = _sheet_role(row, roles)
+        # Лист без роли остаётся рядом с формой: список алиасов неполный (CFS не «Cash flow»).
+        if _ROLE_RANK[role] == best or (role == "unranked" and best == _ROLE_RANK["statement"]):
+            kept.append(row)
+    return kept, True
+
+
+def _by_formula(rows: list[dict], roles: SheetRoles | None):
+    if roles is None or not any(_sheet_role(row, roles) == "statement" for row in rows):
+        return rows, False
+    form = [row for row in rows if _sheet_role(row, roles) == "statement"]
+    formulated = [row for row in form if row.get("has_formula")]
+    if formulated:
+        peers = [row for row in rows if _sheet_role(row, roles) == "unranked"]
+        return formulated + peers, True
+    return form, True
+
+
+def _by_aggregate(rows: list[dict]):
+    parents = [row for row in rows if _is_parent(row, rows)]
+    flagged = [row for row in rows if row.get("aggregation") == "aggregate"]
+    pool = flagged or parents
+    if not pool:
+        return rows, False
+    if len(pool) == 1:
+        return pool, True
+    best = min(_indent(row) for row in pool)
+    return [row for row in pool if _indent(row) == best], True
+
+
+def _by_period(rows: list[dict], periods: dict | None):
+    if not periods:
+        return rows, False
+    counted = []
+    for row in rows:
+        series = periods.get(str(row.get("row_key") or ""))
+        if not series:
+            return rows, False
+        axes = {axis for axis, _period in series}
+        counted.append((axes, series, row))
+    common = set.intersection(*(axes for axes, _series, _row in counted))
+    if not common:
+        return rows, False
+    counts = []
+    for _axes, series, row in counted:
+        counts.append((sum(1 for axis, _period in series if axis in common), row))
+    best = max(count for count, _row in counts)
+    if all(best - count < 1 for count, _row in counts):
+        return rows, False
+    return [row for count, row in counts if best - count < 1], True
+
+
+def _is_parent(row: dict, rows: list[dict]) -> bool:
+    label = sheet_name_key(str(row.get("label") or ""))
+    if not label:
+        return False
+    for other in rows:
+        if other is row:
+            continue
+        if any(sheet_name_key(part) == label for part in _label_path(other)):
+            return True
+    return False
+
+
+def _label_path(row: dict) -> tuple[str, ...]:
+    raw = row.get("label_path")
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(part) for part in raw)
+    text = row.get("label_path_json")
+    if not isinstance(text, str) or not text:
+        return ()
+    try:
+        found = json.loads(text)
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(found, list):
+        return ()
+    return tuple(str(part) for part in found)
+
+
+def _indent(row: dict) -> int:
+    value = row.get("indent")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value)
+
+
+def _blocked_assumptions(row: dict, roles: SheetRoles | None, concept: str | None, filtered: dict) -> bool:
+    if roles is None or not concept or concept not in filtered:
+        return False
+    return _sheet_role(row, roles) == "assumptions"
+
+
+def _veto_assumptions(draft, indexes, roles, filtered) -> None:
+    if len(indexes) != 1:
+        return
+    index = indexes[0]
+    row, item = draft[index]
+    if item.source == "confirmed" or not item.is_primary:
+        return
+    if not _blocked_assumptions(row, roles, item.concept, filtered):
+        return
+    _tie(draft, [index], ["sheet_role"])
+
+
+def _keep(draft, indexes, chosen: int, reason: str) -> None:
+    for index in indexes:
+        row, item = draft[index]
+        if index == chosen:
+            draft[index] = (row, replace(item, evidence={**item.evidence, "selection": reason}))
+            continue
+        draft[index] = (row, replace(item, is_primary=False))
+
+
+def _tie(draft, indexes, reasons: list[str]) -> None:
+    for index in indexes:
+        row, item = draft[index]
+        evidence = item.evidence
+        if reasons and item.concept:
+            evidence = {
+                **item.evidence,
+                "candidates": [
+                    {
+                        "concept": item.concept,
+                        "reasons": list(reasons),
+                        "structure_pass": True,
+                        "match_strength": item.evidence.get("match_strength", "exact"),
+                    }
+                ],
+            }
+        draft[index] = (row, replace(item, status="ambiguous", is_primary=False, evidence=evidence))
 
 
 def verify_numeric(

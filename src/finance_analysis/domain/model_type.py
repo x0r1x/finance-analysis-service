@@ -119,9 +119,15 @@ class Effective:
         }
 
 
+def sheet_name_key(name: str) -> str:
+    """Имя листа для точного сравнения: casefold, strip, ё→е."""
+
+    return name.casefold().strip().replace("ё", "е")
+
+
 def _sheet_hit(name: str, group: tuple[str, ...]) -> bool:
-    folded = name.casefold().strip()
-    return any(folded == alias.casefold().strip() for alias in group)
+    folded = sheet_name_key(name)
+    return any(folded == sheet_name_key(alias) for alias in group)
 
 
 # Равный score этих типов оставляет их: investment_project — более широкий ярлык.
