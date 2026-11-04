@@ -1,0 +1,7 @@
+concept: retained_earnings
+pref:
+  en: "Accumulated profit or loss"
+  ru: "Нераспределенная прибыль (непокрытый убыток)"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."

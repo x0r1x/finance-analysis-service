@@ -1,0 +1,7 @@
+concept: inventory
+pref:
+  en: "Inventory stock"
+  ru: "Запасы"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."

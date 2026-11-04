@@ -1,0 +1,10 @@
+concept: cogs
+pref:
+  en: "Cost of goods sold"
+  ru: "Себестоимость продаж"
+alt:
+  ru:
+    - "Себестоимость реализации товаров, продукции, работ, услуг"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."

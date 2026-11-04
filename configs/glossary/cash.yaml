@@ -1,0 +1,10 @@
+concept: cash
+pref:
+  en: "Cash and cash equivalents"
+  ru: "Денежные средства"
+alt:
+  ru:
+    - "Денежные средства и денежные эквиваленты"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."
