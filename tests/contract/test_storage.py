@@ -74,6 +74,18 @@ async def test_list_skips_directories(store):
     assert all(not key.endswith("/") for key in keys)
 
 
+async def test_list_trailing_slash_is_a_directory_prefix(store):
+    await store.put("books/job/_head.json", b"{}")
+    await store.put("books/job/note", b"n")
+    await store.put("notes/file", b"o")
+    slashed = sorted([item.key async for item in store.list("books/")])
+    plain = sorted([item.key async for item in store.list("books")])
+    assert slashed == plain == ["books/job/_head.json", "books/job/note"]
+    with pytest.raises(InvalidId):
+        async for _item in store.list("books/../x/"):
+            pass
+
+
 async def test_reader_sees_complete_object(store):
     await store.put("atom/blob", b"alpha")
     seen = set()

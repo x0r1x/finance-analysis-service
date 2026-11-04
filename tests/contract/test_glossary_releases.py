@@ -6,6 +6,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from finance_analysis.adapters.api.app import create_app
+from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
+from finance_analysis.adapters.wren.query import WrenQuery
+from finance_analysis.application.service import FasService
 
 pytestmark = pytest.mark.asyncio
 
@@ -187,3 +190,29 @@ async def test_replace_upload_and_read_routes(app):
         one = await client.get(f"/v1/glossary/releases/{version}", headers=HEADERS)
         assert one.status_code == 200, one.text
         assert one.json()["release"]["version"] == version
+
+
+async def test_glossary_activation_on_s3_lists_books(s3_store, settings, redis_runtime, builder):
+    service = FasService(settings, s3_store, PyarrowParquet(), builder, WrenQuery(settings), redis_runtime)
+    app = create_app(settings, service=service, support=redis_runtime)
+    async with _client(app) as client:
+        _body, etag = await _state(client)
+        made = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [_PREF]},
+        )
+        assert made.status_code == 200, made.text
+        activated = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": made.headers["etag"]},
+            json={"version": made.json()["version"], "status": "active"},
+        )
+        assert activated.status_code == 200, activated.text
+        version = made.json()["version"]
+        assert activated.json()["state"]["active"] == version
+        content = await client.get("/v1/glossary/content", headers=HEADERS)
+        assert content.json()["glossaries"]["cfads"]["pref"]["en"] == "Flow for debt"
+        events = await client.get("/v1/glossary/events", headers=HEADERS)
+        assert events.status_code == 200, events.text
+        assert any(item.get("version") == version for item in events.json()["events"])
