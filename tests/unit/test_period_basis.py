@@ -954,7 +954,7 @@ def test_quarterly_component_interest_beats_the_cumulative_income_statement():
         "cum": {("ax", period): Decimal(10 * (index + 1)) for index, period in enumerate(periods)},
     }
     got = _assigned(rows, periods=series, calendar=calendar, links=links)
-    assert got["flow"].evidence["role"] == "component"
+    assert got["flow"].evidence.get("role") != "component"
     assert got["cum"].evidence["period_basis"] == "ytd"
     assert got["cum"].evidence["period_basis_source"] == "formula"
     assert got["flow"].is_primary

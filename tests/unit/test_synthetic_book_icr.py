@@ -326,3 +326,7 @@ def test_synthetic_book_tags_the_income_statement_as_year_to_date():
         series=model["series"]["pl-interest"],
         facts=model["facts"],
     ) == ("ytd", "formula")
+    assert got["cf-interest"].evidence.get("role") != "component"
+    assert got["cf-interest"].evidence["period_basis"] == "period"
+    assert got["cf-interest"].is_primary
+    assert got["pl-interest"].is_primary is False
