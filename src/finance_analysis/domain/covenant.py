@@ -200,11 +200,13 @@ def composed_ratio(
     roll = formula.window == "period" and _rolls(primaries, formula)
     window_name = "LTM" if roll else formula.window
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
+    by_end = _stock_by_end(periods, aligned, series, "net_debt") if metric == "net_debt_ebitda" else {}
     rows = []
     for axis in sorted(_axes_of(facts, primaries[home_name])):
         ordered = _ordered(periods, axis)
         axis_keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in ordered]
-        debt_on_axis = metric != "net_debt_ebitda" or any(key in series["net_debt"] for key in axis_keys)
+        dated = any(item.get("period_end") in by_end for item in ordered)
+        debt_on_axis = metric != "net_debt_ebitda" or any(key in series["net_debt"] for key in axis_keys) or dated
         for period in ordered:
             marker = period.get("marker_class")
             if marker_class and marker and marker != marker_class:
@@ -221,6 +223,8 @@ def composed_ratio(
                 continue
             if metric == "net_debt_ebitda":
                 numerator = _ending(keys, series, "net_debt")
+                if numerator is None and period.get("period_end") in by_end:
+                    numerator = by_end[period["period_end"]]
                 denominator = _part(keys, series, "ebitda", sign_convention, False, basis)
                 if numerator is None and not any(key in series["net_debt"] for key in keys):
                     rows.append(
@@ -368,6 +372,19 @@ def _span(window: str, ordered: list[dict], period: dict, aligned: dict, axis: s
         return None, None, "partial_window"
     keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in span]
     return keys, [item["period_id"] for item in span], None
+
+
+def _stock_by_end(periods: list[dict], aligned: dict, series: dict, name: str) -> dict:
+    """Остаток на дату конца периода. Чужая ось без своей даты сюда не попадает."""
+
+    found = {}
+    values = series.get(name) or {}
+    for period in periods:
+        end = period.get("period_end")
+        key = aligned.get((period["axis_id"], period["period_id"]), (period["axis_id"], period["period_id"]))
+        if end is not None and key in values:
+            found[end] = values[key]
+    return found
 
 
 def _ending(keys, series: dict, name: str) -> Decimal | None:
