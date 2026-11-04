@@ -1,6 +1,7 @@
 """Входы derive_key."""
 
-from finance_analysis.domain.book import FAS_DERIVE_VERSION, derive_key_for
+from finance_analysis.domain.book import derive_key_for
+from finance_analysis.domain.derive_fingerprint import derive_fingerprint
 
 
 def test_sheet_roles_version_changes_derive_key():
@@ -20,4 +21,4 @@ def test_sheet_roles_version_changes_derive_key():
     assert derive_key_for(**shared, sheet_roles_version="aaa") == left
     assert derive_key_for(**shared, sheet_roles_version="bbb") != left
     assert derive_key_for(**shared, sheet_roles_version="aaa", fas_derive_version="1") != left
-    assert FAS_DERIVE_VERSION == "4"
+    assert derive_key_for(**shared) == derive_key_for(**shared, fas_derive_version=derive_fingerprint())
