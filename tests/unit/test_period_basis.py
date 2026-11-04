@@ -57,7 +57,7 @@ def test_ltm_comes_from_the_label_a_header_or_a_four_quarter_sum():
             each.append(_formula_link(f"S!L{index}", "ltm", period, "=SUM(C1:C4)", f"S!C{source}"))
     assert classify_period_basis(
         _row("ltm", "EBITDA"), calendar=calendar, links=links + each, series={("ax", period): 40 for period in quarters}
-    ) == ("ltm", "formula")
+    ) == ("period", "default")
 
 
 def test_ytd_comes_only_from_a_header_or_a_formula_that_resets_each_year():
@@ -152,6 +152,92 @@ def test_a_later_derive_keeps_formula_links_on_the_projection():
     )
     assert "attach_graph_links" in inspect.getsource(FasService.derive_for_build)
     assert "attach_graph_links" in inspect.getsource(FasService._fold_derived)
+
+
+def test_ltm_formula_slides_across_years_and_a_reset_or_cross_row_does_not():
+    periods = [f"{year}Q{quarter}" for year in (2024, 2025) for quarter in range(1, 5)]
+    calendar = _quarter_calendar(periods)
+    cells = {period: f"S!C{index}" for index, period in enumerate(periods)}
+    source = [_formula_link(cells[period], "src", period, None, None) for period in periods]
+    sliding = []
+    shown = periods[3:]
+    for index, period in enumerate(periods):
+        if index < 3:
+            continue
+        for offset in range(index - 3, index + 1):
+            sliding.append(_formula_link(f"S!L{index}", "ltm", period, "=SUM(window)", cells[periods[offset]]))
+    series = {("ax", period): 40 for period in shown}
+    assert classify_period_basis(_row("ltm", "EBITDA"), calendar=calendar, links=source + sliding, series=series) == (
+        "ltm",
+        "formula",
+    )
+    reset = []
+    for year in (2024, 2025):
+        for quarter in range(1, 5):
+            reset.append(
+                _formula_link(f"S!Y{year}", "flow", f"{year}Q4", "=SUM(year)", cells[f"{year}Q{quarter}"])
+            )
+    assert classify_period_basis(
+        _row("flow", "Проценты"),
+        calendar=calendar,
+        links=source + reset,
+        series={("ax", "2024Q4"): 100, ("ax", "2025Q4"): 80},
+    ) == ("ytd", "formula")
+    same_period = [
+        _formula_link("S!E1", "ebitda", "2024Q1", "=OP+DA", "S!O1"),
+        _formula_link("S!E1", "ebitda", "2024Q1", "=OP+DA", "S!D1"),
+        _formula_link("S!E2", "ebitda", "2024Q2", "=OP+DA", "S!O2"),
+        _formula_link("S!E2", "ebitda", "2024Q2", "=OP+DA", "S!D2"),
+    ]
+    located = [
+        _formula_link("S!O1", "op", "2024Q1", None, None),
+        _formula_link("S!D1", "da", "2024Q1", None, None),
+        _formula_link("S!O2", "op", "2024Q2", None, None),
+        _formula_link("S!D2", "da", "2024Q2", None, None),
+    ]
+    quarterly = {("ax", "2024Q1"): 10, ("ax", "2024Q2"): 12}
+    assert classify_period_basis(
+        _row("ebitda", "EBITDA"), calendar=calendar, links=same_period + located, series=quarterly
+    ) == ("period", "default")
+    tailed = [
+        _formula_link(link["cell"].replace("S!L", "S!T"), "tail", link["period_id"], link["formula"], link["ref_cell"])
+        for link in sliding
+    ]
+    assert classify_period_basis(
+        _row("tail", "Расчет EBITDA за квартал"), calendar=calendar, links=source + tailed, series=series
+    ) == ("period", "default")
+
+
+def test_a_monthly_formula_is_ltm_only_as_a_sliding_twelve_month_window():
+    periods = []
+    calendar = {}
+    for index in range(14):
+        year = 2024 + index // 12
+        month = index % 12 + 1
+        period = f"{year}-{month:02d}"
+        periods.append(period)
+        start = date(year, month, 1)
+        end = date(year, 12, 31) if month == 12 else date(year, month + 1, 1) - timedelta(days=1)
+        calendar[("ax", period)] = {
+            "grain": "month",
+            "period_start": start,
+            "period_end": end,
+            "period_index": index,
+            "calendar_year": year,
+        }
+    cells = {period: f"S!M{index}" for index, period in enumerate(periods)}
+    source = [_formula_link(cells[period], "src", period, None, None) for period in periods]
+    links = []
+    for index, period in enumerate(periods):
+        if index < 11:
+            continue
+        for offset in range(index - 11, index + 1):
+            links.append(_formula_link(f"S!L{index}", "ltm", period, "=SUM(window)", cells[periods[offset]]))
+    series = {("ax", period): 1 for period in periods[11:]}
+    assert classify_period_basis(_row("ltm", "EBITDA"), calendar=calendar, links=source + links, series=series) == (
+        "ltm",
+        "formula",
+    )
 
 
 def test_a_ytd_header_wins_over_a_formula_that_looks_like_four_quarters():

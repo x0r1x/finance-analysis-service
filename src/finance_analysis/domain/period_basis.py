@@ -49,6 +49,8 @@ def classify_period_basis(
         return "ytd", "header"
     if _phrase_ltm(row_header) or _columns_agree(columns, _phrase_ltm):
         return "ltm", "header"
+    if _label_forces_period(label):
+        return "period", "default"
     if _ltm_formula(row, links, calendar, series, facts):
         return "ltm", "formula"
     if _ytd_formula(row, links, calendar, series, facts):
@@ -160,6 +162,17 @@ def covered_months(series: dict, calendar: dict | None) -> tuple[str | None, int
     return next(iter(grains)), len(months)
 
 
+def _label_forces_period(label: str) -> bool:
+    """Хвост «за квартал» или «за период» оставляет `period`. Формула его не отменяет."""
+
+    feature = label_features(label).period
+    if not feature or _phrase_ltm(feature):
+        return False
+    folded = label_scan(feature)
+    tails = {label_scan(item) for item in ("за кв.", "за кв", "за квартал", "за период", "за год")}
+    return folded in tails
+
+
 def _label_ltm(label: str) -> bool:
     feature = label_features(label).period
     if feature and _phrase_ltm(feature):
@@ -226,58 +239,40 @@ def _ltm_formula(
     series: dict | None,
     facts: list[dict] | None = None,
 ) -> bool:
-    """Сумма четырёх кварталов ставит `ltm`, только если так устроена каждая колонка периода.
+    """Скользящая сумма последних четырёх кварталов или двенадцати месяцев.
 
-    Одна итоговая колонка года, которая складывает четыре квартала, строку не
-    переводит. Колонки другого зерна в этот счёт не входят.
+    Так устроена каждая колонка, где у строки есть число. Окно относится к той
+    же строке или к одной строке-источнику, переходит через границу года и не
+    сбрасывается в январе. Сумма кварталов одного года и формула из разных
+    строк одного периода сюда не входят.
     """
 
     if not links or not calendar:
         return False
     grain, keys = _period_keys(series, calendar)
-    if grain != "quarter" or not keys:
+    width = {"quarter": 4, "month": 12}.get(grain or "")
+    if not width or not keys:
         return False
     located = _located(links, facts)
     by_period = _formulas_by_period(links, str(row.get("row_key") or ""))
-    for key in keys:
-        formulas = by_period.get(str(key[1])) or []
-        if not any(_four_quarter_formula(formula, located, calendar) for formula in formulas):
+    crossed = False
+    for axis, period_id in keys:
+        order = _axis_order(calendar, axis)
+        ids = [item[1] for item in order]
+        if str(period_id) not in ids:
             return False
-    return True
-
-
-def _four_quarter_formula(formula: dict, located: dict, calendar: dict) -> bool:
-    if not _sums_formula(formula):
-        return False
-    metas = []
-    for ref in formula["refs"]:
-        target = located.get(ref)
-        if target is None:
-            continue
-        meta = _meta_for(calendar, target[1])
-        if meta is not None:
-            metas.append(meta)
-    return _four_quarters(metas)
-
-
-def _four_quarters(metas: list[dict]) -> bool:
-    spans: dict[tuple[date, date], None] = {}
-    for meta in metas:
-        if str(meta.get("grain") or "").lower() != "quarter":
+        index = ids.index(str(period_id))
+        if index + 1 < width:
             return False
-        start = _as_date(meta.get("period_start"))
-        end = _as_date(meta.get("period_end"))
-        if start is None or end is None:
+        expected = ids[index + 1 - width : index + 1]
+        formulas = by_period.get(str(period_id)) or []
+        if not any(_matches_window(formula, located, expected) for formula in formulas):
             return False
-        spans[(start, end)] = None
-    if len(spans) != 4:
-        return False
-    ordered = sorted(spans)
-    months: set[tuple[int, int]] = set()
-    for start, end in ordered:
-        months |= _month_span(start, end)
-    whole = _month_span(ordered[0][0], ordered[-1][1])
-    return len(months) == 12 and months == whole
+        years = {_year_of(meta) for _index, pid, meta in order if pid in expected}
+        years.discard(None)
+        if len(years) >= 2:
+            crossed = True
+    return crossed
 
 
 def _ytd_formula(
@@ -287,11 +282,12 @@ def _ytd_formula(
     series: dict | None,
     facts: list[dict] | None = None,
 ) -> bool:
-    """Нарастающий итог по формуле: каждый период после первого в году прибавляет предыдущую ячейку.
+    """Нарастающий итог по формуле этой строки или одной строки-источника.
 
-    Одной такой ячейки мало. Копирование предыдущей ячейки без сложения — перенос
-    остатка или штопор, а не нарастающий итог. Такая строка остаётся `period`,
-    пока нарастающий итог не назван заголовком.
+    Либо каждый период после первого в году прибавляет предыдущую ячейку, либо
+    формула складывает периоды с начала этого года и в следующем году начинается
+    заново. Одной такой ячейки мало. Копирование предыдущей ячейки без сложения —
+    перенос остатка или штопор, а не нарастающий итог.
     """
 
     if not links or not calendar:
@@ -304,6 +300,14 @@ def _ytd_formula(
     by_period = _formulas_by_period(links, row_key)
     if _copies_previous(by_period, row_key, located, calendar):
         return False
+    if _running_add(by_period, row_key, located, calendar, keys):
+        return True
+    return _prefix_sum(by_period, located, calendar, keys)
+
+
+def _running_add(by_period, row_key: str, located: dict, calendar: dict, keys: set[tuple]) -> bool:
+    """Каждый период после первого в году прибавляет предыдущую ячейку этой строки."""
+
     wanted = {(str(axis), str(period_id)) for axis, period_id in keys}
     by_axis: dict[str, list[tuple[int, str, dict]]] = {}
     for (axis, period_id), meta in calendar.items():
@@ -332,6 +336,71 @@ def _ytd_formula(
                 return False
             qualified = True
     return qualified
+
+
+def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]) -> bool:
+    """Сумма с начала года по одной строке. Следующий год эту сумму не продолжает."""
+
+    by_axis: dict[str, list[str]] = {}
+    for axis, period_id in keys:
+        by_axis.setdefault(str(axis), []).append(str(period_id))
+    qualified = False
+    for axis, period_ids in by_axis.items():
+        order = _axis_order(calendar, axis)
+        years: dict[object, list[str]] = {}
+        for period_id in period_ids:
+            meta = next((meta for _index, pid, meta in order if pid == period_id), None)
+            year = _year_of(meta) if meta else None
+            if year is None:
+                return False
+            years.setdefault(year, []).append(period_id)
+        for year, ids in years.items():
+            year_ids = [pid for _index, pid, meta in order if _year_of(meta) == year]
+            grew = False
+            for period_id in ids:
+                if period_id not in year_ids:
+                    return False
+                prefix = year_ids[: year_ids.index(period_id) + 1]
+                formulas = by_period.get(period_id) or []
+                matched = any(_matches_window(formula, located, prefix) for formula in formulas)
+                if len(prefix) < 2:
+                    continue
+                if not matched:
+                    return False
+                grew = True
+            if grew:
+                qualified = True
+            elif len(ids) >= 2:
+                return False
+    return qualified
+
+
+def _matches_window(formula: dict, located: dict, expected: list[str]) -> bool:
+    """Ссылки формулы — ровно эти периоды одной строки, без посторонних ячеек."""
+
+    if not _sums_formula(formula):
+        return False
+    rows: set[str] = set()
+    periods: list[str] = []
+    for ref in formula["refs"]:
+        target = located.get(ref)
+        if target is None:
+            return False
+        rows.add(str(target[0]))
+        periods.append(str(target[1]))
+    if len(rows) != 1:
+        return False
+    return sorted(periods) == sorted(expected)
+
+
+def _axis_order(calendar: dict, axis: str) -> list[tuple[int, str, dict]]:
+    items = []
+    for (found, period_id), meta in calendar.items():
+        if str(found) != str(axis):
+            continue
+        items.append((int(meta.get("period_index") or 0), str(period_id), meta))
+    items.sort()
+    return items
 
 
 def _adds_previous(formulas: list[dict], row_key: str, prior: str | None, located: dict) -> bool:
@@ -433,13 +502,6 @@ def _located(links: list[dict] | None, facts: list[dict] | None = None) -> dict[
         if cell and row_key and period_id:
             found[str(cell)] = (str(row_key), str(period_id))
     return found
-
-
-def _meta_for(calendar: dict, period_id: str) -> dict | None:
-    for (_axis, key), meta in calendar.items():
-        if str(key) == period_id:
-            return meta
-    return None
 
 
 def _sums_formula(formula: dict) -> bool:
