@@ -15,6 +15,9 @@ services:
       FAS_DATA_DIR: /data
       FAS_HOST: 0.0.0.0
       FAS_PORT: "8080"
+      # Дочерние процессы fas-worker делят образ с API. Глоссарий, понятия и
+      # типы моделей они находят в /usr/local/configs: поиск идёт от
+      # установленного пакета, а не от рабочего каталога.
       FAS_EMBEDDED_WORKERS: "true"
       FAS_IN_CONTAINER: "true"
       BUILDER_BASE_URL: ""

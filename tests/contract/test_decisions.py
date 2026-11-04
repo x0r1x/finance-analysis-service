@@ -23,18 +23,20 @@ def _client(app) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://fas")
 
 
-async def test_mapping_infer_refolds(app, local_service):
+async def test_mapping_infer_refolds(app, local_service, task_workers):
     await local_service.perform_load(JOB, actor=Actor(), fence=1)
     async with _client(app) as client:
         started = await client.post(f"/v1/books/{JOB}/mapping:infer", headers=HEADERS)
     assert started.status_code == 202, started.text
+    assert started.json()["payload"]["queue"] == "fas:interactive"
+    assert started.json()["payload"]["stage"] == "mapping.infer"
     done = await local_service.wait_op(started.json()["id"], 60_000)
     assert done["status"] == "succeeded", done
     assert done["result"]["derive_key"]
     assert done["result"]["build_key"]
 
 
-async def test_packt_semantics_mapping_and_one_fold(app, local_service):
+async def test_packt_semantics_mapping_and_one_fold(app, local_service, task_workers):
     async with _client(app) as client:
         semantics = await client.get(f"/v1/books/{JOB}/semantics", headers=HEADERS)
         assert semantics.status_code == 200, semantics.text

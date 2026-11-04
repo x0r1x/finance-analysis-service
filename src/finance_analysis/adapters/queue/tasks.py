@@ -26,7 +26,15 @@ from finance_analysis.domain.errors import FasError
 RUN_TASK = "fas.run"
 GC_TASK = "fas.gc_builds"
 RECONCILE_TASK = "fas.reconcile_operations"
+# Повторно ставить можно только идемпотентные виды. glossary.validate сюда
+# не входит: повтор записал бы успех, не повторив запись релиза.
 _IDEMPOTENT = {"book.load", "glossary.remap"}
+_SERVICE_STAGES = {
+    "glossary.transition": "perform_glossary_transition",
+    "glossary.decide": "perform_proposal_decision",
+    "glossary.remap": "perform_glossary_remap",
+    "mapping.infer": "perform_mapping_infer",
+}
 
 
 def _rt():
@@ -109,8 +117,22 @@ async def _run_locked(rt, payload: dict) -> dict:
             )
             return {"status": "failed", "code": "poison_task"}
         result = await _stage(rt, payload, attempt)
-        status = result.get("status") or ("succeeded" if result.get("ok", True) else "failed")
-        await _finish(rt, op_id, attempt, status, result=result)
+        # Статус внутри результата домена (например active у релиза) — не статус
+        # операции. Его забирает только поле result. Пропущенная запись (skipped)
+        # уже закрыта шагом: здесь операцию успехом не помечаем.
+        status = result.get("status")
+        if status == "skipped":
+            terminal = True
+            return result
+        if status not in {"succeeded", "failed", "cancelled"}:
+            status = "succeeded" if result.get("ok", True) else "failed"
+        error = result.get("error")
+        if status == "failed" and isinstance(error, dict):
+            await _finish(rt, op_id, attempt, status, error=error)
+        elif status == "succeeded" and "result" in result:
+            await _finish(rt, op_id, attempt, status, result=result["result"])
+        else:
+            await _finish(rt, op_id, attempt, status, result=result)
         terminal = True
         return result
     finally:
@@ -140,6 +162,16 @@ async def _begin_run(rt, op_id: str) -> tuple[str, int]:
     limit = rt.settings.task_retry_max + 1
     if attempt > limit:
         return "poison", attempt
+    # Закрытую операцию повтор задачи не открывает заново. Иначе проверка
+    # зависших операций уже записала отказ, а поздний воркер переписал бы
+    # книгу и мог бы поставить успех.
+    try:
+        current = await read_op(rt.store, op_id)
+    except (FasError, OSError, ValueError, TypeError):
+        current = None
+    if current and is_terminal(current.get("status", "")):
+        await rt.redis.decr(key)
+        return "skip", attempt
     await append_event(rt.store, op_id, {"type": "run.started", "status": "running", "run_attempt": attempt})
     return "run", attempt
 
@@ -157,7 +189,15 @@ async def _beat(rt, op_id: str, attempt: int, stop: asyncio.Event) -> None:
 
 
 async def _stage(rt, payload: dict, attempt: int) -> dict:
-    name = payload.get("stage") or "noop"
+    if not payload.get("stage"):
+        # Повтор без шага не выполняет работу. Проверка зависших операций
+        # раньше ставила такую задачу снова, и этот возврат записывал
+        # незавершённую загрузку как успех.
+        from finance_analysis.application.service import _operation_problem
+        from finance_analysis.domain.errors import Interrupted
+
+        return {"ok": False, "status": "failed", "error": _operation_problem(Interrupted())}
+    name = payload["stage"]
     args = payload.get("stage_args") or {}
     op_id = payload["op_id"]
     if name == "sleep":
@@ -179,7 +219,41 @@ async def _stage(rt, payload: dict, attempt: int) -> dict:
         await rt.redis.set(f"fas:marker:{op_id}", "1", nx=True)
         await _sleep(rt, op_id, attempt, float(args.get("seconds") or 0))
         return {"ok": True, "status": "succeeded"}
+    if name in _SERVICE_STAGES:
+        return await _service_stage(name, args, op_id)
     return {"ok": True, "status": "succeeded"}
+
+
+async def _service_stage(name: str, args: dict, op_id: str) -> dict:
+    """Выполняет шаг глоссария или подбора на сервисе воркера.
+
+    `name` — имя шага из задачи. `args` — аргументы, которые API положило
+    в `stage_args`. `op_id` — операция. Идентификатор передаётся в метод,
+    чтобы запись головы не случилась после отмены и после того, как
+    проверка зависших операций уже закрыла операцию.
+
+    Успех возвращает словарь с полем `result`: туда кладётся ответ домена,
+    даже если в нём есть свой `status` (например `active`). Иначе проверка
+    очереди приняла бы статус релиза за статус операции. Ошибка возвращается
+    как провал с телом problem+json и не поднимается наружу: очередь не
+    должна повторять уже записанный отказ. Пропуск записи (`skipped`) тоже
+    не считается успехом.
+    """
+
+    from finance_analysis.adapters.queue.learning_tasks import _mine_service
+    from finance_analysis.application.service import _operation_problem
+
+    service = await _mine_service()
+    method = getattr(service, _SERVICE_STAGES[name])
+    call = dict(args)
+    call["op_id"] = op_id
+    try:
+        value = await method(**call)
+    except Exception as exc:  # noqa: BLE001 — ошибка шага закрывает операцию и не уходит в повтор Taskiq
+        return {"ok": False, "status": "failed", "error": _operation_problem(exc)}
+    if isinstance(value, dict) and value.get("skipped"):
+        return {"ok": True, "status": "skipped"}
+    return {"ok": True, "status": "succeeded", "result": value}
 
 
 async def _sleep(rt, op_id: str, attempt: int, seconds: float) -> dict:
@@ -363,7 +437,52 @@ async def gc_builds() -> dict:
         )
 
 
+def _resumable(operation: dict) -> bool:
+    """Операцию можно продолжить, если в нагрузке есть шаг и повтор безопасен.
+
+    `operation` — тело операции. Повторять можно `book.load` и
+    `glossary.remap`, а также операцию с полем `idempotent`. Без шага
+    повтор нечего выполнять, поэтому метод возвращает ложь и проверку
+    зависших операций не просит ставить пустую задачу.
+    """
+
+    payload = operation.get("payload") or {}
+    if not payload.get("stage"):
+        return False
+    return operation.get("kind") in _IDEMPOTENT or bool(payload.get("idempotent"))
+
+
+async def _lease_live(rt, operation: dict) -> bool:
+    """Жива ли аренда процесса, которому принадлежит операция.
+
+    `operation` — тело операции. Процесс API пишет ключ `fas:api:{owner}`
+    и обновляет его, пока сам жив. Если владельца нет или ключ истёк,
+    метод возвращает ложь. Тогда операцию без шага можно закрыть.
+    """
+
+    owner = operation.get("owner")
+    if not owner:
+        return False
+    return bool(await rt.redis.exists(f"fas:api:{owner}"))
+
+
 async def reconcile_operations() -> dict:
+    """Закрывает или продолжает операции без свежей метки живости.
+
+    Метод обходит операции в статусе `running`. Свежую метку
+    `fas:op:{id}:hb` не трогает. Если метки нет или она старше
+    `OP_STALE_SEC`, дальше решает аренда владельца и шаг в нагрузке.
+    Живая аренда без шага значит, что процесс API ещё может грузить
+    книгу: такую операцию метод оставляет. Идемпотентную операцию со
+    шагом ставит в очередь снова. Операцию без шага закрывает как
+    `interrupted`, чтобы пустой повтор не записали успехом. Остальные
+    закрывает как `dependency_unavailable`. Возвращает числа `resent`
+    и `closed`.
+    """
+
+    from finance_analysis.application.service import _operation_problem
+    from finance_analysis.domain.errors import Interrupted
+
     rt = _rt()
     closed = 0
     resent = 0
@@ -380,14 +499,19 @@ async def reconcile_operations() -> dict:
         if not await _stale(rt, op_id):
             continue
         payload = dict(operation.get("payload") or {})
-        payload.setdefault("op_id", op_id)
-        payload.setdefault("kind", operation.get("kind"))
-        payload.setdefault("queue", payload.get("queue") or MAINTENANCE)
-        payload.setdefault("user_id", (operation.get("actor") or {}).get("user_id"))
-        idempotent = operation.get("kind") in _IDEMPOTENT or payload.get("idempotent")
-        if idempotent:
+        if await _lease_live(rt, operation) and not payload.get("stage"):
+            continue
+        if _resumable(operation):
+            payload.setdefault("op_id", op_id)
+            payload.setdefault("kind", operation.get("kind"))
+            payload.setdefault("queue", payload.get("queue") or MAINTENANCE)
+            payload.setdefault("user_id", (operation.get("actor") or {}).get("user_id"))
             await _kick(rt.broker, payload)
             resent += 1
+            continue
+        if not payload.get("stage"):
+            await _finish(rt, op_id, None, "failed", error=_operation_problem(Interrupted()))
+            closed += 1
             continue
         await _finish(
             rt,

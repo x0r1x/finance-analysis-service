@@ -36,13 +36,15 @@ async def _transition(client: AsyncClient, service, headers: dict, body: dict) -
     assert response.status_code == 202, response.text
     operation = response.json()
     assert operation["kind"] == "glossary.validate"
+    assert operation["payload"]["queue"] == "fas:glossary"
+    assert operation["payload"]["stage"] == "glossary.transition"
     assert response.headers["operation-location"] == f"/v1/operations/{operation['id']}"
     done = await service.wait_op(operation["id"], 120_000)
     assert done["status"] == "succeeded", done
     return done["result"]
 
 
-async def test_preconditions_dry_run_rollback_and_export(app, local_service):
+async def test_preconditions_dry_run_rollback_and_export(app, local_service, task_workers):
     async with _client(app) as client:
         missing = await client.post("/v1/glossary/releases", headers=HEADERS, json={"ops": []})
         assert missing.status_code == 428
@@ -106,7 +108,7 @@ async def test_preconditions_dry_run_rollback_and_export(app, local_service):
         assert "changes: []" in patch or patch.strip().endswith("[]")
 
 
-async def test_stale_parent_and_idempotent_release(app, local_service):
+async def test_stale_parent_and_idempotent_release(app, local_service, task_workers):
     async with _client(app) as client:
         _body, etag = await _state(client)
         first = await client.post(
@@ -205,7 +207,7 @@ async def test_replace_upload_and_read_routes(app):
         assert one.json()["release"]["version"] == version
 
 
-async def test_transition_is_async_and_etag_conflict_stays_on_the_request(app, local_service):
+async def test_transition_is_async_and_etag_conflict_stays_on_the_request(app, local_service, task_workers):
     async with _client(app) as client:
         _body, etag = await _state(client)
         made = await client.post(
@@ -251,11 +253,12 @@ async def test_glossary_activation_on_s3_lists_books(s3_store, settings, redis_r
             json={"ops": [_PREF]},
         )
         assert made.status_code == 200, made.text
-        activated = await _transition(
-            client,
-            service,
-            {**HEADERS, "If-Match": made.headers["etag"]},
-            {"version": made.json()["version"], "status": "active"},
+        activated = await service.perform_glossary_transition(
+            made.json()["version"],
+            "active",
+            made.headers["etag"],
+            force=False,
+            reason=None,
         )
         version = made.json()["version"]
         assert activated["state"]["active"] == version

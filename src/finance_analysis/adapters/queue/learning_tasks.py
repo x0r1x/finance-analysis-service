@@ -64,13 +64,23 @@ async def cluster_unmapped() -> dict:
 
 
 async def _mine_service() -> FasService:
-    """Ночной mine идёт через FasService: там shadow-гейт и ремап. Хранилище и замки — те же, что у воркера."""
+    """Собирает сервис фасада на хранилище воркера и возвращает его.
+
+    Ночной разбор предложений и шаги глоссария и подбора идут через этот
+    сервис: у него те же книги, глоссарий и замки, что у воркера. Повторный
+    вызов возвращает уже собранный экземпляр. Сервис держит аренду владельца
+    `fas:api:{id}`, чтобы проверка сирот на API не закрыла его операции как
+    прерванные перезапуском. Метку живости самого шага пишет очередь, не этот
+    метод.
+    """
 
     rt = runtime_mod.RUNTIME
     if rt is None:
         raise RuntimeError("worker runtime не привязан")
     cached = _SERVICE.get(id(rt))
     if cached:
+        await cached.refresh_owner_lease()
+        cached.hold_owner()
         return cached
     settings = rt.settings
     fixture = os.environ.get("FAS_FIXTURE_DIR")
@@ -86,6 +96,8 @@ async def _mine_service() -> FasService:
         vector_index=NumpyIndex(),
         cluster=HdbscanCluster(),
     )
+    await service.refresh_owner_lease()
+    service.hold_owner()
     _SERVICE.clear()
     _SERVICE[id(rt)] = service
     return service

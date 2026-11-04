@@ -25,7 +25,7 @@
 Запись:
 
 - `POST /v1/glossary/releases` — релиз из `ops` или замена документа при `mode=replace`.
-- `POST /v1/glossary/transitions` — перевод релиза в другой статус. Успешный переход запускает ремап книг.
+- `POST /v1/glossary/transitions` — перевод релиза в другой статус. Запрос ставит операцию `glossary.validate` в очередь `fas:glossary`, воркер выполняет теневую проверку и запись. Успешный переход запускает пересчёт книг.
 - `POST /v1/glossary:rollback` — включает предыдущий релиз и запускает ремап.
 - `POST /v1/glossary/proposals` и `POST /v1/glossary/proposals:decide` — открыть предложение или пакетом принять и отклонить.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from finance_analysis.adapters.queue.names import INTERACTIVE
 from finance_analysis.domain.ids import job_id as check_job
 
 
@@ -59,5 +60,5 @@ def register(app, settings, *, svc, book_get, read, op_headers) -> None:
     @app.post("/v1/books/{job_id}/mapping:infer")
     async def mapping_infer(job_id: str, request: Request):
         checked = check_job(job_id)
-        result = await read(request, lambda who: svc().infer_mapping(checked, who))
+        result = await read(request, lambda who: svc().infer_mapping(checked, who, queue=INTERACTIVE))
         return JSONResponse(result.operation, status_code=202, headers=op_headers(result))

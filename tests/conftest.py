@@ -182,6 +182,37 @@ async def local_service(settings, redis_runtime, builder):
     yield service
 
 
+@pytest.fixture
+async def task_workers(settings, local_service, tmp_path):
+    """Поднимает очереди Taskiq и два воркера на каталоге фикстур.
+
+    Сервис теста начинает ставить задачи в эти очереди. Воркеры
+    `fas:glossary` и `fas:interactive` читают тот же каталог данных и Redis,
+    а книги берут из каталога фикстур. После теста процессы останавливаются,
+    а соединение очереди закрывается.
+    """
+
+    from finance_analysis.adapters.queue.jobs import TaskiqJobs
+    from finance_analysis.adapters.queue.names import GLOSSARY, INTERACTIVE
+    from tests.chaos.harness import WorkerProc
+
+    jobs = await TaskiqJobs.open(settings)
+    await jobs.startup()
+    local_service.jobs = jobs
+    extra = {"FAS_FIXTURE_DIR": str(BUILDER_ROOT)}
+    glossary = WorkerProc(settings, tmp_path, "glossary", queue=GLOSSARY, extra=extra)
+    interactive = WorkerProc(settings, tmp_path, "interactive", queue=INTERACTIVE, extra=extra)
+    try:
+        glossary.wait_ready(40)
+        interactive.wait_ready(40)
+        yield jobs
+    finally:
+        glossary.stop()
+        interactive.stop()
+        local_service.jobs = None
+        await jobs.shutdown()
+
+
 def s3_settings(tmp_path, endpoint: str, bucket: str = "fas") -> Settings:
     return Settings(
         FAS_DATA_DIR=str(tmp_path / "data"),
