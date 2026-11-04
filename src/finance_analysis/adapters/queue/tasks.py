@@ -26,7 +26,14 @@ from finance_analysis.domain.errors import FasError
 RUN_TASK = "fas.run"
 GC_TASK = "fas.gc_builds"
 RECONCILE_TASK = "fas.reconcile_operations"
+# Повторно ставить можно только идемпотентные виды. glossary.validate сюда
+# не входит: повтор записал бы успех, не повторив запись релиза.
 _IDEMPOTENT = {"book.load", "glossary.remap"}
+_SERVICE_STAGES = {
+    "glossary.transition": "perform_glossary_transition",
+    "glossary.decide": "perform_proposal_decision",
+    "mapping.infer": "perform_mapping_infer",
+}
 
 
 def _rt():
@@ -109,8 +116,22 @@ async def _run_locked(rt, payload: dict) -> dict:
             )
             return {"status": "failed", "code": "poison_task"}
         result = await _stage(rt, payload, attempt)
-        status = result.get("status") or ("succeeded" if result.get("ok", True) else "failed")
-        await _finish(rt, op_id, attempt, status, result=result)
+        # Статус внутри результата домена (например active у релиза) — не статус
+        # операции. Его забирает только поле result. Пропущенная запись (skipped)
+        # уже закрыта шагом: здесь операцию успехом не помечаем.
+        status = result.get("status")
+        if status == "skipped":
+            terminal = True
+            return result
+        if status not in {"succeeded", "failed", "cancelled"}:
+            status = "succeeded" if result.get("ok", True) else "failed"
+        error = result.get("error")
+        if status == "failed" and isinstance(error, dict):
+            await _finish(rt, op_id, attempt, status, error=error)
+        elif status == "succeeded" and "result" in result:
+            await _finish(rt, op_id, attempt, status, result=result["result"])
+        else:
+            await _finish(rt, op_id, attempt, status, result=result)
         terminal = True
         return result
     finally:
@@ -179,7 +200,42 @@ async def _stage(rt, payload: dict, attempt: int) -> dict:
         await rt.redis.set(f"fas:marker:{op_id}", "1", nx=True)
         await _sleep(rt, op_id, attempt, float(args.get("seconds") or 0))
         return {"ok": True, "status": "succeeded"}
+    if name in _SERVICE_STAGES:
+        return await _service_stage(name, args, op_id)
     return {"ok": True, "status": "succeeded"}
+
+
+async def _service_stage(name: str, args: dict, op_id: str) -> dict:
+    """Выполняет шаг глоссария или подбора на сервисе воркера.
+
+    `name` — имя шага из задачи. `args` — аргументы, которые API положило
+    в `stage_args`. `op_id` — операция. Для перехода релиза и решения
+    предложений идентификатор передаётся в метод, чтобы запись головы не
+    случилась после отмены. Подбор сопоставления идентификатор не принимает.
+
+    Успех возвращает словарь с полем `result`: туда кладётся ответ домена,
+    даже если в нём есть свой `status` (например `active`). Иначе проверка
+    очереди приняла бы статус релиза за статус операции. Ошибка возвращается
+    как провал с телом problem+json и не поднимается наружу: очередь не
+    должна повторять уже записанный отказ. Пропуск записи (`skipped`) тоже
+    не считается успехом.
+    """
+
+    from finance_analysis.adapters.queue.learning_tasks import _mine_service
+    from finance_analysis.application.service import _operation_problem
+
+    service = await _mine_service()
+    method = getattr(service, _SERVICE_STAGES[name])
+    call = dict(args)
+    if name != "mapping.infer":
+        call["op_id"] = op_id
+    try:
+        value = await method(**call)
+    except Exception as exc:  # noqa: BLE001 — ошибка шага закрывает операцию и не уходит в повтор Taskiq
+        return {"ok": False, "status": "failed", "error": _operation_problem(exc)}
+    if isinstance(value, dict) and value.get("skipped"):
+        return {"ok": True, "status": "skipped"}
+    return {"ok": True, "status": "succeeded", "result": value}
 
 
 async def _sleep(rt, op_id: str, attempt: int, seconds: float) -> dict:
