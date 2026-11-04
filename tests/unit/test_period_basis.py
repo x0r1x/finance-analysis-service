@@ -12,7 +12,7 @@ from finance_analysis.application.service import FasService
 from finance_analysis.domain.cover_metrics import adscr
 from finance_analysis.domain.mapping import _by_basis
 from finance_analysis.domain.metrics import coverage_ratio
-from finance_analysis.domain.period_basis import classify_period_basis
+from finance_analysis.domain.period_basis import classify_period_basis, restate_series
 from tests.unit.test_cover_metrics import _binding, _common, _quarters, _series
 from tests.unit.test_row_selection import _assigned, _calendar, _row
 
@@ -209,6 +209,32 @@ def test_coverage_is_silent_when_the_month_gap_is_shorter_than_one_period():
     calendar[("ax", "s3")] = {**calendar[("ax", "s3")], "period_end": start + timedelta(days=27)}
     got = _assigned(rows, periods=periods, calendar=calendar)
     assert got["full"].status == "ambiguous" and got["short"].status == "ambiguous"
+
+
+def test_a_missing_quarter_is_not_subtracted_into_the_next_one():
+    periods = _quarters(2025, 4)
+    for period in periods:
+        period["calendar_year"] = period["period_start"].year
+    kept = [periods[0], periods[2], periods[3]]
+    facts = _series("c", kept, ["10", "60", "100"]) + _series("d", periods, ["-10", "-10", "-10", "-10"])
+    binding = {"evidence": {"period_basis": "ytd", "period_basis_source": "header"}}
+    totals = {
+        (periods[0]["axis_id"], periods[0]["period_id"]): Decimal(10),
+        (periods[2]["axis_id"], periods[2]["period_id"]): Decimal(60),
+        (periods[3]["axis_id"], periods[3]["period_id"]): Decimal(100),
+    }
+    restated = restate_series(totals, binding, periods, {})
+    assert (periods[2]["axis_id"], periods[2]["period_id"]) not in restated
+    assert restated[(periods[0]["axis_id"], periods[0]["period_id"])] == Decimal(10)
+    assert restated[(periods[3]["axis_id"], periods[3]["period_id"])] == Decimal(40)
+    bindings = [
+        _binding("cfads", "c", evidence_json=json.dumps({"period_basis": "ytd", "period_basis_source": "header"})),
+        _binding("debt_service", "d"),
+    ]
+    result = coverage_ratio(metric="dscr", **_common(periods, facts, bindings))
+    by_period = {row["period_id"]: row for row in result["rows"]}
+    assert periods[2]["period_id"] not in by_period
+    assert by_period[periods[3]["period_id"]]["value"] == Decimal("4.0000000000")
 
 
 def test_ytd_is_decumulated_for_the_metric_and_not_dropped():

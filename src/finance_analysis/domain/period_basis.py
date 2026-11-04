@@ -76,8 +76,10 @@ def restate_series(totals: dict[tuple, Decimal], binding: dict, periods: list[di
 
     Вычитание делается только если способ показа поставлен по заголовку или
     по формуле этой же строки. В начале года ряд не вычитается из прошлого
-    года: формула в этот момент сбрасывается. Строка `ltm` и строка `period`
-    возвращаются как есть. Ряд без такого источника не пересчитывается.
+    года: формула в этот момент сбрасывается. Если предыдущий период того же
+    года пуст, текущий период из ряда убирается, а не вычитается из более
+    раннего значения. Строка `ltm` и строка `period` возвращаются как есть.
+    Ряд без такого источника не пересчитывается.
     """
 
     basis, source = basis_of(binding)
@@ -91,16 +93,25 @@ def restate_series(totals: dict[tuple, Decimal], binding: dict, periods: list[di
         ordered = sorted(items, key=lambda item: item.get("period_index") or 0)
         previous_year = None
         previous_raw = None
+        previous_present = False
         for period in ordered:
             own = (period.get("axis_id"), period.get("period_id"))
             key = aligned.get(own, own)
-            if key not in totals:
-                continue
             year = _year_of(period)
-            if previous_raw is not None and year is not None and year == previous_year:
+            present = key in totals
+            same_year = year is not None and year == previous_year
+            if present and same_year and previous_present and previous_raw is not None:
                 result[key] = totals[key] - previous_raw
-            previous_year = year
-            previous_raw = totals[key]
+            elif present and same_year and not previous_present:
+                result.pop(key, None)
+            if year is not None:
+                previous_year = year
+            if present:
+                previous_raw = totals[key]
+                previous_present = True
+            else:
+                previous_raw = None
+                previous_present = False
     return result
 
 
