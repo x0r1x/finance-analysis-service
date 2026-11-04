@@ -239,10 +239,7 @@ def _one_primary(
                 if index in confirmed:
                     continue
                 row, item = draft[index]
-                if _lexical(item) or item.source == "confirmed":
-                    draft[index] = (row, replace(item, is_primary=False))
-                else:
-                    draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
+                draft[index] = (row, _drop_primary(item, ambiguous=not _lexical(item) and item.source != "confirmed"))
             continue
         exact = [index for index in indexes if _exact_lexical(draft[index][1])]
         if len(exact) >= 2:
@@ -250,7 +247,7 @@ def _one_primary(
                 if index in exact:
                     continue
                 row, item = draft[index]
-                draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
+                draft[index] = (row, _drop_primary(item, ambiguous=True))
             marks = {
                 str(draft[index][0].get("row_key")): {
                     "role": draft[index][1].evidence.get("role"),
@@ -273,13 +270,28 @@ def _one_primary(
                 if index in kept:
                     continue
                 row, item = draft[index]
-                draft[index] = (row, replace(item, is_primary=False))
+                draft[index] = (row, _drop_primary(item))
             _tie(draft, kept, tie)
             continue
         drop = confirmed or indexes
         for index in drop:
             row, item = draft[index]
-            draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
+            draft[index] = (row, _drop_primary(item, ambiguous=True))
+
+
+def _drop_primary(item: Assignment, *, ambiguous: bool = False) -> Assignment:
+    """Снимает признак основной строки у кандидата, которого человек не подтвердил.
+
+    `item` — привязка строки. Если источник равен `confirmed`, метод возвращает
+    ту же привязку: пересчёт не снимает `is_primary`. Иначе признак снимается.
+    При `ambiguous` статус становится `ambiguous`. Метод ничего не записывает.
+    """
+
+    if item.source == "confirmed":
+        return item
+    if ambiguous:
+        return replace(item, status="ambiguous", is_primary=False)
+    return replace(item, is_primary=False)
 
 
 def _lexical(item: Assignment) -> bool:
@@ -372,16 +384,22 @@ def _mark_references(draft, links, periods) -> None:
             grouped.setdefault(str(key), []).append(link)
     targets: dict[str, str] = {}
     for row, _item in draft:
-        target = link_target(row, grouped.get(str(row.get("row_key") or "")), cells)
+        key = row.get("row_key")
+        if not key:
+            continue
+        target = link_target(row, grouped.get(str(key)), cells)
         if target:
-            targets[str(row["row_key"])] = target
+            targets[str(key)] = target
     groups: dict[str, list] = {}
     for row, item in draft:
         if item.concept and item.is_primary and item.status in {"bound", "bound_with_warning"}:
             groups.setdefault(item.concept, []).append(row)
     for rows in groups.values():
         for row in rows:
-            key = str(row["row_key"])
+            key = row.get("row_key")
+            if not key:
+                continue
+            key = str(key)
             if key in targets or row.get("formula") or row.get("has_formula"):
                 continue
             target = _copy_target(row, rows, periods, targets)
@@ -612,12 +630,14 @@ def _keep(draft, indexes, chosen: int, reason: str) -> None:
         if index == chosen:
             draft[index] = (row, replace(item, evidence={**item.evidence, "selection": reason}))
             continue
-        draft[index] = (row, replace(item, is_primary=False))
+        draft[index] = (row, _drop_primary(item))
 
 
 def _tie(draft, indexes, reasons: list[str]) -> None:
     for index in indexes:
         row, item = draft[index]
+        if item.source == "confirmed":
+            continue
         evidence = item.evidence
         if reasons and item.concept:
             evidence = {

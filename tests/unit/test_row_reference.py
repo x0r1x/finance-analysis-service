@@ -183,6 +183,35 @@ def test_zero_and_empty_rows_lose_to_a_nonzero_candidate():
     assert tied["a"].status == "ambiguous" and tied["b"].status == "ambiguous"
 
 
+def test_confirmed_row_keeps_primary():
+    catalog = load_catalog()
+    rows = [
+        _row("src", "Interest", sheet="Model", row_num=10),
+        _row("echo", "Interest", sheet="Notes", row_num=20, formula="=Model!C10"),
+        _row("other", "Interest", sheet="Debt"),
+    ]
+    events = [
+        {"seq": 1, "type": "concept.set", "target": "echo", "binding_key": "echo", "value": "interest"},
+        {"seq": 2, "type": "concept.set", "target": "other", "binding_key": "other", "value": "interest"},
+    ]
+    got = assign_rows(rows, events, catalog, roles=_ROLES)
+    assert got["echo"].source == "confirmed" and got["echo"].is_primary
+    assert got["echo"].evidence["role"] == "reference"
+    assert got["other"].source == "confirmed" and got["other"].is_primary
+    single_rows = [
+        _row("plain", "Interest", sheet="Model", row_num=10),
+        _row("echo", "Interest", sheet="Notes", row_num=20, formula="=Model!C10"),
+    ]
+    single = assign_rows(
+        single_rows,
+        [{"seq": 1, "type": "concept.set", "target": "echo", "binding_key": "echo", "value": "interest"}],
+        catalog,
+        roles=_ROLES,
+    )
+    assert single["echo"].source == "confirmed" and single["echo"].is_primary
+    assert single["plain"].is_primary is False
+
+
 def test_sole_zero_total_stays_primary():
     alone = _assigned(
         [_row("interest", "Interest", sheet="Model")],
