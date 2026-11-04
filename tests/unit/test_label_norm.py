@@ -178,6 +178,17 @@ def test_ras_ifrs_labels_resolve(concept, label):
     assert load_catalog().resolve(label).concept == concept
 
 
+def test_instruction_and_parenthetical_tail_match_more_weakly():
+    package = load_catalog()
+    raw = "Финансовые расходы (процентные расходы), укажите с '+'"
+    hit, strength = package.resolve_match(raw)
+    assert hit.concept == "interest"
+    assert strength == "stem"
+    assert package.resolve_match("Финансовые расходы")[1] == "exact"
+    assert package.resolve_match("Финансовые расходы, введите сумму")[1] == "exact"
+    assert package.resolve_match("Операционная прибыль (убыток)")[1] == "stem"
+
+
 def test_stripped_unit_and_period_land_in_row_evidence():
     row = {
         "model_id": "m",

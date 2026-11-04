@@ -38,6 +38,7 @@ _UNITS = (
     re.compile(r"(?i)\s*([£€]\s*'?\s*0{3})$"),
 )
 _PAREN = re.compile(r"\s*\(([^()]*)\)\s*$")
+_INSTRUCTION = re.compile(r"(?i)[,;]?\s*(?:укажите|введите)\b.*$")
 _PERIOD_INNER = re.compile(r"(?i)^(?:last\s+12\s+months|ltm|за\s+кв\.?|за\s+квартал|за\s+год|за\s+период)$")
 _UNIT_INNER = re.compile(
     r"(?i)^(?:(?:тыс|млн|млрд)\.?\s*руб\.?|руб\.?|%|\$\s*'?\s*0{3}|(?:usd|eur|gbp|rub)\s*'?\s*(?:k|000)|k[£€$]|[£€$]\s*'?\s*0{3})$"
@@ -52,6 +53,7 @@ class _Peeled:
     unit: str | None
     period: str | None
     abbrevs: tuple[str, ...]
+    stem: bool = False
 
 
 @dataclass(frozen=True)
@@ -95,11 +97,21 @@ def _paren(body: str) -> tuple[str, str, str] | None:
     return "drop", inner, rest
 
 
+def _strip_instruction(text: str) -> str:
+    """Снимает хвост «укажите …» или «введите …». Подпись целиком не стирает."""
+
+    match = _INSTRUCTION.search(text)
+    if match is None or match.start() == 0:
+        return text
+    return text[: match.start()].strip(" ,;")
+
+
 def _peel(text: str) -> _Peeled:
-    body = unicodedata.normalize("NFC", text).strip()
+    body = unicodedata.normalize("NFC", _strip_instruction(text)).strip()
     units: list[str] = []
     periods: list[str] = []
     abbrevs: list[str] = []
+    stem = False
     while body:
         cut = _suffix(body, _PERIODS, "period") or _suffix(body, _UNITS, "unit") or _paren(body)
         if cut is None:
@@ -111,12 +123,15 @@ def _peel(text: str) -> _Peeled:
             units.append(fragment)
         elif kind == "abbrev":
             abbrevs.append(fragment)
+        elif kind == "drop":
+            stem = True
         body = rest
     return _Peeled(
         body,
         " ".join(reversed(units)) or None,
         " ".join(reversed(periods)) or None,
         tuple(reversed(abbrevs)),
+        stem,
     )
 
 
@@ -222,10 +237,10 @@ class GlossaryPackage:
         return found[0] if found else None
 
     def resolve_match(self, text: str) -> tuple[LabelHit, str] | None:
-        """Одно понятие и сила: exact — тело подписи, abbrev — только скобка.
+        """Одно понятие и сила: exact — тело подписи, stem — тело без хвоста в скобках, abbrev — только скобка.
 
         Два ключа на разные понятия не привязываются. Тело, совпавшее вместе со
-        своей аббревиатурой, остаётся exact.
+        своей аббревиатурой, остаётся exact. Пояснение в скобках слабее точной метки.
         """
 
         peeled = _peel(text)
@@ -234,7 +249,7 @@ class GlossaryPackage:
         if body:
             hit = self._by_norm.get(body)
             if hit is not None:
-                found.append((hit, "exact"))
+                found.append((hit, "stem" if peeled.stem else "exact"))
         for abbrev in peeled.abbrevs:
             key = _fold(abbrev)
             if not key or key == body:

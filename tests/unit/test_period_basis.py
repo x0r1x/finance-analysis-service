@@ -821,6 +821,24 @@ def test_ltm_numerator_uses_a_full_denominator_window():
     assert rolled["rows"][0]["reason"] == "partial_window"
 
 
+def test_parenthetical_finance_costs_do_not_replace_the_exact_row():
+    rows = [
+        _row("flow", "Interest", sheet="Cash flow"),
+        _row(
+            "stem",
+            "Финансовые расходы (процентные расходы), укажите с '+'",
+            sheet="Отчет о финансовых результатах",
+        ),
+    ]
+    got = _assigned(rows)
+    assert got["stem"].concept == "interest"
+    assert got["stem"].evidence["match_strength"] == "stem"
+    assert got["stem"].status == "bound"
+    assert got["stem"].is_primary is False
+    assert got["flow"].is_primary
+    assert got["flow"].evidence["match_strength"] == "exact"
+
+
 def test_finance_costs_alias_does_not_replace_the_cascade_primary():
     rows = [
         _row("flow", "Interest", sheet="Cash flow"),
