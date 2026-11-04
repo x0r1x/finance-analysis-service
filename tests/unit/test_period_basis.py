@@ -499,6 +499,58 @@ def test_ytd_is_decumulated_for_the_metric_and_not_dropped():
     assert raw_by[periods[1]["period_id"]] == Decimal("3.0000000000")
 
 
+def test_icr_window_applies_each_row_scale_on_its_own_quarterly_axis():
+    interest_axis = _quarters(2025, 4)
+    ratio_axis = []
+    for index, period in enumerate(interest_axis):
+        copied = dict(period)
+        copied["axis_id"] = "ratios"
+        copied["timeline_id"] = "ratios-line"
+        copied["period_id"] = f"R{index}"
+        ratio_axis.append(copied)
+    interest = []
+    for period in interest_axis:
+        interest.append(
+            {
+                "row_key": "i",
+                "axis_id": period["axis_id"],
+                "period_id": period["period_id"],
+                "value_dec": Decimal(-10),
+                "normalized_value": Decimal(-10),
+                "scale_factor": Decimal(1000),
+                "cell_id": f"Cash flow!C{period['period_index'] + 1}",
+            }
+        )
+    ebitda = []
+    for period in ratio_axis:
+        ebitda.append(
+            {
+                "row_key": "e",
+                "axis_id": "ratios",
+                "period_id": period["period_id"],
+                "value_dec": Decimal("0.04"),
+                "normalized_value": Decimal("0.04"),
+                "scale_factor": Decimal(1_000_000),
+                "cell_id": f"Ratios!C{period['period_index'] + 1}",
+            }
+        )
+    result = coverage_ratio(
+        metric="icr",
+        **_common(
+            interest_axis + ratio_axis,
+            ebitda + interest,
+            [
+                _binding("ebitda", "e", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    last = result["rows"][-1]
+    assert last["status"] == "computed"
+    assert last["value"] == Decimal("1.0000000000")
+    assert last["window"] == [period["period_id"] for period in interest_axis]
+
+
 def test_dscr_avg_ratio_of_sums_does_not_add_an_ltm_row():
     periods = _quarters(2025, 4)
     facts = _series("c", periods, ["40", "40", "40", "40"]) + _series("d", periods, ["-10", "-10", "-10", "-10"])

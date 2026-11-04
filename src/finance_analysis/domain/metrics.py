@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal, localcontext
+from decimal import Decimal, InvalidOperation, localcontext
 
 from finance_analysis.domain.period_basis import basis_of, restate_series
 
@@ -401,9 +401,7 @@ def _sums(
     for fact in facts:
         if fact.get("row_key") != row_key:
             continue
-        number = fact.get("normalized_value")
-        if number is None:
-            number = fact.get("value_dec")
+        number = _figure(fact)
         if number is None:
             continue
         own = (fact["axis_id"], fact["period_id"])
@@ -412,6 +410,50 @@ def _sums(
     if periods is None:
         return totals
     return restate_series(totals, binding, periods, aligned)
+
+
+def _figure(fact: dict) -> Decimal | None:
+    """Величина ячейки в одной шкале со второй стороной коэффициента.
+
+    Если `scale_factor` задан, а `normalized_value` всё ещё равен числу на листе,
+    число умножается на масштаб. Уже приведённое значение не умножается второй раз.
+    Без масштаба остаётся прежнее правило: нормализованное значение, иначе `value_dec`.
+    """
+
+    raw = _decimal(fact.get("value_dec"))
+    if raw is None:
+        raw = _decimal(fact.get("value"))
+    norm = _decimal(fact.get("normalized_value"))
+    scale = _scale(fact.get("scale_factor"))
+    if scale is None or scale == 1:
+        return norm if norm is not None else raw
+    if raw is not None and norm is not None and _close(norm, raw * scale):
+        return norm
+    if raw is not None and (norm is None or norm == raw):
+        return raw * scale
+    return norm
+
+
+def _decimal(value) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _scale(value) -> Decimal | None:
+    number = _decimal(value)
+    if number is None or number == 0:
+        return None
+    return number
+
+
+def _close(left: Decimal, right: Decimal) -> bool:
+    return abs(left - right) <= max(abs(right) * Decimal("0.0001"), Decimal("0.01"))
 
 
 def _payment(value: Decimal, convention: str) -> Decimal:
