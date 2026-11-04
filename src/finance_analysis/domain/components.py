@@ -10,12 +10,14 @@
 from __future__ import annotations
 
 import json
+import re
 
 from finance_analysis.domain.glossary import label_scan, normalize_label
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.references import referenced_row, summed_row_refs
 
-# Слова раздела сильнее слова «базовый». Английские основы покрывают Stress и Optimistic.
+# Слова раздела сильнее слова «базовый». Основа должна начинать слово.
+_WORD = re.compile(r"[^\W\d_]+")
 _ALT = (
     "стресс",
     "stress",
@@ -44,8 +46,11 @@ def scenario_of(row: dict) -> str:
     """Возвращает `alt` или `base` по заголовкам блока и метке.
 
     `row` — строка книги. Смотрятся путь метки, родитель и сама метка.
-    «Стресс», «оптимист», «пессимист», `downside` и `upside` дают `alt`,
-    даже если рядом есть слово «базовый». Иначе сценарий базовый.
+    Основа «стресс», «оптимист», «пессимист», `downside` или `upside` даёт
+    `alt`, только если она стоит в начале слова. Поэтому «стрессовый» и
+    `stressed` дают `alt`, а «бесстрессовый» и `unstressed` остаются
+    базовыми. Слово «базовый» рядом с такой основой не возвращает строку в
+    базовый сценарий. Если основы нет, сценарий базовый.
     """
 
     parts = list(_path(row))
@@ -54,7 +59,7 @@ def scenario_of(row: dict) -> str:
         if text:
             parts.append(str(text))
     folded = [label_scan(part) for part in parts if part]
-    if any(word in part for part in folded for word in _ALT):
+    if any(word.startswith(stem) for part in folded for word in _WORD.findall(part) for stem in _ALT):
         return "alt"
     return "base"
 

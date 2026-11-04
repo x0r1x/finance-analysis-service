@@ -14,6 +14,7 @@ from finance_analysis.domain.book import (
     FAS_SCHEMA_VERSION,
     FAS_VERSION,
 )
+from finance_analysis.domain.components import scenario_of
 from finance_analysis.domain.mapping import assign_rows
 from finance_analysis.domain.questions import concept_questions
 from finance_analysis.domain.references import referenced_row, summed_row_refs
@@ -190,6 +191,23 @@ def test_stress_and_optimistic_blocks_leave_the_base_row():
     assert alone["both"].evidence["scenario"] == "alt"
     assert alone["both"].is_primary is False
     assert alone["both"].status == "bound"
+
+
+def test_unstressed_stays_base_when_stressed_is_alt():
+    assert scenario_of({"label": "Unstressed case"}) == "base"
+    assert scenario_of({"label": "бесстрессовый"}) == "base"
+    assert scenario_of({"label": "Stressed case"}) == "alt"
+    assert scenario_of({"label": "стрессовый"}) == "alt"
+    rows = [
+        _row("plain", "Interest", sheet="Model", parent_label="Unstressed case"),
+        _row("hard", "Interest", sheet="Model", parent_label="Stressed case"),
+    ]
+    got = _assigned(rows)
+    assert got["plain"].is_primary
+    assert got["plain"].evidence["scenario"] == "base"
+    assert got["hard"].is_primary is False
+    assert got["hard"].status == "bound"
+    assert got["hard"].evidence["scenario"] == "alt"
 
 
 def test_confirmed_component_keeps_primary_and_warns():
