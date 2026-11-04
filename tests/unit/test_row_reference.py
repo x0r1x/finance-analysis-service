@@ -8,7 +8,7 @@ from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.sheet_roles import load_sheet_roles
 from finance_analysis.domain.mapping import assign_rows
 from finance_analysis.domain.references import formula_reference, values_match
-from tests.unit.test_row_selection import _row
+from tests.unit.test_row_selection import _calendar, _row
 
 _ROLES = load_sheet_roles()
 
@@ -132,7 +132,7 @@ def test_pasted_copy_matches_within_tolerance_and_scale():
         _row("copy", "Interest", sheet="Notes"),
         _row("other", "Interest", sheet="Debt"),
     ]
-    got = _assigned(rows, periods=periods)
+    got = _assigned(rows, periods=periods, calendar=_calendar(periods))
     assert got["copy"].evidence["role"] == "reference"
     assert got["copy"].evidence["reference_of"] == "src"
     assert got["copy"].is_primary is False
@@ -216,7 +216,7 @@ def test_overlap_marks_only_the_shorter_row_and_rejects_an_empty_overlap():
         _row("forecast", "Interest", sheet="Notes"),
         _row("other", "Interest", sheet="Debt"),
     ]
-    got = _assigned(rows, periods=periods)
+    got = _assigned(rows, periods=periods, calendar=_calendar(periods))
     assert got["history"].evidence["role"] == "reference"
     assert got["history"].evidence["reference_of"] == "forecast"
     assert got["history"].is_primary is False

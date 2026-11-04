@@ -335,6 +335,22 @@ def _unit_map(events: list[dict]) -> dict[str, str]:
     return _by_type(events, "unit.set")
 
 
+def _calendar(periods: list[dict] | None) -> dict[tuple[str, str], dict]:
+    """Календарь оси для способа показа и покрытия: зерно, даты и заголовок колонки."""
+
+    found: dict[tuple[str, str], dict] = {}
+    for period in periods or []:
+        found[(period["axis_id"], period["period_id"])] = {
+            "grain": period.get("grain"),
+            "period_start": period.get("period_start"),
+            "period_end": period.get("period_end"),
+            "header_text": period.get("header_text"),
+            "calendar_year": period.get("calendar_year"),
+            "period_index": period.get("period_index"),
+        }
+    return found
+
+
 def _values_by_row(facts: list[dict] | None) -> dict[str, dict[tuple[str, str], Decimal]]:
     values: dict[str, dict[tuple[str, str], Decimal]] = {}
     for fact in facts or []:
@@ -417,6 +433,7 @@ def derive_rows(
             roles=load_sheet_roles(),
             periods=_values_by_row(facts),
             links=projected.get("graph_links"),
+            calendar=_calendar(projected.get("dim_period")),
         )
         assigned = verify_numeric(assigned, prepared, _values_by_row(facts))
     else:

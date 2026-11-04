@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from decimal import Decimal, localcontext
 
+from finance_analysis.domain.period_basis import restate_series
+
 MONEY = Decimal("0.000001")
 RATIO = Decimal("0.0000000001")
 _BOUND = frozenset({"bound", "bound_with_warning"})
@@ -94,8 +96,8 @@ def coverage_ratio(
         }
     denominator_name = "debt_service" if metric == "dscr" else "interest"
     aligned = aligned_keys(periods)
-    numerator = _sums(facts, primaries[numerator_name], aligned)
-    denominator = _sums(facts, primaries[denominator_name], aligned)
+    numerator = _sums(facts, primaries[numerator_name], aligned, periods)
+    denominator = _sums(facts, primaries[denominator_name], aligned, periods)
     home = _axes_of(facts, primaries[denominator_name])
     rows = []
     for period in periods:
@@ -180,7 +182,19 @@ def _axes_of(facts: list[dict], binding: dict) -> set[str]:
     return {fact["axis_id"] for fact in facts if fact.get("row_key") == binding["row_key"]}
 
 
-def _sums(facts: list[dict], binding: dict, aligned: dict | None = None) -> dict[tuple, Decimal]:
+def _sums(
+    facts: list[dict],
+    binding: dict,
+    aligned: dict | None = None,
+    periods: list[dict] | None = None,
+) -> dict[tuple, Decimal]:
+    """Сумма строки по ключу шкалы. Нарастающий итог переводится в значение за период.
+
+    Перевод делается только когда у привязки есть календарь и способ показа
+    поставлен по заголовку или по формуле. Строка `ltm` здесь не складывается
+    и не выбрасывается: окно само берёт её конец.
+    """
+
     totals: dict[tuple, Decimal] = {}
     row_key = binding["row_key"]
     aligned = aligned or {}
@@ -195,7 +209,9 @@ def _sums(facts: list[dict], binding: dict, aligned: dict | None = None) -> dict
         own = (fact["axis_id"], fact["period_id"])
         key = aligned.get(own, own)
         totals[key] = totals.get(key, Decimal(0)) + Decimal(number)
-    return totals
+    if periods is None:
+        return totals
+    return restate_series(totals, binding, periods, aligned)
 
 
 def _payment(value: Decimal, convention: str) -> Decimal:

@@ -20,4 +20,4 @@ def test_sheet_roles_version_changes_derive_key():
     assert derive_key_for(**shared, sheet_roles_version="aaa") == left
     assert derive_key_for(**shared, sheet_roles_version="bbb") != left
     assert derive_key_for(**shared, sheet_roles_version="aaa", fas_derive_version="1") != left
-    assert FAS_DERIVE_VERSION == "4"
+    assert FAS_DERIVE_VERSION == "5"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 from finance_analysis.application.catalog import load_catalog
@@ -23,6 +24,39 @@ def _row(key: str, label: str, **extra) -> dict:
 
 def _assigned(rows: list[dict], **extra):
     return assign_rows(rows, [], load_catalog(), roles=_ROLES, **extra)
+
+
+def _calendar(periods: dict, *, grain: str = "quarter") -> dict:
+    """Календарь тех же ключей, что в рядах: один grain, даты без разрывов."""
+
+    found: dict[tuple[str, str], dict] = {}
+    by_axis: dict[str, set[str]] = {}
+    for series in periods.values():
+        for axis, period in series:
+            by_axis.setdefault(axis, set()).add(period)
+    for axis, ids in by_axis.items():
+        ordered = sorted(ids, key=lambda item: (0, int(item)) if str(item).isdigit() else (1, str(item)))
+        for index, period in enumerate(ordered):
+            if grain == "year":
+                start = date(2010 + index, 1, 1)
+                end = date(2010 + index, 12, 31)
+            else:
+                month = 1 + 3 * index
+                year = 2020 + (month - 1) // 12
+                month = (month - 1) % 12 + 1
+                start = date(year, month, 1)
+                next_month = month + 3
+                next_year = year + (next_month - 1) // 12
+                next_month = (next_month - 1) % 12 + 1
+                end = date(next_year, next_month, 1) - timedelta(days=1)
+            found[(axis, period)] = {
+                "grain": grain,
+                "period_start": start,
+                "period_end": end,
+                "period_index": index,
+                "calendar_year": start.year,
+            }
+    return found
 
 
 def test_statement_roles_come_from_corporate_groups_without_a_second_copy():
@@ -168,7 +202,7 @@ def test_same_indent_total_and_parent_fall_through_to_coverage():
         "line": {("ax", str(i)): 1 for i in range(20)},
         "total": {("ax", str(i)): 9 for i in range(2)},
     }
-    got = _assigned(rows, periods=periods)
+    got = _assigned(rows, periods=periods, calendar=_calendar(periods))
     assert got["line"].is_primary and got["line"].evidence["selection"] == "period_coverage"
     assert got["total"].is_primary is False
 
@@ -191,27 +225,28 @@ def test_period_coverage_on_one_axis_picks_the_longer_row_and_is_silent_under_on
         "long": {("ax", str(i)): 1 for i in range(5)},
         "short": {("ax", str(i)): 4 for i in range(3)},
     }
-    got = _assigned(rows, periods=periods)
+    got = _assigned(rows, periods=periods, calendar=_calendar(periods))
     assert got["long"].is_primary and got["long"].evidence["selection"] == "period_coverage"
     equal = {
         "long": {("ax", str(i)): 1 for i in range(4)},
         "short": {("ax", str(i)): 1 for i in range(4)},
     }
-    tied = _assigned(rows, periods=equal)
+    tied = _assigned(rows, periods=equal, calendar=_calendar(equal))
     assert tied["long"].status == "ambiguous" and tied["short"].status == "ambiguous"
 
 
-def test_period_coverage_is_silent_when_two_axes_are_shared():
+def test_period_coverage_compares_the_same_grain_across_axes():
     rows = [
-        _row("forecast", "Interest", sheet="Model"),
-        _row("actuals", "Interest", sheet="Notes"),
+        _row("scenarios", "Interest", sheet="Model"),
+        _row("cash", "Interest", sheet="Notes"),
     ]
     periods = {
-        "forecast": {("actual", str(i)): 1 for i in range(2)} | {("forecast", str(i)): 0 for i in range(30)},
-        "actuals": {("actual", str(i)): 1 for i in range(10)} | {("forecast", str(i)): 0 for i in range(2)},
+        "scenarios": {("scenario", str(i)): 1 for i in range(4)},
+        "cash": {("cash", str(i)): 1 for i in range(12)},
     }
-    got = _assigned(rows, periods=periods)
-    assert got["forecast"].status == "ambiguous" and got["actuals"].status == "ambiguous"
+    got = _assigned(rows, periods=periods, calendar=_calendar(periods))
+    assert got["cash"].is_primary and got["cash"].evidence["selection"] == "period_coverage"
+    assert got["scenarios"].is_primary is False
 
 
 def test_missing_series_scores_zero_on_the_one_axis():
@@ -232,22 +267,24 @@ def test_missing_series_scores_zero_on_the_one_axis():
         "short": {("ax", str(i)): 4 for i in range(2)},
         "other": {("side", str(i)): 1 for i in range(8)},
     }
-    again = _assigned(trio, periods=periods)
+    again = _assigned(trio, periods=periods, calendar=_calendar(periods))
     assert again["wide"].is_primary and again["wide"].evidence["selection"] == "period_coverage"
     assert again["short"].is_primary is False and again["other"].is_primary is False
 
 
-def test_period_coverage_does_not_compare_different_axes():
+def test_period_coverage_does_not_compare_quarters_with_years():
     rows = [
-        _row("wide", "Interest", sheet="Model"),
-        _row("narrow", "Interest", sheet="Notes"),
+        _row("quarters", "Interest", sheet="Model"),
+        _row("years", "Interest", sheet="Notes"),
     ]
     periods = {
-        "wide": {("left", str(i)): 1 for i in range(40)},
-        "narrow": {("right", "1"): 1},
+        "quarters": {("left", str(i)): 1 for i in range(8)},
+        "years": {("right", str(i)): 1 for i in range(6)},
     }
-    got = _assigned(rows, periods=periods)
-    assert got["wide"].status == "ambiguous" and got["narrow"].status == "ambiguous"
+    calendar = _calendar({"quarters": periods["quarters"]})
+    calendar.update(_calendar({"years": periods["years"]}, grain="year"))
+    got = _assigned(rows, periods=periods, calendar=calendar)
+    assert got["quarters"].status == "ambiguous" and got["years"].status == "ambiguous"
 
 
 def test_tie_asks_only_for_a_required_metric_input():

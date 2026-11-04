@@ -11,8 +11,8 @@ from datetime import date, datetime
 FAS_VERSION = "0.23.0"
 FAS_SCHEMA_VERSION = "1.0"
 FAS_PROJECTION_VERSION = "2"
-# 4: роль component и сценарий alt меняют выбор основной строки, поэтому книга считается заново.
-FAS_DERIVE_VERSION = "4"
+# 5: способ показа периода и покрытие по месяцам одного зерна меняют выбор основной строки.
+FAS_DERIVE_VERSION = "5"
 SEP = "›"
 
 _WS = re.compile(r"\s+")
