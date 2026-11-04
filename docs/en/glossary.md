@@ -25,7 +25,7 @@ These do not publish:
 Writes:
 
 - `POST /v1/glossary/releases` — create a release from `ops`, or replace the document when `mode` is `replace`.
-- `POST /v1/glossary/transitions` — move a release to another status. A successful transition starts a book remap.
+- `POST /v1/glossary/transitions` — move a release to another status. The request enqueues a `glossary.validate` operation on `fas:glossary`; the worker runs the shadow check and the write. A successful transition starts a book remap.
 - `POST /v1/glossary:rollback` — activate the previous release and start a remap.
 - `POST /v1/glossary/proposals` and `POST /v1/glossary/proposals:decide` — open a proposal, or accept and reject a batch.
 

@@ -15,6 +15,7 @@ from finance_analysis.adapters.builder.http import HttpBuilder
 from finance_analysis.adapters.ml.cluster import HdbscanCluster
 from finance_analysis.adapters.ml.http import build_models, close_models
 from finance_analysis.adapters.queue.embedded import start_for_serve, stop_for_serve
+from finance_analysis.adapters.queue.jobs import TaskiqJobs
 from finance_analysis.adapters.redis.runtime import RedisRuntime, version_at_least
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
 from finance_analysis.adapters.storage.store import open_storage
@@ -56,6 +57,8 @@ async def assemble(settings: Settings) -> tuple[FasService, RedisRuntime]:
         vector_index=NumpyIndex(),
         cluster=HdbscanCluster(),
     )
+    service.jobs = await TaskiqJobs.open(settings)
+    await service.jobs.startup()
     return service, support
 
 
@@ -112,6 +115,8 @@ def main() -> None:
                 service.draining = True
                 await service.settle()
                 await close_models(service.models)
+                if service.jobs is not None:
+                    await service.jobs.shutdown()
                 await support.close()
                 await service.builder.aclose()
                 stop_for_serve(supervisor)

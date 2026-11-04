@@ -20,7 +20,7 @@ def _client(app) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://fas")
 
 
-async def test_accept_edits_text_and_reject_writes_no_release(app, local_service):
+async def test_accept_edits_text_and_reject_writes_no_release(app, local_service, task_workers):
     async with _client(app) as client:
         made = await client.post(
             "/v1/glossary/proposals",

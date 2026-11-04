@@ -7,7 +7,6 @@ import contextvars
 import json
 import logging
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -325,6 +324,7 @@ class FasService:
         self.draining = False
         self.instance_id = str(ULID())
         self._owner_held = False
+        self.jobs = None
         self.glossary_seen = ""
         self.analyses = Analyses(self)
         self.compare = Comparisons(self.analyses)
@@ -1569,7 +1569,15 @@ class FasService:
                 await asyncio.sleep(1)
 
     async def sweep_orphans(self) -> int:
-        """Закрыть операции умершего процесса API. Очередь и живой worker не трогать."""
+        """Закрывает операции, которые остались в работе после смерти процесса API.
+
+        Метод обходит незавершённые операции. Если у операции есть очередь
+        Taskiq, свежая метка живости или живая аренда владельца, её не
+        трогает: её доделает воркер или другой процесс API. Остальные
+        помечает проваленными с ошибкой `interrupted` («операция прервана
+        перезапуском», её можно повторить). Возвращает число закрытых
+        операций.
+        """
 
         closed = 0
         for op in await self.list_ops(kind=None, job_id=None, status=None):
@@ -1870,6 +1878,22 @@ class FasService:
         public = await self._coverage_public(job_id, head)
         return {"build_key": head.build_key, "rows": rows, **public}
 
+    async def _submit(self, kind: str, queue: str, actor: Actor, payload: dict) -> Accepted:
+        """Ставит операцию в очередь Taskiq и возвращает её как принятую.
+
+        `kind` — вид операции. `queue` — имя очереди, которую передал маршрут.
+        `actor` — пользователь и клиент, от имени которых записывается операция.
+        `payload` — аргументы шага: воркер прочитает их сам. Метод не выполняет
+        шаг. Если очередь на сервисе не настроена, метод поднимает ошибку
+        `dependency_unavailable` с текстом «очередь задач не настроена».
+        Возвращает `Accepted`: тело операции. HTTP-слой отвечает 202.
+        """
+
+        if self.jobs is None:
+            raise DependencyUnavailable("очередь задач не настроена")
+        operation = await self.jobs.submit(kind, payload, queue=queue, actor=actor)
+        return Accepted(operation)
+
     async def begin_glossary_transition(
         self,
         version: str,
@@ -1879,26 +1903,28 @@ class FasService:
         force: bool,
         reason: str | None,
         actor: Actor,
+        queue: str,
     ) -> Accepted:
-        """Ставит переход релиза глоссария в фоновую операцию и возвращает её.
+        """Ставит переход релиза глоссария в очередь и сразу возвращает операцию.
 
         Теневая проверка (сравнение нового глоссария с активным на загруженных
         книгах) и запись нового статуса не укладываются в синхронный предел
         запроса. Метод не выполняет переход сам. Он создаёт операцию
-        `glossary.validate` и запускает её в процессе API, тем же способом, что
-        и подбор сопоставления `mapping.infer`. Воркер очереди Taskiq этот
-        переход не исполняет. Пока операция выполняется, обновляется метка
-        живости в Redis (heartbeat, ключ `fas:op:{id}:hb`) с интервалом
-        `OP_HEARTBEAT_SEC`. Если проверка зависших операций уже закрыла
-        операцию или клиент поставил флаг отмены `fas:op:{id}:cancel`, голова
-        глоссария не меняется и успех в операцию не пишется.
+        `glossary.validate` и ставит её в очередь `queue`. Шаг исполняет воркер
+        Taskiq. Пока шаг выполняется, воркер обновляет метку живости в Redis
+        (heartbeat, ключ `fas:op:{id}:hb`) с интервалом `OP_HEARTBEAT_SEC`.
+        Если проверка зависших операций уже закрыла операцию или клиент
+        поставил флаг отмены `fas:op:{id}:cancel`, голова глоссария не меняется
+        и успех в операцию не пишется. Эту проверку делает воркер непосредственно
+        перед записью.
 
         `version` — версия релиза. `status` — целевой статус: `canary`,
         `active` или `rejected`. `if_match` — заголовок If-Match; сверка
-        повторяется уже внутри операции, под замком, в момент записи.
+        повторяется уже внутри шага, под замком, в момент записи.
         Если `force` равен истине, активация разрешена даже когда теневая
         проверка нашла регресс, но только вместе с непустым `reason`.
         `actor` — пользователь и клиент, от имени которых записывается операция.
+        `queue` — имя очереди Taskiq.
 
         Возвращает `Accepted`: тело операции. HTTP-слой отвечает 202 и
         заголовками `Operation-Location` и `Retry-After`. Успешная операция
@@ -1907,127 +1933,136 @@ class FasService:
         `failed` и ошибкой `glossary_regression`. Устаревший родитель релиза
         (`stale_parent`) тоже завершает операцию со статусом `failed`. Любая
         другая ошибка перехода закрывает операцию со статусом `failed`.
+        Если очередь не настроена, метод поднимает `dependency_unavailable`.
         """
 
-        op = await self.create_op(
+        return await self._submit(
             "glossary.validate",
-            None,
+            queue,
             actor,
-            {"version": version, "status": status, "force": force, "reason": reason},
+            {
+                "stage": "glossary.transition",
+                "stage_args": {
+                    "version": version,
+                    "status": status,
+                    "if_match": if_match,
+                    "force": force,
+                    "reason": reason,
+                },
+            },
         )
-        stop, beater = self._watch_glossary(op["id"])
 
-        async def _run() -> None:
-            try:
-                if not await self._glossary_writable(op["id"]):
-                    await self._close_cancelled_glossary(op["id"])
-                    return
-                result = await self.glossary.transition(
-                    version,
-                    status,
-                    if_match,
-                    force=force,
-                    reason=reason,
-                    may_commit=lambda: self._glossary_writable(op["id"]),
-                )
-                if result.get("skipped"):
-                    await self._close_cancelled_glossary(op["id"])
-                    return
-                remap = await self.begin_remap()
-                ref = remap.get("operation")
-                result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
-                await self.finish_op(op["id"], "succeeded", result=result)
-            except Exception as exc:  # noqa: BLE001 — ошибка перехода не выходит наружу, операция закрывается как failed
-                await self.finish_op(op["id"], "failed", error=_operation_problem(exc))
-            finally:
-                await self._stop_glossary_watch(op["id"], stop, beater)
+    async def perform_glossary_transition(
+        self,
+        version: str,
+        status: str,
+        if_match: str | None,
+        *,
+        force: bool,
+        reason: str | None,
+        op_id: str | None = None,
+    ) -> dict:
+        """Выполняет переход релиза. Этот метод вызывает воркер, не HTTP-запрос.
 
-        self.spawn(_run())
-        return Accepted(op)
+        `version`, `status`, `if_match`, `force` и `reason` — те же значения,
+        что принял запрос. `op_id` — идентификатор операции `glossary.validate`.
+        Если идентификатора нет, запись разрешена: прямой вызов из обучения и
+        теста хранилища не зависит от очереди.
 
-    async def begin_proposal_decision(self, decisions: list, actor: Actor) -> Accepted:
-        """Ставит принятие пакета предложений в ту же фоновую операцию, что и переход релиза.
+        Перед записью головы метод ещё раз проверяет, что операция не отменена
+        и не закрыта. Если запись пропущена, операция помечается отменённой,
+        когда она ещё выполняется, и метод возвращает `{"skipped": True}`.
+        Иначе метод записывает статус, запускает пересчёт книг и возвращает
+        результат перехода вместе с идентификатором операции `glossary.remap`.
+        Регресс без `force` поднимает ошибку `glossary_regression`. Устаревший
+        родитель поднимает `stale_parent`. Успех операции записывает воркер,
+        не этот метод: пропущенную запись нельзя закрыть как успех.
+        """
+
+        may_commit = (lambda: self._glossary_writable(op_id)) if op_id else None
+        if op_id and not await self._glossary_writable(op_id):
+            await self._close_cancelled_glossary(op_id)
+            return {"skipped": True}
+        result = await self.glossary.transition(
+            version,
+            status,
+            if_match,
+            force=force,
+            reason=reason,
+            may_commit=may_commit,
+        )
+        if result.get("skipped"):
+            if op_id:
+                await self._close_cancelled_glossary(op_id)
+            return {"skipped": True}
+        remap = await self.begin_remap()
+        ref = remap.get("operation")
+        return {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
+
+    async def begin_proposal_decision(self, decisions: list, actor: Actor, *, queue: str) -> Accepted:
+        """Ставит принятие пакета предложений в ту же очередь, что и переход релиза.
 
         `decisions` — список решений. В каждом элементе указаны идентификатор
         предложения и решение `accept` или `reject`. Новый текст метки и
         понятие можно не передавать. `actor` — пользователь и клиент, от имени
-        которых записывается операция. Сюда попадает только пакет, в котором
-        есть хотя бы одно принятие. Пакет из одних отказов маршрут обрабатывает
-        синхронно и этот метод не вызывает. Заголовок If-Match для решения
-        предложений не сверяется.
+        которых записывается операция. `queue` — имя очереди Taskiq. Сюда
+        попадает только пакет, в котором есть хотя бы одно принятие. Пакет из
+        одних отказов маршрут обрабатывает синхронно и этот метод не вызывает.
+        Заголовок If-Match для решения предложений не сверяется.
 
         Возвращает `Accepted`: тело операции `glossary.validate`. HTTP-слой
         отвечает 202 и заголовками `Operation-Location` и `Retry-After`.
-        Операция проводит теневую проверку принятых правок: сравнивает новый
-        глоссарий с активным на загруженных книгах. Пока она выполняется,
-        обновляется та же метка живости. Если проверка зависших операций уже
-        закрыла операцию или стоит флаг отмены `fas:op:{id}:cancel`, релиз не
-        активируется и успех не пишется. Если проверка прошла, активируется
-        один общий релиз и запускается пересчёт книг. Если проверка нашла регресс, предложения остаются открытыми с
-        пометкой `blocked: glossary_regression`, а операция завершается
-        успешно: отказ записан в результате, а не как провал. Ошибка решения,
-        например отсутствующее или уже решённое предложение, закрывает
-        операцию со статусом `failed`.
+        Воркер проводит теневую проверку принятых правок: сравнивает новый
+        глоссарий с активным на загруженных книгах и обновляет метку живости.
+        Если проверка зависших операций уже закрыла операцию или стоит флаг
+        отмены `fas:op:{id}:cancel`, релиз не активируется и успех не пишется.
+        Если проверка прошла, активируется один общий релиз и запускается
+        пересчёт книг. Если проверка нашла регресс, предложения остаются
+        открытыми с пометкой `blocked: glossary_regression`, а операция
+        завершается успешно: отказ записан в результате, а не как провал.
+        Ошибка решения, например отсутствующее или уже решённое предложение,
+        закрывает операцию со статусом `failed`. Если очередь не настроена,
+        метод поднимает `dependency_unavailable`.
         """
 
-        op = await self.create_op("glossary.validate", None, actor, {"proposals": len(decisions)})
-        stop, beater = self._watch_glossary(op["id"])
+        return await self._submit(
+            "glossary.validate",
+            queue,
+            actor,
+            {"stage": "glossary.decide", "stage_args": {"decisions": decisions}},
+        )
 
-        async def _run() -> None:
-            try:
-                if not await self._glossary_writable(op["id"]):
-                    await self._close_cancelled_glossary(op["id"])
-                    return
-                result = await self.glossary.decide_proposals(
-                    decisions, may_commit=lambda: self._glossary_writable(op["id"])
-                )
-                if result.get("skipped"):
-                    await self._close_cancelled_glossary(op["id"])
-                    return
-                await self.learning.proposals_rejected(result.pop("rejected", []))
-                release = result.get("release") or {}
-                if release.get("status") == "active":
-                    remap = await self.begin_remap()
-                    ref = remap.get("operation")
-                    result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
-                await self.finish_op(op["id"], "succeeded", result=result)
-            except Exception as exc:  # noqa: BLE001 — ошибка решения не выходит наружу, операция закрывается как failed
-                await self.finish_op(op["id"], "failed", error=_operation_problem(exc))
-            finally:
-                await self._stop_glossary_watch(op["id"], stop, beater)
+    async def perform_proposal_decision(self, decisions: list, *, op_id: str | None = None) -> dict:
+        """Решает пакет предложений. Этот метод вызывает воркер, не HTTP-запрос.
 
-        self.spawn(_run())
-        return Accepted(op)
+        `decisions` — тот же список, что принял запрос. `op_id` — идентификатор
+        операции `glossary.validate`. Если идентификатора нет, запись разрешена.
 
-    def _watch_glossary(self, op_id: str) -> tuple[asyncio.Event, asyncio.Task]:
-        stop = asyncio.Event()
-        return stop, self.spawn(self._beat_op(op_id, stop))
-
-    async def _beat_op(self, op_id: str, stop: asyncio.Event) -> None:
-        """Пишет метку живости операции (heartbeat), пока фоновый шаг глоссария не закончился.
-
-        Проверка зависших операций закрывает неидемпотентную операцию без ключа
-        `fas:op:{id}:hb`, если с создания прошло больше `OP_STALE_SEC`.
-        Повторно ставить `glossary.validate` нельзя: шаг записал бы успех без
-        записи релиза. Поэтому живой шаг сам обновляет ключ с интервалом
-        `OP_HEARTBEAT_SEC`.
+        Перед записью метод проверяет, что операция не отменена и не закрыта.
+        Если запись пропущена, метод возвращает `{"skipped": True}` и не
+        активирует релиз. Кандидат, уже записанный до теневой проверки, при
+        этом остаётся. Иначе метод сохраняет отрицательные примеры, при
+        активном релизе запускает пересчёт книг и возвращает результат решения.
+        Успех операции записывает воркер. Ошибку отсутствующего или уже
+        решённого предложения метод поднимает наружу.
         """
 
-        interval = max(float(self.settings.op_heartbeat_sec), 0.05)
-        ttl = max(int(interval * 2), 1)
-        key = f"fas:op:{op_id}:hb"
-        while not stop.is_set():
-            await self.support.cache_set(key, f"0:{time.time()}".encode(), ttl)
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=interval)
-            except TimeoutError:
-                continue
-
-    async def _stop_glossary_watch(self, op_id: str, stop: asyncio.Event, beater: asyncio.Task) -> None:
-        stop.set()
-        beater.cancel()
-        await asyncio.gather(beater, return_exceptions=True)
-        await self.support.cache_delete(f"fas:op:{op_id}:hb")
+        may_commit = (lambda: self._glossary_writable(op_id)) if op_id else None
+        if op_id and not await self._glossary_writable(op_id):
+            await self._close_cancelled_glossary(op_id)
+            return {"skipped": True}
+        result = await self.glossary.decide_proposals(decisions, may_commit=may_commit)
+        if result.get("skipped"):
+            if op_id:
+                await self._close_cancelled_glossary(op_id)
+            return {"skipped": True}
+        await self.learning.proposals_rejected(result.pop("rejected", []))
+        release = result.get("release") or {}
+        if release.get("status") == "active":
+            remap = await self.begin_remap()
+            ref = remap.get("operation")
+            result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
+        return result
 
     async def _glossary_writable(self, op_id: str) -> bool:
         """Можно ли ещё менять глоссарий от имени этой операции.
@@ -2067,26 +2102,41 @@ class FasService:
         if current["status"] == "running":
             await self.finish_op(op_id, "cancelled")
 
-    async def infer_mapping(self, job_id: str, actor: Actor) -> Accepted:
-        op = await self.create_op("mapping.infer", job_id, actor, {})
-        self.spawn(self._infer_mapping(op["id"], job_id))
-        return Accepted(op)
+    async def infer_mapping(self, job_id: str, actor: Actor, *, queue: str) -> Accepted:
+        """Ставит подбор сопоставления книги в очередь и возвращает операцию.
 
-    async def _infer_mapping(self, op_id: str, job_id: str) -> None:
-        try:
-            async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as held:
-                head, token = await self._read_head(job_id)
-                if head is None:
-                    await self.finish_op(op_id, "failed", error={"detail": "книга не загружена"})
-                    return
-                fresh = await self._fold_derived(job_id, head, token, held.fence)
-            await self.finish_op(
-                op_id,
-                "succeeded",
-                result={"build_key": fresh.build_key, "derive_key": fresh.derive_key},
-            )
-        except Exception as exc:  # noqa: BLE001 — любая ошибка прогона закрывает операцию
-            await self.finish_op(op_id, "failed", error={"detail": str(exc)})
+        `job_id` — книга. `actor` — пользователь и клиент, от имени которых
+        записывается операция. `queue` — имя очереди Taskiq. Метод не считает
+        сопоставление сам. Воркер выполняет шаг и обновляет метку живости
+        `fas:op:{id}:hb`. Возвращает `Accepted`: тело операции `mapping.infer`.
+        HTTP-слой отвечает 202. Если очередь не настроена, метод поднимает
+        `dependency_unavailable`. Если книга не загружена, воркер закрывает
+        операцию со статусом `failed`.
+        """
+
+        return await self._submit(
+            "mapping.infer",
+            queue,
+            actor,
+            {"stage": "mapping.infer", "stage_args": {"job_id": job_id}, "job_id": job_id},
+        )
+
+    async def perform_mapping_infer(self, job_id: str) -> dict:
+        """Подбирает сопоставление загруженной книги и возвращает ключи сборки.
+
+        `job_id` — книга. Метод держит замок книги, чтобы два подбора одной
+        книги не писали голову одновременно. Если голова не найдена, метод
+        поднимает ошибку `not_found` с текстом «книга не загружена». Иначе
+        пересчитывает производные строки и возвращает `build_key` и
+        `derive_key`. Успех операции записывает воркер.
+        """
+
+        async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as held:
+            head, token = await self._read_head(job_id)
+            if head is None:
+                raise NotFound("книга не загружена")
+            fresh = await self._fold_derived(job_id, head, token, held.fence)
+        return {"build_key": fresh.build_key, "derive_key": fresh.derive_key}
 
     async def catch_glossary(self, version: str) -> bool:
         if not version or version == self.glossary_seen:
