@@ -16,6 +16,9 @@ from finance_analysis.domain.metrics import coverage_ratio
 
 _TOLERANCE = Decimal("0.005")
 _BOUND = frozenset({"bound", "bound_with_warning"})
+_EMPTY_REFERENCE = "справочная строка пуста"
+_INCOMPLETE_NUMERATOR = "справочный расчёт книги неполон: числитель пуст"
+_ICR_DIVERGENCE = "Справочный коэффициент книги расходится с расчётом FAS."
 
 
 def _primary(data: AuditInput, concept: str) -> dict | None:
@@ -157,6 +160,151 @@ def _chain_concepts(data: AuditInput) -> set[str]:
     return watched
 
 
+class IcrReference(Rule):
+    """Сверяет ICR FAS со строкой коэффициента книги.
+
+    Ноль или пустое значение книги не считается расхождением, если пуст источник
+    EBITDA либо строка числителя, на которую ссылается формула.
+    """
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        if data.applicable_metrics is not None and "icr" not in data.applicable_metrics:
+            return []
+        model = _primary(data, "icr")
+        ebitda = _primary(data, "ebitda")
+        if model is None or ebitda is None or not data.periods:
+            return []
+        interest = _primary(data, "interest")
+        computed = {}
+        if interest is not None:
+            phases = {}
+            for row in data.periods:
+                phase = row.get("phase")
+                if phase:
+                    phases[(row["axis_id"], row["period_id"])] = phase
+            result = coverage_ratio(
+                metric="icr",
+                facts=data.facts,
+                bindings=data.bindings,
+                periods=data.periods,
+                period_phase=phases,
+                explicit_phases=bool(phases),
+            )
+            computed = {(row["axis_id"], row["period_id"]): row for row in result["rows"] if row.get("value") is not None}
+        cached = _cached(data, model["row_key"])
+        source = _cached(data, ebitda["row_key"])
+        children = [row for row in _child_rows(data, model["row_key"]) if interest is None or row != interest["row_key"]]
+        findings = []
+        for period in data.periods:
+            key = (period["axis_id"], period["period_id"])
+            book = cached.get(key)
+            source_value = _same_period(source, key)
+            if _blank(book) and _numerator_blank(data, children, period["period_id"]) and source_value is not None:
+                findings.append(
+                    self.finding(
+                        data,
+                        row_key=model["row_key"],
+                        axis_id=period["axis_id"],
+                        period_id=period["period_id"],
+                        params={
+                            "cause": "empty_numerator",
+                            "message": _INCOMPLETE_NUMERATOR,
+                            "cells": _named_cells(
+                                data, model["row_key"], ebitda["row_key"], children, period["period_id"]
+                            ),
+                        },
+                    )
+                )
+                continue
+            if _blank(book) and source_value is None:
+                findings.append(
+                    self.finding(
+                        data,
+                        row_key=model["row_key"],
+                        axis_id=period["axis_id"],
+                        period_id=period["period_id"],
+                        params={"cause": "empty_source", "message": _EMPTY_REFERENCE, "cells": []},
+                    )
+                )
+                continue
+            fas = computed.get(key)
+            if book is None or fas is None or abs(Decimal(fas["value"]) - book) <= _TOLERANCE:
+                continue
+            findings.append(
+                self.finding(
+                    data,
+                    row_key=model["row_key"],
+                    axis_id=period["axis_id"],
+                    period_id=period["period_id"],
+                    params={
+                        "cause": "mismatch",
+                        "message": _ICR_DIVERGENCE,
+                        "fas": str(fas["value"]),
+                        "model": str(book),
+                    },
+                )
+            )
+        return findings
+
+
+def _blank(value: Decimal | None) -> bool:
+    return value is None or value == 0
+
+
+def _same_period(values: dict[tuple[str, str], Decimal], key: tuple[str, str]) -> Decimal | None:
+    if key in values:
+        return values[key]
+    return next((item for (axis, period), item in values.items() if period == key[1] and axis != key[0]), None)
+
+
+def _child_rows(data: AuditInput, row_key: str) -> list[str]:
+    by_cell = {fact.get("cell_id"): fact.get("row_key") for fact in data.facts if fact.get("cell_id")}
+    found: list[str] = []
+    for link in data.links:
+        if link.get("row_key") != row_key:
+            continue
+        child = by_cell.get(link.get("ref_cell"))
+        if child and child not in found:
+            found.append(child)
+    return found
+
+
+def _numerator_blank(data: AuditInput, rows: list[str], period_id: str) -> bool:
+    if not rows:
+        return False
+    for row_key in rows:
+        for fact in data.facts:
+            if fact.get("row_key") == row_key and fact.get("period_id") == period_id and _fact_number(fact) is not None:
+                return False
+    return True
+
+
+def _fact_number(fact: dict) -> Decimal | None:
+    number = fact.get("normalized_value")
+    if number is None:
+        number = fact.get("value_dec")
+    if number is None:
+        return None
+    return Decimal(str(number))
+
+
+def _named_cells(
+    data: AuditInput, ratio_row: str, ebitda_row: str, numerator_rows: list[str], period_id: str
+) -> list[str]:
+    cells = []
+    for fact in data.facts:
+        if fact.get("period_id") != period_id or not fact.get("cell_id"):
+            continue
+        if fact.get("row_key") == ebitda_row or fact.get("row_key") in numerator_rows:
+            cells.append(fact["cell_id"])
+    watched = {ratio_row, *numerator_rows}
+    for link in data.links:
+        ref = link.get("ref_cell")
+        if link.get("row_key") in watched and ref and ref not in cells:
+            cells.append(ref)
+    return cells
+
+
 class UnmappedInMetricChain(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         if not data.bindings:
@@ -192,6 +340,10 @@ class UnmappedInMetricChain(Rule):
         return findings
 
 
+ICR_REFERENCE = IcrReference(
+    "icr_reference", "1", "quantitative", "low", ("ICR reference row",),
+    "Справочный ICR книги сверен с расчётом FAS", ROWS_LINKS, 2,
+)
 RATIO_MISMATCH = RatioMismatch(
     "ratio_mismatch", "1", "quantitative", "high", ("DSCR model cache",),
     "Коэффициент расходится с кэшем модели", ROWS, 2,

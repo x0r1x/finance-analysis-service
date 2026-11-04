@@ -11,6 +11,7 @@ from finance_analysis.plugins.rules.coverage import (
     dscr_rows,
 )
 from finance_analysis.plugins.rules.ratios import (
+    ICR_REFERENCE,
     MARKER_MIX,
     RATIO_MISMATCH,
     UNMAPPED_IN_METRIC_CHAIN,
@@ -116,6 +117,53 @@ def test_ambiguous_pair_and_icr_numerator():
     assert icr["warnings"][0]["code"] == "icr_numerator"
     assert icr["rows"][0]["status"] == "missing_input"
     assert icr["rows"][0]["value"] is None
+
+
+def test_icr_reference_distinguishes_an_empty_numerator_from_a_divergence():
+    rows = [
+        {"row_key": "m", "binding_key": "m"},
+        {"row_key": "e", "binding_key": "e"},
+        {"row_key": "i", "binding_key": "i"},
+        {"row_key": "n", "binding_key": "n"},
+    ]
+    bindings = [_binding("ebitda", "e"), _binding("interest", "i"), _binding("icr", "m")]
+    periods = [_period()]
+    far = AuditInput(
+        rows=rows,
+        periods=periods,
+        facts=[
+            {**_fact("e", "40"), "cell_id": "ДДС!B34"},
+            {**_fact("i", "10"), "cell_id": "ДДС!B38"},
+            {**_fact("m", "9"), "cell_id": "К!B10"},
+        ],
+        bindings=bindings,
+    )
+    mismatch = ICR_REFERENCE.check(far)
+    assert [item.params["cause"] for item in mismatch] == ["mismatch"]
+    empty_source = AuditInput(
+        rows=rows,
+        periods=periods,
+        facts=[{**_fact("i", "10"), "cell_id": "ДДС!B38"}],
+        bindings=bindings,
+    )
+    assert [item.params["message"] for item in ICR_REFERENCE.check(empty_source)] == ["справочная строка пуста"]
+    incomplete = AuditInput(
+        rows=rows,
+        periods=periods,
+        facts=[
+            {**_fact("e", "40"), "cell_id": "ДДС!B34"},
+            {**_fact("i", "10"), "cell_id": "ДДС!B38"},
+            {**_fact("m", "0"), "cell_id": "К!B10"},
+        ],
+        bindings=bindings,
+        links=[{"row_key": "m", "ref_cell": "К!B41"}, {"row_key": "n", "ref_cell": "ДДС!B34"}],
+    )
+    incomplete.facts.append({"row_key": "n", "axis_id": "Sheet!r1", "period_id": "other", "cell_id": "К!B41", "normalized_value": None})
+    found = ICR_REFERENCE.check(incomplete)
+    assert [item.params["cause"] for item in found] == ["empty_numerator"]
+    assert found[0].params["message"] == "справочный расчёт книги неполон: числитель пуст"
+    assert "ДДС!B34" in found[0].params["cells"]
+    assert "К!B41" in found[0].params["cells"]
 
 
 def test_ratio_mismatch_and_marker_mix_and_pair_status():
