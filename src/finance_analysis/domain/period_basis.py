@@ -241,10 +241,10 @@ def _ltm_formula(
 ) -> bool:
     """Скользящая сумма последних четырёх кварталов или двенадцати месяцев.
 
-    Так устроена каждая колонка, где у строки есть число. Окно относится к той
-    же строке или к одной строке-источнику, переходит через границу года и не
-    сбрасывается в январе. Сумма кварталов одного года и формула из разных
-    строк одного периода сюда не входят.
+    Полное окно требуется с той колонки, где уже есть четыре квартала или
+    двенадцать месяцев. Более ранние колонки могут складывать более короткий
+    префикс той же строки или одной строки-источника. Хотя бы одно полное окно
+    переходит через границу года и не сбрасывается в январе.
     """
 
     if not links or not calendar:
@@ -263,11 +263,14 @@ def _ltm_formula(
             return False
         index = ids.index(str(period_id))
         if index + 1 < width:
-            return False
-        expected = ids[index + 1 - width : index + 1]
+            expected = ids[: index + 1]
+        else:
+            expected = ids[index + 1 - width : index + 1]
         formulas = by_period.get(str(period_id)) or []
         if not any(_matches_window(formula, located, expected) for formula in formulas):
             return False
+        if len(expected) < width:
+            continue
         years = {_year_of(meta) for _index, pid, meta in order if pid in expected}
         years.discard(None)
         if len(years) >= 2:

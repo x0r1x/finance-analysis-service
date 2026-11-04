@@ -208,6 +208,43 @@ def test_ltm_formula_slides_across_years_and_a_reset_or_cross_row_does_not():
     ) == ("period", "default")
 
 
+def test_opening_quarters_of_a_trailing_window_do_not_keep_the_row_period():
+    periods = [f"{year}Q{quarter}" for year in (2024, 2025) for quarter in range(1, 5)]
+    calendar = _quarter_calendar(periods)
+    cells = {period: f"S!C{index}" for index, period in enumerate(periods)}
+    source = [_formula_link(cells[period], "src", period, None, None) for period in periods]
+    links = []
+    for index, period in enumerate(periods):
+        start = 0 if index < 3 else index - 3
+        for offset in range(start, index + 1):
+            links.append(_formula_link(f"S!L{index}", "ltm", period, "=SUM(window)", cells[periods[offset]]))
+    series = {("ax", period): 40 for period in periods}
+    assert classify_period_basis(_row("ltm", "EBITDA"), calendar=calendar, links=source + links, series=series) == (
+        "ltm",
+        "formula",
+    )
+    metric_periods = _quarters(2024, 8)
+    facts = _series("e", metric_periods, ["10", "20", "30", "40", "40", "40", "40", "40"]) + _series(
+        "i", metric_periods, ["-10"] * 8
+    )
+    got = coverage_ratio(
+        metric="icr",
+        **_common(
+            metric_periods,
+            facts,
+            [
+                _binding(
+                    "ebitda",
+                    "e",
+                    evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "formula"}),
+                ),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    assert got["status"] == "basis_mismatch"
+
+
 def test_a_monthly_formula_is_ltm_only_as_a_sliding_twelve_month_window():
     periods = []
     calendar = {}
