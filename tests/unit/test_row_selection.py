@@ -200,6 +200,29 @@ def test_period_coverage_is_silent_when_two_axes_are_shared():
     assert got["forecast"].status == "ambiguous" and got["actuals"].status == "ambiguous"
 
 
+def test_missing_series_scores_zero_on_the_one_axis():
+    rows = [
+        _row("long", "Interest", sheet="Model"),
+        _row("empty", "Interest", sheet="Notes"),
+    ]
+    got = _assigned(rows, periods={"long": {("ax", str(i)): 1 for i in range(12)}})
+    assert got["long"].is_primary and got["long"].evidence["selection"] == "period_coverage"
+    assert got["empty"].is_primary is False
+    trio = [
+        _row("wide", "Interest", sheet="Model"),
+        _row("short", "Interest", sheet="Notes"),
+        _row("other", "Interest", sheet="Debt"),
+    ]
+    periods = {
+        "wide": {("ax", str(i)): 1 for i in range(10)},
+        "short": {("ax", str(i)): 1 for i in range(2)},
+        "other": {("side", str(i)): 1 for i in range(8)},
+    }
+    again = _assigned(trio, periods=periods)
+    assert again["wide"].is_primary and again["wide"].evidence["selection"] == "period_coverage"
+    assert again["short"].is_primary is False and again["other"].is_primary is False
+
+
 def test_period_coverage_does_not_compare_different_axes():
     rows = [
         _row("wide", "Interest", sheet="Model"),

@@ -386,17 +386,21 @@ def _by_period(rows: list[dict], periods: dict | None):
     if not periods:
         return rows, False
     counted = []
+    tally: dict[str, int] = {}
     for row in rows:
-        series = periods.get(str(row.get("row_key") or ""))
-        if not series:
-            return rows, False
-        axes = {axis for axis, _period in series}
-        counted.append((axes, series, row))
-    common = set.intersection(*(axes for axes, _series, _row in counted))
-    if len(common) != 1:
+        series = periods.get(str(row.get("row_key") or "")) or {}
+        for axis in {item for item, _period in series}:
+            tally[axis] = tally.get(axis, 0) + 1
+        counted.append((series, row))
+    shared = [axis for axis, count in tally.items() if count >= 2]
+    axis = shared[0] if len(shared) == 1 else None
+    if axis is None and not shared:
+        populated = [series for series, _row in counted if series]
+        if len(populated) == 1 and len({item for item, _period in populated[0]}) == 1 and len(populated) < len(counted):
+            axis = next(iter(populated[0]))[0]
+    if axis is None:
         return rows, False
-    axis = next(iter(common))
-    counts = [(sum(1 for item_axis, _period in series if item_axis == axis), row) for _axes, series, row in counted]
+    counts = [(sum(1 for item_axis, _period in series if item_axis == axis), row) for series, row in counted]
     best = max(count for count, _row in counts)
     if all(best - count < 1 for count, _row in counts):
         return rows, False
