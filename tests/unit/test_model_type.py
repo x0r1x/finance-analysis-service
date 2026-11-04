@@ -40,6 +40,29 @@ def test_cfads_and_debt_service_are_project_finance():
     assert got.scores["corporate"] == 0.0
 
 
+def test_russian_cash_flow_alias_with_ebitda_and_interest_is_corporate():
+    """Лист «Денежные потоки» входит в группу ДДС. EBITDA и проценты тип не переключают."""
+    catalog = _catalog()
+    got = infer(
+        catalog,
+        bound=frozenset({"ebitda", "interest"}),
+        sheets=frozenset({"ОПиУ", "Баланс", "Денежные потоки"}),
+        accept=0.6,
+        gap=0.15,
+    )
+    assert got.confident is True
+    assert got.primary == "corporate"
+    assert got.labels == ("corporate",)
+    official = infer(
+        catalog,
+        bound=frozenset({"ebitda", "interest"}),
+        sheets=frozenset({"Отчет о финансовых результатах", "Бухгалтерский баланс", "ОДДС"}),
+        accept=0.6,
+        gap=0.15,
+    )
+    assert official.confident is True and official.labels == ("corporate",)
+
+
 def test_three_statements_are_corporate_and_covenant_dscr_is_optional():
     """Синтетическая corporate-книга: три формы. Ковенантный DSCR необязателен, семейство PF — нет."""
     catalog = _catalog()

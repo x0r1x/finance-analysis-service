@@ -1,0 +1,21 @@
+id: bank_leasing
+title:
+  ru: "Банковский лизинг"
+  en: "Bank leasing portfolio"
+signals:
+  - kind: concepts_bound_all
+    concepts: [lease_interest_income, npl_share, provision_coverage]
+    weight: 1
+required_concepts: [lease_interest_income, npl_share, provision_coverage]
+metrics:
+  dscr: {use: not_applicable}
+  dscr_min: {use: not_applicable}
+  dscr_avg: {use: not_applicable}
+  adscr: {use: not_applicable}
+  llcr: {use: not_applicable}
+  plcr: {use: not_applicable}
+  icr: {use: not_applicable}
+  net_debt_ebitda: {use: not_applicable}
+  escrow_coverage: {use: not_applicable}
+  npv: {use: not_applicable}
+  irr: {use: not_applicable}

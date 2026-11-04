@@ -1,0 +1,21 @@
+id: real_estate_income
+title:
+  ru: "Доходная недвижимость"
+  en: "Income-producing real estate"
+signals:
+  - kind: concepts_bound_all
+    concepts: [noi, cap_rate, vacancy]
+    weight: 1
+required_concepts: [noi, cap_rate, vacancy]
+metrics:
+  dscr: {use: optional, variant: pf}
+  dscr_min: {use: optional}
+  dscr_avg: {use: optional}
+  adscr: {use: not_applicable}
+  llcr: {use: not_applicable}
+  plcr: {use: not_applicable}
+  icr: {use: not_applicable}
+  net_debt_ebitda: {use: not_applicable}
+  escrow_coverage: {use: not_applicable}
+  npv: {use: not_applicable}
+  irr: {use: not_applicable}
