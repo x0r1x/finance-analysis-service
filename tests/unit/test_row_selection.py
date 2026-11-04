@@ -8,6 +8,7 @@ from pathlib import Path
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.application.sheet_roles import load_sheet_roles
+from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.mapping import assign_rows
 from finance_analysis.domain.questions import concept_questions
 
@@ -257,6 +258,19 @@ def test_tie_asks_only_for_a_required_metric_input():
     optional = _questions(capex, capex_assigned, labels=("project_finance",), catalog=types, concepts=catalog.concepts)
     assert all(item["subject"] != "capex" for item in optional)
     assert capex_assigned["a"].status == "ambiguous"
+
+
+def test_model_hit_does_not_block_the_exact_cascade():
+    rows = [
+        _row("form", "Interest", sheet="P&L"),
+        _row("asm", "Interest", sheet="Допущения"),
+        _row("model", "Coupon", sheet="Model", unit="money"),
+    ]
+    evidence = {"model": RowEvidence(candidates=(Candidate("interest", recall_cos=0.92, rerank_rank=1, rerank_gap=0.6),))}
+    got = assign_rows(rows, [], load_catalog(), roles=_ROLES, evidence=evidence)
+    assert got["form"].is_primary and got["form"].evidence["selection"] == "sheet_role"
+    assert got["asm"].status == "bound" and got["asm"].is_primary is False
+    assert got["model"].status == "ambiguous" and got["model"].is_primary is False
 
 
 def test_assumptions_winner_is_not_bound_when_a_statement_row_was_filtered():

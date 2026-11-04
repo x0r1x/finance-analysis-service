@@ -242,7 +242,12 @@ def _one_primary(
                     draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
             continue
         exact = [index for index in indexes if _exact_lexical(draft[index][1])]
-        if len(exact) == len(indexes) and len(exact) >= 2:
+        if len(exact) >= 2:
+            for index in indexes:
+                if index in exact:
+                    continue
+                row, item = draft[index]
+                draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
             winner, reason, tie = _cascade([draft[index][0] for index in exact], roles, periods)
             concept = draft[exact[0]][1].concept
             if winner is not None and _blocked_assumptions(winner, roles, concept, filtered or {}):
