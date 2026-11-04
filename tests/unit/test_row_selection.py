@@ -272,6 +272,41 @@ def test_missing_series_scores_zero_on_the_one_axis():
     assert again["short"].is_primary is False and again["other"].is_primary is False
 
 
+def test_quarterly_cash_flow_row_stays_primary_over_a_ytd_statement():
+    labels = ("Выручка за кв.", "Операционная прибыль за кв.", "Чистая прибыль (убыток) за кв.")
+    for label in labels:
+        got = _assigned(
+            [
+                _row("cash", label, sheet="Денежные потоки"),
+                _row("form", label.removesuffix(" за кв."), sheet="ОФР", label_path=["нарастающим итогом"]),
+            ]
+        )
+        assert got["cash"].is_primary and got["cash"].evidence["selection"] == "period_basis"
+        assert got["form"].is_primary is False
+
+
+def test_cash_balance_stays_tied_when_coverage_cannot_separate_the_rows():
+    label = "Остаток денежных средств на конец периода"
+    rows = [
+        _row("cash", label, sheet="Денежные потоки"),
+        _row("form", label, sheet="Баланс"),
+    ]
+    equal = {
+        "cash": {("left", str(index)): 1 for index in range(8)},
+        "form": {("right", str(index)): 1 for index in range(8)},
+    }
+    tied = _assigned(rows, periods=equal, calendar=_calendar(equal))
+    assert tied["cash"].status == "ambiguous" and tied["form"].status == "ambiguous"
+    years = {"form": {("right", str(index)): 1 for index in range(6)}}
+    calendar = _calendar({"cash": equal["cash"]})
+    calendar.update(_calendar(years, grain="year"))
+    mixed = _assigned(rows, periods={"cash": equal["cash"], **years}, calendar=calendar)
+    assert mixed["cash"].status == "ambiguous" and mixed["form"].status == "ambiguous"
+    short = {"form": {("right", str(index)): 1 for index in range(2)}}
+    chosen = _assigned(rows, periods={"cash": equal["cash"], **short}, calendar=_calendar({"cash": equal["cash"], **short}))
+    assert chosen["cash"].is_primary and chosen["cash"].evidence["selection"] == "period_coverage"
+
+
 def test_cash_capex_without_acquisitions_wins_by_quarterly_coverage():
     rows = [
         _row("short", "Капитальные затраты", sheet="Model"),
