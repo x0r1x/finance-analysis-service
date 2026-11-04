@@ -263,3 +263,22 @@ async def test_running_remap_rejects_a_transition(app, local_service):
         assert posted.json()["code"] == "glossary_busy"
 
 
+async def test_bad_status_is_409_and_force_without_reason_is_400(app):
+    async with _client(app) as client:
+        bad = await client.post(
+            "/v1/glossary/transitions",
+            headers=HEADERS,
+            json={"version": "g-missing", "status": "retired"},
+        )
+        assert bad.status_code == 409, bad.text
+        assert bad.json()["code"] == "invalid_transition"
+        forced = await client.post(
+            "/v1/glossary/transitions",
+            headers=HEADERS,
+            json={"version": "g-missing", "status": "active", "force": True},
+        )
+        assert forced.status_code == 400, forced.text
+        assert forced.json()["code"] == "invalid_argument"
+
+
+
