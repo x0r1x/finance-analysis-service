@@ -458,7 +458,7 @@ _CITED = {
     "dscr_avg": ("cfads", "debt_service"),
     "llcr": ("cfads",),
     "plcr": ("cfads",),
-    "icr": ("interest",),
+    "icr": ("ebitda", "ebit", "interest"),
 }
 
 
@@ -470,6 +470,11 @@ def ratio_cells(row: dict, facts: list[dict], bindings: list[dict], periods: lis
 
     if row.get("status") != "computed" or row.get("axis_id") is None:
         return []
+    named = row.get("components") or {}
+    cited_cells = [cell for group in named.values() if isinstance(group, list) for cell in group]
+    if cited_cells:
+        wanted_cells = set(cited_cells)
+        return [fact for fact in facts if fact.get("cell_id") in wanted_cells]
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
     axis = row["axis_id"]

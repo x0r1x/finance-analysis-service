@@ -12,7 +12,7 @@ from openpyxl import Workbook
 from finance_analysis.application.project import attach_graph_links
 from finance_analysis.application.service import FasService
 from finance_analysis.domain.covenant import composed_ratio
-from finance_analysis.domain.cover_metrics import adscr, dscr_reductions
+from finance_analysis.domain.cover_metrics import adscr, dscr_reductions, ratio_cells
 from finance_analysis.domain.mapping import _by_basis
 from finance_analysis.domain.metrics import PARTIAL_DENOMINATOR, coverage_ratio
 from finance_analysis.domain.model_type import Composed, Side
@@ -549,6 +549,19 @@ def test_icr_window_applies_each_row_scale_on_its_own_quarterly_axis():
     assert last["status"] == "computed"
     assert last["value"] == Decimal("1.0000000000")
     assert last["window"] == [period["period_id"] for period in interest_axis]
+    assert last["components"]["ebitda"] == ["Ratios!C4"]
+    assert last["components"]["interest"] == ["Cash flow!C1", "Cash flow!C2", "Cash flow!C3", "Cash flow!C4"]
+    cited = ratio_cells(last, ebitda + interest, [
+        _binding("ebitda", "e", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+        _binding("interest", "i"),
+    ], interest_axis + ratio_axis, frozenset())
+    assert {item["cell_id"] for item in cited} == {
+        "Ratios!C4",
+        "Cash flow!C1",
+        "Cash flow!C2",
+        "Cash flow!C3",
+        "Cash flow!C4",
+    }
 
 
 def test_dscr_avg_ratio_of_sums_does_not_add_an_ltm_row():

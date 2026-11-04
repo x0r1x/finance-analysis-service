@@ -165,7 +165,12 @@ def coverage_ratio(
             ctx.prec = 38
             ctx.rounding = "ROUND_HALF_EVEN"
             value = quantize_ratio(num / payment)
-        rows.append(_row(metric, period, value, "computed", None))
+        built = _row(metric, period, value, "computed", None)
+        built["components"] = {
+            numerator_name: _component_cells(facts, primaries[numerator_name], [period]),
+            denominator_name: _component_cells(facts, primaries[denominator_name], [period]),
+        }
+        rows.append(built)
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
@@ -238,6 +243,12 @@ def _ltm_numerator(
             value = quantize_ratio(numerator[key] / total)
         row = _row(metric, period, value, "computed", None)
         row["window"] = [item["period_id"] for item in window]
+        numerator_name = str(numerator_binding.get("concept") or ("cfads" if metric == "dscr" else "ebitda"))
+        denominator_name = str(denominator_binding.get("concept") or ("debt_service" if metric == "dscr" else "interest"))
+        row["components"] = {
+            numerator_name: _component_cells(facts, numerator_binding, [period]),
+            denominator_name: _component_cells(facts, denominator_binding, window),
+        }
         rows.append(row)
         computed = True
     if not rows:
@@ -410,6 +421,22 @@ def _sums(
     if periods is None:
         return totals
     return restate_series(totals, binding, periods, aligned)
+
+
+def _component_cells(facts: list[dict], binding: dict, periods: list[dict]) -> list[str]:
+    """Ячейки строки понятия за указанные периоды. Пустой список, если ячеек нет."""
+
+    wanted = {(item.get("axis_id"), item.get("period_id")) for item in periods}
+    found = []
+    for fact in facts:
+        if fact.get("row_key") != binding.get("row_key"):
+            continue
+        if (fact.get("axis_id"), fact.get("period_id")) not in wanted:
+            continue
+        cell = fact.get("cell_id")
+        if cell and cell not in found:
+            found.append(str(cell))
+    return found
 
 
 def _figure(fact: dict) -> Decimal | None:
