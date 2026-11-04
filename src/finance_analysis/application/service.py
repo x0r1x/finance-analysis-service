@@ -67,6 +67,7 @@ from finance_analysis.domain.errors import (
     AlreadyExists,
     BuilderUnstable,
     DependencyUnavailable,
+    FasError,
     InvalidArgument,
     NotFound,
     PreconditionFailed,
@@ -114,6 +115,25 @@ _YEAR_ONLY = re.compile(r"^(\d{4})$")
 class Accepted:
     operation: dict
     retry_after: int = 1
+
+
+def _operation_problem(exc: BaseException) -> dict:
+    """Провал операции в той же форме, что problem+json у синхронного ответа."""
+
+    if not isinstance(exc, FasError):
+        return {"code": "failed", "detail": str(exc)}
+    body = {
+        "type": f"urn:fas:problem:{exc.code}",
+        "title": exc.title,
+        "status": exc.status,
+        "detail": exc.detail,
+        "code": exc.code,
+        "retryable": exc.retryable,
+    }
+    for key, value in exc.extra.items():
+        if key not in body:
+            body[key] = value
+    return body
 
 
 class _LockTimeout(Exception):
@@ -1791,6 +1811,59 @@ class FasService:
             return rows
         public = await self._coverage_public(job_id, head)
         return {"build_key": head.build_key, "rows": rows, **public}
+
+    async def begin_glossary_transition(
+        self,
+        version: str,
+        status: str,
+        if_match: str | None,
+        *,
+        force: bool,
+        reason: str | None,
+        actor: Actor,
+    ) -> Accepted:
+        """Shadow и запись релиза не укладываются в SYNC_DEADLINE. Как mapping.infer: операция и spawn, не Taskiq."""
+
+        op = await self.create_op(
+            "glossary.validate",
+            None,
+            actor,
+            {"version": version, "status": status, "force": force, "reason": reason},
+        )
+
+        async def _run() -> None:
+            try:
+                result = await self.glossary.transition(version, status, if_match, force=force, reason=reason)
+                remap = await self.begin_remap()
+                ref = remap.get("operation")
+                result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
+                await self.finish_op(op["id"], "succeeded", result=result)
+            except Exception as exc:  # noqa: BLE001 — любая ошибка перехода закрывает операцию
+                await self.finish_op(op["id"], "failed", error=_operation_problem(exc))
+
+        self.spawn(_run())
+        return Accepted(op)
+
+    async def begin_proposal_decision(self, decisions: list, actor: Actor) -> Accepted:
+        """Приём предложения гоняет тот же shadow, что и переход релиза."""
+
+        op = await self.create_op("glossary.validate", None, actor, {"proposals": len(decisions)})
+
+        async def _run() -> None:
+            try:
+                result = await self.glossary.decide_proposals(decisions)
+                await self.learning.proposals_rejected(result.pop("rejected", []))
+                release = result.get("release") or {}
+                if release.get("status") == "active":
+                    remap = await self.begin_remap()
+                    ref = remap.get("operation")
+                    result = {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
+                await self.finish_op(op["id"], "succeeded", result=result)
+            except Exception as exc:  # noqa: BLE001 — любая ошибка решения закрывает операцию
+                await self.finish_op(op["id"], "failed", error=_operation_problem(exc))
+
+        self.spawn(_run())
+        return Accepted(op)
 
     async def infer_mapping(self, job_id: str, actor: Actor) -> Accepted:
         op = await self.create_op("mapping.infer", job_id, actor, {})

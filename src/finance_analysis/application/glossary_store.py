@@ -137,6 +137,13 @@ class GlossaryStore:
                 return {"dry_run": True, "diff": diff, "state": state_of(head)}
             return await self._commit(head, etag, updated, ops, parent=parent, source=source, diff=diff, activate=False)
 
+    async def require_match(self, if_match: str | None) -> None:
+        """Сверка If-Match до постановки операции: 428/412 остаются ответом запроса."""
+
+        async with self._lock:
+            head, _etag = await self._ensure_locked()
+            self._match(head, if_match)
+
     async def transition(
         self,
         version: str | None,
@@ -146,12 +153,7 @@ class GlossaryStore:
         force: bool = False,
         reason: str | None = None,
     ) -> dict:
-        if status not in {"canary", "active", "rejected"}:
-            raise InvalidTransition("переход только в canary, active или rejected")
-        if not version:
-            raise InvalidArgument("нужна version")
-        if force and not (isinstance(reason, str) and reason.strip()):
-            raise InvalidArgument("force требует reason")
+        check_transition_request(status, version, force=force, reason=reason)
         async with self._lock:
             head, etag = await self._ensure_locked()
             self._match(head, if_match)
@@ -964,6 +966,15 @@ def _proposal_op(found: dict, text: str) -> dict:
         "новое понятие и метки профиля принимаются только релизом администратора",
         extra={"id": found["id"], "type": kind_of},
     )
+
+
+def check_transition_request(status: str, version: str | None, *, force: bool, reason: str | None) -> None:
+    if status not in {"canary", "active", "rejected"}:
+        raise InvalidTransition("переход только в canary, active или rejected")
+    if not version:
+        raise InvalidArgument("нужна version")
+    if force and not (isinstance(reason, str) and reason.strip()):
+        raise InvalidArgument("force требует reason")
 
 
 def _shadow_summary(report: dict) -> dict:

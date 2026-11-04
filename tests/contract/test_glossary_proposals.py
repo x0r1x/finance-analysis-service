@@ -20,7 +20,7 @@ def _client(app) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://fas")
 
 
-async def test_accept_edits_text_and_reject_writes_no_release(app):
+async def test_accept_edits_text_and_reject_writes_no_release(app, local_service):
     async with _client(app) as client:
         made = await client.post(
             "/v1/glossary/proposals",
@@ -38,8 +38,10 @@ async def test_accept_edits_text_and_reject_writes_no_release(app):
             headers=HEADERS,
             json={"decisions": [{"id": proposal_id, "decision": "accept", "text": "принятая метка"}]},
         )
-        assert accepted.status_code == 200, accepted.text
-        assert accepted.json()["release"]["status"] == "active"
+        assert accepted.status_code == 202, accepted.text
+        done = await local_service.wait_op(accepted.json()["id"], 120_000)
+        assert done["status"] == "succeeded", done
+        assert done["result"]["release"]["status"] == "active"
         content = await client.get("/v1/glossary/content", headers=HEADERS)
         assert "принятая метка" in content.text
         again = await client.post(

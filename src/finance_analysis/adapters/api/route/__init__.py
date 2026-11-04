@@ -53,6 +53,10 @@ def register(app, settings, *, actor, limited, svc, support) -> None:
             if not isinstance(body, dict):
                 raise InvalidArgument("тело должно быть объектом")
             result = await run(svc().glossary, body, request.headers.get("if-match"))
+            if isinstance(result, Accepted):
+                await idem_finish(runtime, who, method, route, request, raw, result.operation, 202)
+                pending = False
+                return JSONResponse(result.operation, status_code=202, headers=op_headers(result))
             etag = result.get("etag") if isinstance(result, dict) else None
             encoded = result if isinstance(result, dict) else {"ok": True}
             await idem_finish(runtime, who, method, route, request, raw, encoded, 200)

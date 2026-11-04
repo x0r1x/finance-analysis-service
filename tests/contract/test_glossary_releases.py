@@ -31,6 +31,17 @@ async def _state(client: AsyncClient) -> tuple[dict, str]:
     return response.json(), response.headers["etag"]
 
 
+async def _transition(client: AsyncClient, service, headers: dict, body: dict) -> dict:
+    response = await client.post("/v1/glossary/transitions", headers=headers, json=body)
+    assert response.status_code == 202, response.text
+    operation = response.json()
+    assert operation["kind"] == "glossary.validate"
+    assert response.headers["operation-location"] == f"/v1/operations/{operation['id']}"
+    done = await service.wait_op(operation["id"], 120_000)
+    assert done["status"] == "succeeded", done
+    return done["result"]
+
+
 async def test_preconditions_dry_run_rollback_and_export(app, local_service):
     async with _client(app) as client:
         missing = await client.post("/v1/glossary/releases", headers=HEADERS, json={"ops": []})
@@ -70,18 +81,18 @@ async def test_preconditions_dry_run_rollback_and_export(app, local_service):
         )
         assert made.status_code == 200, made.text
         version = made.json()["version"]
-        activated = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": made.headers["etag"]},
-            json={"version": version, "status": "active"},
+        activated = await _transition(
+            client,
+            local_service,
+            {**HEADERS, "If-Match": made.headers["etag"]},
+            {"version": version, "status": "active"},
         )
-        assert activated.status_code == 200, activated.text
         changed = await client.get("/v1/glossary/content", headers=HEADERS)
         assert changed.json()["glossaries"]["cfads"]["pref"]["en"] == "Flow for debt"
 
         rolled = await client.post(
             "/v1/glossary:rollback",
-            headers={**HEADERS, "If-Match": activated.headers["etag"]},
+            headers={**HEADERS, "If-Match": activated["etag"]},
             json={},
         )
         assert rolled.status_code == 200, rolled.text
@@ -95,7 +106,7 @@ async def test_preconditions_dry_run_rollback_and_export(app, local_service):
         assert "changes: []" in patch or patch.strip().endswith("[]")
 
 
-async def test_stale_parent_and_idempotent_release(app):
+async def test_stale_parent_and_idempotent_release(app, local_service):
     async with _client(app) as client:
         _body, etag = await _state(client)
         first = await client.post(
@@ -120,19 +131,21 @@ async def test_stale_parent_and_idempotent_release(app):
             json={"ops": [{"op": "add_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "beta"}]},
         )
         assert second.status_code == 200, second.text
-        activated = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": second.headers["etag"]},
-            json={"version": first.json()["version"], "status": "active"},
+        activated = await _transition(
+            client,
+            local_service,
+            {**HEADERS, "If-Match": second.headers["etag"]},
+            {"version": first.json()["version"], "status": "active"},
         )
-        assert activated.status_code == 200, activated.text
         conflict = await client.post(
             "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": activated.headers["etag"]},
+            headers={**HEADERS, "If-Match": activated["etag"]},
             json={"version": second.json()["version"], "status": "active"},
         )
-        assert conflict.status_code == 409
-        assert conflict.json()["code"] == "stale_parent"
+        assert conflict.status_code == 202, conflict.text
+        failed = await local_service.wait_op(conflict.json()["id"], 120_000)
+        assert failed["status"] == "failed", failed
+        assert failed["error"]["code"] == "stale_parent"
 
 
 async def test_admin_token_when_configured(app, settings):
@@ -192,6 +205,41 @@ async def test_replace_upload_and_read_routes(app):
         assert one.json()["release"]["version"] == version
 
 
+async def test_transition_is_async_and_etag_conflict_stays_on_the_request(app, local_service):
+    async with _client(app) as client:
+        _body, etag = await _state(client)
+        made = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [_PREF]},
+        )
+        assert made.status_code == 200, made.text
+        version = made.json()["version"]
+        missing = await client.post(
+            "/v1/glossary/transitions",
+            headers=HEADERS,
+            json={"version": version, "status": "active"},
+        )
+        assert missing.status_code == 428
+        stale = await client.post(
+            "/v1/glossary/transitions",
+            headers={**HEADERS, "If-Match": "h-999"},
+            json={"version": version, "status": "active"},
+        )
+        assert stale.status_code == 412
+        assert stale.json()["code"] == "precondition_failed"
+        listed = await client.get("/v1/operations", headers=HEADERS, params={"kind": "glossary.validate"})
+        assert listed.json()["operations"] == []
+        canary = await _transition(
+            client,
+            local_service,
+            {**HEADERS, "If-Match": made.headers["etag"]},
+            {"version": version, "status": "canary"},
+        )
+        assert canary["status"] == "canary"
+        assert canary["state"]["canary"] == version
+
+
 async def test_glossary_activation_on_s3_lists_books(s3_store, settings, redis_runtime, builder):
     service = FasService(settings, s3_store, PyarrowParquet(), builder, WrenQuery(settings), redis_runtime)
     app = create_app(settings, service=service, support=redis_runtime)
@@ -203,14 +251,14 @@ async def test_glossary_activation_on_s3_lists_books(s3_store, settings, redis_r
             json={"ops": [_PREF]},
         )
         assert made.status_code == 200, made.text
-        activated = await client.post(
-            "/v1/glossary/transitions",
-            headers={**HEADERS, "If-Match": made.headers["etag"]},
-            json={"version": made.json()["version"], "status": "active"},
+        activated = await _transition(
+            client,
+            service,
+            {**HEADERS, "If-Match": made.headers["etag"]},
+            {"version": made.json()["version"], "status": "active"},
         )
-        assert activated.status_code == 200, activated.text
         version = made.json()["version"]
-        assert activated.json()["state"]["active"] == version
+        assert activated["state"]["active"] == version
         content = await client.get("/v1/glossary/content", headers=HEADERS)
         assert content.json()["glossaries"]["cfads"]["pref"]["en"] == "Flow for debt"
         events = await client.get("/v1/glossary/events", headers=HEADERS)
