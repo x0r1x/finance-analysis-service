@@ -966,7 +966,7 @@ broader: operating_cash_flow                                   # иерархи�
 | Правило | Тип |
 |---|---|
 | Привязаны и `cfads`, и `debt_service` | `project_finance` |
-| Есть листы трёх форм: (ОПиУ \| P&L \| Income statement) и (Баланс \| Balance sheet) и (ДДС \| Cash flow) | `corporate` |
+| Есть листы трёх форм: отчёт о прибыли, баланс и движение денег (алиасы в `corporate.yaml`, в том числе «Денежные потоки», «ОДДС», «ОФР», «Бухгалтерский баланс») | `corporate` |
 | Привязан `escrow_balance` | `development_escrow` |
 | Привязано любое из `grantor_payment`, `capital_grant`, `mgd_compensation` | `ppp_concession` |
 | Привязаны `npv`, `irr` и `discount_rate`, и не привязан `debt_service` | `investment_project` |
