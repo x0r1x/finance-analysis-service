@@ -13,8 +13,8 @@ from tests.workbook_labels import resolved_workbook
 _BOOK = "escrow/development_escrow_214.recalc_libreoffice.xlsx"
 _PATH = Path(__file__).resolve().parents[1] / "fixtures" / "model_books" / _BOOK
 
-# Месяц 2 при параметрах фикстуры: покрытие 2000/1000, вес 1, ставка = специальная.
-_MONTH2 = {"coverage": 2.0, "rate": 0.06, "interest": 5.0, "escrow": 4000.0, "loan": 2005.0}
+# Месяц 2: покрытие закрытия 4000/2005. Ставка — от входа 2000/1000, вес 1, проценты 5.
+_MONTH2 = {"coverage": 4000 / 2005, "rate": 0.06, "interest": 5.0, "escrow": 4000.0, "loan": 2005.0}
 
 
 def _params(sheet) -> dict:
@@ -52,17 +52,16 @@ def _recurrence(params: dict, months: int) -> list[dict]:
         capex = capex_m if month <= capex_until else 0
         equity = min(capex, max(0.0, equity_need - cum_equity))
         draw = min(max(0.0, capex - equity), max(0.0, loan_limit - cum_draw))
-        if prev_loan > 0:
-            coverage = prev_escrow / prev_loan
-            weight = min(coverage, full)
+        if prev_loan > 0 and full > 0:
+            weight = min((prev_escrow / prev_loan) / full, 1)
             rate = weight * special + (1 - weight) * base
         else:
-            coverage = None
             rate = base
         interest = prev_loan * rate / per_year
         capitalized = interest if month <= rve else 0.0
         repay = min(prev_loan + draw + capitalized, release * to_loan)
         loan = prev_loan + draw + capitalized - repay
+        coverage = None if loan <= 0 else escrow / loan
         rows.append(
             {
                 "coverage": coverage,
@@ -111,8 +110,10 @@ def test_coverage_and_effective_rate_match_the_hand_recurrence():
         expected = _recurrence(params, 36)
         model = cached["Модель"]
         first, second = expected[0], expected[1]
-        assert first["coverage"] is None and first["escrow"] == 2000 and first["loan"] == 1000
+        assert first["coverage"] == 2 and first["rate"] == 0.12 and first["interest"] == 0
+        assert first["escrow"] == 2000 and first["loan"] == 1000
         assert second == {**_MONTH2, "escrow_in": 2000.0, "release": 0.0}
+        assert expected[23]["coverage"] is None
         for offset, row in enumerate(expected, start=2):
             assert _close(model.cell(offset, 13).value, row["coverage"]), offset
             assert _close(model.cell(offset, 14).value, row["rate"]), offset
@@ -124,16 +125,39 @@ def test_coverage_and_effective_rate_match_the_hand_recurrence():
         checks = cached["Проверки"]
         for row in range(1, 11):
             assert checks.cell(row, 2).value is True, checks.cell(row, 1).value
-        rate_formula = formulas["Модель"]["N2"].value
+        rate_formula = formulas["Модель"]["N3"].value
         interest_formula = formulas["Модель"]["O2"].value
         balance_formula = formulas["Модель"]["I2"].value
-        assert "MIN(" in rate_formula and "$B$11" in rate_formula and "$B$12" in rate_formula and "$B$17" in rate_formula
+        assert formulas["Модель"]["M2"].value == '=IF(Q2<=0,"",I2/Q2)'
+        assert "MIN((I2/Q2)/Вводы!$B$17,1)" in rate_formula
+        assert "M3" not in rate_formula and "M2" not in rate_formula
+        assert "$B$11" in rate_formula and "$B$12" in rate_formula
         assert "0.12" not in rate_formula and "0.06" not in rate_formula
         assert "/12" not in interest_formula and "$B$18" in interest_formula
         assert "O2" not in balance_formula
     finally:
         cached.close()
         formulas.close()
+
+
+def test_threshold_other_than_one_still_reaches_the_special_rate():
+    params = _params_of_fixture()
+    params["Порог полного покрытия"] = 0.8
+    second = _recurrence(params, 2)[1]
+    assert second["rate"] == 0.06 and second["interest"] == 5
+    params["Цена за м2"] = 10
+    thin = _recurrence(params, 2)[1]
+    assert abs(thin["rate"] - (0.25 * 0.06 + 0.75 * 0.12)) < 1e-9
+    params["Порог полного покрытия"] = 0
+    assert _recurrence(params, 2)[1]["rate"] == 0.12
+
+
+def _params_of_fixture() -> dict:
+    book = openpyxl.load_workbook(_PATH, data_only=True)
+    try:
+        return _params(book["Вводы"])
+    finally:
+        book.close()
 
 
 def test_escrow_only_book_still_scores_one():

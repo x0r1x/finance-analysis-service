@@ -52,11 +52,11 @@ def _model_row(row: int) -> list:
         f"=IF(A{row}<='Вводы'!$B$8,'Вводы'!$B$7,0)",
         f"=MIN(J{row},MAX(0,'Вводы'!$B$9*'Вводы'!$B$7*'Вводы'!$B$8-{equity_cum}))",
         f"=MIN(MAX(0,J{row}-K{row}),MAX(0,'Вводы'!$B$10-{drawn}))",
-        f'=IF({prev_loan}<=0,"",{prev_escrow}/{prev_loan})',
+        f'=IF(Q{row}<=0,"",I{row}/Q{row})',
         (
-            f"=IF({prev_loan}<=0,'Вводы'!{_BASE},"
-            f"MIN(M{row},'Вводы'!{_FULL})*'Вводы'!{_SPECIAL}"
-            f"+(1-MIN(M{row},'Вводы'!{_FULL}))*'Вводы'!{_BASE})"
+            f"=IF(OR({prev_loan}<=0,'Вводы'!{_FULL}<=0),'Вводы'!{_BASE},"
+            f"MIN(({prev_escrow}/{prev_loan})/'Вводы'!{_FULL},1)*'Вводы'!{_SPECIAL}"
+            f"+(1-MIN(({prev_escrow}/{prev_loan})/'Вводы'!{_FULL},1))*'Вводы'!{_BASE})"
         ),
         f"={prev_loan}*N{row}/'Вводы'!{_PER_YEAR}",
         f"=MIN({prev_loan}+L{row}+{cap_interest},H{row}*'Вводы'!$B$16)",
