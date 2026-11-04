@@ -271,6 +271,34 @@ def test_confirmed_component_keeps_primary_and_warns():
     assert FAS_DERIVE_VERSION == "4"
 
 
+def test_confirmed_component_over_a_bound_total_does_not_raise_missing_total_row():
+    rows = [
+        _row("total", "Interest", sheet="Debt", row_num=30, formula="=C10+C11"),
+        _row("senior", "Interest", sheet="Debt", row_num=10, parent_label="Senior loan"),
+        _row("bond", "Interest", sheet="Debt", row_num=11, parent_label="Bond"),
+    ]
+    events = [{"seq": 1, "type": "concept.set", "target": "senior", "binding_key": "senior", "value": "interest"}]
+    got = _assigned(rows, events=events)
+    assert got["senior"].is_primary
+    assert got["senior"].evidence["role"] == "component"
+    assert got["total"].status == "bound"
+    assert got["total"].is_primary is False
+    assert "role" not in got["total"].evidence
+    data = AuditInput(
+        bindings=[
+            {
+                "row_key": key,
+                "effective_concept": "interest",
+                "status": item.status,
+                "is_primary": item.is_primary,
+                "evidence_json": json.dumps(item.evidence),
+            }
+            for key, item in got.items()
+        ]
+    )
+    assert check("missing_total_row", data) == []
+
+
 def test_components_without_a_total_raise_missing_total_row():
     rows = [
         _row("loan", "Interest", sheet="Debt", parent_label="Кредит"),

@@ -165,12 +165,14 @@ class PeriodGrainMismatch(Rule):
 
 @dataclass(frozen=True)
 class MissingTotalRow(Rule):
-    """Итоговой строки понятия метрики нет (§5.5.2, §5.10.5).
+    """Сообщает, что у понятия метрики нет итоговой строки (§5.5.2, §5.10.5).
 
     Первая причина — человек отметил `concept.absent`. Вторая — у понятия
-    есть части, а строки с ролью итога не осталось. Составная привязка не
-    создаётся: сумма частей в расчёт не идёт. Места — строки состава или
-    сами части.
+    есть части, а связанной строки, которая не является частью итога и не
+    является ссылкой, не осталось. Подтверждённая часть может остаться
+    основной. Если при этом итог связан, находка не создаётся. Составная
+    привязка не создаётся: сумма частей в расчёт не идёт. Места находки —
+    строки состава или сами части.
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
@@ -205,12 +207,10 @@ class MissingTotalRow(Rule):
             if not concept or _binding_evidence(row).get("role") != "component":
                 continue
             components.setdefault(str(concept), []).append(row)
-        primaries = _primaries(data.bindings, data.absent)
         for concept, parts in sorted(components.items()):
             if concept in seen or concept not in METRIC_INPUTS:
                 continue
-            primary = primaries.get(concept)
-            if primary is not None and _binding_evidence(primary).get("role") != "component":
+            if _bound_total_remains(data.bindings, concept):
                 continue
             needed = [
                 metric
@@ -232,6 +232,25 @@ class MissingTotalRow(Rule):
                 )
             )
         return findings
+
+
+def _bound_total_remains(bindings, concept: str) -> bool:
+    """Сообщает, осталась ли связанная строка понятия, которая не является частью или ссылкой.
+
+    `bindings` — привязки книги. `concept` — понятие метрики. Такая строка
+    остаётся итогом, даже если основная строка — подтверждённая часть.
+    Часть итога и ссылка итогом не считаются.
+    """
+
+    for row in bindings:
+        if str(row.get("effective_concept") or "") != concept:
+            continue
+        if row.get("status") not in _BOUND:
+            continue
+        if _binding_evidence(row).get("role") in {"component", "reference"}:
+            continue
+        return True
+    return False
 
 
 def _binding_evidence(row: dict) -> dict:
