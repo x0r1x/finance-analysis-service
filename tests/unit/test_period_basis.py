@@ -635,6 +635,37 @@ def test_a_merged_block_title_reaches_every_row_until_the_next_title():
     book.close()
 
 
+def test_quarterly_component_interest_beats_the_cumulative_income_statement():
+    periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1"]
+    calendar = _quarter_calendar(periods)
+    cells = {period: f"CF!C{index}" for index, period in enumerate(periods, start=38)}
+    # Номер строки 38 совпадает с адресом CF!C38, чтобы формула итога увидела часть.
+    source = [_formula_link(cell, "flow", period, None, None) for period, cell in cells.items()]
+    links = source + _prefix_links(periods, cells, choice="IF")
+    links.append(_formula_link("PL!Z1", "cum", periods[0], "=SUM('Cash flow'!C38:G38)", None))
+    rows = [
+        _row("flow", "Interest", sheet="Cash flow", row_num=38),
+        _row(
+            "cum",
+            "Interest",
+            sheet="Отчет о финансовых результатах",
+            row_num=10,
+            formula="=SUM('Cash flow'!C38:G38)",
+        ),
+    ]
+    series = {
+        "flow": {("ax", period): Decimal(10) for period in periods},
+        "cum": {("ax", period): Decimal(10 * (index + 1)) for index, period in enumerate(periods)},
+    }
+    got = _assigned(rows, periods=series, calendar=calendar, links=links)
+    assert got["flow"].evidence["role"] == "component"
+    assert got["cum"].evidence["period_basis"] == "ytd"
+    assert got["cum"].evidence["period_basis_source"] == "formula"
+    assert got["flow"].is_primary
+    assert got["flow"].evidence["selection"] == "period_basis"
+    assert got["cum"].is_primary is False
+
+
 def test_quarter_index_prefix_is_ytd_and_a_sum_that_does_not_restart_is_not():
     periods = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1", "2025Q2"]
     calendar = _quarter_calendar(periods)
