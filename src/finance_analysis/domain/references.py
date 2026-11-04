@@ -44,13 +44,16 @@ def formula_reference(
     *,
     default_sheet: str,
     origin_row: int | None = None,
+    origin_column: str | None = None,
 ) -> tuple[str, int] | None:
-    """Возвращает лист и номер строки, если формула только повторяет одну ячейку.
+    """Возвращает лист и номер строки, если формула повторяет одну ячейку того же столбца.
 
     `formula` — текст формулы A1 или R1C1. `default_sheet` — лист самой
     строки, если в формуле лист не назван. `origin_row` — номер строки
-    формулы; он нужен для относительной ссылки R1C1. Допускается умножение
-    или деление только на 1, 1000 или 1 000 000. Множитель 1,1 или 10 даёт
+    формулы; он нужен для относительной ссылки R1C1. `origin_column` —
+    столбец ячейки формулы. Ссылка на другой столбец той же строки — это
+    лаг, а не копия, и метод возвращает `None`. Допускается умножение или
+    деление только на 1, 1000 или 1 000 000. Множитель 1,1 или 10 даёт
     `None`. Сумма, функция и ссылка на две ячейки тоже дают `None`.
     """
 
@@ -71,6 +74,8 @@ def formula_reference(
         else:
             row_number = int(origin_row) + int(matched.group("rrel"))
     if row_number < 1 or not _scale_ok(matched.group("op"), matched.group("num")):
+        return None
+    if not _same_column(matched, origin_column):
         return None
     return _sheet_name(matched.group("sheet"), default_sheet), row_number
 
@@ -161,32 +166,75 @@ def _one_link(link: dict, row: dict, cells: dict[tuple[str, int], str]) -> str |
     origin = _cell_row(str(link.get("cell") or ""))
     default_sheet = origin[0] if origin else str(row.get("sheet") or "")
     origin_row = origin[1] if origin else _origin_row(row)
-    parsed = formula_reference(
-        str(link.get("formula") or ""),
-        default_sheet=default_sheet,
-        origin_row=origin_row,
-    )
-    if parsed is None:
-        refs = [str(item) for item in (link.get("refs") or []) if item]
-        if len(refs) != 1:
-            return None
-        parsed = _cell_address(refs[0], default_sheet)
+    formula = str(link.get("formula") or "")
+    origin_column = _column_of(str(link.get("cell") or ""))
+    if formula:
+        parsed = formula_reference(
+            formula,
+            default_sheet=default_sheet,
+            origin_row=origin_row,
+            origin_column=origin_column,
+        )
         if parsed is None:
             return None
+        return cells.get((sheet_name_key(parsed[0]), parsed[1]))
+    refs = [str(item) for item in (link.get("refs") or []) if item]
+    if len(refs) != 1:
+        return None
+    parsed = _cell_address(refs[0], default_sheet)
+    if parsed is None or not _columns_equal(parsed[2], origin_column):
+        return None
     return cells.get((sheet_name_key(parsed[0]), parsed[1]))
 
 
-def _cell_address(text: str, default_sheet: str) -> tuple[str, int] | None:
+def _cell_address(text: str, default_sheet: str) -> tuple[str, int, str] | None:
     matched = _CELL.fullmatch(text.strip())
     if matched is None:
         return None
-    return _sheet_name(matched.group("sheet"), default_sheet), int(matched.group("row"))
+    return _sheet_name(matched.group("sheet"), default_sheet), int(matched.group("row")), matched.group("col")
 
 
 def _cell_row(cell: str) -> tuple[str, int] | None:
     if "!" not in cell:
         return None
-    return _cell_address(cell, "")
+    parsed = _cell_address(cell, "")
+    if parsed is None:
+        return None
+    return parsed[0], parsed[1]
+
+
+def _column_of(cell: str) -> str | None:
+    parsed = _cell_address(cell, "")
+    if parsed is None:
+        return None
+    return parsed[2]
+
+
+def _same_column(matched: re.Match[str], origin_column: str | None) -> bool:
+    if "col" in matched.re.groupindex:
+        return _columns_equal(matched.group("col"), origin_column)
+    relative = matched.group("crel")
+    if relative is not None:
+        return int(relative) == 0
+    absolute = matched.group("cabs")
+    if absolute is None:
+        return True
+    if not origin_column:
+        return False
+    return _column_number(origin_column) == int(absolute)
+
+
+def _columns_equal(referenced: str | None, origin: str | None) -> bool:
+    if not origin or not referenced:
+        return True
+    return referenced.casefold() == origin.casefold()
+
+
+def _column_number(letters: str) -> int:
+    number = 0
+    for char in letters.upper():
+        number = number * 26 + (ord(char) - ord("A") + 1)
+    return number
 
 
 def _origin_row(row: dict) -> int | None:

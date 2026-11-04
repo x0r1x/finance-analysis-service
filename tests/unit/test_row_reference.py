@@ -87,6 +87,37 @@ def test_cross_sheet_link_and_r1c1_point_at_the_source_row():
     assert got["src"].is_primary
 
 
+def test_lagged_column_on_the_same_row_is_not_a_reference():
+    rows = [
+        _row("close", "Interest", sheet="Debt", row_num=11),
+        _row("open", "Interest", sheet="Debt", row_num=8, has_formula=True),
+    ]
+    links = [
+        {"row_key": "open", "cell": "Debt!B8", "formula": "=A11", "refs": ["Debt!A11"]},
+        {"row_key": "open", "cell": "Debt!C8", "formula": "=B11", "refs": ["Debt!B11"]},
+        {"row_key": "open", "cell": "Debt!D8", "formula": "=C11", "refs": ["Debt!C11"]},
+    ]
+    periods = {
+        "close": {("ax", "1"): Decimal(100), ("ax", "2"): Decimal(80), ("ax", "3"): Decimal(60)},
+        "open": {("ax", "1"): Decimal(0), ("ax", "2"): Decimal(100), ("ax", "3"): Decimal(80)},
+    }
+    got = _assigned(rows, links=links, periods=periods)
+    assert "role" not in got["open"].evidence
+    assert "role" not in got["close"].evidence
+    same = [
+        _row("src", "Interest", sheet="Debt", row_num=14),
+        _row("echo", "Interest", sheet="P&L", row_num=19, has_formula=True),
+    ]
+    same_links = [
+        {"row_key": "echo", "cell": "P&L!AA19", "formula": "=Debt!AA14", "refs": ["Debt!AA14"]},
+    ]
+    copied = _assigned(same, links=same_links)
+    assert copied["echo"].evidence["role"] == "reference"
+    assert copied["echo"].evidence["reference_of"] == "src"
+    assert formula_reference("=R[3]C[-1]", default_sheet="Debt", origin_row=8) is None
+    assert formula_reference("=R[-5]C[0]", default_sheet="Debt", origin_row=16) == ("Debt", 11)
+
+
 def test_pasted_copy_matches_within_tolerance_and_scale():
     assert values_match({"a": Decimal(1000)}, {"a": Decimal("1000.05")})
     assert values_match({"a": Decimal(1000), "b": Decimal(0)}, {"a": Decimal(1), "b": Decimal(0)})
