@@ -29,7 +29,10 @@ def agreed_dry_run(query: str | None, body: dict) -> bool:
     if "dry_run" in body:
         from_body = _body_flag(body.get("dry_run"))
         if from_query is not None and from_query is not from_body:
-            raise InvalidArgument("dry_run в строке запроса и в теле не совпадают")
+            raise InvalidArgument(
+                "Параметр dry_run в строке запроса и в теле запроса имеет разные значения. "
+                "Укажите его в одном месте или задайте одинаковые значения."
+            )
         return from_body
     return bool(from_query)
 
@@ -41,13 +44,13 @@ def _query_flag(value: object) -> bool:
             return True
         if token == "false":
             return False
-    raise InvalidArgument("dry_run должен быть true или false")
+    raise InvalidArgument("Параметр dry_run в строке запроса должен иметь значение true или false.")
 
 
 def _body_flag(value: object) -> bool:
     if isinstance(value, bool):
         return value
-    raise InvalidArgument("dry_run в теле должен быть логическим true или false")
+    raise InvalidArgument("Поле dry_run в теле запроса должно быть логическим значением true или false.")
 
 
 def register(app, settings, *, svc, write, read) -> None:

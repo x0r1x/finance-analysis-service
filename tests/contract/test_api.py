@@ -169,6 +169,7 @@ async def test_idempotency_and_actor(app):
             content=b"{",
         )
         assert bad.status_code == 400
+        assert bad.json()["detail"] == "Тело запроса не является корректным JSON."
         assert app.fastapi.state.inflight == 0
         again = await client.post(
             f"/v1/books/{JOB}/series",

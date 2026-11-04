@@ -303,6 +303,10 @@ async def test_release_dry_run_query_agrees_with_body(app):
         )
         assert clash.status_code == 400, clash.text
         assert clash.json()["code"] == "invalid_argument"
+        assert clash.json()["detail"] == (
+            "Параметр dry_run в строке запроса и в теле запроса имеет разные значения. "
+            "Укажите его в одном месте или задайте одинаковые значения."
+        )
         other = await client.post(
             "/v1/glossary/releases",
             headers={**HEADERS, "If-Match": etag},
@@ -319,6 +323,7 @@ async def test_release_dry_run_query_agrees_with_body(app):
         )
         assert odd.status_code == 400, odd.text
         assert odd.json()["code"] == "invalid_argument"
+        assert odd.json()["detail"] == "Параметр dry_run в строке запроса должен иметь значение true или false."
         text = await client.post(
             "/v1/glossary/releases",
             headers={**HEADERS, "If-Match": etag},
@@ -326,6 +331,7 @@ async def test_release_dry_run_query_agrees_with_body(app):
         )
         assert text.status_code == 400, text.text
         assert text.json()["code"] == "invalid_argument"
+        assert text.json()["detail"] == "Поле dry_run в теле запроса должно быть логическим значением true или false."
         quoted = await client.post(
             "/v1/glossary/releases",
             headers={**HEADERS, "If-Match": etag},
@@ -333,6 +339,13 @@ async def test_release_dry_run_query_agrees_with_body(app):
         )
         assert quoted.status_code == 400, quoted.text
         assert quoted.json()["code"] == "invalid_argument"
+        assert quoted.json()["detail"] == "Поле dry_run в теле запроса должно быть логическим значением true или false."
+        broken = await client.post("/v1/glossary/releases", headers=HEADERS, content=b"{")
+        assert broken.status_code == 400, broken.text
+        assert broken.json()["detail"] == "Тело запроса не является корректным JSON."
+        array = await client.post("/v1/glossary/releases", headers=HEADERS, content=b"[]")
+        assert array.status_code == 400, array.text
+        assert array.json()["detail"] == "Тело запроса должно быть JSON-объектом."
         state, etag = await _state(client)
         assert state["seq"] == 1
 

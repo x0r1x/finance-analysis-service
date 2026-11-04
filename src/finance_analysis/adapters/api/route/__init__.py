@@ -34,14 +34,14 @@ from finance_analysis.domain.ids import job_id as check_job
 
 
 def _json_object(raw: bytes) -> dict:
-    """Тело запроса как объект. Пустое тело — пустой объект."""
+    """Возвращает тело запроса как JSON-объект. Пустое тело считается пустым объектом."""
 
     try:
         body = json.loads(raw) if raw else {}
     except Exception as exc:
-        raise InvalidArgument("тело не JSON") from exc
+        raise InvalidArgument("Тело запроса не является корректным JSON.") from exc
     if not isinstance(body, dict):
-        raise InvalidArgument("тело должно быть объектом")
+        raise InvalidArgument("Тело запроса должно быть JSON-объектом.")
     return body
 
 
@@ -118,12 +118,7 @@ def register(app, settings, *, actor, limited, svc, support) -> None:
             if cached is not None:
                 return idem_response(cached)
             pending = idem_key(request) is not None
-            try:
-                body = await request.json() if raw else {}
-            except Exception as exc:
-                raise InvalidArgument("тело не JSON") from exc
-            if not isinstance(body, dict):
-                raise InvalidArgument("тело должно быть объектом")
+            body = _json_object(raw)
             if prefer_async and header_async(request):
                 body = {**body, "async": True}
             digest = hashlib.sha256(raw or b"{}").hexdigest()
