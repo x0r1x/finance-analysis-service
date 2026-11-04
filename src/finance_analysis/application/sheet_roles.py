@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import yaml
 
 from finance_analysis.application.catalog import catalog_file
+from finance_analysis.domain.book import canonical_json
 from finance_analysis.domain.mapping import SheetRoles
 
 
@@ -25,3 +27,15 @@ def load_sheet_roles(path: Path | None = None) -> SheetRoles:
         outputs=tuple(str(name) for name in body.get("outputs") or ()),
         assumptions=tuple(str(name) for name in body.get("assumptions") or ()),
     )
+
+
+def sheet_roles_version(roles: SheetRoles | None = None) -> str:
+    """sha256 ролей листа [:16]. Вход `derive_key`, не сигнал типа модели."""
+
+    resolved = roles or load_sheet_roles()
+    payload = {
+        "assumptions": list(resolved.assumptions),
+        "outputs": list(resolved.outputs),
+        "statement": list(resolved.statement),
+    }
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()[:16]

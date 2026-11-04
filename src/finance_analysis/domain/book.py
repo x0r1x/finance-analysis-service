@@ -11,7 +11,8 @@ from datetime import date, datetime
 FAS_VERSION = "0.23.0"
 FAS_SCHEMA_VERSION = "1.0"
 FAS_PROJECTION_VERSION = "2"
-FAS_DERIVE_VERSION = "1"
+# 2: свёртка сверяет входы даже на 304 builder; роли листа входят в ключ.
+FAS_DERIVE_VERSION = "2"
 SEP = "›"
 
 _WS = re.compile(r"\s+")
@@ -61,6 +62,7 @@ def derive_key_for(
     fas_derive_version: str = FAS_DERIVE_VERSION,
     model_types_version: str = "none",
     model_type_seq: int = 0,
+    sheet_roles_version: str = "none",
 ) -> str:
     payload = {
         "state_seq": state_seq,
@@ -74,6 +76,7 @@ def derive_key_for(
         "fas_derive_version": fas_derive_version,
         "model_types_version": model_types_version,
         "model_type_seq": model_type_seq,
+        "sheet_roles_version": sheet_roles_version,
     }
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -131,6 +134,7 @@ class Versions:
     fas: str = FAS_VERSION
     model_types: str = "none"
     model_type_seq: int = 0
+    sheet_roles: str = "none"
 
     def as_dict(self) -> dict:
         return {
@@ -146,6 +150,7 @@ class Versions:
             "fas": self.fas,
             "model_types": self.model_types,
             "model_type_seq": self.model_type_seq,
+            "sheet_roles": self.sheet_roles,
         }
 
     def derive(self, state_seq: int) -> str:
@@ -160,6 +165,7 @@ class Versions:
             profile_version=self.profile,
             model_types_version=self.model_types,
             model_type_seq=self.model_type_seq,
+            sheet_roles_version=self.sheet_roles,
         )
 
 

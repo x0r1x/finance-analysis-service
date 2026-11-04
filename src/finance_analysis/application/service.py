@@ -41,6 +41,7 @@ from finance_analysis.application.operations import append_event, create_op, rea
 from finance_analysis.application.ports import Models
 from finance_analysis.application.project import derive_rows, prepare_rows, project
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
+from finance_analysis.application.sheet_roles import sheet_roles_version
 from finance_analysis.application.tools import build_tools
 from finance_analysis.domain.book import (
     FAS_PROJECTION_VERSION,
@@ -278,6 +279,7 @@ class FasService:
         self.support = support
         self.catalog = load_catalog()
         self.model_types = load_model_types(concepts=self.catalog.ids)
+        self.sheet_roles_version = sheet_roles_version()
         self.guard = SemanticWriteGuard(
             store,
             catalog=self.catalog.ids,
@@ -410,6 +412,7 @@ class FasService:
             clm_model=base.clm_model,
             model_types=self.model_types.version,
             model_type_seq=_model_type_seq(events),
+            sheet_roles=self.sheet_roles_version,
         )
 
     async def _profile_version(self, events: list[dict], current: str) -> str:
@@ -448,6 +451,7 @@ class FasService:
             rerank_model=self.settings.rerank_model,
             clm_model=self.settings.clm_model,
             model_types=self.model_types.version,
+            sheet_roles=self.sheet_roles_version,
         )
 
     async def _write_attempt(self, job_id: str, build: str, attempt: str, tables: dict[str, list[dict]]) -> dict:
@@ -479,6 +483,7 @@ class FasService:
         events = await self.guard.read_all(job_id)
         versions_dict["model_types"] = versions_dict.get("model_types") or self.model_types.version
         versions_dict["model_type_seq"] = _model_type_seq(events)
+        versions_dict["sheet_roles"] = versions_dict.get("sheet_roles") or self.sheet_roles_version
         derive = Versions(
             glossary=glossary_version,
             taxonomy=versions_dict.get("taxonomy", "core-1"),
@@ -489,6 +494,7 @@ class FasService:
             clm_model=(versions_dict.get("models") or {}).get("clm", ""),
             model_types=versions_dict.get("model_types") or self.model_types.version,
             model_type_seq=_model_type_seq(events),
+            sheet_roles=versions_dict["sheet_roles"],
         ).derive(head.state_seq)
         if projected is None:
             projected = await self._projected_from_store(job_id, head.build_key)
@@ -728,9 +734,14 @@ class FasService:
             loaded = await self.load_consistent(job_id, known_etag=known)
             if isinstance(loaded, NotModified):
                 assert head is not None
+                fresh = await self._fold_derived(job_id, head, token, fence)
                 if op_id:
-                    await self.finish_op(op_id, "succeeded", result={"build_key": head.build_key})
-                return head
+                    await self.finish_op(
+                        op_id,
+                        "succeeded",
+                        result={"build_key": fresh.build_key, "derive_key": fresh.derive_key},
+                    )
+                return fresh
             if not isinstance(loaded, tuple):
                 if head is not None:
                     if op_id:
@@ -866,10 +877,13 @@ class FasService:
         except DependencyUnavailable:
             return Freshness(head)
         if isinstance(probe, NotModified) and head is not None:
-            return head
-        if isinstance(probe, ReportNotReady) or not isinstance(probe, Summary) or probe.status != "succeeded":
+            if await self._current_derive(job_id, head) == head.derive_key:
+                return head
+            task = self.spawn(self._rederive_under_lock(job_id))
+        elif isinstance(probe, ReportNotReady) or not isinstance(probe, Summary) or probe.status != "succeeded":
             return Freshness(head)
-        task = self.spawn(self._load_under_lock(job_id, actor, probe))
+        else:
+            task = self.spawn(self._load_under_lock(job_id, actor, probe))
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout=wait_sec)
         except TimeoutError:
@@ -885,6 +899,22 @@ class FasService:
             if exc is not None:
                 raise exc
             return task.result()
+
+    async def _current_derive(self, job_id: str, head: Head) -> str:
+        events = await self.guard.read_all(job_id)
+        versions = await self._versions_for(head, events, job_id)
+        state_seq = int(events[-1]["seq"]) if events else head.state_seq
+        return versions.derive(state_seq)
+
+    async def _rederive_under_lock(self, job_id: str) -> Head:
+        try:
+            async with self.support.lock(f"book:{job_id}", self.settings.lock_ttl_ms) as fence:
+                head, token = await self._read_head(job_id)
+                if head is None:
+                    raise NotFound("книга не загружена")
+                return await self._fold_derived(job_id, head, token, fence.fence)
+        except TimeoutError as exc:
+            raise _LockTimeout(job_id) from exc
 
     async def _load_under_lock(self, job_id: str, actor: Actor, probe: Summary):
         try:
