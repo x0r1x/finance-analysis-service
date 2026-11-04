@@ -409,6 +409,40 @@ def test_dscr_avg_ratio_of_sums_does_not_add_an_ltm_row():
     assert ratio["value"] == Decimal("1.0000000000")
 
 
+def test_icr_states_when_the_numerator_basis_or_axis_does_not_fit():
+    periods = _quarters(2025, 4)
+    interest = _series("i", periods, ["-10", "-10", "-10", "-10"])
+    ebitda = _series("e", periods, ["40", "40", "40", "40"])
+    mismatch = coverage_ratio(
+        metric="icr",
+        **_common(
+            periods,
+            ebitda + interest,
+            [
+                _binding("ebitda", "e", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    assert mismatch["status"] == "basis_mismatch"
+    assert mismatch["rows"][0]["status"] == "basis_mismatch"
+    assert mismatch["rows"][0]["message"] == mismatch["message"]
+    assert "ICR по этим строкам не рассчитан." in mismatch["message"]
+    off_axis = _series("e", periods, ["40", "40", "40", "40"], axis="PL!r1")
+    absent = coverage_ratio(
+        metric="icr",
+        **_common(periods, off_axis + interest, [_binding("ebitda", "e"), _binding("interest", "i")]),
+    )
+    assert absent["status"] == "input_absent"
+    assert absent["rows"][0]["message"] == "Числитель ICR не содержит значений на оси процентов. Коэффициент не рассчитан."
+    fitted = coverage_ratio(
+        metric="icr",
+        **_common(periods, ebitda + interest, [_binding("ebitda", "e"), _binding("interest", "i")]),
+    )
+    assert fitted["rows"][0]["status"] == "computed"
+    assert fitted["rows"][0]["value"] == Decimal("4.0000000000")
+
+
 def test_ltm_row_is_taken_as_is_and_not_summed_over_four_quarters():
     periods = _quarters(2025, 4)
     for period in periods:

@@ -440,6 +440,38 @@ def test_net_debt_ebitda_uses_the_ending_stock_and_raw_ebitda():
     assert year["rows"][0]["value"] == Decimal("-2.5000000000")
 
 
+def test_net_debt_ebitda_reports_when_net_debt_is_off_the_ratio_axis():
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    periods = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    facts = []
+    for index in range(1, 5):
+        facts.append(_fact("e", f"Q{index}", "10"))
+        facts.append({**_fact("n", f"Q{index}", "100"), "axis_id": "debt"})
+    got = composed_ratio(
+        "net_debt_ebitda",
+        catalog.composed["net_debt_ebitda"],
+        facts=facts,
+        bindings=[_bind("net_debt", "n"), _bind("ebitda", "e")],
+        periods=periods,
+    )
+    assert got["status"] == "input_absent"
+    assert got["message"] == (
+        "Чистый долг не содержит значений на оси, по которой считается отношение к EBITDA. "
+        "Коэффициент не рассчитан."
+    )
+    final = next(row for row in got["rows"] if row["period_id"] == "Q4")
+    assert final["status"] == "input_absent"
+    assert final["message"] == got["message"]
+    assert not any(row["status"] == "computed" for row in got["rows"])
+
+
 def test_escrow_coverage_is_balance_over_outstanding():
     from finance_analysis.domain.covenant import composed_ratio
 

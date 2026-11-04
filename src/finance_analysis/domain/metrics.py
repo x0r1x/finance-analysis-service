@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal, localcontext
 
-from finance_analysis.domain.period_basis import restate_series
+from finance_analysis.domain.period_basis import basis_of, restate_series
 
 MONEY = Decimal("0.000001")
 RATIO = Decimal("0.0000000001")
@@ -95,10 +95,17 @@ def coverage_ratio(
             "status": "missing_input",
         }
     denominator_name = "debt_service" if metric == "dscr" else "interest"
+    if metric == "icr":
+        mismatch = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name])
+        if mismatch:
+            return _explained(metric, periods, "basis_mismatch", mismatch, warnings)
     aligned = aligned_keys(periods)
     numerator = _sums(facts, primaries[numerator_name], aligned, periods)
     denominator = _sums(facts, primaries[denominator_name], aligned, periods)
     home = _axes_of(facts, primaries[denominator_name])
+    if metric == "icr" and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
+        message = "Числитель ICR не содержит значений на оси процентов. Коэффициент не рассчитан."
+        return _explained(metric, periods, "input_absent", message, warnings)
     rows = []
     for period in periods:
         axis, period_id = period["axis_id"], period["period_id"]
@@ -132,6 +139,64 @@ def coverage_ratio(
             value = quantize_ratio(num / payment)
         rows.append(_row(metric, period, value, "computed", None))
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
+
+
+def _explained(metric: str, periods: list[dict], status: str, message: str, warnings: list[dict]) -> dict:
+    """Один явный исход вместо пустого списка строк."""
+
+    period = periods[0] if periods else None
+    if period is None:
+        row = {
+            "metric": metric,
+            "axis_id": None,
+            "period_id": None,
+            "period_key_base": None,
+            "period_marker": None,
+            "value": None,
+            "status": status,
+            "reason": status,
+            "message": message,
+        }
+    else:
+        row = _row(metric, period, None, status, status)
+        row["message"] = message
+    return {"metric": metric, "rows": [row], "needs_input": [], "warnings": warnings, "status": status, "message": message}
+
+
+def _basis_message(numerator_name: str, numerator: dict, denominator: dict) -> str | None:
+    """Сообщение, если способ показа числителя нельзя делить на проценты за период."""
+
+    left = _flow_basis(numerator)
+    right = _flow_basis(denominator)
+    if left == right:
+        return None
+    title = "EBITDA" if numerator_name == "ebitda" else "EBIT"
+    return (
+        f"Строка {title} имеет способ показа «{left}», а строка процентов — «{right}». "
+        "ICR по этим строкам не рассчитан."
+    )
+
+
+def _flow_basis(binding: dict) -> str:
+    basis, source = basis_of(binding)
+    if basis == "ytd" and source in {"header", "formula"}:
+        return "period"
+    return basis
+
+
+def _numerator_misses_axis(numerator: dict, denominator: dict, periods: list[dict], aligned: dict, home: set[str]) -> bool:
+    """У процентов есть значения, а на их оси числителя нет."""
+
+    seen_denominator = False
+    for period in periods:
+        if period["axis_id"] not in home:
+            continue
+        key = aligned.get((period["axis_id"], period["period_id"]), (period["axis_id"], period["period_id"]))
+        if key in denominator:
+            seen_denominator = True
+        if key in numerator:
+            return False
+    return seen_denominator
 
 
 def _primaries(bindings: list[dict], absent: frozenset[str] = frozenset()) -> dict[str, dict]:

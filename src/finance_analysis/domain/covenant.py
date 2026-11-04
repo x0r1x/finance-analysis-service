@@ -189,6 +189,20 @@ def composed_ratio(
             if metric == "net_debt_ebitda":
                 numerator = _ending(keys, series, "net_debt")
                 denominator = _part(keys, series, "ebitda", sign_convention, False, basis)
+                if numerator is None and not any(key in series["net_debt"] for key in keys):
+                    rows.append(
+                        _line(
+                            metric,
+                            period,
+                            None,
+                            "input_absent",
+                            "input_absent",
+                            inputs,
+                            window,
+                            message=_NET_DEBT_ABSENT,
+                        )
+                    )
+                    continue
             else:
                 numerator = _total(keys, series, formula.numerator, sign_convention, pay_plus=False, basis=basis)
                 denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True, basis=basis)
@@ -200,7 +214,16 @@ def composed_ratio(
                 rows.append(_line(metric, period, None, status, "zero_denominator", inputs, window))
                 continue
             rows.append(_line(metric, period, _ratio(numerator, denominator), "computed", None, inputs, window))
-    return {"metric": metric, "rows": rows, "needs_input": [], "warnings": [], "status": "succeeded"}
+    status = "succeeded"
+    message = None
+    absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
+    if absent and not any(row["status"] == "computed" for row in rows):
+        status = "input_absent"
+        message = _NET_DEBT_ABSENT
+    result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": [], "status": status}
+    if message:
+        result["message"] = message
+    return result
 
 
 def select_ratio(
@@ -303,8 +326,14 @@ def _part(keys, series: dict, name: str, convention: str, pay: bool, basis: dict
     return total
 
 
-def _line(metric, period, value, status, reason, inputs, window) -> dict:
-    return {
+_NET_DEBT_ABSENT = (
+    "Чистый долг не содержит значений на оси, по которой считается отношение к EBITDA. "
+    "Коэффициент не рассчитан."
+)
+
+
+def _line(metric, period, value, status, reason, inputs, window, message: str | None = None) -> dict:
+    row = {
         "metric": metric,
         "axis_id": period["axis_id"],
         "period_id": period["period_id"],
@@ -316,6 +345,9 @@ def _line(metric, period, value, status, reason, inputs, window) -> dict:
         "inputs": inputs,
         "window": window,
     }
+    if message:
+        row["message"] = message
+    return row
 
 
 def _mismatch(rows, facts, bindings, periods, absent) -> list[dict]:
