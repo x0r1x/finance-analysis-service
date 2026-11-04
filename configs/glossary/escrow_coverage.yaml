@@ -1,0 +1,7 @@
+concept: escrow_coverage
+pref:
+  en: "Escrow coverage of outstanding debt"
+  ru: "Покрытие эскроу"
+definition:
+  en: "Escrow balance divided by the outstanding project loan"
+  ru: "Остаток на счетах эскроу, делённый на остаток проектного кредита"

@@ -1,0 +1,7 @@
+concept: escrowed_funds_rate
+pref:
+  en: "Escrowed funds rate"
+  ru: "Ставка на депонированные средства"
+definition:
+  en: "Rate on funds held in escrow. A book row, not a rate FAS computes."
+  ru: "Ставка на средства, лежащие на эскроу. Строка книги; FAS её не считает."

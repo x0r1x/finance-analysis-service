@@ -120,3 +120,10 @@ cases:
     expect:
       kind: question
       reason: unknown
+  - id: development_escrow
+    source: workbook
+    book: escrow/development_escrow_214.recalc_libreoffice.xlsx
+    expect:
+      kind: type
+      primary: development_escrow
+      labels: [development_escrow]
