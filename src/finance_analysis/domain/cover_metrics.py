@@ -254,7 +254,8 @@ def dscr_reductions(
     """`dscr_min` — минимум по тестовым периодам; `dscr_avg` — двумя способами.
 
     Среднее отдаётся как среднее отношений (`mean_of_ratios`) и как отношение
-    сумм (`ratio_of_sums`), с явным названием варианта (§5.7).
+    сумм (`ratio_of_sums`), с явным названием варианта (§5.7). Строка `ltm`
+    в отношение сумм входит один раз, на последний тестовый период.
     """
 
     dscr = coverage_ratio(
@@ -289,8 +290,10 @@ def dscr_reductions(
             _ctx(ctx)
             mean = quantize_ratio(sum((row["value"] for row in computed), Decimal(0)) / len(computed))
             keys = [aligned.get((axis, pid), (axis, pid)) for pid in tested]
-            paid = sum((_payment(debt[key], sign_convention) for key in keys), Decimal(0))
-            earned = sum((cfads[key] for key in keys), Decimal(0))
+            earned_keys = keys_for_basis(keys, primaries["cfads"])
+            paid_keys = keys_for_basis(keys, primaries["debt_service"])
+            paid = sum((_payment(debt[key], sign_convention) for key in paid_keys), Decimal(0))
+            earned = sum((cfads[key] for key in earned_keys), Decimal(0))
         base = {"axis_id": axis, "period_id": None}
         rows.append(_row(metric, base, mean, "computed", None, variant="mean_of_ratios", over=tested))
         rows.append(_row(metric, base, _ratio(earned, paid), "computed", None, variant="ratio_of_sums", over=tested))

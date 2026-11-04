@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from finance_analysis.application.project import attach_graph_links
 from finance_analysis.application.service import FasService
-from finance_analysis.domain.cover_metrics import adscr
+from finance_analysis.domain.cover_metrics import adscr, dscr_reductions
 from finance_analysis.domain.mapping import _by_basis
 from finance_analysis.domain.metrics import coverage_ratio
 from finance_analysis.domain.period_basis import classify_period_basis, restate_series
@@ -257,6 +257,18 @@ def test_ytd_is_decumulated_for_the_metric_and_not_dropped():
     raw = coverage_ratio(metric="dscr", **_common(periods, facts, untouched))
     raw_by = {row["period_id"]: row["value"] for row in raw["rows"]}
     assert raw_by[periods[1]["period_id"]] == Decimal("3.0000000000")
+
+
+def test_dscr_avg_ratio_of_sums_does_not_add_an_ltm_row():
+    periods = _quarters(2025, 4)
+    facts = _series("c", periods, ["40", "40", "40", "40"]) + _series("d", periods, ["-10", "-10", "-10", "-10"])
+    bindings = [
+        _binding("cfads", "c", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+        _binding("debt_service", "d"),
+    ]
+    result = dscr_reductions("dscr_avg", **_common(periods, facts, bindings))
+    ratio = next(row for row in result["rows"] if row.get("variant") == "ratio_of_sums")
+    assert ratio["value"] == Decimal("1.0000000000")
 
 
 def test_ltm_row_is_taken_as_is_and_not_summed_over_four_quarters():
