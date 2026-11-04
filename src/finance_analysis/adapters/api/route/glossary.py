@@ -11,7 +11,46 @@ from finance_analysis.application.glossary_store import (
     check_transition_request,
     state_of,
 )
-from finance_analysis.domain.errors import Forbidden
+from finance_analysis.domain.errors import Forbidden, InvalidArgument
+
+
+def agreed_dry_run(query: str | None, body: dict) -> bool:
+    """Берёт флаг пробного прогона из строки запроса и из тела.
+
+    `?dry_run=true` или `false` и поле `dry_run` в теле задают один и тот же
+    прогон. В строке запроса это слова true и false без учёта регистра. В теле
+    годится только логическое значение: строка `"false"` не считается пробным
+    прогоном и не записывает релиз. Если задан только один источник, берётся он.
+    Если заданы оба и значения разные, запрос отклоняется. Если не задан ни
+    один, релиз записывается по-настоящему.
+    """
+
+    from_query = _query_flag(query) if query is not None else None
+    if "dry_run" in body:
+        from_body = _body_flag(body.get("dry_run"))
+        if from_query is not None and from_query is not from_body:
+            raise InvalidArgument(
+                "Параметр dry_run в строке запроса и в теле запроса имеет разные значения. "
+                "Укажите его в одном месте или задайте одинаковые значения."
+            )
+        return from_body
+    return bool(from_query)
+
+
+def _query_flag(value: object) -> bool:
+    if isinstance(value, str):
+        token = value.casefold()
+        if token == "true":
+            return True
+        if token == "false":
+            return False
+    raise InvalidArgument("Параметр dry_run в строке запроса должен иметь значение true или false.")
+
+
+def _body_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise InvalidArgument("Поле dry_run в теле запроса должно быть логическим значением true или false.")
 
 
 def register(app, settings, *, svc, write, read) -> None:
@@ -59,16 +98,23 @@ def register(app, settings, *, svc, write, read) -> None:
         )
 
     @app.post("/v1/glossary/releases")
-    async def glossary_release(request: Request):
+    async def glossary_release(request: Request, dry_run: str | None = None):
+        def fingerprint(raw: bytes, body: dict) -> bytes:
+            # Флаг участвует в ключе идемпотентности. Иначе повтор с тем же телом
+            # и другим ?dry_run= вернёт сохранённый ответ и не проверит расхождение.
+            flag = agreed_dry_run(dry_run, body)
+            mark = b"true" if flag else b"false"
+            return raw + b"\ndry_run=" + mark
+
         async def run(gloss, body, match):
             _admin(request)
-            dry_run = bool(body.get("dry_run"))
+            preview = agreed_dry_run(dry_run, body)
             source = str(body.get("source") or "api")
             if body.get("mode") == "replace":
-                return await gloss.release([], match, dry_run=dry_run, source=source, document=body.get("document"))
-            return await gloss.release(body.get("ops") or [], match, dry_run=dry_run, source=source)
+                return await gloss.release([], match, dry_run=preview, source=source, document=body.get("document"))
+            return await gloss.release(body.get("ops") or [], match, dry_run=preview, source=source)
 
-        return await write(request, run)
+        return await write(request, run, fingerprint=fingerprint)
 
     @app.get("/v1/glossary/releases/{version}")
     async def glossary_release_one(version: str, request: Request):

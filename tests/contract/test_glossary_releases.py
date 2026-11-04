@@ -267,3 +267,138 @@ async def test_glossary_activation_on_s3_lists_books(s3_store, settings, redis_r
         events = await client.get("/v1/glossary/events", headers=HEADERS)
         assert events.status_code == 200, events.text
         assert any(item.get("version") == version for item in events.json()["events"])
+
+
+async def test_release_dry_run_query_agrees_with_body(app):
+    async with _client(app) as client:
+        _body, etag = await _state(client)
+        headers = {**HEADERS, "If-Match": etag}
+        preview = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "true"},
+            json={"ops": [_PREF]},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["dry_run"] is True
+        state, etag = await _state(client)
+        assert state["seq"] == 1
+
+        same = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "TRUE"},
+            json={"ops": [_PREF], "dry_run": True},
+        )
+        assert same.status_code == 200, same.text
+        assert same.json()["dry_run"] is True
+        state, etag = await _state(client)
+        assert state["seq"] == 1
+
+        clash = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "false"},
+            json={"ops": [_PREF], "dry_run": True},
+        )
+        assert clash.status_code == 400, clash.text
+        assert clash.json()["code"] == "invalid_argument"
+        assert clash.json()["detail"] == (
+            "Параметр dry_run в строке запроса и в теле запроса имеет разные значения. "
+            "Укажите его в одном месте или задайте одинаковые значения."
+        )
+        other = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "true"},
+            json={"ops": [_PREF], "dry_run": False},
+        )
+        assert other.status_code == 400, other.text
+        assert other.json()["code"] == "invalid_argument"
+        odd = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "yes"},
+            json={"ops": [_PREF]},
+        )
+        assert odd.status_code == 400, odd.text
+        assert odd.json()["code"] == "invalid_argument"
+        assert odd.json()["detail"] == "Параметр dry_run в строке запроса должен иметь значение true или false."
+        text = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [_PREF], "dry_run": "false"},
+        )
+        assert text.status_code == 400, text.text
+        assert text.json()["code"] == "invalid_argument"
+        assert text.json()["detail"] == "Поле dry_run в теле запроса должно быть логическим значением true или false."
+        quoted = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            json={"ops": [_PREF], "dry_run": "true"},
+        )
+        assert quoted.status_code == 400, quoted.text
+        assert quoted.json()["code"] == "invalid_argument"
+        assert quoted.json()["detail"] == "Поле dry_run в теле запроса должно быть логическим значением true или false."
+        broken = await client.post("/v1/glossary/releases", headers=HEADERS, content=b"{")
+        assert broken.status_code == 400, broken.text
+        assert broken.json()["detail"] == "Тело запроса не является корректным JSON."
+        array = await client.post("/v1/glossary/releases", headers=HEADERS, content=b"[]")
+        assert array.status_code == 400, array.text
+        assert array.json()["detail"] == "Тело запроса должно быть JSON-объектом."
+        state, etag = await _state(client)
+        assert state["seq"] == 1
+
+        made = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "false"},
+            json={"ops": [_PREF]},
+        )
+        assert made.status_code == 200, made.text
+        assert made.json()["version"]
+        state, _etag = await _state(client)
+        assert state["seq"] == 2
+
+
+async def test_dry_run_query_changes_the_idempotency_key(app):
+    async with _client(app) as client:
+        _body, etag = await _state(client)
+        headers = {**HEADERS, "If-Match": etag, "Idempotency-Key": "dry-1"}
+        preview = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "true"},
+            json={"ops": [_PREF]},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["dry_run"] is True
+        replay = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "true"},
+            json={"ops": [_PREF]},
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == preview.json()
+        state, etag = await _state(client)
+        assert state["seq"] == 1
+
+        clash = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "false"},
+            json={"ops": [_PREF]},
+        )
+        assert clash.status_code == 422, clash.text
+        assert clash.json()["code"] == "idempotency_key_reused"
+        denied = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "false"},
+            json={"ops": [_PREF], "dry_run": True},
+        )
+        assert denied.status_code == 400, denied.text
+        assert denied.json()["code"] == "invalid_argument"
+        state, _etag = await _state(client)
+        assert state["seq"] == 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -32,41 +33,53 @@ from finance_analysis.domain.errors import InvalidArgument
 from finance_analysis.domain.ids import job_id as check_job
 
 
+def _json_object(raw: bytes) -> dict:
+    """Возвращает тело запроса как JSON-объект. Пустое тело считается пустым объектом."""
+
+    try:
+        body = json.loads(raw) if raw else {}
+    except Exception as exc:
+        raise InvalidArgument("Тело запроса не является корректным JSON.") from exc
+    if not isinstance(body, dict):
+        raise InvalidArgument("Тело запроса должно быть JSON-объектом.")
+    return body
+
+
 def register(app, settings, *, actor, limited, svc, support) -> None:
-    async def write(request: Request, run):
+    async def write(request: Request, run, *, fingerprint=None):
+        # fingerprint(raw, body) добавляет к телу то, что меняет смысл запроса.
+        # Без него ключ идемпотентности по-прежнему считается только по байтам тела.
         who = actor(request)
         runtime = await limited(request, who)
         method = request.method
         route = route_template(request)
         raw = b""
+        hashed = b""
         pending = False
         try:
             raw = await request.body()
-            cached = await idem_begin(runtime, who, method, route, request, raw)
+            parsed = _json_object(raw) if fingerprint is not None else None
+            hashed = raw if fingerprint is None else fingerprint(raw, parsed)
+            cached = await idem_begin(runtime, who, method, route, request, hashed)
             if cached is not None:
                 return idem_response(cached)
             pending = bool(request.headers.get("idempotency-key"))
-            try:
-                body = await request.json() if raw else {}
-            except Exception as exc:
-                raise InvalidArgument("тело не JSON") from exc
-            if not isinstance(body, dict):
-                raise InvalidArgument("тело должно быть объектом")
+            body = parsed if parsed is not None else _json_object(raw)
             result = await run(svc().glossary, body, request.headers.get("if-match"))
             if isinstance(result, Accepted):
-                await idem_finish(runtime, who, method, route, request, raw, result.operation, 202)
+                await idem_finish(runtime, who, method, route, request, hashed, result.operation, 202)
                 pending = False
                 return JSONResponse(result.operation, status_code=202, headers=op_headers(result))
             etag = result.get("etag") if isinstance(result, dict) else None
             encoded = result if isinstance(result, dict) else {"ok": True}
-            await idem_finish(runtime, who, method, route, request, raw, encoded, 200)
+            await idem_finish(runtime, who, method, route, request, hashed, encoded, 200)
             pending = False
             if etag and isinstance(result, dict):
                 return JSONResponse(result, headers={"ETag": etag})
             return result
         except BaseException:
             if pending:
-                await idem_abort(runtime, who, method, route, request, raw)
+                await idem_abort(runtime, who, method, route, request, hashed)
             raise
         finally:
             app.state.inflight -= 1
@@ -105,12 +118,7 @@ def register(app, settings, *, actor, limited, svc, support) -> None:
             if cached is not None:
                 return idem_response(cached)
             pending = idem_key(request) is not None
-            try:
-                body = await request.json() if raw else {}
-            except Exception as exc:
-                raise InvalidArgument("тело не JSON") from exc
-            if not isinstance(body, dict):
-                raise InvalidArgument("тело должно быть объектом")
+            body = _json_object(raw)
             if prefer_async and header_async(request):
                 body = {**body, "async": True}
             digest = hashlib.sha256(raw or b"{}").hexdigest()
