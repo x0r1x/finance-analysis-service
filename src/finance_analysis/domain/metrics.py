@@ -8,12 +8,18 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, localcontext
 
 from finance_analysis.domain.period_basis import basis_of, restate_series
 
 MONEY = Decimal("0.000001")
 RATIO = Decimal("0.0000000001")
+# То же двенадцатимесячное окно, что у чистого долга к EBITDA. Привязка строки не меняется.
+PARTIAL_DENOMINATOR = (
+    "Окно знаменателя неполное: нет двенадцати месяцев подряд до конца периода числителя. "
+    "Коэффициент не рассчитан."
+)
 _BOUND = frozenset({"bound", "bound_with_warning"})
 # Источники привязки от человека: только они отменяют `concept.absent` (§5.10.5).
 HUMAN_SOURCES = frozenset({"confirmed", "profile"})
@@ -95,7 +101,22 @@ def coverage_ratio(
             "status": "missing_input",
         }
     denominator_name = "debt_service" if metric == "dscr" else "interest"
-    if metric == "icr":
+    numerator_basis = _flow_basis(primaries[numerator_name])
+    denominator_basis = _flow_basis(primaries[denominator_name])
+    if numerator_basis == "ltm" and denominator_basis == "period":
+        return _ltm_numerator(
+            metric,
+            facts,
+            primaries[numerator_name],
+            primaries[denominator_name],
+            periods,
+            warnings,
+            sign_convention,
+            period_phase=period_phase,
+            explicit_phases=explicit_phases,
+            marker_class=marker_class,
+        )
+    if metric == "icr" and numerator_basis != denominator_basis:
         mismatch = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name])
         if mismatch:
             return _explained(metric, periods, "basis_mismatch", mismatch, warnings)
@@ -146,6 +167,112 @@ def coverage_ratio(
             value = quantize_ratio(num / payment)
         rows.append(_row(metric, period, value, "computed", None))
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
+
+
+def _ltm_numerator(
+    metric: str,
+    facts: list[dict],
+    numerator_binding: dict,
+    denominator_binding: dict,
+    periods: list[dict],
+    warnings: list[dict],
+    sign_convention: str,
+    *,
+    period_phase: dict,
+    explicit_phases: bool,
+    marker_class: str | None,
+) -> dict:
+    """Числитель `ltm` делится на сумму знаменателя за двенадцать месяцев до его конца.
+
+    Привязка строк не меняется. Неполное окно даёт `partial_window`. Окно то же,
+    что у отношения чистого долга к EBITDA.
+    """
+
+    from finance_analysis.domain.cover_metrics import _window
+    from finance_analysis.domain.coverage import is_coverage_test_period
+
+    aligned = aligned_keys(periods)
+    numerator = _sums(facts, numerator_binding, aligned, periods)
+    denominator = _sums(facts, denominator_binding, aligned, periods)
+    numerator_axes = _axes_of(facts, numerator_binding)
+    denominator_axes = _axes_of(facts, denominator_binding)
+    ordered = _dated_periods([period for period in periods if period["axis_id"] in denominator_axes])
+    rows = []
+    computed = False
+    for period in _dated_periods([period for period in periods if period["axis_id"] in numerator_axes]):
+        marker = period.get("marker_class")
+        if marker_class and marker and marker != marker_class:
+            continue
+        key = aligned.get((period["axis_id"], period["period_id"]), (period["axis_id"], period["period_id"]))
+        if key not in numerator:
+            continue
+        window = _window(ordered, period, "lookback")
+        if window is None:
+            rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
+            continue
+        total = Decimal(0)
+        complete = True
+        for item in window:
+            dkey = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
+            if dkey not in denominator:
+                complete = False
+                break
+            total += _payment(denominator[dkey], sign_convention)
+        if not complete:
+            rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
+            continue
+        phase = period_phase.get((period["axis_id"], period["period_id"]))
+        if metric == "dscr" and not is_coverage_test_period(
+            debt_service_nonzero=total != 0,
+            phase=phase,
+            explicit_phases=explicit_phases,
+        ):
+            continue
+        if total == 0:
+            status = "no_debt_service" if metric == "dscr" else "missing_input"
+            rows.append(_row(metric, period, None, status, "zero_denominator"))
+            continue
+        with localcontext() as ctx:
+            ctx.prec = 38
+            ctx.rounding = "ROUND_HALF_EVEN"
+            value = quantize_ratio(numerator[key] / total)
+        row = _row(metric, period, value, "computed", None)
+        row["window"] = [item["period_id"] for item in window]
+        rows.append(row)
+        computed = True
+    if not rows:
+        return _explained(metric, periods, "partial_window", PARTIAL_DENOMINATOR, warnings)
+    status = "succeeded" if computed else "partial_window"
+    result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
+    if not computed:
+        result["message"] = PARTIAL_DENOMINATOR
+    return result
+
+
+def _noted(metric: str, period: dict, status: str, message: str) -> dict:
+    row = _row(metric, period, None, status, status)
+    row["message"] = message
+    return row
+
+
+def _dated_periods(periods: list[dict]) -> list[dict]:
+    found = []
+    for period in periods:
+        start = _as_date(period.get("period_start"))
+        end = _as_date(period.get("period_end"))
+        found.append({**period, "period_start": start, "period_end": end})
+    return sorted(found, key=lambda item: (item["period_end"] or date.min, int(item.get("period_index") or 0)))
+
+
+def _as_date(value) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
 
 
 def _explained(metric: str, periods: list[dict], status: str, message: str, warnings: list[dict]) -> dict:

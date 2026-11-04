@@ -11,9 +11,11 @@ from openpyxl import Workbook
 
 from finance_analysis.application.project import attach_graph_links
 from finance_analysis.application.service import FasService
+from finance_analysis.domain.covenant import composed_ratio
 from finance_analysis.domain.cover_metrics import adscr, dscr_reductions
 from finance_analysis.domain.mapping import _by_basis
-from finance_analysis.domain.metrics import coverage_ratio
+from finance_analysis.domain.metrics import PARTIAL_DENOMINATOR, coverage_ratio
+from finance_analysis.domain.model_type import Composed, Side
 from finance_analysis.domain.period_basis import classify_period_basis, restate_series
 from tests.unit.test_cover_metrics import _binding, _common, _quarters, _series
 from tests.unit.test_row_selection import _assigned, _calendar, _row
@@ -280,7 +282,11 @@ def test_opening_quarters_of_a_trailing_window_do_not_keep_the_row_period():
             ],
         ),
     )
-    assert got["status"] == "basis_mismatch"
+    assert got["status"] == "succeeded"
+    by_period = {row["period_id"]: row for row in got["rows"]}
+    assert by_period["2024Q1"]["status"] == "partial_window"
+    assert by_period["2024Q4"]["status"] == "computed"
+    assert by_period["2024Q4"]["value"] == Decimal("1.0000000000")
 
 
 def test_a_monthly_formula_is_ltm_only_as_a_sliding_twelve_month_window():
@@ -520,10 +526,28 @@ def test_icr_states_when_the_numerator_basis_or_axis_does_not_fit():
             ],
         ),
     )
-    assert mismatch["status"] == "basis_mismatch"
-    assert mismatch["rows"][0]["status"] == "basis_mismatch"
-    assert mismatch["rows"][0]["message"] == mismatch["message"]
-    assert "ICR по этим строкам не рассчитан." in mismatch["message"]
+    by_period = {row["period_id"]: row for row in mismatch["rows"]}
+    assert by_period[periods[0]["period_id"]]["status"] == "partial_window"
+    assert "двенадцати месяцев" in by_period[periods[0]["period_id"]]["message"]
+    assert by_period[periods[3]["period_id"]]["status"] == "computed"
+    assert by_period[periods[3]["period_id"]]["value"] == Decimal("1.0000000000")
+    swapped = coverage_ratio(
+        metric="icr",
+        **_common(
+            periods,
+            ebitda + interest,
+            [
+                _binding("ebitda", "e"),
+                _binding(
+                    "interest",
+                    "i",
+                    evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"}),
+                ),
+            ],
+        ),
+    )
+    assert swapped["status"] == "basis_mismatch"
+    assert "ICR по этим строкам не рассчитан." in swapped["message"]
     off_axis = _series("e", periods, ["40", "40", "40", "40"], axis="PL!r1")
     absent = coverage_ratio(
         metric="icr",
@@ -633,6 +657,103 @@ def test_a_merged_block_title_reaches_every_row_until_the_next_title():
     assert got["Первые!2"].evidence["period_basis"] == "ytd"
     assert got["Первые!5"].evidence["period_basis"] == "period"
     book.close()
+
+
+def test_ltm_numerator_uses_a_full_denominator_window():
+    quarters = _quarters(2025, 4)
+    facts = _series("e", quarters, ["40", "40", "40", "40"]) + _series("i", quarters, ["-10", "-10", "-10", "-10"])
+    short = coverage_ratio(
+        metric="icr",
+        **_common(
+            quarters[:3],
+            _series("e", quarters[:3], ["40", "40", "40"]) + _series("i", quarters[:3], ["-10", "-10", "-10"]),
+            [
+                _binding(
+                    "ebitda",
+                    "e",
+                    evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "header"}),
+                ),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    assert short["status"] == "partial_window"
+    assert short["message"] == PARTIAL_DENOMINATOR
+    annual = {
+        "axis_id": "Ratios!r1",
+        "timeline_id": "Ratios!r1",
+        "period_id": "2025",
+        "period_index": 0,
+        "period_key_base": "2025",
+        "grain": "year",
+        "period_start": date(2025, 1, 1),
+        "period_end": date(2025, 12, 31),
+    }
+    separate = coverage_ratio(
+        metric="icr",
+        **_common(
+            [annual, *quarters],
+            [{"row_key": "e", "axis_id": "Ratios!r1", "period_id": "2025", "normalized_value": Decimal(40)}]
+            + _series("i", quarters, ["-8", "-8", "-8", "-8"]),
+            [
+                _binding(
+                    "ebitda",
+                    "e",
+                    evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "header"}),
+                ),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    assert separate["status"] == "succeeded"
+    assert separate["rows"][0]["value"] == Decimal("1.2500000000")
+    months = []
+    for index in range(12):
+        start = date(2025, index + 1, 1)
+        end = date(2025, 12, 31) if index == 11 else date(2025, index + 2, 1) - timedelta(days=1)
+        months.append(
+            {
+                "axis_id": "Debt!r3",
+                "timeline_id": "Debt!r3",
+                "period_id": f"2025-{index + 1:02d}",
+                "period_index": index,
+                "grain": "month",
+                "period_start": start,
+                "period_end": end,
+            }
+        )
+    monthly = coverage_ratio(
+        metric="icr",
+        **_common(
+            months,
+            _series("e", months, ["12"] * 12) + _series("i", months, ["-1"] * 12),
+            [
+                _binding(
+                    "ebitda",
+                    "e",
+                    evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"}),
+                ),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    last = monthly["rows"][-1]
+    assert last["status"] == "computed"
+    assert last["value"] == Decimal("1.0000000000")
+    formula = Composed(Side(("ebitda",), ()), Side(("interest",), ()), "period")
+    rolled = composed_ratio(
+        "icr",
+        formula,
+        facts=facts,
+        bindings=[
+            _binding("ebitda", "e", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+            _binding("interest", "i"),
+        ],
+        periods=quarters,
+    )
+    assert rolled["rows"][-1]["status"] == "computed"
+    assert rolled["rows"][-1]["value"] == Decimal("1.0000000000")
+    assert rolled["rows"][0]["reason"] == "partial_window"
 
 
 def test_quarterly_component_interest_beats_the_cumulative_income_statement():

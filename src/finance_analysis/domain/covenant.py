@@ -16,7 +16,9 @@ from finance_analysis.domain.cover_metrics import (
     grain_months,
 )
 from finance_analysis.domain.metrics import (
+    PARTIAL_DENOMINATOR,
     _axes_of,
+    _flow_basis,
     _payment,
     _primaries,
     _sums,
@@ -173,6 +175,8 @@ def composed_ratio(
     aligned = aligned_keys(periods)
     series = {name: _sums(facts, primaries[name], aligned, periods) for name in dict.fromkeys(needed)}
     basis = {name: basis_of(primaries[name])[0] for name in series}
+    roll = formula.window == "period" and _rolls(primaries, formula)
+    window_name = "LTM" if roll else formula.window
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
     inputs = list(dict.fromkeys(needed))
     rows = []
@@ -184,14 +188,15 @@ def composed_ratio(
             marker = period.get("marker_class")
             if marker_class and marker and marker != marker_class:
                 continue
-            keys, window, problem = _span(formula.window, ordered, period, aligned, axis)
+            keys, window, problem = _span(window_name, ordered, period, aligned, axis)
             if problem and not debt_on_axis:
                 rows.append(
                     _line(metric, period, None, "input_absent", "input_absent", inputs, window, message=_NET_DEBT_ABSENT)
                 )
                 continue
             if problem:
-                rows.append(_line(metric, period, None, "not_computed", problem, inputs, window))
+                message = PARTIAL_DENOMINATOR if roll and problem == "partial_window" else None
+                rows.append(_line(metric, period, None, "not_computed", problem, inputs, window, message=message))
                 continue
             if metric == "net_debt_ebitda":
                 numerator = _ending(keys, series, "net_debt")
@@ -227,10 +232,29 @@ def composed_ratio(
     if absent and not any(row["status"] == "computed" for row in rows):
         status = "input_absent"
         message = _NET_DEBT_ABSENT
+    elif roll and rows and not any(row["status"] == "computed" for row in rows):
+        if any(row.get("reason") == "partial_window" for row in rows):
+            status = "partial_window"
+            message = PARTIAL_DENOMINATOR
     result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": [], "status": status}
     if message:
         result["message"] = message
     return result
+
+
+def _rolls(primaries: dict, formula: Composed) -> bool:
+    """Числитель `ltm` и знаменатель за период: знаменатель собирается окном LTM.
+
+    Привязка строк не меняется. Окно уже заданное как LTM здесь не подменяется.
+    """
+
+    numerator = [*formula.numerator.plus, *formula.numerator.minus]
+    denominator = [*formula.denominator.plus, *formula.denominator.minus]
+    if not numerator or not denominator:
+        return False
+    if any(_flow_basis(primaries[name]) != "ltm" for name in numerator):
+        return False
+    return all(_flow_basis(primaries[name]) == "period" for name in denominator)
 
 
 def select_ratio(

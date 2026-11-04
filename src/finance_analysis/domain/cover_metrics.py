@@ -289,7 +289,12 @@ def dscr_reductions(
         with localcontext() as ctx:
             _ctx(ctx)
             mean = quantize_ratio(sum((row["value"] for row in computed), Decimal(0)) / len(computed))
-            keys = [aligned.get((axis, pid), (axis, pid)) for pid in tested]
+            covered: list[str] = []
+            for row in computed:
+                for period_id in row.get("window") or [row["period_id"]]:
+                    if period_id not in covered:
+                        covered.append(period_id)
+            keys = [aligned.get((axis, pid), (axis, pid)) for pid in covered]
             earned_keys = keys_for_basis(keys, primaries["cfads"])
             paid_keys = keys_for_basis(keys, primaries["debt_service"])
             paid = sum((_payment(debt[key], sign_convention) for key in paid_keys), Decimal(0))
