@@ -42,7 +42,7 @@ def test_trailing_paren_explanation_is_not_its_own_key():
     package = load_catalog()
     raw = "Операционная прибыль (убыток)"
     assert normalize_label(raw) == normalize_label("Операционная прибыль")
-    assert package.resolve(raw).concept == "ebit"
+    assert package.resolve(raw).concept == "operating_profit"
     assert package.resolve("убыток") is None
 
 
@@ -160,8 +160,8 @@ def test_profile_does_not_take_another_concepts_key():
         ("debt_outstanding", "Долг всего"),
         ("debt_outstanding", "Остаток долга"),
         ("debt_outstanding", "Остаток кредитов на конец периода"),
-        ("ebit", "Операционная прибыль"),
-        ("ebit", "Операционная прибыль (убыток)"),
+        ("operating_profit", "Операционная прибыль"),
+        ("operating_profit", "Операционная прибыль (убыток)"),
         ("capex", "Капитальные затраты"),
         ("capex", "Капитальные вложения"),
         ("debt_service", "Обслуживание долга"),
@@ -209,11 +209,11 @@ def test_stripped_unit_and_period_land_in_row_evidence():
 def test_collapsed_alts_keep_separate_provenance():
     short = "Операционная прибыль"
     longer = "Операционная прибыль (убыток)"
-    assert label_id("ebit", "alt", short) != label_id("ebit", "alt", longer)
+    assert label_id("operating_profit", "alt", short) != label_id("operating_profit", "alt", longer)
     added = provenance_of(
         [
-            {"concept": "ebit", "kind": "alt", "text": short, "change": "add"},
-            {"concept": "ebit", "kind": "alt", "text": longer, "change": "add"},
+            {"concept": "operating_profit", "kind": "alt", "text": short, "change": "add"},
+            {"concept": "operating_profit", "kind": "alt", "text": longer, "change": "add"},
         ],
         {},
         origin="base_git",
@@ -222,12 +222,12 @@ def test_collapsed_alts_keep_separate_provenance():
         proposals=None,
     )
     left = provenance_of(
-        [{"concept": "ebit", "kind": "alt", "text": longer, "change": "remove"}],
+        [{"concept": "operating_profit", "kind": "alt", "text": longer, "change": "remove"}],
         added,
         origin="review",
         seq=2,
         version="g2",
         proposals=None,
     )
-    assert label_id("ebit", "alt", short) in left
-    assert label_id("ebit", "alt", longer) not in left
+    assert label_id("operating_profit", "alt", short) in left
+    assert label_id("operating_profit", "alt", longer) not in left

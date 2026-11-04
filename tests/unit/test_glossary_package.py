@@ -69,6 +69,7 @@ _IDS = frozenset(
         "cogs",
         "gross_profit",
         "selling_expenses",
+        "operating_profit",
         "ebt",
         "income_tax",
         "net_income",

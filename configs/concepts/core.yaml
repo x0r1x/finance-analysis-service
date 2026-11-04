@@ -187,6 +187,9 @@ concepts:
     kind: measure
     unit: money
     expected_sign: outflow
+  operating_profit:
+    kind: measure
+    unit: money
   ebt:
     kind: measure
     unit: money

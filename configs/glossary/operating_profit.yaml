@@ -1,0 +1,12 @@
+concept: operating_profit
+pref:
+  en: "Profit from sales"
+  ru: "Прибыль (убыток) от реализации"
+alt:
+  ru:
+    - "Операционная прибыль"
+    - "Операционная прибыль (убыток)"
+    - "Прибыль (убыток) от продаж"
+definition:
+  en: "Line of the official financial statement. This release does not calculate it."
+  ru: "Строка официальной формы отчётности. В этом релизе не считается."
