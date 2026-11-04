@@ -74,6 +74,9 @@ concepts:
     kind: measure
     unit: money
     expected_sign: stock
+  escrowed_funds_rate:
+    kind: parameter
+    unit: ratio
   escrow_inflow:
     kind: measure
     unit: money

@@ -33,6 +33,7 @@ _IDS = frozenset(
         "net_debt",
         "dscr_covenant",
         "escrow_balance",
+        "escrowed_funds_rate",
         "escrow_inflow",
         "escrow_disclosure",
         "escrow_coverage",
