@@ -248,7 +248,7 @@ def _one_primary(
                     continue
                 row, item = draft[index]
                 draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
-            winner, reason, tie = _cascade([draft[index][0] for index in exact], roles, periods)
+            winner, reason, tie, left = _cascade([draft[index][0] for index in exact], roles, periods)
             concept = draft[exact[0]][1].concept
             if winner is not None and _blocked_assumptions(winner, roles, concept, filtered or {}):
                 winner, reason, tie = None, None, ["sheet_role"]
@@ -256,7 +256,13 @@ def _one_primary(
                 chosen = next(index for index in exact if draft[index][0] is winner)
                 _keep(draft, exact, chosen, reason)
                 continue
-            _tie(draft, exact, tie)
+            kept = [index for index in exact if any(draft[index][0] is row for row in left)]
+            for index in exact:
+                if index in kept:
+                    continue
+                row, item = draft[index]
+                draft[index] = (row, replace(item, is_primary=False))
+            _tie(draft, kept, tie)
             continue
         drop = confirmed or indexes
         for index in drop:
@@ -348,11 +354,9 @@ def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None):
         if len(nxt) < len(current):
             current = nxt
             if len(current) == 1:
-                return current[0], name, tie
+                return current[0], name, tie, current
             tie.append(name)
-        else:
-            tie.append(name)
-    return None, None, tie
+    return None, None, tie, current
 
 
 def _by_role(rows: list[dict], roles: SheetRoles | None):

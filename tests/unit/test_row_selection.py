@@ -249,7 +249,18 @@ def test_tie_asks_only_for_a_required_metric_input():
     asked = next(item for item in questions if item["subject"] == "interest")
     assert asked["reason"] == "ambiguous"
     assert {item["binding_key"] for item in asked["candidates"]} == {"long", "short"}
-    assert "sheet_role" in asked["candidates"][0]["reasons"]
+    assert asked["candidates"][0]["reasons"] == []
+    mixed = [
+        _row("pnl", "Interest", sheet="P&L"),
+        _row("balance", "Interest", sheet="Баланс"),
+        _row("asm", "Interest", sheet="Допущения"),
+    ]
+    mixed_assigned = assign_rows(mixed, [], catalog, roles=_ROLES)
+    mixed_questions = _questions(mixed, mixed_assigned, labels=("corporate",), catalog=types, concepts=catalog.concepts)
+    mixed_asked = next(item for item in mixed_questions if item["subject"] == "interest")
+    assert mixed_asked["candidates"][0]["reasons"] == ["sheet_role"]
+    assert {item["binding_key"] for item in mixed_asked["candidates"]} == {"pnl", "balance"}
+    assert mixed_assigned["asm"].status == "bound" and mixed_assigned["asm"].is_primary is False
     capex = [
         _row("a", "CAPEX", sheet="Model"),
         _row("b", "CAPEX", sheet="Notes"),
