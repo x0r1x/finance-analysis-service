@@ -27,7 +27,7 @@ from finance_analysis.application.compare import Comparisons
 from finance_analysis.application.evaluation import Evaluator
 from finance_analysis.application.examples import ExampleStore
 from finance_analysis.application.gc import gc_incomplete
-from finance_analysis.application.glossary_store import GlossaryStore
+from finance_analysis.application.glossary_store import GlossaryStore, state_of
 from finance_analysis.application.learning import Learning
 from finance_analysis.application.mapping_pipeline import MappingPipeline
 from finance_analysis.application.metrics import (
@@ -1974,23 +1974,34 @@ class FasService:
         когда она ещё выполняется, и метод возвращает `{"skipped": True}`.
         Иначе метод записывает статус, запускает пересчёт книг и возвращает
         результат перехода вместе с идентификатором операции `glossary.remap`.
-        Регресс без `force` поднимает ошибку `glossary_regression`. Устаревший
-        родитель поднимает `stale_parent`. Успех операции записывает воркер,
-        не этот метод: пропущенную запись нельзя закрыть как успех.
+        Повтор после уже записанной головы не считается провалом. Подтверждение
+        задачи приходит только когда метод вернулся, поэтому воркер может
+        умереть между записью и ответом. Второй запуск видит старый If-Match и
+        получил бы ошибку `precondition_failed`. Если голова уже стоит на
+        запрошенных версии и статусе, метод возвращает это состояние как успех
+        и не пишет голову ещё раз. Регресс без `force` поднимает ошибку
+        `glossary_regression`. Устаревший родитель поднимает `stale_parent`.
+        Успех операции записывает воркер, не этот метод: пропущенную запись
+        нельзя закрыть как успех.
         """
 
         may_commit = (lambda: self._glossary_writable(op_id)) if op_id else None
         if op_id and not await self._glossary_writable(op_id):
             await self._close_cancelled_glossary(op_id)
             return {"skipped": True}
-        result = await self.glossary.transition(
-            version,
-            status,
-            if_match,
-            force=force,
-            reason=reason,
-            may_commit=may_commit,
-        )
+        try:
+            result = await self.glossary.transition(
+                version,
+                status,
+                if_match,
+                force=force,
+                reason=reason,
+                may_commit=may_commit,
+            )
+        except PreconditionFailed:
+            result = await self._transition_already_applied(version, status)
+            if result is None:
+                raise
         if result.get("skipped"):
             if op_id:
                 await self._close_cancelled_glossary(op_id)
@@ -1998,6 +2009,33 @@ class FasService:
         remap = await self.begin_remap()
         ref = remap.get("operation")
         return {**result, "remap": ref.get("id") if isinstance(ref, dict) else ref}
+
+    async def _transition_already_applied(self, version: str, status: str) -> dict | None:
+        """Возвращает текущую голову, если запрошенный переход уже записан.
+
+        `version` — версия релиза. `status` — статус, который просил первый
+        запуск: `canary`, `active` или `rejected`. Метод читает голову и не
+        меняет её. Если именно эта версия уже в запрошенном статусе, словарь
+        совпадает с обычным ответом перехода. Если голова в другом состоянии,
+        метод возвращает `None`: вызывающий код поднимает исходную ошибку
+        предусловия, потому что писать поверх чужого изменения нельзя.
+        """
+
+        head = await self.glossary.ensure()
+        applied = False
+        if status == "active":
+            applied = head.get("active") == version
+        elif status == "canary":
+            applied = head.get("canary") == version
+        elif status == "rejected":
+            found = None
+            for item in head.get("history") or []:
+                if item.get("version") == version:
+                    found = item.get("status")
+            applied = found == "rejected"
+        if not applied:
+            return None
+        return {"version": version, "status": status, "state": state_of(head), "etag": f"h-{head['seq']}"}
 
     async def begin_proposal_decision(self, decisions: list, actor: Actor, *, queue: str) -> Accepted:
         """Ставит принятие пакета предложений в ту же очередь, что и переход релиза.

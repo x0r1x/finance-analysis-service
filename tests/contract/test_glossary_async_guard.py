@@ -297,6 +297,28 @@ async def test_running_remap_rejects_a_transition(app, local_service):
         assert posted.json()["code"] == "glossary_busy"
 
 
+async def test_replayed_transition_succeeds_when_the_head_is_already_there(app, local_service):
+    async with _client(app) as client:
+        version, etag, _before = await _release(client)
+        first = await local_service.perform_glossary_transition(
+            version, "active", etag, force=False, reason=None
+        )
+        assert first["status"] == "active"
+        settled = await client.get("/v1/glossary", headers=HEADERS)
+        replay = await local_service.perform_glossary_transition(
+            version, "active", etag, force=False, reason=None
+        )
+        assert replay["status"] == "active"
+        assert replay["state"]["active"] == version
+        again = await client.get("/v1/glossary", headers=HEADERS)
+        assert again.json()["seq"] == settled.json()["seq"]
+        assert again.headers["etag"] == settled.headers["etag"]
+        with pytest.raises(PreconditionFailed):
+            await local_service.perform_glossary_transition(
+                version, "canary", etag, force=False, reason=None
+            )
+
+
 async def test_bad_status_is_409_and_force_without_reason_is_400(app):
     async with _client(app) as client:
         bad = await client.post(
