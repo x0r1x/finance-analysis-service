@@ -93,6 +93,9 @@ def main() -> None:
         @asynccontextmanager
         async def lifespan(_app: FastAPI):
             service, support = await assemble(settings)
+            await service.sweep_orphans()
+            await service.refresh_owner_lease()
+            service.hold_owner()
             _app.state.service = service
             _app.state.support = support
             _app.state.settings = settings

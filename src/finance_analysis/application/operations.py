@@ -20,7 +20,9 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def create_op(store, kind: str, job_id: str | None, actor: Actor, payload: dict) -> dict:
+async def create_op(
+    store, kind: str, job_id: str | None, actor: Actor, payload: dict, *, owner: str | None = None
+) -> dict:
     from ulid import ULID
 
     op_id = str(ULID())
@@ -38,6 +40,7 @@ async def create_op(store, kind: str, job_id: str | None, actor: Actor, payload:
         "result": None,
         "error": None,
         "run_attempt": 0,
+        "owner": owner,
     }
     await store.put_if_absent(keys.operation_key(op_id), dumps(body))
     return body

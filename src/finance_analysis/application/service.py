@@ -70,6 +70,7 @@ from finance_analysis.domain.errors import (
     DependencyUnavailable,
     FasError,
     GlossaryBusy,
+    Interrupted,
     InvalidArgument,
     NotFound,
     PreconditionFailed,
@@ -322,6 +323,8 @@ class FasService:
         self._tasks: set[asyncio.Task] = set()
         self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
+        self.instance_id = str(ULID())
+        self._owner_held = False
         self.glossary_seen = ""
         self.analyses = Analyses(self)
         self.compare = Comparisons(self.analyses)
@@ -1540,9 +1543,54 @@ class FasService:
         return payload
 
     async def create_op(self, kind: str, job_id: str | None, actor: Actor, payload: dict) -> dict:
-        body = await create_op(self.store, kind, job_id, actor, payload)
+        body = await create_op(self.store, kind, job_id, actor, payload, owner=self.instance_id)
         await self.support.publish(f"fas:op:{body['id']}", "running")
         return body
+
+    async def refresh_owner_lease(self) -> None:
+        ttl = max(int(self.settings.op_heartbeat_sec) * 3, 5)
+        await self.support.cache_set(f"fas:api:{self.instance_id}", b"1", ttl)
+
+    def hold_owner(self) -> None:
+        if self._owner_held:
+            return
+        self._owner_held = True
+        self.spawn(self.owner_lease())
+
+    async def owner_lease(self) -> None:
+        while not self.draining:
+            try:
+                await self.refresh_owner_lease()
+            except Exception:  # noqa: BLE001, S110 — аренда обновится на следующем круге
+                pass
+            for _ in range(max(int(self.settings.op_heartbeat_sec), 1)):
+                if self.draining:
+                    return
+                await asyncio.sleep(1)
+
+    async def sweep_orphans(self) -> int:
+        """Закрыть операции умершего процесса API. Очередь и живой worker не трогать."""
+
+        closed = 0
+        for op in await self.list_ops(kind=None, job_id=None, status=None):
+            if op.get("status") in {"succeeded", "failed", "cancelled"}:
+                continue
+            if await self._worker_or_live_owner(op):
+                continue
+            await self.finish_op(op["id"], "failed", error=_operation_problem(Interrupted()))
+            closed += 1
+        return closed
+
+    async def _worker_or_live_owner(self, op: dict) -> bool:
+        payload = op.get("payload") or {}
+        if payload.get("queue"):
+            return True
+        if await self.support.cache_get(f"fas:op:{op['id']}:hb"):
+            return True
+        owner = op.get("owner")
+        if owner == self.instance_id:
+            return True
+        return bool(owner and await self.support.cache_get(f"fas:api:{owner}"))
 
     async def progress_op(self, op_id: str, stage: str) -> None:
         current = await self.get_op(op_id)
@@ -2599,6 +2647,7 @@ PROBLEM_CATALOG = [
     {"code": "book_busy", "http": 429, "retryable": True},
     {"code": "too_many_inflight", "http": 429, "retryable": True},
     {"code": "overloaded", "http": 503, "retryable": True},
+    {"code": "interrupted", "http": 503, "retryable": True},
     {"code": "dependency_unavailable", "http": 503, "retryable": True},
     {"code": "deadline_exceeded", "http": 504, "retryable": True},
 ]
