@@ -281,6 +281,12 @@ class RedisRuntime:
         except redis_async.RedisError as exc:
             raise DependencyUnavailable("Redis недоступен") from exc
 
+    async def cache_delete(self, key: str) -> None:
+        try:
+            await self.redis.delete(key)
+        except redis_async.RedisError:
+            return
+
     async def publish(self, channel: str, message: str) -> None:
         try:
             await self.redis.publish(channel, message)
