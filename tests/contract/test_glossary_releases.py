@@ -267,3 +267,68 @@ async def test_glossary_activation_on_s3_lists_books(s3_store, settings, redis_r
         events = await client.get("/v1/glossary/events", headers=HEADERS)
         assert events.status_code == 200, events.text
         assert any(item.get("version") == version for item in events.json()["events"])
+
+
+async def test_release_dry_run_query_agrees_with_body(app):
+    async with _client(app) as client:
+        _body, etag = await _state(client)
+        headers = {**HEADERS, "If-Match": etag}
+        preview = await client.post(
+            "/v1/glossary/releases",
+            headers=headers,
+            params={"dry_run": "true"},
+            json={"ops": [_PREF]},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["dry_run"] is True
+        state, etag = await _state(client)
+        assert state["seq"] == 1
+
+        same = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "TRUE"},
+            json={"ops": [_PREF], "dry_run": True},
+        )
+        assert same.status_code == 200, same.text
+        assert same.json()["dry_run"] is True
+        state, etag = await _state(client)
+        assert state["seq"] == 1
+
+        clash = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "false"},
+            json={"ops": [_PREF], "dry_run": True},
+        )
+        assert clash.status_code == 400, clash.text
+        assert clash.json()["code"] == "invalid_argument"
+        other = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "true"},
+            json={"ops": [_PREF], "dry_run": False},
+        )
+        assert other.status_code == 400, other.text
+        assert other.json()["code"] == "invalid_argument"
+        odd = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "yes"},
+            json={"ops": [_PREF]},
+        )
+        assert odd.status_code == 400, odd.text
+        assert odd.json()["code"] == "invalid_argument"
+        state, etag = await _state(client)
+        assert state["seq"] == 1
+
+        made = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag},
+            params={"dry_run": "false"},
+            json={"ops": [_PREF]},
+        )
+        assert made.status_code == 200, made.text
+        assert made.json()["version"]
+        state, _etag = await _state(client)
+        assert state["seq"] == 2

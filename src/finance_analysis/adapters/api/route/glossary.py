@@ -11,7 +11,38 @@ from finance_analysis.application.glossary_store import (
     check_transition_request,
     state_of,
 )
-from finance_analysis.domain.errors import Forbidden
+from finance_analysis.domain.errors import Forbidden, InvalidArgument
+
+
+def agreed_dry_run(query: str | None, body: dict) -> bool:
+    """Берёт флаг пробного прогона из строки запроса и из тела.
+
+    `?dry_run=true` или `false` и поле `dry_run` в теле задают один и тот же
+    прогон. В теле годится логическое значение или такая же строка. Если задан
+    только один источник, берётся он. Если заданы оба и значения разные, запрос
+    отклоняется. Если не задан ни один, релиз записывается по-настоящему.
+    Строка сравнивается без учёта регистра.
+    """
+
+    from_query = _dry_run_flag(query) if query is not None else None
+    if "dry_run" in body:
+        from_body = _dry_run_flag(body.get("dry_run"))
+        if from_query is not None and from_query is not from_body:
+            raise InvalidArgument("dry_run в строке запроса и в теле не совпадают")
+        return from_body
+    return bool(from_query)
+
+
+def _dry_run_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.casefold()
+        if token == "true":
+            return True
+        if token == "false":
+            return False
+    raise InvalidArgument("dry_run должен быть true или false")
 
 
 def register(app, settings, *, svc, write, read) -> None:
@@ -59,14 +90,14 @@ def register(app, settings, *, svc, write, read) -> None:
         )
 
     @app.post("/v1/glossary/releases")
-    async def glossary_release(request: Request):
+    async def glossary_release(request: Request, dry_run: str | None = None):
         async def run(gloss, body, match):
             _admin(request)
-            dry_run = bool(body.get("dry_run"))
+            preview = agreed_dry_run(dry_run, body)
             source = str(body.get("source") or "api")
             if body.get("mode") == "replace":
-                return await gloss.release([], match, dry_run=dry_run, source=source, document=body.get("document"))
-            return await gloss.release(body.get("ops") or [], match, dry_run=dry_run, source=source)
+                return await gloss.release([], match, dry_run=preview, source=source, document=body.get("document"))
+            return await gloss.release(body.get("ops") or [], match, dry_run=preview, source=source)
 
         return await write(request, run)
 
