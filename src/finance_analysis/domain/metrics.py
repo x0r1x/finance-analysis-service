@@ -20,6 +20,8 @@ PARTIAL_DENOMINATOR = (
     "Окно знаменателя неполное: нет двенадцати месяцев подряд до конца периода числителя. "
     "Коэффициент не рассчитан."
 )
+SCALE_UNCONFIRMED = "Масштаб числителя и знаменателя не подтверждён. Коэффициент не рассчитан."
+MIXED_BASIS = "Способ показа числителя и знаменателя различается. Коэффициент не рассчитан."
 _BOUND = frozenset({"bound", "bound_with_warning"})
 # Источники привязки от человека: только они отменяют `concept.absent` (§5.10.5).
 HUMAN_SOURCES = frozenset({"confirmed", "profile"})
@@ -101,6 +103,8 @@ def coverage_ratio(
             "status": "missing_input",
         }
     denominator_name = "debt_service" if metric == "dscr" else "interest"
+    if unconfirmed_scale(facts, [primaries[numerator_name], primaries[denominator_name]]):
+        return _explained(metric, periods, "scale_unconfirmed", SCALE_UNCONFIRMED, warnings)
     numerator_basis = _flow_basis(primaries[numerator_name])
     denominator_basis = _flow_basis(primaries[denominator_name])
     if numerator_basis == "ltm" and denominator_basis == "period":
@@ -116,10 +120,11 @@ def coverage_ratio(
             explicit_phases=explicit_phases,
             marker_class=marker_class,
         )
-    if metric == "icr" and numerator_basis != denominator_basis:
-        mismatch = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name])
-        if mismatch:
-            return _explained(metric, periods, "basis_mismatch", mismatch, warnings)
+    if numerator_basis != denominator_basis:
+        message = MIXED_BASIS
+        if metric == "icr":
+            message = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name]) or MIXED_BASIS
+        return _explained(metric, periods, "basis_mismatch", message, warnings)
     aligned = aligned_keys(periods)
     numerator = _sums(facts, primaries[numerator_name], aligned, periods)
     denominator = _sums(facts, primaries[denominator_name], aligned, periods)
@@ -437,6 +442,44 @@ def _component_cells(facts: list[dict], binding: dict, periods: list[dict]) -> l
         if cell and cell not in found:
             found.append(str(cell))
     return found
+
+
+def unconfirmed_scale(facts: list[dict], bindings: list[dict]) -> bool:
+    """Масштаб нельзя подтвердить: стороны в разных единицах или число спорит со шкалой.
+
+    Без `scale_factor` у обеих сторон остаётся прежний расчёт. Шкала 1 — уже базовые единицы.
+    """
+
+    kinds = {_scale_kind(facts, binding) for binding in bindings}
+    if "unconfirmed" in kinds:
+        return True
+    return "raw" in kinds and "base" in kinds
+
+
+def _scale_kind(facts: list[dict], binding: dict) -> str:
+    kinds = {_one_scale(fact) for fact in facts if fact.get("row_key") == binding.get("row_key")}
+    if not kinds:
+        return "raw"
+    if kinds == {"raw"} or kinds == {"base"}:
+        return next(iter(kinds))
+    return "unconfirmed"
+
+
+def _one_scale(fact: dict) -> str:
+    raw = _decimal(fact.get("value_dec"))
+    if raw is None:
+        raw = _decimal(fact.get("value"))
+    norm = _decimal(fact.get("normalized_value"))
+    scale = _scale(fact.get("scale_factor"))
+    if scale is None:
+        return "raw"
+    if scale == 1:
+        return "base"
+    if raw is not None and norm is not None and _close(norm, raw * scale):
+        return "base"
+    if raw is not None and (norm is None or norm == raw):
+        return "base"
+    return "unconfirmed"
 
 
 def _figure(fact: dict) -> Decimal | None:

@@ -14,7 +14,12 @@ from finance_analysis.application.service import FasService
 from finance_analysis.domain.covenant import composed_ratio
 from finance_analysis.domain.cover_metrics import adscr, dscr_reductions, ratio_cells
 from finance_analysis.domain.mapping import _by_basis
-from finance_analysis.domain.metrics import PARTIAL_DENOMINATOR, coverage_ratio
+from finance_analysis.domain.metrics import (
+    MIXED_BASIS,
+    PARTIAL_DENOMINATOR,
+    SCALE_UNCONFIRMED,
+    coverage_ratio,
+)
 from finance_analysis.domain.model_type import Composed, Side
 from finance_analysis.domain.period_basis import classify_period_basis, restate_series
 from tests.unit.test_cover_metrics import _binding, _common, _quarters, _series
@@ -495,8 +500,9 @@ def test_ytd_is_decumulated_for_the_metric_and_not_dropped():
         _binding("debt_service", "d"),
     ]
     raw = coverage_ratio(metric="dscr", **_common(periods, facts, untouched))
-    raw_by = {row["period_id"]: row["value"] for row in raw["rows"]}
-    assert raw_by[periods[1]["period_id"]] == Decimal("3.0000000000")
+    assert raw["status"] == "basis_mismatch"
+    assert raw["message"] == MIXED_BASIS
+    assert all(row["value"] is None for row in raw["rows"])
 
 
 def test_icr_window_applies_each_row_scale_on_its_own_quarterly_axis():
@@ -562,6 +568,74 @@ def test_icr_window_applies_each_row_scale_on_its_own_quarterly_axis():
         "Cash flow!C3",
         "Cash flow!C4",
     }
+
+
+def test_mixed_basis_or_unconfirmed_scale_is_a_status_not_a_number():
+    periods = _quarters(2025, 4)
+    facts = _series("e", periods, ["40", "40", "40", "40"]) + _series("i", periods, ["-10", "-10", "-10", "-10"])
+    mixed = coverage_ratio(
+        metric="icr",
+        **_common(
+            periods,
+            facts,
+            [
+                _binding("ebitda", "e", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+                _binding("interest", "i", evidence_json=json.dumps({"period_basis": "ytd", "period_basis_source": "shape"})),
+            ],
+        ),
+    )
+    assert mixed["status"] == "basis_mismatch"
+    assert mixed["message"]
+    assert all(row["value"] is None for row in mixed["rows"])
+    ebitda = [
+        {
+            "row_key": "e",
+            "axis_id": period["axis_id"],
+            "period_id": period["period_id"],
+            "value_dec": Decimal("0.04"),
+            "normalized_value": Decimal("0.04"),
+            "scale_factor": Decimal(1_000_000),
+        }
+        for period in periods
+    ]
+    interest = [
+        {
+            "row_key": "i",
+            "axis_id": period["axis_id"],
+            "period_id": period["period_id"],
+            "value_dec": Decimal(-10),
+            "normalized_value": Decimal(-10),
+        }
+        for period in periods
+    ]
+    uneven = coverage_ratio(
+        metric="icr",
+        **_common(
+            periods,
+            ebitda + interest,
+            [
+                _binding("ebitda", "e", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+                _binding("interest", "i"),
+            ],
+        ),
+    )
+    assert uneven["status"] == "scale_unconfirmed"
+    assert uneven["message"] == SCALE_UNCONFIRMED
+    assert all(row["value"] is None for row in uneven["rows"])
+    formula = Composed(Side(("ebitda",), ()), Side(("interest",), ()), "period")
+    composed = composed_ratio(
+        "icr",
+        formula,
+        facts=facts,
+        bindings=[
+            _binding("ebitda", "e", evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "label"})),
+            _binding("interest", "i", evidence_json=json.dumps({"period_basis": "ytd", "period_basis_source": "shape"})),
+        ],
+        periods=periods,
+    )
+    assert composed["status"] == "basis_mismatch"
+    assert composed["message"] == MIXED_BASIS
+    assert all(row["value"] is None for row in composed["rows"])
 
 
 def test_dscr_avg_ratio_of_sums_does_not_add_an_ltm_row():

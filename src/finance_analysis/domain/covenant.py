@@ -16,7 +16,9 @@ from finance_analysis.domain.cover_metrics import (
     grain_months,
 )
 from finance_analysis.domain.metrics import (
+    MIXED_BASIS,
     PARTIAL_DENOMINATOR,
+    SCALE_UNCONFIRMED,
     _axes_of,
     _flow_basis,
     _payment,
@@ -24,6 +26,7 @@ from finance_analysis.domain.metrics import (
     _sums,
     aligned_keys,
     coverage_ratio,
+    unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
 from finance_analysis.domain.period_basis import basis_of
@@ -172,13 +175,19 @@ def composed_ratio(
     if missing:
         return missing
     primaries = _primaries(bindings, absent)
+    inputs = list(dict.fromkeys(needed))
+    if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
+        return _refused(metric, periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)
+    flow = {_flow_basis(primaries[name]) for name in inputs}
+    reconciled = formula.window == "LTM" or (formula.window == "period" and _rolls(primaries, formula))
+    if len(flow) > 1 and not reconciled:
+        return _refused(metric, periods, "basis_mismatch", MIXED_BASIS, inputs)
     aligned = aligned_keys(periods)
     series = {name: _sums(facts, primaries[name], aligned, periods) for name in dict.fromkeys(needed)}
     basis = {name: basis_of(primaries[name])[0] for name in series}
     roll = formula.window == "period" and _rolls(primaries, formula)
     window_name = "LTM" if roll else formula.window
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
-    inputs = list(dict.fromkeys(needed))
     rows = []
     for axis in sorted(_axes_of(facts, primaries[home_name])):
         ordered = _ordered(periods, axis)
@@ -361,6 +370,26 @@ _NET_DEBT_ABSENT = (
     "Чистый долг не содержит значений на оси, по которой считается отношение к EBITDA. "
     "Коэффициент не рассчитан."
 )
+
+
+def _refused(metric: str, periods: list[dict], status: str, message: str, inputs: list[str]) -> dict:
+    """Явный статус вместо числа, когда основания или масштаб нельзя свести."""
+
+    period = periods[0] if periods else None
+    if period is None:
+        row = {
+            "metric": metric,
+            "axis_id": None,
+            "period_id": None,
+            "value": None,
+            "status": status,
+            "reason": status,
+            "message": message,
+            "inputs": inputs,
+        }
+    else:
+        row = _line(metric, period, None, status, status, inputs, None, message=message)
+    return {"metric": metric, "rows": [row], "needs_input": [], "warnings": [], "status": status, "message": message}
 
 
 def _line(metric, period, value, status, reason, inputs, window, message: str | None = None) -> dict:
