@@ -252,6 +252,37 @@ def test_unstressed_stays_base_when_stressed_is_alt():
     assert got["hard"].evidence["scenario"] == "alt"
 
 
+def test_forecast_headers_stay_base_and_alt_headers_leave():
+    assert scenario_of({"label": "Текущий прогноз"}) == "base"
+    assert scenario_of({"label_path": ["ТЕКУЩИЙ ПРОГНОЗ (БАЗОВЫЙ)"]}) == "base"
+    assert scenario_of({"parent_label": "базовый"}) == "base"
+    assert scenario_of({"label": "BASE"}) == "base"
+    assert scenario_of({"label": "Стресс"}) == "alt"
+    assert scenario_of({"label": "STRESS"}) == "alt"
+    assert scenario_of({"label": "Оптимистичный"}) == "alt"
+    assert scenario_of({"label": "Optimistic"}) == "alt"
+    assert scenario_of({"label": "Пессимистичный"}) == "alt"
+    assert scenario_of({"label": "Downside"}) == "alt"
+    rows = [
+        _row("now", "Interest", sheet="Scenarios", label_path=["Текущий прогноз"]),
+        _row("official", "Interest", sheet="Scenarios", label_path=["ТЕКУЩИЙ ПРОГНОЗ (БАЗОВЫЙ)"]),
+        _row("english", "Interest", sheet="Scenarios", parent_label="Base"),
+        _row("stress", "Interest", sheet="Scenarios", parent_label="Стресс"),
+        _row("stress_en", "Interest", sheet="Scenarios", parent_label="Stress"),
+        _row("opt", "Interest", sheet="Scenarios", parent_label="Оптимистичный"),
+        _row("opt_en", "Interest", sheet="Scenarios", parent_label="Optimistic"),
+        _row("pess", "Interest", sheet="Scenarios", parent_label="Пессимистичный"),
+        _row("down", "Interest", sheet="Scenarios", parent_label="Downside"),
+    ]
+    got = _assigned(rows)
+    for key in ("now", "official", "english"):
+        assert got[key].evidence["scenario"] == "base"
+    for key in ("stress", "stress_en", "opt", "opt_en", "pess", "down"):
+        assert got[key].evidence["scenario"] == "alt"
+        assert got[key].is_primary is False
+        assert got[key].status == "bound"
+
+
 def test_confirmed_component_keeps_primary_and_warns():
     rows = [
         _row("total", "Interest", sheet="Debt", row_num=30, formula="=C10+C11"),

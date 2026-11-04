@@ -3,9 +3,10 @@
 Часть итога — строка, которую формула другого кандидата того же понятия
 складывает в итог. Если итог сам не является суммой, часть ставится и у
 рассчитанной строки: одна и та же конечная метка на одном листе стоит под
-разными родителями, и родитель называет долговой инструмент. Сценарий
-`alt` — блок стресса, оптимизма или пессимизма. Базовый сценарий этим
-словам уступает.
+разными родителями, и родитель называет долговой инструмент. Сценарий `alt` — блок «стресс», `stress`, «оптимистичный», `optimistic`,
+«пессимистичный» или `downside`. Заголовки «текущий прогноз», «базовый» и
+`base` остаются базовым сценарием. Слово сценария `alt` этих заголовков
+сильнее.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from finance_analysis.domain.glossary import label_scan, normalize_label
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.references import referenced_row, summed_row_refs
 
-# Слова раздела сильнее слова «базовый». Основа должна начинать слово.
+# Слово сценария alt сильнее базового заголовка. Основа должна начинать слово.
 _WORD = re.compile(r"[^\W\d_]+")
 _ALT = (
     "стресс",
@@ -29,6 +30,8 @@ _ALT = (
     "downside",
     "upside",
 )
+_BASE_PHRASE = "текущий прогноз"
+_BASE = ("базов", "base")
 # Родитель называет инструмент, а не просто повторяет метку.
 # «транш» сверяется отдельно: «траншея» этим списком не подходит.
 _DEBT = (
@@ -48,11 +51,15 @@ def scenario_of(row: dict) -> str:
     """Возвращает `alt` или `base` по заголовкам блока и метке.
 
     `row` — строка книги. Смотрятся путь метки, родитель и сама метка.
-    Основа «стресс», «оптимист», «пессимист», `downside` или `upside` даёт
-    `alt`, только если она стоит в начале слова. Поэтому «стрессовый» и
-    `stressed` дают `alt`, а «бесстрессовый» и `unstressed` остаются
-    базовыми. Слово «базовый» рядом с такой основой не возвращает строку в
-    базовый сценарий. Если основы нет, сценарий базовый.
+    Сравнение идёт без учёта регистра, буква «ё» читается как «е».
+    Заголовок «текущий прогноз», слово «базовый» и слово `base` задают
+    базовый сценарий. Заголовок «стресс», `stress`, «оптимистичный`,
+    `optimistic`, «пессимистичный» или `downside` задаёт сценарий `alt`:
+    такая строка выходит из пула основной строки. Основа должна стоять в
+    начале слова, поэтому «стрессовый» и `stressed` дают `alt`, а
+    «бесстрессовый» и `unstressed` остаются базовыми. Если в одном
+    заголовке есть и базовое слово, и слово сценария `alt`, побеждает
+    `alt`. Если таких слов нет, сценарий базовый.
     """
 
     parts = list(_path(row))
@@ -61,8 +68,11 @@ def scenario_of(row: dict) -> str:
         if text:
             parts.append(str(text))
     folded = [label_scan(part) for part in parts if part]
-    if any(word.startswith(stem) for part in folded for word in _WORD.findall(part) for stem in _ALT):
+    words = [word for part in folded for word in _WORD.findall(part)]
+    if any(word.startswith(stem) for word in words for stem in _ALT):
         return "alt"
+    if any(_BASE_PHRASE in part for part in folded) or any(word.startswith(stem) for word in words for stem in _BASE):
+        return "base"
     return "base"
 
 
