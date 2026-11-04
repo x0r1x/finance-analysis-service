@@ -145,6 +145,20 @@ def test_parent_in_the_label_path_beats_the_child():
     assert got["child"].is_primary is False
 
 
+def test_same_indent_total_and_parent_fall_through_to_coverage():
+    rows = [
+        _row("line", "Interest", sheet="Model", indent=0),
+        _row("total", "Interest", sheet="Model", indent=0, aggregation="aggregate", label_path=["Interest"]),
+    ]
+    periods = {
+        "line": {("ax", str(i)): 1 for i in range(20)},
+        "total": {("ax", str(i)): 1 for i in range(2)},
+    }
+    got = _assigned(rows, periods=periods)
+    assert got["line"].is_primary and got["line"].evidence["selection"] == "period_coverage"
+    assert got["total"].is_primary is False
+
+
 def test_plain_indent_does_not_pick_a_winner():
     rows = [
         _row("a", "Interest", sheet="Model", indent=0),

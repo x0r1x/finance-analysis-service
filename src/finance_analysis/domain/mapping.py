@@ -375,13 +375,9 @@ def _by_formula(rows: list[dict], roles: SheetRoles | None):
 
 
 def _by_aggregate(rows: list[dict]):
-    parents = [row for row in rows if _is_parent(row, rows)]
-    flagged = [row for row in rows if row.get("aggregation") == "aggregate"]
-    pool = flagged or parents
+    pool = [row for row in rows if row.get("aggregation") == "aggregate" or _is_parent(row, rows)]
     if not pool:
         return rows, False
-    if len(pool) == 1:
-        return pool, True
     best = min(_indent(row) for row in pool)
     return [row for row in pool if _indent(row) == best], True
 
