@@ -357,7 +357,11 @@ def _running_add(by_period, row_key: str, located: dict, calendar: dict, keys: s
 
 
 def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]) -> bool:
-    """Сумма с начала года по одной строке. Следующий год эту сумму не продолжает."""
+    """Сумма с начала года по одной строке. Следующий год эту сумму не продолжает.
+
+    Если в новом году есть число, его формула должна начинаться в этом году.
+    Ссылка на прошлый год оставляет строку `period`.
+    """
 
     by_axis: dict[str, list[str]] = {}
     for axis, period_id in keys:
@@ -382,6 +386,8 @@ def _prefix_sum(by_period: dict, located: dict, calendar: dict, keys: set[tuple]
                 formulas = by_period.get(period_id) or []
                 matched = any(_matches_window(formula, located, prefix) for formula in formulas)
                 if len(prefix) < 2:
+                    if formulas and not matched:
+                        return False
                     continue
                 if not matched:
                     return False
