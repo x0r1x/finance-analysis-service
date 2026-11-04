@@ -285,6 +285,38 @@ def test_a_series_that_only_grows_stays_period():
     )
 
 
+def test_quarterly_interest_beats_a_longer_ytd_block_and_the_block_is_decumulated():
+    rows = [
+        _row("flow", "Interest", sheet="Cash flow"),
+        _row("cum", "Interest", sheet="Отчет о финансовых результатах", parent_label="накопленным итогом за год"),
+    ]
+    series = {
+        "flow": {("cfs", f"q{index}"): Decimal(10) for index in range(4)},
+        "cum": {("pl", f"p{index}"): Decimal(10 * (index + 1)) for index in range(8)},
+    }
+    got = _assigned(rows, periods=series, calendar=_calendar(series))
+    assert got["flow"].is_primary
+    assert got["flow"].evidence["selection"] == "period_basis"
+    assert got["flow"].evidence["period_basis"] == "period"
+    assert got["cum"].is_primary is False
+    assert got["cum"].evidence["period_basis"] == "ytd"
+    assert got["cum"].evidence["period_basis_source"] == "header"
+    periods = _quarters(2025, 4)
+    for period in periods:
+        period["calendar_year"] = period["period_start"].year
+    totals = {
+        (periods[index]["axis_id"], periods[index]["period_id"]): Decimal(10 * (index + 1)) for index in range(4)
+    }
+    binding = {"evidence": {"period_basis": "ytd", "period_basis_source": "header"}}
+    restated = restate_series(totals, binding, periods, {})
+    assert [restated[(periods[index]["axis_id"], periods[index]["period_id"])] for index in range(4)] == [
+        Decimal(10),
+        Decimal(10),
+        Decimal(10),
+        Decimal(10),
+    ]
+
+
 def test_period_and_unknown_beat_ytd_and_ltm_is_kept():
     rows = [
         _row("flow", "Interest"),
