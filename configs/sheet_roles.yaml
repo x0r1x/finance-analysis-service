@@ -1,0 +1,4 @@
+# Роли листа для выбора строки (§5.5). Не сигнал типа модели.
+# Формы сюда не копируются: это группы sheets_any в configs/model_types/corporate.yaml.
+outputs: [Outputs, Output, Итоги, Сводка]
+assumptions: [Assumptions, Inputs, Допущения, Ввод]
