@@ -14,6 +14,7 @@ from finance_analysis.domain.calibration import (
 from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
 from finance_analysis.domain.model_type import sheet_name_key
+from finance_analysis.domain.references import blank_series, link_target, values_match
 
 MATERIAL_SHARE = 0.05
 _NOT_MONEY = frozenset({"%", "percent", "rate", "ratio", "x", "count", "years", "date"})
@@ -55,6 +56,7 @@ def assign_rows(
     calibrator: Calibrator | None = None,
     roles: SheetRoles | None = None,
     periods: dict[str, dict[tuple[str, str], Decimal]] | None = None,
+    links: list[dict] | None = None,
 ) -> dict[str, Assignment]:
     human, ignored, absent = _decisions(events)
     draft: list[tuple[dict, Assignment]] = []
@@ -72,6 +74,7 @@ def assign_rows(
         elif found is not None and found.degraded:
             item = replace(item, evidence={**item.evidence, "degraded": list(found.degraded)})
         draft.append((row, item))
+    _mark_references(draft, links, periods, roles)
     _one_primary(draft, roles, periods, filtered)
     total = sum((abs_by_row or {}).values()) or 0
     assigned = {}
@@ -236,10 +239,7 @@ def _one_primary(
                 if index in confirmed:
                     continue
                 row, item = draft[index]
-                if _lexical(item) or item.source == "confirmed":
-                    draft[index] = (row, replace(item, is_primary=False))
-                else:
-                    draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
+                draft[index] = (row, _drop_primary(item, ambiguous=not _lexical(item) and item.source != "confirmed"))
             continue
         exact = [index for index in indexes if _exact_lexical(draft[index][1])]
         if len(exact) >= 2:
@@ -247,8 +247,17 @@ def _one_primary(
                 if index in exact:
                     continue
                 row, item = draft[index]
-                draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
-            winner, reason, tie, left = _cascade([draft[index][0] for index in exact], roles, periods)
+                draft[index] = (row, _drop_primary(item, ambiguous=True))
+            marks = {
+                str(draft[index][0].get("row_key")): {
+                    "role": draft[index][1].evidence.get("role"),
+                    "zero": periods is not None and blank_series(periods.get(str(draft[index][0].get("row_key")))),
+                }
+                for index in exact
+            }
+            winner, reason, tie, left = _cascade(
+                [draft[index][0] for index in exact], roles, periods, marks
+            )
             concept = draft[exact[0]][1].concept
             if winner is not None and _blocked_assumptions(winner, roles, concept, filtered or {}):
                 winner, reason, tie = None, None, ["sheet_role"]
@@ -261,13 +270,28 @@ def _one_primary(
                 if index in kept:
                     continue
                 row, item = draft[index]
-                draft[index] = (row, replace(item, is_primary=False))
+                draft[index] = (row, _drop_primary(item))
             _tie(draft, kept, tie)
             continue
         drop = confirmed or indexes
         for index in drop:
             row, item = draft[index]
-            draft[index] = (row, replace(item, status="ambiguous", is_primary=False))
+            draft[index] = (row, _drop_primary(item, ambiguous=True))
+
+
+def _drop_primary(item: Assignment, *, ambiguous: bool = False) -> Assignment:
+    """Снимает признак основной строки у кандидата, которого человек не подтвердил.
+
+    `item` — привязка строки. Если источник равен `confirmed`, метод возвращает
+    ту же привязку: пересчёт не снимает `is_primary`. Иначе признак снимается.
+    При `ambiguous` статус становится `ambiguous`. Метод ничего не записывает.
+    """
+
+    if item.source == "confirmed":
+        return item
+    if ambiguous:
+        return replace(item, status="ambiguous", is_primary=False)
+    return replace(item, is_primary=False)
 
 
 def _lexical(item: Assignment) -> bool:
@@ -336,12 +360,126 @@ def _named(name: str, aliases: tuple[str, ...]) -> bool:
     return any(folded == sheet_name_key(alias) for alias in aliases)
 
 
-def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None):
-    """Оставшиеся строки, причина единственного победителя и причины ничьей."""
+def _mark_references(draft, links, periods, roles: SheetRoles | None) -> None:
+    """Помечает строки, которые только повторяют другую строку того же понятия.
+
+    Сначала берётся формула: одна ссылка на ячейку, в том числе на другой
+    лист, и та же ссылка с умножением или делением на 1, 1000 или 1 000 000.
+    Затем строка без формулы, чьи периоды строго входят в периоды другого
+    кандидата и чьи значения на них совпали. Более длинный ряд остаётся итогом.
+    В `evidence` пишутся `role` со значением `reference` и `reference_of` с
+    `row_key` источника. Статус строки здесь не меняется.
+    """
+
+    cells: dict[tuple[str, int], str] = {}
+    for row, _item in draft:
+        number = row.get("row_num")
+        sheet = row.get("sheet")
+        if isinstance(number, int) and not isinstance(number, bool) and sheet and row.get("row_key"):
+            cells[(sheet_name_key(str(sheet)), number)] = str(row["row_key"])
+    grouped: dict[str, list] = {}
+    for link in links or []:
+        key = link.get("row_key")
+        if key:
+            grouped.setdefault(str(key), []).append(link)
+    targets: dict[str, str] = {}
+    for row, _item in draft:
+        key = row.get("row_key")
+        if not key:
+            continue
+        target = link_target(row, grouped.get(str(key)), cells)
+        if target:
+            targets[str(key)] = target
+    groups: dict[str, list] = {}
+    for row, item in draft:
+        if item.concept and item.is_primary and item.status in {"bound", "bound_with_warning"}:
+            groups.setdefault(item.concept, []).append(row)
+    for rows in groups.values():
+        for row in rows:
+            key = row.get("row_key")
+            if not key:
+                continue
+            key = str(key)
+            if key in targets or row.get("formula") or row.get("has_formula"):
+                continue
+            target = _copy_target(row, rows, periods, targets, roles)
+            if target:
+                targets[key] = target
+    for index, (row, item) in enumerate(draft):
+        target = targets.get(str(row.get("row_key") or ""))
+        if not target:
+            continue
+        draft[index] = (
+            row,
+            replace(item, evidence={**item.evidence, "role": "reference", "reference_of": target}),
+        )
+
+
+def _copy_target(row, rows, periods, targets: dict[str, str], roles: SheetRoles | None) -> str | None:
+    """Возвращает источник вставленной копии или `None`.
+
+    `row` — строка без формулы. `rows` — другие кандидаты того же понятия.
+    `periods` — значения по периодам. Копией считается только ряд, чьи периоды
+    строго входят в периоды другого ряда и чья роль листа не лучше роли
+    источника. Строка формы поэтому не прячется за более длинным листом без
+    роли. Более длинный ряд остаётся итогом. Одинаковый набор периодов копией
+    не считается.
+    """
+
+    if not periods:
+        return None
+    own_key = str(row["row_key"])
+    own = periods.get(own_key) or {}
+    if blank_series(own):
+        return None
+    found = []
+    for other in rows:
+        other_key = str(other["row_key"])
+        if other_key == own_key:
+            continue
+        source = periods.get(other_key) or {}
+        if not values_match(source, own):
+            continue
+        if set(own) < set(source) and not _better_sheet(row, other, roles):
+            found.append(other_key)
+    if not found:
+        return None
+    plain = [key for key in found if key not in targets]
+    chosen = min(plain or found)
+    followed = targets.get(chosen)
+    if followed and followed != own_key:
+        return followed
+    return chosen
+
+
+def _better_sheet(copy: dict, source: dict, roles: SheetRoles | None) -> bool:
+    """Строка-копия лежит на листе, который каскад предпочитает листу источника.
+
+    `copy` и `source` — строки книги. `roles` — роли листов. Метод возвращает
+    истину, если у копии роль лучше: форма лучше листа без роли, а лист без
+    роли лучше допущений. Без ролей метод возвращает ложь.
+    """
+
+    if roles is None:
+        return False
+    return _ROLE_RANK[_sheet_role(copy, roles)] < _ROLE_RANK[_sheet_role(source, roles)]
+
+
+def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None, marks: dict | None = None):
+    """Оставшиеся строки, причина единственного победителя и причины ничьей.
+
+    Сначала снимается нулевая строка, но только если остаётся другой ненулевой
+    итог. Единственный нулевой итог и нулевая строка рядом с одной ссылкой
+    остаются. Затем снимаются ссылки `reference`, если осталась строка, которая
+    не является ссылкой. Дальше идут прежние шаги: роль листа, формула, итог
+    и покрытие периодов.
+    """
 
     current = list(rows)
     tie: list[str] = []
     steps = (
+        ("zero", lambda items: _by_zero(items, marks)),
+        ("reference", lambda items: _by_reference(items, marks)),
         ("sheet_role", lambda items: _by_role(items, roles)),
         ("formula", lambda items: _by_formula(items, roles)),
         ("aggregate", lambda items: _by_aggregate(items)),
@@ -357,6 +495,38 @@ def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None):
                 return current[0], name, tie, current
             tie.append(name)
     return None, None, tie, current
+
+
+def _by_zero(rows: list[dict], marks: dict | None):
+    """Оставляет нулевую строку, если другого ненулевого итога нет.
+
+    `rows` — кандидаты одного понятия. `marks` хранит `zero` и `role`.
+    Строка-ссылка не заменяет итог. Метод возвращает оставшиеся строки и
+    признак, что шаг применился. Если ненулевого итога нет, состав не меняется.
+    """
+
+    if not marks:
+        return rows, False
+
+    def mark(row: dict) -> dict:
+        return marks.get(str(row.get("row_key"))) or {}
+
+    base = [row for row in rows if mark(row).get("role") != "reference" and not mark(row).get("zero")]
+    if not base:
+        return rows, False
+    alive = [row for row in rows if not mark(row).get("zero")]
+    if alive and len(alive) < len(rows):
+        return alive, True
+    return rows, False
+
+
+def _by_reference(rows: list[dict], marks: dict | None):
+    if not marks:
+        return rows, False
+    plain = [row for row in rows if (marks.get(str(row.get("row_key"))) or {}).get("role") != "reference"]
+    if plain and len(plain) < len(rows):
+        return plain, True
+    return rows, False
 
 
 def _by_role(rows: list[dict], roles: SheetRoles | None):
@@ -475,12 +645,14 @@ def _keep(draft, indexes, chosen: int, reason: str) -> None:
         if index == chosen:
             draft[index] = (row, replace(item, evidence={**item.evidence, "selection": reason}))
             continue
-        draft[index] = (row, replace(item, is_primary=False))
+        draft[index] = (row, _drop_primary(item))
 
 
 def _tie(draft, indexes, reasons: list[str]) -> None:
     for index in indexes:
         row, item = draft[index]
+        if item.source == "confirmed":
+            continue
         evidence = item.evidence
         if reasons and item.concept:
             evidence = {

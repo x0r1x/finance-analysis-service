@@ -19,8 +19,18 @@ pytestmark = pytest.mark.asyncio
 HEADERS = {"X-User-Id": "alex", "X-Client-Id": "desk"}
 PACKT = job_id("packt")
 RVI = job_id("rvi")
-# Счётчики fact-строк после нормализации меток: bound / ambiguous / unknown.
-_COUNTS = {"packt": {"bound": 4, "ambiguous": 7, "unknown": 82}, "rvi": {"bound": 5, "ambiguous": 6, "unknown": 218}}
+# Счётчики fact-строк: связанные, неоднозначные, неизвестные и неприменимые.
+# У Packt роль reference снимает ничьи interest и principal, поэтому связанных строк 9, а неоднозначных 2.
+_COUNTS = {
+    "packt": {"bound": 9, "ambiguous": 2, "unknown": 82, "not_applicable": 4},
+    "rvi": {"bound": 5, "ambiguous": 6, "unknown": 218, "not_applicable": 9},
+}
+# Неизвестные и неоднозначные строки минус входы метрик, которые тип модели не спрашивает.
+_OPEN = {"packt": 84, "rvi": 221}
+# У Packt interest уже основная строка. У RVI три неоднозначные строки interest остаются.
+_DROPPED = {"packt": (0, []), "rvi": (3, ["interest"])}
+# У Packt interest связан, поэтому ICR считается. LLCR и PLCR по-прежнему пропущены.
+_SKIPPED = {"packt": ["llcr", "plcr"], "rvi": ["icr", "llcr", "plcr"]}
 
 
 @pytest.fixture
@@ -68,7 +78,7 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         assert verdict.primary == "project_finance" and verdict.source == "inferred", alias
         assert verdict.scores["project_finance"] >= 0.6
         counts = await _fact_counts(local_service, job)
-        assert {key: counts.get(key, 0) for key in ("bound", "ambiguous", "unknown")} == _COUNTS[alias], counts
+        assert {key: counts.get(key, 0) for key in _COUNTS[alias]} == _COUNTS[alias], counts
         mapped = await local_service.mapping_view(job, Actor(), wait_sec=30)
         assert not isinstance(mapped, Accepted)
         labels = decision_labels(verdict)
@@ -91,9 +101,9 @@ async def test_packt_and_rvi_are_project_finance(local_service):
             for row in mapped["rows"]
             if row.get("status") in {"unknown", "ambiguous"} and row.get("source") != "confirmed"
         ]
-        # До — пакет по строкам (неизвестные и неоднозначные минус необязательный interest).
+        # Пакет вопросов: неизвестные и неоднозначные минус необязательные входы метрик.
         before = len(pool) - len(dropped)
-        assert (alias, before, len(subjects)) == {"packt": ("packt", 86, 0), "rvi": ("rvi", 221, 0)}[alias]
+        assert (alias, before, len(subjects)) == (alias, _OPEN[alias], 0)
         ratios = await _ratios(local_service, job)
         hidden = sorted(
             item["metric"] for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"
@@ -104,8 +114,8 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         assert ratios["versions"]["model_types"] == local_service.model_types.version
         concepts = sorted({row.get("effective_concept") for row in dropped})
         skipped = [item["metric"] for item in ratios["result_data"]["metrics"] if item.get("skipped")]
-        assert (len(dropped), concepts) == (3, ["interest"])
-        assert skipped == ["icr", "llcr", "plcr"]
+        assert (len(dropped), concepts) == _DROPPED[alias], alias
+        assert skipped == _SKIPPED[alias], alias
 
 
 async def test_model_type_set_needs_confirm_then_keeps_history(local_service):
