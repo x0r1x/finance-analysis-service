@@ -183,6 +183,28 @@ def test_zero_and_empty_rows_lose_to_a_nonzero_candidate():
     assert tied["a"].status == "ambiguous" and tied["b"].status == "ambiguous"
 
 
+def test_sole_zero_total_stays_primary():
+    alone = _assigned(
+        [_row("interest", "Interest", sheet="Model")],
+        periods={"interest": {("ax", "1"): Decimal(0), ("ax", "2"): Decimal(0)}},
+    )
+    assert alone["interest"].is_primary
+    assert alone["interest"].status == "bound"
+    rows = [
+        _row("src", "Revenue", sheet="Revenue", row_num=4),
+        _row("total", "Interest", sheet="Model"),
+        _row("echo", "Interest", sheet="Notes", row_num=20, formula="=Revenue!C4"),
+    ]
+    periods = {
+        "total": {("ax", "1"): Decimal(0)},
+        "echo": {("ax", "1"): Decimal(4)},
+    }
+    got = _assigned(rows, periods=periods)
+    assert got["total"].is_primary
+    assert got["echo"].is_primary is False
+    assert got["echo"].evidence["role"] == "reference"
+
+
 def test_nonzero_reference_beats_an_all_zero_row():
     rows = [
         _row("echo", "Interest", sheet="Notes", row_num=20, formula="=Model!C10"),

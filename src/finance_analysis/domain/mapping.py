@@ -435,11 +435,11 @@ def _copy_target(row, rows, periods, targets: dict[str, str]) -> str | None:
 def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None, marks: dict | None = None):
     """Оставшиеся строки, причина единственного победителя и причины ничьей.
 
-    Сначала снимаются строки, у которых все значения нулевые или пустые,
-    если рядом есть ненулевая строка. Затем снимаются ссылки `reference`,
-    если осталась строка, которая не является ссылкой. Ненулевая ссылка
-    поэтому побеждает пустую строку, а обычная строка побеждает ссылку.
-    Дальше идут прежние шаги: роль листа, формула, итог и покрытие периодов.
+    Сначала снимается нулевая строка, но только если остаётся другой ненулевой
+    итог. Единственный нулевой итог и нулевая строка рядом с одной ссылкой
+    остаются. Затем снимаются ссылки `reference`, если осталась строка, которая
+    не является ссылкой. Дальше идут прежние шаги: роль листа, формула, итог
+    и покрытие периодов.
     """
 
     current = list(rows)
@@ -465,9 +465,23 @@ def _cascade(rows: list[dict], roles: SheetRoles | None, periods: dict | None, m
 
 
 def _by_zero(rows: list[dict], marks: dict | None):
+    """Оставляет нулевую строку, если другого ненулевого итога нет.
+
+    `rows` — кандидаты одного понятия. `marks` хранит `zero` и `role`.
+    Строка-ссылка не заменяет итог. Метод возвращает оставшиеся строки и
+    признак, что шаг применился. Если ненулевого итога нет, состав не меняется.
+    """
+
     if not marks:
         return rows, False
-    alive = [row for row in rows if not (marks.get(str(row.get("row_key"))) or {}).get("zero")]
+
+    def mark(row: dict) -> dict:
+        return marks.get(str(row.get("row_key"))) or {}
+
+    base = [row for row in rows if mark(row).get("role") != "reference" and not mark(row).get("zero")]
+    if not base:
+        return rows, False
+    alive = [row for row in rows if not mark(row).get("zero")]
     if alive and len(alive) < len(rows):
         return alive, True
     return rows, False
