@@ -21,7 +21,8 @@ _ABSOLUTE = Decimal("0.000001")
 _UNIT_SCALE = frozenset({Decimal(1), Decimal(1000), Decimal(1_000_000)})
 _UNIT_FACTORS = (Decimal(1000), Decimal(1_000_000))
 _NUMBER = r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?"
-_SHEET = r"(?:'(?:[^']|'')+'|[^\s'!][^'!]*)"
+# Знак формулы не входит в имя листа: иначе `=Notes!C10` читается как лист `=Notes`.
+_SHEET = r"(?:'(?:[^']|'')+'|[^'\s!=+()*/,]+)"
 _A1 = re.compile(
     rf"^=?\s*(?:(?P<sheet>{_SHEET})!)?"
     rf"\$?(?P<col>[A-Za-z]{{1,3}})\$?(?P<row>\d+)"
@@ -152,19 +153,22 @@ def summed_row_refs(formula: str | None, *, default_sheet: str) -> tuple[tuple[s
     `formula` — текст формулы. `default_sheet` — лист строки, если в ссылке
     лист не назван. Сумма — это `SUM` или знак «+». Одна ссылка, произведение
     и множитель вроде 1,1 суммой не являются: метод возвращает `None`.
-    Диапазон `C10:C12` раскрывается в строки 10, 11 и 12. Повтор одной строки
-    в ответе не дублируется.
+    Диапазон `C10:C12` раскрывается в строки 10, 11 и 12. Имя листа
+    заканчивается перед знаком формулы, поэтому `=Notes!C10` указывает на
+    лист `Notes`. Повтор одной строки в ответе не дублируется.
     """
 
     text = str(formula or "").strip()
     if not text or not (_SUM.search(text) or "+" in text):
         return None
     found: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
     spans: list[tuple[int, int]] = []
 
     def add(sheet: str, number: int) -> None:
         item = (sheet, number)
-        if number >= 1 and item not in found:
+        if number >= 1 and item not in seen:
+            seen.add(item)
             found.append(item)
 
     for match in _RANGE.finditer(text):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.model_types import load_model_types
@@ -15,7 +16,7 @@ from finance_analysis.domain.book import (
 )
 from finance_analysis.domain.mapping import assign_rows
 from finance_analysis.domain.questions import concept_questions
-from finance_analysis.domain.references import summed_row_refs
+from finance_analysis.domain.references import referenced_row, summed_row_refs
 from tests.unit.rule_inputs import check
 from tests.unit.test_row_selection import _row
 
@@ -47,6 +48,41 @@ def test_sum_formula_marks_the_rows_it_adds():
         assert got[key].evidence["total_row"] == "total"
     assert got["senior"].evidence["member"]
     assert "role" not in got["total"].evidence
+
+
+def test_cross_sheet_sum_without_links_marks_components():
+    assert summed_row_refs("=Notes!C10+Model!C11", default_sheet="Debt") == (("Notes", 10), ("Model", 11))
+    assert summed_row_refs("=SUM(Notes!C10:C12)", default_sheet="Debt") == (
+        ("Notes", 10),
+        ("Notes", 11),
+        ("Notes", 12),
+    )
+    assert summed_row_refs("='Debt Book'!C10+'P&L'!C11", default_sheet="Debt") == (
+        ("Debt Book", 10),
+        ("P&L", 11),
+    )
+    assert referenced_row("P&L!AA19", default_sheet="Debt") == ("P&L", 19)
+    rows = [
+        _row("total", "Interest", sheet="Debt", row_num=30, formula="=Notes!C10+Model!C11"),
+        _row("one", "Interest", sheet="Notes", row_num=10),
+        _row("two", "Interest", sheet="Model", row_num=11),
+    ]
+    got = _assigned(rows)
+    assert got["total"].is_primary
+    assert got["one"].evidence["role"] == "component"
+    assert got["one"].evidence["component_of"] == "total"
+    assert got["two"].evidence["role"] == "component"
+    assert got["one"].is_primary is False and got["two"].is_primary is False
+
+
+def test_wide_sum_range_does_not_scan_the_whole_list():
+    started = time.perf_counter()
+    found = summed_row_refs("=SUM(C5:C200000)", default_sheet="Debt")
+    assert time.perf_counter() - started < 2
+    assert found is not None
+    assert found[0] == ("Debt", 5)
+    assert found[-1] == ("Debt", 200000)
+    assert len(found) == 199996
 
 
 def test_sum_range_and_cross_sheet_links_are_components():
