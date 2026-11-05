@@ -647,7 +647,8 @@ def _named_window(data: AuditInput, value: str, source: str) -> tuple | None:
 def _structural_boundary(data: AuditInput) -> tuple[str, str, list[str]] | None:
     """Срез по своей строке или по прослеженному вводу, если строка целиком из формул.
 
-    Ненулевое значение прогноза фактом не считается: граница — последняя введённая ячейка.
+    Ненулевое значение прогноза фактом не считается. Строка целиком из ввода даёт
+    последнюю ячейку ввода, которая питает цепочку, без перехода в формулу на ней.
     """
 
     formula = _agreed(_formula_cuts(data))
@@ -731,25 +732,30 @@ def _trace_row(data: AuditInput, row_key: str | None) -> tuple[str, list[str]] |
         return None
     targets = _row_axes(data, row_key)
     found: list[tuple[str, list[str]]] = []
-    for other in _precedent_rows(data, row_key):
-        cut = _row_switch(data, other)
-        if cut is None:
-            continue
+    for other, refs in _precedent_refs(data, row_key).items():
+        switched = _row_switch(data, other)
+        if switched is not None:
+            cut, cells = switched, _input_cells(data, other, switched)
+        else:
+            leaf = _latest_hardcoded(data, other, refs)
+            if leaf is None:
+                continue
+            cut, cells = str(leaf.get("period_id")), [str(leaf["cell_id"])]
         mapped = next((item for axis in targets if (item := _map_cut(data, other, cut, axis))), None)
         if mapped is None:
             continue
-        found.append((mapped, _input_cells(data, other, cut)))
+        found.append((mapped, cells))
     if not found:
         return None
     ids = {item[0] for item in found}
     if len(ids) != 1:
         return None
-    cells: list[str] = []
+    traced: list[str] = []
     for _period, group in found:
         for cell in group:
-            if cell not in cells:
-                cells.append(cell)
-    return next(iter(ids)), cells
+            if cell not in traced:
+                traced.append(cell)
+    return next(iter(ids)), traced
 
 
 def _row_switch(data: AuditInput, row_key: str) -> str | None:
@@ -798,25 +804,64 @@ def _input_cells(data: AuditInput, row_key: str, period_id: str) -> list[str]:
     return cells
 
 
-def _precedent_rows(data: AuditInput, row_key: str) -> list[str]:
-    seen = set()
-    found = []
-    stack = [row_key]
+def _precedent_refs(data: AuditInput, row_key: str) -> dict[str, list[str]]:
+    """Ячейки прецедентов, до которых доходит цепочка. Формулы проходятся, ввод — нет."""
+
+    seen: set[str] = set()
+    found: dict[str, list[str]] = {}
+    stack = [fact.get("cell_id") for fact in data.facts if fact.get("row_key") == row_key and fact.get("cell_id")]
     while stack:
-        current = stack.pop()
-        if not current or current in seen:
+        cell = stack.pop()
+        if not cell or cell in seen:
             continue
-        seen.add(current)
-        if current != row_key:
-            found.append(current)
-        for fact in data.facts:
-            if fact.get("row_key") != current or not fact.get("cell_id"):
+        seen.add(cell)
+        for ref in _refs_of(data, cell):
+            other = data.facts_by_cell.get(ref)
+            if other is None or not other.get("row_key"):
                 continue
-            for ref in _refs_of(data, fact["cell_id"]):
-                other = data.facts_by_cell.get(ref)
-                if other and other.get("row_key") and other.get("row_key") not in seen:
-                    stack.append(other["row_key"])
+            key = str(other.get("row_key"))
+            if key != row_key:
+                bucket = found.setdefault(key, [])
+                if ref not in bucket:
+                    bucket.append(ref)
+            nxt = other.get("cell_id")
+            if nxt and _fact_formula(data, other):
+                stack.append(nxt)
     return found
+
+
+def _latest_hardcoded(data: AuditInput, row_key: str, refs: list[str]) -> dict | None:
+    """Последний ввод строки без формул среди ячеек, которые цепочка реально читает."""
+
+    if any(fact.get("row_key") == row_key and _fact_formula(data, fact) for fact in data.facts):
+        return None
+    leaves = []
+    for ref in refs:
+        fact = data.facts_by_cell.get(ref)
+        if fact is None or fact.get("row_key") != row_key or not fact.get("cell_id"):
+            continue
+        if _fact_formula(data, fact) or _fact_number(fact) is None:
+            continue
+        leaves.append(fact)
+    if not leaves:
+        return None
+    return max(leaves, key=lambda fact: _input_rank(data, fact))
+
+
+def _input_rank(data: AuditInput, fact: dict) -> tuple:
+    period = next(
+        (
+            item
+            for item in data.periods
+            if item.get("axis_id") == fact.get("axis_id") and item.get("period_id") == fact.get("period_id")
+        ),
+        None,
+    )
+    end = _period_end(period) if period else None
+    index = period.get("period_index") if period else None
+    if not isinstance(index, int) or isinstance(index, bool):
+        index = -1
+    return (end or date.min, index, str(fact.get("period_id") or ""))
 
 
 def _form_starts_after(data: AuditInput, period_id: str) -> bool:

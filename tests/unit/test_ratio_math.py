@@ -913,6 +913,89 @@ def test_formula_row_traces_the_input_switch_and_ignores_a_nonzero_forecast():
     assert disagreed[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
 
 
+def test_all_input_source_row_traces_the_latest_cell_that_feeds_the_chain():
+    """Строка ввода без формул задаёт границу последней ячейкой, которую читает цепочка."""
+
+    rows = [
+        {"row_key": "model", "binding_key": "model"},
+        {"row_key": "form", "binding_key": "form"},
+        {"row_key": "assumptions", "binding_key": "assumptions"},
+        {"row_key": "rsbu", "binding_key": "rsbu"},
+    ]
+    bindings = [
+        _binding("revenue", "model", evidence={"period_basis": "period", "period_basis_source": "label"}),
+        _binding(
+            "revenue",
+            "form",
+            is_primary=False,
+            evidence={"role": "reference", "period_basis": "ytd", "period_basis_source": "header"},
+        ),
+    ]
+    ends = {"2016Q1": "2016-03-31", "2016Q2": "2016-06-30", "2016Q3": "2016-09-30", "2016Q4": "2016-12-31"}
+    rsbu_ids = {"2016Q1": "n1", "2016Q2": "n2", "2016Q3": "n3", "2016Q4": "n4"}
+    cells = {
+        "2016Q1": "Фин отчетность РСБУ!K25",
+        "2016Q2": "Фин отчетность РСБУ!L25",
+        "2016Q3": "Фин отчетность РСБУ!N25",
+        "2016Q4": "Фин отчетность РСБУ!O25",
+    }
+    periods = []
+    for index, period in enumerate(ends, start=1):
+        for axis in ("model", "form", "assumptions"):
+            periods.append({**_quarter(period, index, end=ends[period]), "axis_id": axis})
+        periods.append({**_quarter(rsbu_ids[period], index, end=ends[period]), "axis_id": "rsbu"})
+    facts = []
+    links = []
+    for period, rsbu in rsbu_ids.items():
+        facts.append({**_fact("rsbu", "100", rsbu), "axis_id": "rsbu", "cell_id": cells[period]})
+        source = "2016Q3" if period == "2016Q4" else period
+        if period != "2016Q4":
+            facts.append(
+                {**_fact("assumptions", "100", period), "axis_id": "assumptions", "cell_id": f"Предпосылки_!{period}"}
+            )
+            links.append(
+                {
+                    "cell": f"Предпосылки_!{period}",
+                    "row_key": "assumptions",
+                    "period_id": period,
+                    "formula": f"={cells[period]}",
+                    "ref_cell": cells[period],
+                }
+            )
+        facts.append({**_fact("model", "100", period), "axis_id": "model", "cell_id": f"Денежные потоки!{period}"})
+        links.append(
+            {
+                "cell": f"Денежные потоки!{period}",
+                "row_key": "model",
+                "period_id": period,
+                "formula": f"=Предпосылки_!{source}",
+                "ref_cell": f"Предпосылки_!{source}",
+            }
+        )
+    facts.append({**_fact("form", "400", "2016Q4"), "axis_id": "form", "cell_id": "ОПиУ!D11"})
+    for period in ends:
+        links.append(
+            {
+                "cell": "ОПиУ!D11",
+                "row_key": "form",
+                "period_id": "2016Q4",
+                "formula": "=F32+G32+H32+I32",
+                "ref_cell": f"Денежные потоки!{period}",
+            }
+        )
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, links=links)
+    )
+    assert [item.params["cause"] for item in found] == ["actuals_no_overlap"]
+    assert found[0].params["message"] == (
+        "факт заканчивается на 2016Q3, форма начинается с 2016Q4, общих периодов для сверки нет"
+    )
+    assert found[0].params["actuals_source"] == "structural_traced"
+    assert found[0].params["fact_end"] == "2016Q3"
+    assert found[0].params["form_start"] == "2016Q4"
+    assert found[0].params["traced_cells"] == ["Фин отчетность РСБУ!N25"]
+
+
 def test_boundary_that_misses_the_row_axis_stays_undetermined():
     rows, bindings = _statement_pair()
     quarters = [{**_quarter(period, index), "axis_id": "pl"} for index, period in enumerate(("2016Q1", "2016Q2", "2016Q3"), start=1)]
