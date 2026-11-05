@@ -32,13 +32,20 @@ _HELD_OUT = frozenset(
 )
 
 
-def _binding(concept: str, row_key: str, *, primary: bool = True) -> dict:
+def _binding(
+    concept: str,
+    row_key: str,
+    *,
+    primary: bool = True,
+    source: str = "inferred",
+    status: str = "bound",
+) -> dict:
     return {
         "effective_concept": concept,
         "is_primary": primary,
-        "status": "bound",
+        "status": status,
         "row_key": row_key,
-        "source": "inferred",
+        "source": source,
     }
 
 
@@ -221,7 +228,7 @@ def test_solar_cites_degradation_generation_and_tariff_not_capacity():
     generation = _row_numbers(book, "Model", 58, 8)
     tariff = _row_numbers(book, "Model", 61, 8)
     got = cite_type_book_rows(
-        source="confirmed",
+        source="inferred",
         primary="renewables_dpm",
         bindings=[
             _binding("degradation", "Model!B23"),
@@ -368,7 +375,15 @@ def test_unresolved_and_other_primaries_do_not_cite():
     cited = cite_type_book_rows(
         source="profile", primary="real_estate_income", bindings=bindings, facts=facts
     )
-    assert cited[0]["status"] == "cited"
+    assert cited[0]["status"] == "absent"
+    confirmed = cite_type_book_rows(
+        source="confirmed",
+        primary="real_estate_income",
+        bindings=[_binding("cap_rate", "r", source="confirmed")],
+        facts=facts,
+    )
+    assert confirmed[0]["status"] == "cited"
+    assert confirmed[0]["observations"][0]["value"] == "0.0575"
 
 
 def test_cited_number_is_value_dec_not_the_scaled_amount():
@@ -532,6 +547,49 @@ def test_a_gap_keeps_its_slot_and_axes_stay_separate():
     assert [item["period_id"] for item in observed] == ["y1", "y2", "y0", "y0", "y1"]
     assert observed[0]["value_status"] == "empty"
     assert observed[2]["normalized_value"] == "10000"
+
+
+def test_two_primaries_are_ambiguous_and_human_type_skips_inferred_rows():
+    facts = [
+        _fact("first", "1", scale=1),
+        _fact("second", "2", scale=1),
+    ]
+    got = cite_type_book_rows(
+        source="inferred",
+        primary="real_estate_income",
+        bindings=[
+            _binding("cap_rate", "first"),
+            _binding("cap_rate", "second"),
+        ],
+        facts=facts,
+    )
+    assert got[0]["status"] == "ambiguous"
+    assert got[0]["observations"] == []
+    assert "row_key" not in got[0]
+    same = cite_type_book_rows(
+        source="inferred",
+        primary="real_estate_income",
+        bindings=[
+            _binding("cap_rate", "first"),
+            _binding("cap_rate", "first"),
+        ],
+        facts=facts,
+    )
+    assert same[0]["status"] == "cited"
+    assert same[0]["row_key"] == "first"
+    assert _sheet(same[0]) == ["1"]
+    skipped = cite_type_book_rows(
+        source="profile",
+        primary="real_estate_income",
+        bindings=[_binding("cap_rate", "first", status="ambiguous")],
+        facts=facts,
+    )
+    assert skipped[0]["status"] == "absent"
+
+
+def test_book_rows_are_attached_on_ratios_and_full():
+    text = Path(_attach_book_rows.__code__.co_filename).read_text(encoding="utf-8")
+    assert text.count("_attach_book_rows(envelope, got)") == 2
 
 
 def test_citation_stays_out_of_the_ratio_matrix_and_an_empty_list_adds_no_key():

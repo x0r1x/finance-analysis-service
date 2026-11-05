@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
-from finance_analysis.domain.metrics import _primaries
-
 # Пустое, ошибочное и отсутствующее значение не являются числом ячейки.
 _NOT_A_NUMBER = frozenset({"empty", "not_applicable", "error", "missing"})
+_BOUND = frozenset({"bound", "bound_with_warning"})
+_HUMAN = frozenset({"confirmed", "profile"})
 
 # Порядок понятий — как в утверждённых абзацах к решениям 37 и 38.
 CITED_BY_TYPE = {
@@ -41,12 +41,11 @@ def cite_type_book_rows(
     concepts = CITED_BY_TYPE.get(primary or "")
     if source == "unresolved" or concepts is None:
         return []
-    primaries = _primaries(bindings, absent)
     cited = []
     for concept in concepts:
-        row = primaries.get(concept)
+        status, row = _unique_row(concept, bindings, source, absent)
         if row is None:
-            cited.append({"concept": concept, "status": "absent", "observations": []})
+            cited.append({"concept": concept, "status": status, "observations": []})
             continue
         cited.append(
             {
@@ -57,6 +56,37 @@ def cite_type_book_rows(
             }
         )
     return cited
+
+
+def _unique_row(
+    concept: str,
+    bindings: list[dict],
+    type_source: str,
+    absent: frozenset[str],
+) -> tuple[str, dict | None]:
+    """Одна основная строка. Несколько основных не схлопываются в последнюю."""
+
+    rows = []
+    for row in bindings:
+        if row.get("effective_concept") != concept or not row.get("is_primary"):
+            continue
+        if row.get("status") not in _BOUND:
+            continue
+        if concept in absent and row.get("source") not in _HUMAN:
+            continue
+        if type_source in _HUMAN and row.get("source") not in _HUMAN:
+            continue
+        rows.append(row)
+    keys = []
+    for row in rows:
+        key = row.get("row_key")
+        if key not in keys:
+            keys.append(key)
+    if len(keys) == 1:
+        return "cited", next(row for row in rows if row.get("row_key") == keys[0])
+    if len(keys) > 1:
+        return "ambiguous", None
+    return "absent", None
 
 
 def _observations(facts: list[dict], row_key: str) -> list[dict]:
