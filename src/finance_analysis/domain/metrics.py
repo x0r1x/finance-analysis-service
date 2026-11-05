@@ -204,7 +204,12 @@ def coverage_ratio(
     else:
         paid = _sums(facts, primaries[fallback_parts[0]], aligned, periods, sheet=sheet)
         repaid = _sums(facts, primaries["principal"], aligned, periods, sheet=sheet)
-        denominator = {key: paid[key] + repaid[key] for key in paid.keys() & repaid.keys()}
+        # Платёж считается по каждой части отдельно и только потом складывается.
+        # Сумма до знака уменьшает знаменатель, если у частей разные знаки.
+        denominator = {
+            key: _payment(paid[key], sign_convention) + _payment(repaid[key], sign_convention)
+            for key in paid.keys() & repaid.keys()
+        }
         home = _axes_of(facts, primaries[fallback_parts[0]]) | _axes_of(facts, primaries["principal"])
     if metric == "icr" and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
         raw = _sums(facts, primaries[numerator_name], aligned, None, sheet=sheet)

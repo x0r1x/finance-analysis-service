@@ -707,6 +707,22 @@ def test_pf_dscr_without_debt_service_names_the_missing_input():
     assert "principal" in summed["rows"][0]["components"]
 
 
+def test_interest_and_principal_of_opposite_signs_are_paid_apart():
+    from finance_analysis.domain.metrics import coverage_ratio
+
+    got = coverage_ratio(
+        metric="dscr",
+        facts=[_fact("c", "Y1", "40"), _fact("i", "Y1", "10"), _fact("p", "Y1", "-40")],
+        bindings=[_bind("cfads", "c"), _bind("interest", "i"), _bind("principal", "p")],
+        periods=[_year()],
+        period_phase={},
+        explicit_phases=False,
+        interest_order=_catalog().interest_order,
+    )
+    assert got["rows"][0]["status"] == "computed"
+    assert got["rows"][0]["value"] == Decimal("0.8000000000")
+
+
 def test_debt_service_still_beats_the_interest_fallback():
     from finance_analysis.domain.metrics import coverage_ratio
 
