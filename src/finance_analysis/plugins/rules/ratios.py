@@ -479,17 +479,25 @@ def _dedupe(periods: list[dict]) -> list[dict]:
 
 
 def _periods_through(periods: list[dict], value: str) -> list[dict]:
-    """Периоды до границы включительно. Граница — `period_id` или дата конца."""
+    """Периоды до границы включительно.
 
-    if value in {period.get("period_id") for period in periods}:
-        selected = []
-        by_axis: dict[str, list[dict]] = {}
-        for period in periods:
-            by_axis.setdefault(period.get("axis_id"), []).append(period)
-        for rows in by_axis.values():
-            ordered = _order(rows)
-            keys = [row.get("period_id") for row in ordered]
-            selected.extend(ordered[: keys.index(value) + 1])
+    Граница — `period_id`, `period_key_base` или дата конца. Ось без этой
+    границы пропускается: `period_id` уникален только вместе с `axis_id`.
+    """
+
+    selected = []
+    by_axis: dict[str, list[dict]] = {}
+    for period in periods:
+        by_axis.setdefault(period.get("axis_id"), []).append(period)
+    named = False
+    for rows in by_axis.values():
+        ordered = _order(rows)
+        cut = _boundary_index(ordered, value)
+        if cut is None:
+            continue
+        named = True
+        selected.extend(ordered[: cut + 1])
+    if named:
         return _dedupe(selected)
     boundary = _iso_date(value)
     if boundary is None:
@@ -499,23 +507,37 @@ def _periods_through(periods: list[dict], value: str) -> list[dict]:
     )
 
 
+def _boundary_index(ordered: list[dict], value: str) -> int | None:
+    """Индекс границы на одной оси. Точный `period_id` важнее общей базы."""
+
+    keys = [row.get("period_id") for row in ordered]
+    if value in keys:
+        return keys.index(value)
+    matches = [index for index, row in enumerate(ordered) if row.get("period_key_base") == value]
+    if not matches:
+        return None
+    return matches[-1]
+
+
 def _resolve_actuals(data: AuditInput) -> tuple[list[dict], str, str] | None:
     """Каскад границы факта: явное решение, маркер, профиль, затем структура.
 
-    `None` — граница не определена. Пустой список — граница задана, но в неё
-    не попал ни один период.
+    `None` — граница не определена. Явное значение, которое не попало ни в один
+    период, тоже не определено: оно не глушит сверку.
     """
 
     decision = _text(data.actuals_end)
     marked = [period for period in data.periods if period.get("marker_class") == "actual"]
     config = _text((data.profile or {}).get("actuals_end"))
     if decision:
-        return _periods_through(data.periods, decision), "explicit", decision
+        window = _periods_through(data.periods, decision)
+        return (window, "explicit", decision) if window else None
     if marked:
         ordered = _dedupe(marked)
         return ordered, "explicit", str(ordered[-1].get("period_id"))
     if config:
-        return _periods_through(data.periods, config), "explicit", config
+        window = _periods_through(data.periods, config)
+        return (window, "explicit", config) if window else None
     end = _structural_end(data)
     if end is None:
         return None
@@ -555,11 +577,19 @@ def _formula_cuts(data: AuditInput) -> list[str | None]:
 
 
 def _formula_cut(data: AuditInput, primary: dict) -> str | None:
-    """Последний ввод перед формулами. Смешанный ряд границу не даёт."""
+    """Последний ввод перед формулами на оси основной строки. Смешанный ряд границу не даёт."""
 
     grain = _primary_grain(data, primary)
     row_key = primary.get("row_key")
-    timeline = _timeline(data, grain)
+    if not row_key:
+        return None
+    agreed = _agreed(
+        [_formula_switch(data, row_key, _axis_periods(data, axis, grain)) for axis in _row_axes(data, row_key)]
+    )
+    return None if agreed in (None, _CONFLICT) else agreed
+
+
+def _formula_switch(data: AuditInput, row_key: str | None, timeline: list[dict]) -> str | None:
     kinds = [_cell_kind(data, row_key, period) for period in timeline]
     compact = [(period, kind) for period, kind in zip(timeline, kinds, strict=True) if kind != "blank"]
     if not compact:
@@ -577,7 +607,9 @@ def _cell_kind(data: AuditInput, row_key: str | None, period: dict) -> str:
     facts = [
         fact
         for fact in data.facts
-        if fact.get("row_key") == row_key and fact.get("period_id") == period.get("period_id")
+        if fact.get("row_key") == row_key
+        and fact.get("period_id") == period.get("period_id")
+        and fact.get("axis_id") == period.get("axis_id")
     ]
     if not facts:
         return "blank"
@@ -607,21 +639,19 @@ def _span_cuts(data: AuditInput) -> list[str | None]:
         if primary is None:
             continue
         grain = _primary_grain(data, primary)
-        timeline = _timeline(data, grain)
         for ref in _form_rows(data, concept, primary):
-            cuts.append(_span_cut(data, timeline, ref["row_key"]))
+            for axis in _row_axes(data, ref["row_key"]):
+                cuts.append(_span_cut(data, _axis_periods(data, axis, grain), ref["row_key"]))
     return cuts
 
 
 def _span_cut(data: AuditInput, timeline: list[dict], row_key: str) -> str | None:
-    """Последний заполненный период формы перед пустым хвостом."""
+    """Последний заполненный период формы перед пустым хвостом. Только ось этой строки."""
 
     if not timeline:
         return None
     values = _cached(data, row_key)
-    filled = [
-        _same_period(values, (period.get("axis_id"), period.get("period_id"))) is not None for period in timeline
-    ]
+    filled = [(period.get("axis_id"), period.get("period_id")) in values for period in timeline]
     if not any(filled) or all(filled):
         return None
     gap = filled.index(False)
@@ -630,8 +660,10 @@ def _span_cut(data: AuditInput, timeline: list[dict], row_key: str) -> str | Non
     return str(timeline[gap - 1].get("period_id"))
 
 
-def _timeline(data: AuditInput, grain: str | None) -> list[dict]:
-    return _dedupe([period for period in data.periods if _grain_ok(period, grain)])
+def _axis_periods(data: AuditInput, axis_id: str, grain: str | None) -> list[dict]:
+    return _order(
+        [period for period in data.periods if period.get("axis_id") == axis_id and _grain_ok(period, grain)]
+    )
 
 
 def _grain_ok(period: dict, grain: str | None) -> bool:
@@ -663,9 +695,6 @@ class StatementReference(Rule):
                 ]
             return []
         actual, source, end = resolved
-        # shortcut: пустое явное окно молчит, а не пишет «не определены»; сказать отдельно, когда такая книга появится
-        if not actual:
-            return []
         findings = []
         for concept in _STATEMENT_CONCEPTS:
             primary = _primary(data, concept)

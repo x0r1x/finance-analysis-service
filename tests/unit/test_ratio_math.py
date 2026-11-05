@@ -384,6 +384,92 @@ def test_conflicting_structural_signals_do_not_reconcile():
     assert "actuals_source" not in found[0].params
 
 
+def test_boundary_skips_an_axis_that_does_not_contain_it():
+    """period_id уникален только с осью: баланс без q2 не роняет срез ОПУ по q2."""
+
+    rows, bindings = _statement_pair()
+    pl = [{**_quarter(period, index), "axis_id": "pl"} for index, period in enumerate(("q1", "q2", "q3"), start=1)]
+    balance = [{**_quarter("q1", 1), "axis_id": "bs"}]
+    data = AuditInput(
+        rows=rows,
+        periods=[*pl, *balance],
+        facts=[
+            {**_fact("model", "100", "q1"), "axis_id": "pl", "cell_id": "ОПУ!B"},
+            {**_fact("model", "100", "q2"), "axis_id": "pl", "cell_id": "ОПУ!C"},
+            {**_fact("form", "110", "q1"), "axis_id": "pl", "cell_id": "ОФР!B"},
+            {**_fact("form", "120", "q2"), "axis_id": "pl", "cell_id": "ОФР!C"},
+        ],
+        bindings=bindings,
+        actuals_end="q2",
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert [item.locations[0].period_id for item in found] == ["q1", "q2"]
+    assert {item.params["actuals_end"] for item in found} == {"q2"}
+
+
+def test_structural_cut_ignores_another_sheet_of_the_same_grain():
+    """Чужой лист с другими period_id не дырявит срез ОПУ и не прячет 110 против 100."""
+
+    rows, bindings = _statement_pair()
+    cash = [{**_quarter(period, index), "axis_id": "cf"} for index, period in enumerate(("cf-q1", "cf-q2"), start=1)]
+    pl = [{**_quarter(period, index), "axis_id": "pl"} for index, period in enumerate(("pl-q1", "pl-q2", "pl-q3"), start=1)]
+    data = AuditInput(
+        rows=rows,
+        periods=[*cash, *pl],
+        facts=[
+            {**_fact("model", "100", "pl-q1"), "axis_id": "pl", "cell_id": "ОПУ!B"},
+            {**_fact("model", "100", "pl-q2"), "axis_id": "pl", "cell_id": "ОПУ!C"},
+            {**_fact("model", "130", "pl-q3"), "axis_id": "pl", "cell_id": "ОПУ!D"},
+            {**_fact("form", "100", "pl-q1"), "axis_id": "pl", "cell_id": "ОФР!B"},
+            {**_fact("form", "110", "pl-q2"), "axis_id": "pl", "cell_id": "ОФР!C"},
+        ],
+        bindings=bindings,
+        links=[{"cell": "ОПУ!D", "row_key": "model", "period_id": "pl-q3", "formula": "=C10"}],
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert [item.locations[0].period_id for item in found] == ["pl-q2"]
+    assert found[0].params["actuals_source"] == "structural"
+    assert found[0].params["model"] == "100"
+    assert found[0].params["reported"] == "110"
+
+
+def test_unresolved_boundary_does_not_silence_the_statement_check():
+    """База периода режет окно. Значение, которого нет в книге, оставляет находку, а не пустой список."""
+
+    rows, bindings = _statement_pair()
+    periods = [
+        {**_quarter("2024@факт", 1), "period_key_base": "2024"},
+        {**_quarter("2025", 2), "period_key_base": "2025"},
+    ]
+    facts = [
+        {**_fact("model", "100", "2024@факт"), "cell_id": "ДДС!B"},
+        {**_fact("form", "110", "2024@факт"), "cell_id": "ОФР!B"},
+        {**_fact("model", "100", "2025"), "cell_id": "ДДС!C"},
+        {**_fact("form", "90", "2025"), "cell_id": "ОФР!C"},
+    ]
+    by_base = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, actuals_end="2024")
+    )
+    assert [item.locations[0].period_id for item in by_base] == ["2024@факт"]
+    assert by_base[0].params["actuals_source"] == "explicit"
+    assert by_base[0].params["actuals_end"] == "2024"
+    unknown = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[_quarter("q1", 1), _quarter("q2", 2)],
+            facts=[
+                {**_fact("model", "100", "q1"), "cell_id": "ДДС!B"},
+                {**_fact("form", "110", "q1"), "cell_id": "ОФР!B"},
+            ],
+            bindings=bindings,
+            profile={"actuals_end": "нет"},
+        )
+    )
+    assert len(unknown) == 1
+    assert unknown[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
+    assert "actuals_source" not in unknown[0].params
+
+
 def test_actuals_end_journal_keeps_the_latest_value():
     from finance_analysis.domain.audit import (
         actuals_end_from_journal,
