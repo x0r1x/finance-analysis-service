@@ -1361,6 +1361,63 @@ def test_without_a_reporting_input_the_traced_boundary_stays_ambiguous():
     assert any(item["cell"] == "Фин отчетность РСБУ!N25" and item["message"] == "допущения прогноза, не факт" for item in found[0].params["forecast_assumptions"])
 
 
+def test_shared_period_id_does_not_count_as_the_boundary_on_the_model_axis():
+    """q2 есть только на оси формы. Общий q1 не доказывает, что граница попала на ось модели."""
+
+    rows, bindings = _statement_pair()
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[
+                {**_quarter("q1", 1), "axis_id": "model"},
+                {**_quarter("q1", 1), "axis_id": "form"},
+                {**_quarter("q2", 2), "axis_id": "form"},
+            ],
+            facts=[
+                {**_fact("model", "100", "q1"), "axis_id": "model", "cell_id": "ДДС!B"},
+                {**_fact("form", "110", "q1"), "axis_id": "form", "cell_id": "ОФР!B"},
+                {**_fact("form", "120", "q2"), "axis_id": "form", "cell_id": "ОФР!C"},
+            ],
+            bindings=bindings,
+            actuals_end="q2",
+        )
+    )
+    assert [item.params["cause"] for item in found] == ["actuals_end_axis_miss", "actual_unknown"]
+    assert found[0].params["message"] == "значение границы фактов не попало на ось сверяемой строки"
+    assert found[0].params["actuals_end"] == "q2"
+    assert found[0].params["axis_id"] == "model"
+    assert all("model" not in item.params for item in found)
+
+
+def test_dedupe_keeps_the_same_period_id_when_the_grains_differ():
+    """Год и квартал с одним period_id остаются двумя периодами."""
+
+    from finance_analysis.plugins.rules.ratios import _dedupe
+
+    year = {"axis_id": "inputs", "period_id": "2024", "period_key_base": "2024", "period_index": 1, "grain": "year"}
+    quarter = {"axis_id": "pl", "period_id": "2024", "period_key_base": "2024", "period_index": 1, "grain": "quarter"}
+    assert {(item["axis_id"], item["grain"]) for item in _dedupe([year, quarter])} == {
+        ("inputs", "year"),
+        ("pl", "quarter"),
+    }
+    rows, bindings = _statement_pair()
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[year, quarter],
+            facts=[
+                {**_fact("model", "100", "2024"), "axis_id": "pl", "cell_id": "ДДС!B"},
+                {**_fact("form", "110", "2024"), "axis_id": "pl", "cell_id": "ОФР!B"},
+            ],
+            bindings=bindings,
+            actuals_end="2024",
+        )
+    )
+    assert [(item.locations[0].axis_id, item.locations[0].period_id) for item in found] == [("pl", "2024")]
+    assert found[0].params["model"] == "100"
+    assert found[0].params["reported"] == "110"
+
+
 def test_boundary_that_misses_the_row_axis_stays_undetermined():
     rows, bindings = _statement_pair()
     quarters = [{**_quarter(period, index), "axis_id": "pl"} for index, period in enumerate(("2016Q1", "2016Q2", "2016Q3"), start=1)]

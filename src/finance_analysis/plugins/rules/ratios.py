@@ -478,13 +478,15 @@ def _order(periods: list[dict]) -> list[dict]:
 
 
 def _dedupe(periods: list[dict]) -> list[dict]:
-    seen: set = set()
+    """Одинаковый `period_id` на разных осях — разные периоды."""
+
+    seen: set[tuple] = set()
     found = []
     for period in _order(periods):
-        pid = period.get("period_id")
-        if pid in seen:
+        key = (period.get("axis_id"), period.get("period_id"))
+        if key in seen:
             continue
-        seen.add(pid)
+        seen.add(key)
         found.append(period)
     return found
 
@@ -1069,13 +1071,17 @@ def _immediately_before(data: AuditInput, earlier: dict, later: dict) -> bool:
 
 
 def _boundary_hits_axis(data: AuditInput, primary: dict, actual: list[dict]) -> bool:
-    """Граница попала в период оси сверяемой строки, а не только в чужую ось того же имени."""
+    """Граница лежит на оси сверяемой строки. Тот же `period_id` чужой оси не считается."""
 
     axes = _row_axes(data, primary.get("row_key") or "")
     if not axes:
         return False
-    ids = {period.get("period_id") for period in data.periods if period.get("axis_id") in axes}
-    return any(period.get("period_id") in ids for period in actual)
+    owned = {
+        (period.get("axis_id"), period.get("period_id"))
+        for period in data.periods
+        if period.get("axis_id") in axes
+    }
+    return any((period.get("axis_id"), period.get("period_id")) in owned for period in actual)
 
 
 def _agreed(cuts: list[str | None]) -> str | None:
@@ -1235,7 +1241,7 @@ class StatementReference(Rule):
             if primary is None:
                 continue
             grain = _primary_grain(data, primary)
-            comparable = _same_grain(actual, grain)
+            comparable = _on_row_axis(data, primary, _same_grain(actual, grain))
             if source == "explicit" and not _boundary_hits_axis(data, primary, actual):
                 axis_miss = True
                 findings.append(
@@ -1676,6 +1682,14 @@ def _same_grain(periods: list[dict], grain: str | None) -> list[dict]:
     if grain is None:
         return periods
     return [period for period in periods if str(period.get("grain") or grain).lower() == grain]
+
+
+def _on_row_axis(data: AuditInput, primary: dict, periods: list[dict]) -> list[dict]:
+    """Сверка идёт по периоду оси строки. Копия того же id с другой оси остаётся в окне, но не второй сверкой."""
+
+    axes = _row_axes(data, primary.get("row_key") or "")
+    on_row = [period for period in periods if period.get("axis_id") in axes]
+    return on_row or periods
 
 
 def _grain_word(grain: str | None) -> str:
