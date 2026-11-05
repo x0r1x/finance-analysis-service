@@ -53,6 +53,16 @@ def test_halyard_stays_confident_lbo_ma_at_full_score():
     assert got.scores["lbo_ma"] == 1.0
 
 
+def test_meridian_stays_confident_dcf_valuation_at_full_score():
+    """Книга Meridian остаётся уверенным dcf_valuation со score 1.0, потому что привязаны все четыре понятия сигнала."""
+    bound, sheets = resolved_workbook("meridian/meridian_dcf.recalc_libreoffice.xlsx")
+    got = _infer(bound=bound, sheets=sheets)
+    assert got.confident is True
+    assert got.primary == "dcf_valuation"
+    assert got.labels == ("dcf_valuation",)
+    assert got.scores["dcf_valuation"] == 1.0
+
+
 def test_ppa_allocation_is_not_renewables_but_capacity_or_tariff_is():
     allocation = _infer(bound=frozenset({"purchase_price_allocation"}), sheets=frozenset())
     capacity = _infer(bound=frozenset({"installed_capacity"}), sheets=frozenset())
@@ -93,6 +103,30 @@ def test_dcf_real_estate_and_leasing_need_their_full_set():
     assert estate.primary == "real_estate_income"
     assert noi.confident is False
     assert lease.primary == "bank_leasing" and lease.labels == ("bank_leasing",)
+
+
+def test_wacc_and_terminal_value_without_enterprise_and_equity_are_not_confident_dcf():
+    """Связка wacc и terminal_value без enterprise_value и equity_value не даёт уверенный dcf_valuation.
+
+    Сигнал один и имеет вид concepts_bound_all по всем четырём понятиям, поэтому score равен 0.0.
+    """
+    got = _infer(bound=frozenset({"wacc", "terminal_value"}), sheets=frozenset())
+    assert got.scores["dcf_valuation"] == 0.0
+    assert got.confident is False
+    assert got.reason == "unknown"
+    assert got.labels == ()
+
+
+def test_enterprise_and_equity_without_wacc_are_not_confident_dcf():
+    """Связка enterprise_value и equity_value без wacc и без terminal_value не даёт уверенный dcf_valuation.
+
+    Сигнал один и имеет вид concepts_bound_all по всем четырём понятиям, поэтому score равен 0.0.
+    """
+    got = _infer(bound=frozenset({"enterprise_value", "equity_value"}), sheets=frozenset())
+    assert got.scores["dcf_valuation"] == 0.0
+    assert got.confident is False
+    assert got.reason == "unknown"
+    assert got.labels == ()
 
 
 def test_fixture_workbooks_classify_from_their_own_labels():
