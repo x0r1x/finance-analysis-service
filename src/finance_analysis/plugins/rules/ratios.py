@@ -622,10 +622,14 @@ def _resolve_actuals(data: AuditInput) -> tuple | None:
         return ("window", ordered, "explicit", str(ordered[-1].get("period_id")))
     if config:
         return _named_window(data, config, "explicit")
-    end = _structural_end(data)
-    if end is None:
+    boundary = _structural_boundary(data)
+    if boundary is None:
         return None
-    return _named_window(data, end, "structural")
+    source, end, cells = boundary
+    resolved = _named_window(data, end, source)
+    if resolved is None or resolved[0] != "window":
+        return resolved
+    return (*resolved, cells)
 
 
 def _named_window(data: AuditInput, value: str, source: str) -> tuple | None:
@@ -638,14 +642,234 @@ def _named_window(data: AuditInput, value: str, source: str) -> tuple | None:
     return ("window", kept, source, value)
 
 
-def _structural_end(data: AuditInput) -> str | None:
-    """Последний фактический период, если смена формулы и охват формы называют одно и то же."""
+def _structural_boundary(data: AuditInput) -> tuple[str, str, list[str]] | None:
+    """Срез по своей строке или по прослеженному вводу, если строка целиком из формул.
+
+    Ненулевое значение прогноза фактом не считается: граница — последняя введённая ячейка.
+    """
 
     formula = _agreed(_formula_cuts(data))
     span = _agreed(_span_cuts(data))
-    if formula in (None, _CONFLICT) or span in (None, _CONFLICT) or formula != span:
+    if formula not in (None, _CONFLICT) and span not in (None, _CONFLICT) and formula == span:
+        return "structural", formula, []
+    if formula not in (None, _CONFLICT) or span == _CONFLICT:
         return None
-    return formula
+    traced = _traced_boundary(data)
+    if traced is None:
+        return None
+    period_id, cells, both = traced
+    if not _trace_accepted(data, period_id, span, both):
+        return None
+    return "structural_traced", period_id, cells
+
+
+def _traced_boundary(data: AuditInput) -> tuple[str, list[str], bool] | None:
+    cuts = []
+    cells: list[str] = []
+    both = True
+    saw = False
+    for concept in _STATEMENT_CONCEPTS:
+        primary = _primary(data, concept)
+        if primary is None or not _all_formula(data, primary.get("row_key")):
+            continue
+        saw = True
+        main = _trace_row(data, primary.get("row_key"))
+        form_cuts = [cut for ref in _form_rows(data, concept, primary) if (cut := _trace_row(data, ref.get("row_key")))]
+        form_ids = {item[0] for item in form_cuts}
+        if main and form_ids == {main[0]}:
+            cuts.append(main[0])
+            cells.extend(main[1])
+            for item in form_cuts:
+                cells.extend(item[1])
+            continue
+        chosen = main[0] if main else next(iter(form_ids), None)
+        if chosen is None or (form_ids and chosen not in form_ids) or len(form_ids) > 1:
+            return None
+        cuts.append(chosen)
+        both = False
+        if main and main[0] == chosen:
+            cells.extend(main[1])
+        for item in form_cuts:
+            if item[0] == chosen:
+                cells.extend(item[1])
+    if not saw:
+        return None
+    agreed = _agreed(cuts)
+    if agreed in (None, _CONFLICT):
+        return None
+    unique = list(dict.fromkeys(cells))
+    return agreed, unique, both
+
+
+def _trace_accepted(data: AuditInput, period_id: str, span: str | None, both: bool) -> bool:
+    if span == period_id:
+        return True
+    if span is not None:
+        return False
+    if both:
+        return True
+    return _form_starts_after(data, period_id)
+
+
+def _all_formula(data: AuditInput, row_key: str | None) -> bool:
+    saw = False
+    for fact in data.facts:
+        if fact.get("row_key") != row_key:
+            continue
+        if _fact_number(fact) is None and not _fact_formula(data, fact):
+            continue
+        if not _fact_formula(data, fact):
+            return False
+        saw = True
+    return saw
+
+
+def _trace_row(data: AuditInput, row_key: str | None) -> tuple[str, list[str]] | None:
+    if not row_key:
+        return None
+    targets = _row_axes(data, row_key)
+    found: list[tuple[str, list[str]]] = []
+    for other in _precedent_rows(data, row_key):
+        cut = _row_switch(data, other)
+        if cut is None:
+            continue
+        mapped = next((item for axis in targets if (item := _map_cut(data, other, cut, axis))), None)
+        if mapped is None:
+            continue
+        found.append((mapped, _input_cells(data, other, cut)))
+    if not found:
+        return None
+    ids = {item[0] for item in found}
+    if len(ids) != 1:
+        return None
+    cells: list[str] = []
+    for _period, group in found:
+        for cell in group:
+            if cell not in cells:
+                cells.append(cell)
+    return next(iter(ids)), cells
+
+
+def _row_switch(data: AuditInput, row_key: str) -> str | None:
+    agreed = _agreed(
+        [
+            _formula_switch(
+                data,
+                row_key,
+                _order([period for period in data.periods if period.get("axis_id") == axis]),
+            )
+            for axis in _row_axes(data, row_key)
+        ]
+    )
+    return None if agreed in (None, _CONFLICT) else agreed
+
+
+def _map_cut(data: AuditInput, source_row: str, period_id: str, target_axis: str) -> str | None:
+    sources = [
+        period
+        for period in data.periods
+        if period.get("period_id") == period_id and period.get("axis_id") in _row_axes(data, source_row)
+    ]
+    targets = [period for period in data.periods if period.get("axis_id") == target_axis]
+    for source in sources:
+        for target in targets:
+            if target.get("period_id") == source.get("period_id"):
+                return str(target.get("period_id"))
+    for source in sources:
+        end = _period_end(source)
+        if end is None:
+            continue
+        for target in targets:
+            if _period_end(target) == end:
+                return str(target.get("period_id"))
+    return None
+
+
+def _input_cells(data: AuditInput, row_key: str, period_id: str) -> list[str]:
+    cells = []
+    for fact in data.facts:
+        if fact.get("row_key") != row_key or fact.get("period_id") != period_id or _fact_formula(data, fact):
+            continue
+        cell = fact.get("cell_id")
+        if cell and cell not in cells and _fact_number(fact) is not None:
+            cells.append(cell)
+    return cells
+
+
+def _precedent_rows(data: AuditInput, row_key: str) -> list[str]:
+    seen = set()
+    found = []
+    stack = [row_key]
+    while stack:
+        current = stack.pop()
+        if not current or current in seen:
+            continue
+        seen.add(current)
+        if current != row_key:
+            found.append(current)
+        for fact in data.facts:
+            if fact.get("row_key") != current or not fact.get("cell_id"):
+                continue
+            for ref in _refs_of(data, fact["cell_id"]):
+                other = data.facts_by_cell.get(ref)
+                if other and other.get("row_key") and other.get("row_key") not in seen:
+                    stack.append(other["row_key"])
+    return found
+
+
+def _form_starts_after(data: AuditInput, period_id: str) -> bool:
+    saw = False
+    for concept in _STATEMENT_CONCEPTS:
+        primary = _primary(data, concept)
+        if primary is None:
+            continue
+        boundary = next(
+            (
+                period
+                for period in data.periods
+                if period.get("period_id") == period_id and period.get("axis_id") in _row_axes(data, primary.get("row_key"))
+            ),
+            None,
+        )
+        for ref in _form_rows(data, concept, primary):
+            first = _first_filled(data, ref.get("row_key"))
+            if first is None or boundary is None:
+                continue
+            saw = True
+            if not _immediately_before(data, boundary, first):
+                return False
+    return saw
+
+
+def _first_filled(data: AuditInput, row_key: str | None) -> dict | None:
+    if not row_key:
+        return None
+    values = _cached(data, row_key)
+    axes = _row_axes(data, row_key)
+    for period in _order([item for item in data.periods if item.get("axis_id") in axes]):
+        if (period.get("axis_id"), period.get("period_id")) in values:
+            return period
+    return None
+
+
+def _immediately_before(data: AuditInput, earlier: dict, later: dict) -> bool:
+    left = _period_end(earlier)
+    right = _period_end(later)
+    grain = str(earlier.get("grain") or later.get("grain") or "").lower()
+    if left is not None and right is not None and left < right:
+        for period in data.periods:
+            if grain and str(period.get("grain") or "").lower() not in ("", grain):
+                continue
+            end = _period_end(period)
+            if end is not None and left < end < right:
+                return False
+        return True
+    if earlier.get("axis_id") != later.get("axis_id"):
+        return False
+    ordered = [item.get("period_id") for item in _order([item for item in data.periods if item.get("axis_id") == earlier.get("axis_id")])]
+    if earlier.get("period_id") not in ordered or later.get("period_id") not in ordered:
+        return False
+    return ordered.index(later.get("period_id")) == ordered.index(earlier.get("period_id")) + 1
 
 
 def _agreed(cuts: list[str | None]) -> str | None:
@@ -789,7 +1013,8 @@ class StatementReference(Rule):
             if not _has_statement_pair(data):
                 return []
             return [_ambiguous_boundary(self, data, resolved[1], resolved[2])]
-        _kind, actual, source, end = resolved
+        _kind, actual, source, end, *extra = resolved
+        traced = extra[0] if extra else []
         findings = []
         for concept in _STATEMENT_CONCEPTS:
             primary = _primary(data, concept)
@@ -820,6 +1045,7 @@ class StatementReference(Rule):
                                     "actuals_source": source,
                                     "actuals_end": end,
                                     **({"scale_source": scale_source} if scale_source else {}),
+                                    **({"traced_cells": list(traced)} if traced else {}),
                                 },
                             )
                         )
@@ -839,6 +1065,7 @@ class StatementReference(Rule):
                                 "reported": str(right),
                                 "actuals_source": source,
                                 "actuals_end": end,
+                                **({"traced_cells": list(traced)} if traced else {}),
                                 "cells": _named_cells(
                                     data, primary["row_key"], ref["row_key"], [], period["period_id"]
                                 ),

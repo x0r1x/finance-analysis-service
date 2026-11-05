@@ -338,6 +338,9 @@ def _stamp_actuals(cited: dict, params: dict) -> dict:
     end = params.get("actuals_end")
     if isinstance(end, str) and end:
         stamped["actuals_end"] = end
+    traced = params.get("traced_cells")
+    if traced:
+        stamped["traced_cells"] = list(traced)
     return stamped
 
 

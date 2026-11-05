@@ -767,6 +767,85 @@ def test_ytd_form_compares_model_cumulative_sum_at_an_inferred_scale():
     assert given[0].params["reported"] == "5000"
 
 
+def test_formula_row_traces_the_input_switch_and_ignores_a_nonzero_forecast():
+    """Граница формульной строки — последняя введённая ячейка прецедента, не ненулевой прогноз."""
+
+    from finance_analysis.application.analyses import _citations
+
+    rows, bindings = _statement_pair()
+    rows = rows + [{"row_key": "rsbu", "binding_key": "rsbu"}]
+    periods = []
+    ends = {"2016Q1": "2016-03-31", "2016Q2": "2016-06-30", "2016Q3": "2016-09-30", "2016Q4": "2016-12-31"}
+    rsbu_ids = {"2016Q1": "n1", "2016Q2": "n2", "2016Q3": "n3", "2016Q4": "n4"}
+    for index, period in enumerate(("2016Q1", "2016Q2", "2016Q3", "2016Q4"), start=1):
+        for axis in ("model", "form"):
+            periods.append({**_quarter(period, index, end=ends[period]), "axis_id": axis})
+        periods.append({**_quarter(rsbu_ids[period], index, end=ends[period]), "axis_id": "rsbu"})
+    facts = []
+    links = []
+    for period, rsbu in rsbu_ids.items():
+        facts.append({**_fact("model", "100", period), "axis_id": "model", "cell_id": f"ДДС!{period}"})
+        links.append(
+            {
+                "cell": f"ДДС!{period}",
+                "row_key": "model",
+                "period_id": period,
+                "formula": f"={rsbu}",
+                "ref_cell": f"Фин отчетность РСБУ!{rsbu}",
+            }
+        )
+        cell = "Фин отчетность РСБУ!N25" if period == "2016Q3" else f"Фин отчетность РСБУ!{rsbu}"
+        facts.append({**_fact("rsbu", "100", rsbu), "axis_id": "rsbu", "cell_id": cell})
+        if period == "2016Q4":
+            links.append(
+                {
+                    "cell": cell,
+                    "row_key": "rsbu",
+                    "period_id": rsbu,
+                    "formula": "=N25*(1+K25)",
+                    "ref_cell": "Фин отчетность РСБУ!N25",
+                }
+            )
+    facts.append({**_fact("form", "110", "2016Q3"), "axis_id": "form", "cell_id": "ОПиУ!2016Q3"})
+    facts.append({**_fact("form", "1", "2016Q4"), "axis_id": "form", "cell_id": "ОПиУ!2016Q4"})
+    links.append(
+        {"cell": "ОПиУ!2016Q3", "row_key": "form", "period_id": "2016Q3", "formula": "=ДДС!2016Q3", "ref_cell": "ДДС!2016Q3"}
+    )
+    links.append(
+        {"cell": "ОПиУ!2016Q4", "row_key": "form", "period_id": "2016Q4", "formula": "=ДДС!2016Q4", "ref_cell": "ДДС!2016Q4"}
+    )
+    data = AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, links=links)
+    found = STATEMENT_REFERENCE.check(data)
+    assert [item.locations[0].period_id for item in found] == ["2016Q3"]
+    assert found[0].params["actuals_source"] == "structural_traced"
+    assert found[0].params["actuals_end"] == "2016Q3"
+    assert found[0].params["traced_cells"] == ["Фин отчетность РСБУ!N25"]
+    cited = _citations(data, found)
+    assert cited
+    assert {tuple(item["traced_cells"]) for item in cited} == {("Фин отчетность РСБУ!N25",)}
+    facts.append({**_fact("other", "80", "n2"), "axis_id": "other", "cell_id": "Прочее!B2"})
+    facts.append({**_fact("other", "80", "n3"), "axis_id": "other", "cell_id": "Прочее!C3"})
+    links.append({"cell": "Прочее!C3", "row_key": "other", "period_id": "n3", "formula": "=B2", "ref_cell": "Прочее!B2"})
+    for period in ("2016Q2", "2016Q3"):
+        links.append(
+            {
+                "cell": f"ДДС!{period}",
+                "row_key": "model",
+                "period_id": period,
+                "formula": "=Прочее",
+                "ref_cell": "Прочее!B2" if period == "2016Q2" else "Прочее!C3",
+            }
+        )
+    other_periods = [
+        {**_quarter("n2", 2, end="2016-06-30"), "axis_id": "other"},
+        {**_quarter("n3", 3, end="2016-09-30"), "axis_id": "other"},
+    ]
+    disagreed = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows + [{"row_key": "other", "binding_key": "other"}], periods=periods + other_periods, facts=facts, bindings=bindings, links=links)
+    )
+    assert disagreed[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
+
+
 def test_actuals_end_journal_keeps_the_latest_value():
     from finance_analysis.domain.audit import (
         actuals_end_from_journal,
