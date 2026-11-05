@@ -7,7 +7,7 @@ signals:
     concepts: [sources_and_uses, exit_enterprise_value]
     weight: 1
   - kind: concepts_bound_any
-    concepts: [moic, irr]
+    concepts: [moic]
     weight: 1
 required_concepts: [sources_and_uses, exit_enterprise_value, moic]
 metrics:

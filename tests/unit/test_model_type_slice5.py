@@ -28,6 +28,31 @@ def test_lbo_needs_sources_exit_and_a_return():
     assert sources.scores["lbo_ma"] == 0.5
 
 
+def test_sources_exit_and_catalog_irr_without_moic_are_not_a_confident_lbo():
+    """Связка sources_and_uses, exit_enterprise_value и каталожного irr без moic не даёт уверенный lbo_ma.
+
+    Срабатывает только первый сигнал. Score равен 0.5 и остаётся ниже порога принятия 0.6.
+    """
+    got = _infer(
+        bound=frozenset({"sources_and_uses", "exit_enterprise_value", "irr"}),
+        sheets=frozenset(),
+    )
+    assert got.scores["lbo_ma"] == 0.5
+    assert got.confident is False
+    assert got.reason == "unknown"
+    assert got.labels == ()
+
+
+def test_halyard_stays_confident_lbo_ma_at_full_score():
+    """Книга Halyard остаётся уверенным lbo_ma со score 1.0, потому что привязан moic."""
+    bound, sheets = resolved_workbook("halyard/project_halyard.recalc_libreoffice.xlsx")
+    got = _infer(bound=bound, sheets=sheets)
+    assert got.confident is True
+    assert got.primary == "lbo_ma"
+    assert got.labels == ("lbo_ma",)
+    assert got.scores["lbo_ma"] == 1.0
+
+
 def test_ppa_allocation_is_not_renewables_but_capacity_or_tariff_is():
     allocation = _infer(bound=frozenset({"purchase_price_allocation"}), sheets=frozenset())
     capacity = _infer(bound=frozenset({"installed_capacity"}), sheets=frozenset())

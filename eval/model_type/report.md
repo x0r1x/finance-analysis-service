@@ -6,13 +6,13 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | packt | project_finance | project_finance | project_finance 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
 | rvi | project_finance | project_finance | project_finance 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
-| toll_road | project_finance | project_finance | project_finance 1.000 | lbo_ma 0.500 | 0.500 | да | да | — |
-| port | investment_project | investment_project | investment_project 1.000 | lbo_ma 0.500 | 0.500 | да | да | — |
+| toll_road | project_finance | project_finance | project_finance 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
+| port | investment_project | investment_project | investment_project 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
 | hybrid_ppp | ppp_concession + project_finance | ppp_concession + project_finance | ppp_concession 1.000 | project_finance 1.000 | 0.000 | да | нет | — |
 | corporate | corporate | corporate | corporate 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
 | ambiguous_statements_and_debt | вопрос: ambiguous | вопрос: ambiguous | corporate 1.000 | project_finance 1.000 | 0.000 | да | нет | — |
 | ask_instead_of_other | вопрос: unknown | вопрос: unknown | bank_leasing 0.000 | corporate 0.000 | 0.000 | нет | нет | — |
-| partial_npv | вопрос: unknown | вопрос: unknown | lbo_ma 0.500 | bank_leasing 0.000 | 0.500 | нет | да | — |
+| partial_npv | вопрос: unknown | вопрос: unknown | bank_leasing 0.000 | corporate 0.000 | 0.000 | нет | нет | — |
 | halyard | lbo_ma | lbo_ma | lbo_ma 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
 | meridian | dcf_valuation | dcf_valuation | dcf_valuation 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
 | debtlens | real_estate_income | real_estate_income | real_estate_income 1.000 | bank_leasing 0.000 | 1.000 | да | да | — |
@@ -42,4 +42,4 @@
 | real_estate_income | 0 | 0.000 |
 | renewables_dpm | 0 | 0.000 |
 
-Минимальный score верного одиночного типа: 1.000. Минимальный разрыв верного одиночного типа: 0.500. Уверенные ответы с разрывом ниже порога: hybrid_ppp. Вопросы, где оба лидера не ниже accept, а разрыв ниже порога: ambiguous_statements_and_debt.
+Минимальный score верного одиночного типа: 1.000. Минимальный разрыв верного одиночного типа: 1.000. Уверенные ответы с разрывом ниже порога: hybrid_ppp. Вопросы, где оба лидера не ниже accept, а разрыв ниже порога: ambiguous_statements_and_debt.

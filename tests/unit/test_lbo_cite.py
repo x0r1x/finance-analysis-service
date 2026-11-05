@@ -296,7 +296,7 @@ def test_unresolved_type_and_other_primaries_do_not_cite():
 
 
 def test_citation_stays_out_of_the_ratio_matrix():
-    """Сигналы, схема и применимость покрытия не меняются."""
+    """Цитата не входит в матрицу коэффициентов. Второй сигнал типа — только moic. Схема 1.0."""
 
     assert FAS_SCHEMA_VERSION == "1.0"
     assert "moic" not in RATIO_METRICS
@@ -312,5 +312,5 @@ def test_citation_stays_out_of_the_ratio_matrix():
     )
     assert [signal.concepts for signal in spec.signals] == [
         ("sources_and_uses", "exit_enterprise_value"),
-        ("moic", "irr"),
+        ("moic",),
     ]
