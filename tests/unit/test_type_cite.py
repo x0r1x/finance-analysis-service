@@ -42,17 +42,25 @@ def _binding(concept: str, row_key: str, *, primary: bool = True) -> dict:
     }
 
 
-def _fact(row_key: str, value, *, scale: int = 1000, status: str = "cached") -> dict:
+def _fact(
+    row_key: str, value, *, scale: int = 1000, status: str = "cached", **fields
+) -> dict:
     """Кэш листа в `value_dec`, масштаб — отдельно. Цитата не должна взять масштаб."""
 
     sheet = None if value is None else Decimal(str(value))
-    return {
+    body = {
         "row_key": row_key,
         "value_dec": None if sheet is None else format(sheet, "f"),
         "normalized_value": None if sheet is None else format(sheet * scale, "f"),
         "scale_factor": scale,
         "value_status": status,
     }
+    body.update(fields)
+    return body
+
+
+def _sheet(row: dict) -> list:
+    return [item["value"] for item in row["observations"]]
 
 
 def _cached(relative: str, sheet: str, coord: str):
@@ -134,7 +142,7 @@ def test_lease_portfolio_cites_the_three_scalars():
         ],
     )
     assert [row["concept"] for row in got] == list(CITED_BY_TYPE["bank_leasing"])
-    assert [Decimal(row["values"][0]) for row in got] == [
+    assert [Decimal(_sheet(row)[0]) for row in got] == [
         Decimal(260),
         Decimal("0.125"),
         Decimal("0.5"),
@@ -180,24 +188,24 @@ def test_meridian_cites_wacc_and_both_bridges_unsummed():
     )
     by_concept = {row["concept"]: row for row in got}
     assert list(by_concept) == list(CITED_BY_TYPE["dcf_valuation"])
-    assert by_concept["wacc"]["values"] == [format(Decimal(str(wacc)), "f")]
-    assert round(Decimal(by_concept["wacc"]["values"][0]), 5) == Decimal("0.09614")
+    assert _sheet(by_concept["wacc"]) == [format(Decimal(str(wacc)), "f")]
+    assert round(Decimal(_sheet(by_concept["wacc"])[0]), 5) == Decimal("0.09614")
     assert [
-        round(Decimal(value), 1) for value in by_concept["enterprise_value"]["values"]
+        round(Decimal(value), 1) for value in _sheet(by_concept["enterprise_value"])
     ] == [
         Decimal("5717.6"),
         Decimal("6192.8"),
     ]
     assert [
-        round(Decimal(value), 1) for value in by_concept["equity_value"]["values"]
+        round(Decimal(value), 1) for value in _sheet(by_concept["equity_value"])
     ] == [
         Decimal("5087.6"),
         Decimal("5562.8"),
     ]
-    assert len(by_concept["terminal_value"]["values"]) == 2
-    assert len(by_concept["enterprise_value"]["values"]) == 2
-    left = Decimal(by_concept["enterprise_value"]["values"][0])
-    right = Decimal(by_concept["enterprise_value"]["values"][1])
+    assert len(_sheet(by_concept["terminal_value"])) == 2
+    assert len(_sheet(by_concept["enterprise_value"])) == 2
+    left = Decimal(_sheet(by_concept["enterprise_value"])[0])
+    right = Decimal(_sheet(by_concept["enterprise_value"])[1])
     assert left + right != left
 
 
@@ -231,11 +239,11 @@ def test_solar_cites_degradation_generation_and_tariff_not_capacity():
         ],
     )
     assert [row["concept"] for row in got] == list(CITED_BY_TYPE["renewables_dpm"])
-    assert Decimal(got[0]["values"][0]) == Decimal("0.005")
-    assert len(got[1]["values"]) == 30
-    assert round(Decimal(got[1]["values"][0]), 0) == Decimal(50370)
-    assert len(got[2]["values"]) == 30
-    assert Decimal(got[2]["values"][0]) == Decimal("72.75")
+    assert Decimal(_sheet(got[0])[0]) == Decimal("0.005")
+    assert len(_sheet(got[1])) == 30
+    assert round(Decimal(_sheet(got[1])[0]), 0) == Decimal(50370)
+    assert len(_sheet(got[2])) == 30
+    assert Decimal(_sheet(got[2])[0]) == Decimal("72.75")
     assert "installed_capacity" not in {row["concept"] for row in got}
 
 
@@ -263,7 +271,7 @@ def test_debtlens_cites_only_the_cap_rate():
         ],
     )
     assert [row["concept"] for row in got] == ["cap_rate"]
-    assert Decimal(got[0]["values"][0]) * 100 == Decimal("5.75")
+    assert Decimal(_sheet(got[0])[0]) * 100 == Decimal("5.75")
     assert got[0]["status"] == "cited"
 
 
@@ -295,13 +303,13 @@ def test_escrow_cites_inflow_disclosure_and_rate():
         ],
     )
     assert [row["concept"] for row in got] == list(CITED_BY_TYPE["development_escrow"])
-    assert [len(row["values"]) for row in got] == [36, 36, 36]
-    assert [Decimal(value) for value in got[0]["values"][:2]] == [
+    assert [len(_sheet(row)) for row in got] == [36, 36, 36]
+    assert [Decimal(value) for value in _sheet(got[0])[:2]] == [
         Decimal(2000),
         Decimal(2000),
     ]
-    assert Decimal(got[1]["values"][0]) == Decimal(0)
-    assert [Decimal(value) for value in got[2]["values"][:2]] == [
+    assert Decimal(_sheet(got[1])[0]) == Decimal(0)
+    assert [Decimal(value) for value in _sheet(got[2])[:2]] == [
         Decimal("0.12"),
         Decimal("0.06"),
     ]
@@ -331,7 +339,7 @@ def test_a_missing_row_is_absent_and_not_asked():
             source="inferred", primary=primary, bindings=[], facts=[]
         )
         assert [row["concept"] for row in got] == list(concepts)
-        assert all(row["status"] == "absent" and row["values"] == [] for row in got)
+        assert all(row["status"] == "absent" and _sheet(row) == [] for row in got)
 
 
 def test_unresolved_and_other_primaries_do_not_cite():
@@ -381,7 +389,9 @@ def test_cited_number_is_value_dec_not_the_scaled_amount():
         ],
     )
     assert got[0]["status"] == "cited"
-    assert got[0]["values"] == ["512.4"]
+    assert _sheet(got[0]) == ["512.4"]
+    assert got[0]["observations"][0]["normalized_value"] == "512400000"
+    assert got[0]["observations"][0]["scale_factor"] == 1_000_000
 
 
 def test_missing_value_dec_is_not_replaced_by_normalized_value():
@@ -394,11 +404,17 @@ def test_missing_value_dec_is_not_replaced_by_normalized_value():
                 "row_key": "Assumptions!C20",
                 "normalized_value": "0.0575",
                 "value_status": "cached",
+                "cell_id": "Assumptions!D20",
+                "period_id": "uw",
             }
         ],
     )
-    assert got[0]["status"] == "absent"
-    assert got[0]["values"] == []
+    observed = got[0]["observations"][0]
+    assert got[0]["status"] == "cited"
+    assert observed["value"] is None
+    assert observed["normalized_value"] == "0.0575"
+    assert observed["cell_id"] == "Assumptions!D20"
+    assert observed["period_id"] == "uw"
 
 
 def test_empty_and_error_statuses_are_not_quoted_as_numbers():
@@ -411,13 +427,111 @@ def test_empty_and_error_statuses_are_not_quoted_as_numbers():
             _binding("provision_coverage", "cover"),
         ],
         facts=[
-            {"row_key": "income", "value_dec": "260", "value_status": "empty"},
-            {"row_key": "share", "value_dec": "0.125", "value_status": "error"},
-            {"row_key": "cover", "value_dec": "0.5", "value_status": "missing"},
+            {
+                "row_key": "income",
+                "value_dec": "260",
+                "value_status": "empty",
+                "cell_id": "B2",
+                "period_id": "t",
+            },
+            {
+                "row_key": "share",
+                "value_dec": "0.125",
+                "value_status": "error",
+                "cell_id": "B5",
+                "period_id": "t",
+            },
+            {
+                "row_key": "cover",
+                "value_dec": "0.5",
+                "value_status": "missing",
+                "cell_id": "B8",
+                "period_id": "t",
+            },
         ],
     )
-    assert [row["values"] for row in got] == [[], [], []]
-    assert [row["status"] for row in got] == ["absent", "absent", "absent"]
+    assert [_sheet(row) for row in got] == [[None], [None], [None]]
+    assert [row["observations"][0]["value_status"] for row in got] == [
+        "empty",
+        "error",
+        "missing",
+    ]
+    assert [row["observations"][0]["cell_id"] for row in got] == ["B2", "B5", "B8"]
+
+
+def test_a_gap_keeps_its_slot_and_axes_stay_separate():
+    """Пропуск посередине не сдвигает следующий период. Оси не склеиваются."""
+
+    got = cite_type_book_rows(
+        source="inferred",
+        primary="renewables_dpm",
+        bindings=[_binding("energy_generation", "gen")],
+        facts=[
+            _fact(
+                "gen",
+                "30",
+                cell_id="Model!J58",
+                axis_id="north",
+                period_id="y2",
+                period_index=2,
+            ),
+            _fact(
+                "gen",
+                None,
+                cell_id="Model!I58",
+                axis_id="north",
+                period_id="y1",
+                period_index=1,
+                status="empty",
+            ),
+            _fact(
+                "gen",
+                "10",
+                cell_id="Model!H58",
+                axis_id="south",
+                period_id="y0",
+                period_index=0,
+            ),
+            _fact(
+                "gen",
+                "11",
+                cell_id="Model!I58s",
+                axis_id="south",
+                period_id="y1",
+                period_index=1,
+            ),
+            _fact(
+                "gen",
+                "10",
+                cell_id="Model!H58b",
+                axis_id="south",
+                period_id="y0",
+                period_index=0,
+            ),
+        ],
+    )
+    observed = next(
+        row["observations"] for row in got if row["concept"] == "energy_generation"
+    )
+    assert [
+        (item["axis_id"], item["period_index"], item["value"]) for item in observed
+    ] == [
+        ("north", 1, None),
+        ("north", 2, "30"),
+        ("south", 0, "10"),
+        ("south", 0, "10"),
+        ("south", 1, "11"),
+    ]
+    assert [item["cell_id"] for item in observed] == [
+        "Model!I58",
+        "Model!J58",
+        "Model!H58",
+        "Model!H58b",
+        "Model!I58s",
+    ]
+    assert [item["period_id"] for item in observed] == ["y1", "y2", "y0", "y0", "y1"]
+    assert observed[0]["value_status"] == "empty"
+    assert observed[2]["normalized_value"] == "10000"
 
 
 def test_citation_stays_out_of_the_ratio_matrix_and_an_empty_list_adds_no_key():

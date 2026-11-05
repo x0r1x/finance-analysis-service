@@ -34,8 +34,8 @@ def cite_type_book_rows(
 ) -> list[dict]:
     """Строки книги для уверенного основного типа. Нерешённый тип получает пустой список.
 
-    Несколько чисел одной основной строки отдаются как есть и не складываются.
-    Отсутствующая строка остаётся в списке со статусом `absent` и без вопроса.
+    Несколько чисел одной основной строки отдаются отдельными наблюдениями и не складываются.
+    Пропуск периода остаётся на своём месте. Отсутствующая строка — статус `absent`, без вопроса.
     """
 
     concepts = CITED_BY_TYPE.get(primary or "")
@@ -46,32 +46,56 @@ def cite_type_book_rows(
     for concept in concepts:
         row = primaries.get(concept)
         if row is None:
-            cited.append({"concept": concept, "status": "absent", "values": []})
+            cited.append({"concept": concept, "status": "absent", "observations": []})
             continue
-        values = _values(facts, str(row.get("row_key") or ""))
         cited.append(
             {
                 "concept": concept,
-                "status": "cited" if values else "absent",
+                "status": "cited",
                 "row_key": row.get("row_key"),
-                "values": values,
+                "observations": _observations(facts, str(row.get("row_key") or "")),
             }
         )
     return cited
 
 
-def _values(facts: list[dict], row_key: str) -> list[str]:
-    """Числа листа в порядке фактов. Берётся `value_dec`, не нормализованная величина."""
+def _observations(facts: list[dict], row_key: str) -> list[dict]:
+    """Наблюдения строки: `period_index` внутри `axis_id`, пропуски не выкидываются."""
 
-    found = []
-    for fact in facts:
-        if fact.get("row_key") != row_key:
-            continue
-        text = _sheet_value(fact)
-        if text is None:
-            continue
-        found.append(text)
-    return found
+    chosen = [fact for fact in facts if fact.get("row_key") == row_key]
+    ordered = sorted(enumerate(chosen), key=lambda item: _order(item[1], item[0]))
+    return [_observation(fact) for _, fact in ordered]
+
+
+def _order(fact: dict, position: int) -> tuple:
+    axis = "" if fact.get("axis_id") is None else str(fact.get("axis_id"))
+    return (axis, _period_index(fact), position)
+
+
+def _period_index(fact: dict) -> int:
+    index = fact.get("period_index")
+    if index is None or index == "":
+        return 10**9
+    try:
+        return int(index)
+    except (TypeError, ValueError):
+        return 10**9
+
+
+def _observation(fact: dict) -> dict:
+    observed = {
+        "cell_id": fact.get("cell_id"),
+        "axis_id": fact.get("axis_id"),
+        "period_id": fact.get("period_id"),
+        "period_index": fact.get("period_index"),
+        "value": _sheet_value(fact),
+        "value_status": fact.get("value_status"),
+    }
+    if fact.get("normalized_value") is not None:
+        observed["normalized_value"] = _decimal_text(fact.get("normalized_value"))
+    if fact.get("scale_factor") not in (None, ""):
+        observed["scale_factor"] = fact.get("scale_factor")
+    return observed
 
 
 def _sheet_value(fact: dict) -> str | None:
