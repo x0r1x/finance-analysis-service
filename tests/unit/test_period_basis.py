@@ -980,7 +980,7 @@ def test_ltm_cfads_adds_interest_and_principal_across_the_same_window():
                 "row_key": "c",
                 "axis_id": last["axis_id"],
                 "period_id": last["period_id"],
-                "normalized_value": Decimal("80"),
+                "normalized_value": Decimal(80),
             }
         ]
         + _series("i", quarters, ["-10", "-10", "-10", "-10"])
