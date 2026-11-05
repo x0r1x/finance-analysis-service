@@ -28,7 +28,12 @@ from finance_analysis.application.rule_engine import (
     select_rules,
 )
 from finance_analysis.application.sheet_roles import load_sheet_roles
-from finance_analysis.domain.audit import AuditInput, Finding, Location
+from finance_analysis.domain.audit import (
+    AuditInput,
+    Finding,
+    Location,
+    actuals_end_from_journal,
+)
 from finance_analysis.domain.book import (
     FAS_VERSION,
     Actor,
@@ -323,17 +328,55 @@ def _fact_citation(fact: dict, row: dict) -> dict:
     }
 
 
+def _stamp_actuals(cited: dict, params: dict) -> dict:
+    """Цитата сверки называет, откуда взята граница факта."""
+
+    source = params.get("actuals_source")
+    if not source:
+        return cited
+    stamped = {**cited, "actuals_source": source}
+    end = params.get("actuals_end")
+    if isinstance(end, str) and end:
+        stamped["actuals_end"] = end
+    traced = params.get("traced_cells")
+    if traced:
+        stamped["traced_cells"] = list(traced)
+    return stamped
+
+
+def _finding_citations(data: AuditInput, locations: list[Location], params: dict) -> list[dict]:
+    seen: set[str] = set()
+    out = []
+    for location in locations:
+        if not location.cell_id or location.cell_id in seen:
+            continue
+        cited = _citation(data, location)
+        if cited is None:
+            continue
+        seen.add(location.cell_id)
+        out.append(_stamp_actuals(cited, params))
+    if not params.get("actuals_source"):
+        return out
+    for cell in params.get("cells") or []:
+        if not isinstance(cell, str) or cell in seen:
+            continue
+        cited = _citation(data, Location(cell, None, None, None))
+        if cited is None:
+            continue
+        seen.add(cell)
+        out.append(_stamp_actuals(cited, params))
+    return out
+
+
 def _citations(data: AuditInput, findings: list[Finding]) -> list[dict]:
     seen: set[str] = set()
     out = []
     for finding in findings:
-        for location in finding.locations:
-            if not location.cell_id or location.cell_id in seen:
+        for cited in _finding_citations(data, list(finding.locations), finding.params):
+            if cited["cell_id"] in seen:
                 continue
-            cited = _citation(data, location)
-            if cited is not None:
-                seen.add(location.cell_id)
-                out.append(cited)
+            seen.add(cited["cell_id"])
+            out.append(cited)
     return out
 
 
@@ -482,7 +525,14 @@ class Analyses:
             applicable_metrics=live,
             dscr_variant=_dscr_variant(self.service.model_types, verdict),
             statement_sheets=frozenset(load_sheet_roles().statement),
+            actuals_end=await self._actuals_end(job_id, target),
         )
+
+    async def _actuals_end(self, job_id: str, target: Target) -> str | None:
+        """Граница факта из журнала на закреплённом `state_seq`."""
+
+        events = await self.service.guard.read_all(job_id)
+        return actuals_end_from_journal(events, target.head.state_seq)
 
     async def _absent(self, job_id: str, target: Target) -> frozenset[str]:
         """`concept.absent` журнала на закреплённом `state_seq` (ключ — книга и понятие, §5.10.5)."""
@@ -1337,7 +1387,7 @@ class Analyses:
                 if isinstance(found.get("explanation"), str)
                 else template_text(found["code"], found.get("params"), rule.title if rule else None),
             },
-            "citations": [item for item in (_citation(data, location) for location in locations) if item],
+            "citations": _finding_citations(data, locations, found.get("params") or {}),
             "trace": trace,
         }
 
