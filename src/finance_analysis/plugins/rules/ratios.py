@@ -11,11 +11,13 @@ from finance_analysis.domain.audit import (
     ROWS_LINKS,
     AuditInput,
     Finding,
+    Location,
     Rule,
     project_finance_dscr,
 )
 from finance_analysis.domain.metrics import coverage_ratio
 from finance_analysis.domain.model_type import sheet_name_key
+from finance_analysis.domain.periods import marker_class, split_period_key
 
 _TOLERANCE = Decimal("0.005")
 _BOUND = frozenset({"bound", "bound_with_warning"})
@@ -25,6 +27,7 @@ _ICR_DIVERGENCE = "Справочный коэффициент книги рас
 _ICR_AMBIGUOUS = "На оси расчёта ICR несколько справочных строк покрытия. Сверка не выполнена."
 _STATEMENT_DIVERGENCE = "Строка модели расходится с отчётной формой на фактическом {grain}."
 _ACTUAL_UNKNOWN = "фактические периоды не определены, сверка с отчётностью не выполнена"
+_ACTUAL_AMBIGUOUS = "граница факта «{value}» неоднозначна, сверка с отчётностью не выполнена: {candidates}"
 # Проценты не сверяются: начисление и уплата — разные основания, это сравнение отложено.
 _STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income")
 _GRAIN_WORD = {"quarter": "квартале", "month": "месяце", "year": "году"}
@@ -478,73 +481,130 @@ def _dedupe(periods: list[dict]) -> list[dict]:
     return found
 
 
-def _periods_through(periods: list[dict], value: str) -> list[dict]:
-    """Периоды до границы включительно.
+def _periods_through(periods: list[dict], value: str) -> tuple[list[dict], list[dict]]:
+    """Периоды до границы включительно и кандидаты, если база на оси неоднозначна.
 
     Граница — `period_id`, `period_key_base` или дата конца. Ось без этой
     границы пропускается: `period_id` уникален только вместе с `axis_id`.
+    Непустой второй список значит, что базу нельзя выбрать и окно пустое.
     """
 
     selected = []
+    ambiguous: list[dict] = []
     by_axis: dict[str, list[dict]] = {}
     for period in periods:
         by_axis.setdefault(period.get("axis_id"), []).append(period)
     named = False
     for rows in by_axis.values():
         ordered = _order(rows)
-        cut = _boundary_index(ordered, value)
+        cut, extra = _boundary_cut(ordered, value)
+        if extra:
+            ambiguous.extend(extra)
+            continue
         if cut is None:
             continue
         named = True
         selected.extend(ordered[: cut + 1])
+    if ambiguous:
+        return [], _unique_axis_periods(ambiguous)
     if named:
-        return _dedupe(selected)
+        return _dedupe(selected), []
     boundary = _iso_date(value)
     if boundary is None:
-        return []
-    return _dedupe(
-        [period for period in periods if (end := _period_end(period)) is not None and end <= boundary]
+        return [], []
+    return (
+        _dedupe([period for period in periods if (end := _period_end(period)) is not None and end <= boundary]),
+        [],
     )
 
 
-def _boundary_index(ordered: list[dict], value: str) -> int | None:
-    """Индекс границы на одной оси. Точный `period_id` важнее общей базы."""
+def _boundary_cut(ordered: list[dict], value: str) -> tuple[int | None, list[dict]]:
+    """Индекс границы на одной оси. Точный `period_id` важнее общей базы.
+
+    Несколько периодов одной базы режутся только по единственному явному факту.
+    Иначе второй элемент — все такие периоды, и границу не выбирают.
+    """
 
     keys = [row.get("period_id") for row in ordered]
     if value in keys:
-        return keys.index(value)
+        return keys.index(value), []
     matches = [index for index, row in enumerate(ordered) if row.get("period_key_base") == value]
     if not matches:
+        return None, []
+    if len(matches) == 1:
+        return matches[0], []
+    actual = [index for index in matches if _clearly_actual(ordered[index])]
+    if len(actual) == 1:
+        return actual[0], []
+    return None, [ordered[index] for index in matches]
+
+
+def _clearly_actual(period: dict) -> bool:
+    """Класс `actual`, явный маркер факта или суффикс `period_id`. Противоречие — не факт."""
+
+    seen = []
+    klass = period.get("marker_class")
+    if isinstance(klass, str) and klass.strip():
+        seen.append(klass.strip())
+    marker = period.get("period_marker")
+    if isinstance(marker, str) and marker.strip():
+        seen.append(marker_class(marker) or "other")
+    suffix = _period_suffix(period.get("period_id"))
+    if suffix:
+        seen.append(marker_class(suffix) or "other")
+    return bool(seen) and set(seen) == {"actual"}
+
+
+def _period_suffix(period_id) -> str | None:
+    if not isinstance(period_id, str):
         return None
-    return matches[-1]
+    _base, marker = split_period_key(period_id)
+    return marker
 
 
-def _resolve_actuals(data: AuditInput) -> tuple[list[dict], str, str] | None:
+def _unique_axis_periods(periods: list[dict]) -> list[dict]:
+    seen = set()
+    found = []
+    for period in periods:
+        key = (period.get("axis_id"), period.get("period_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(period)
+    return found
+
+
+def _resolve_actuals(data: AuditInput) -> tuple | None:
     """Каскад границы факта: явное решение, маркер, профиль, затем структура.
 
-    `None` — граница не определена. Явное значение, которое не попало ни в один
-    период, тоже не определено: оно не глушит сверку.
+    `("window", периоды, источник, граница)` — окно сверки. `("ambiguous",
+    кандидаты, граница)` — база назвала несколько периодов и фактический не
+    один. `None` — граница не определена, в том числе явное значение без периода.
     """
 
     decision = _text(data.actuals_end)
     marked = [period for period in data.periods if period.get("marker_class") == "actual"]
     config = _text((data.profile or {}).get("actuals_end"))
     if decision:
-        window = _periods_through(data.periods, decision)
-        return (window, "explicit", decision) if window else None
+        return _named_window(data, decision, "explicit")
     if marked:
         ordered = _dedupe(marked)
-        return ordered, "explicit", str(ordered[-1].get("period_id"))
+        return ("window", ordered, "explicit", str(ordered[-1].get("period_id")))
     if config:
-        window = _periods_through(data.periods, config)
-        return (window, "explicit", config) if window else None
+        return _named_window(data, config, "explicit")
     end = _structural_end(data)
     if end is None:
         return None
-    window = _periods_through(data.periods, end)
+    return _named_window(data, end, "structural")
+
+
+def _named_window(data: AuditInput, value: str, source: str) -> tuple | None:
+    window, ambiguous = _periods_through(data.periods, value)
+    if ambiguous:
+        return ("ambiguous", ambiguous, value)
     if not window:
         return None
-    return window, "structural", end
+    return ("window", window, source, value)
 
 
 def _structural_end(data: AuditInput) -> str | None:
@@ -694,7 +754,11 @@ class StatementReference(Rule):
                     )
                 ]
             return []
-        actual, source, end = resolved
+        if resolved[0] == "ambiguous":
+            if not _has_statement_pair(data):
+                return []
+            return [_ambiguous_boundary(self, data, resolved[1], resolved[2])]
+        _kind, actual, source, end = resolved
         findings = []
         for concept in _STATEMENT_CONCEPTS:
             primary = _primary(data, concept)
@@ -732,6 +796,66 @@ class StatementReference(Rule):
                         )
                     )
         return findings
+
+
+def _ambiguous_boundary(rule: StatementReference, data: AuditInput, periods: list[dict], value: str) -> Finding:
+    """Одна находка: база назвала несколько периодов, и фактический среди них не один."""
+
+    labels = [_candidate_label(data, period) for period in periods]
+    cells = [cell for period in periods for cell in _period_cells(data, period)]
+    return rule.finding(
+        data,
+        locations=_candidate_locations(data, periods),
+        params={
+            "cause": "actuals_end_ambiguous",
+            "message": _ACTUAL_AMBIGUOUS.format(value=value, candidates=", ".join(labels)),
+            "actuals_end": value,
+            "candidates": [str(period.get("period_id")) for period in periods],
+            "cells": cells,
+        },
+    )
+
+
+def _candidate_label(data: AuditInput, period: dict) -> str:
+    pid = str(period.get("period_id"))
+    cells = _period_cells(data, period)
+    if not cells:
+        return pid
+    return f"{pid} ({', '.join(cells)})"
+
+
+def _period_cells(data: AuditInput, period: dict) -> list[str]:
+    cells = []
+    for fact in data.facts:
+        cell = fact.get("cell_id")
+        if (
+            cell
+            and fact.get("axis_id") == period.get("axis_id")
+            and fact.get("period_id") == period.get("period_id")
+            and cell not in cells
+        ):
+            cells.append(cell)
+    return cells
+
+
+def _candidate_locations(data: AuditInput, periods: list[dict]) -> list[Location]:
+    found = []
+    seen = set()
+    for period in periods:
+        axis = period.get("axis_id")
+        pid = period.get("period_id")
+        placed = False
+        for fact in data.facts:
+            cell = fact.get("cell_id")
+            key = (cell, fact.get("row_key"), axis, pid)
+            if fact.get("axis_id") != axis or fact.get("period_id") != pid or not cell or key in seen:
+                continue
+            seen.add(key)
+            found.append(Location(cell, fact.get("row_key"), axis, pid))
+            placed = True
+        if not placed:
+            found.append(Location(None, None, axis, pid))
+    return found
 
 
 def _form_rows(data: AuditInput, concept: str, primary: dict) -> list[dict]:

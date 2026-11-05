@@ -470,6 +470,121 @@ def test_unresolved_boundary_does_not_silence_the_statement_check():
     assert "actuals_source" not in unknown[0].params
 
 
+def _year_pair(earlier: str, later: str, **marks) -> list[dict]:
+    return [
+        {**_quarter(earlier, 1), "period_key_base": "2024", **marks.get("first", {})},
+        {**_quarter(later, 2), "period_key_base": "2024", **marks.get("second", {})},
+    ]
+
+
+def _pair_facts(*periods: str) -> list[dict]:
+    facts = []
+    for index, period in enumerate(periods):
+        column = chr(ord("B") + index)
+        facts.append({**_fact("model", "100", period), "cell_id": f"ДДС!{column}"})
+        facts.append({**_fact("form", "110", period), "cell_id": f"ОФР!{column}"})
+    return facts
+
+
+def test_base_boundary_stops_at_the_one_actual_period():
+    """Несколько периодов одной базы режутся по единственному явному факту, не по последнему."""
+
+    rows, bindings = _statement_pair()
+    by_suffix = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[*_year_pair("2024@факт", "2024@план"), _quarter("2025", 3)],
+            facts=_pair_facts("2024@факт", "2024@план", "2025"),
+            bindings=bindings,
+            actuals_end="2024",
+        )
+    )
+    assert [item.locations[0].period_id for item in by_suffix] == ["2024@факт"]
+    by_class = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=_year_pair("y-fact", "y-plan", first={"marker_class": "actual"}, second={"marker_class": "plan"}),
+            facts=_pair_facts("y-fact", "y-plan"),
+            bindings=bindings,
+            actuals_end="2024",
+        )
+    )
+    assert [item.locations[0].period_id for item in by_class] == ["y-fact"]
+    by_marker = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=_year_pair("2024a", "2024b", first={"period_marker": "факт"}, second={"period_marker": "план"}),
+            facts=_pair_facts("2024a", "2024b"),
+            bindings=bindings,
+            actuals_end="2024",
+        )
+    )
+    assert [item.locations[0].period_id for item in by_marker] == ["2024a"]
+    exact = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=_year_pair("2024@факт", "2024@план"),
+            facts=_pair_facts("2024@факт", "2024@план"),
+            bindings=bindings,
+            actuals_end="2024@план",
+        )
+    )
+    assert [item.locations[0].period_id for item in exact] == ["2024@факт", "2024@план"]
+
+
+def test_ambiguous_base_boundary_lists_candidates_and_does_not_reconcile():
+    rows, bindings = _statement_pair()
+    none_actual = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=_year_pair("2024a", "2024b"),
+            facts=_pair_facts("2024a", "2024b"),
+            bindings=bindings,
+            actuals_end="2024",
+        )
+    )
+    assert len(none_actual) == 1
+    assert none_actual[0].params["cause"] == "actuals_end_ambiguous"
+    assert none_actual[0].params["candidates"] == ["2024a", "2024b"]
+    assert none_actual[0].params["cells"] == ["ДДС!B", "ОФР!B", "ДДС!C", "ОФР!C"]
+    assert "2024a (ДДС!B, ОФР!B)" in none_actual[0].params["message"]
+    assert "2024b (ДДС!C, ОФР!C)" in none_actual[0].params["message"]
+    assert "actuals_source" not in none_actual[0].params
+    assert {(item.cell_id, item.period_id) for item in none_actual[0].locations} == {
+        ("ДДС!B", "2024a"),
+        ("ОФР!B", "2024a"),
+        ("ДДС!C", "2024b"),
+        ("ОФР!C", "2024b"),
+    }
+    two_actual = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=_year_pair(
+                "2024@факт",
+                "2024@actual",
+                first={"marker_class": "actual"},
+                second={"marker_class": "actual"},
+            ),
+            facts=_pair_facts("2024@факт", "2024@actual"),
+            bindings=bindings,
+            actuals_end="2024",
+        )
+    )
+    assert len(two_actual) == 1
+    assert two_actual[0].params["candidates"] == ["2024@факт", "2024@actual"]
+    conflicted = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=_year_pair("2024@факт", "2024@план", first={"marker_class": "plan"}),
+            facts=_pair_facts("2024@факт", "2024@план"),
+            bindings=bindings,
+            actuals_end="2024",
+        )
+    )
+    assert conflicted[0].params["cause"] == "actuals_end_ambiguous"
+    assert conflicted[0].params["candidates"] == ["2024@факт", "2024@план"]
+
+
 def test_actuals_end_journal_keeps_the_latest_value():
     from finance_analysis.domain.audit import (
         actuals_end_from_journal,
