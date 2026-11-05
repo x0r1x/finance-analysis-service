@@ -255,30 +255,49 @@ def test_solar_cites_degradation_generation_and_tariff_not_capacity():
 
 
 def test_debtlens_cites_only_the_cap_rate():
-    """Assumptions!C20 — подпись ставки 5,75%. NOI, вакансия и DSCR в цитату не входят."""
+    """Цитата — только cap_rate. Дубли NOI и вакансии и шапка ёмкости DSCR в неё не входят."""
 
     book = "debtlens/DebtLens_Underwriting_Model.xlsx"
     package = load_catalog()
     assert package.resolve(_label(book, "Assumptions", "C20")).concept == "cap_rate"
+    assert package.resolve(_label(book, "Summary", "C7")).concept == "noi"
+    assert package.resolve(_label(book, "Operating Forecast", "C15")).concept == "noi"
+    assert package.resolve(_label(book, "Assumptions", "C13")).concept == "vacancy"
+    assert (
+        package.resolve(_label(book, "Operating Forecast", "C9")).concept == "vacancy"
+    )
+    assert package.resolve(_label(book, "Summary", "C17")).concept == "dscr"
+    assert package.resolve(_label(book, "Summary", "G10")).concept == "dscr"
     rate = _cached(book, "Assumptions", "D20")
+    capacity = _cached(book, "Summary", "H10")
     got = cite_type_book_rows(
         source="inferred",
         primary="real_estate_income",
         bindings=[
             _binding("cap_rate", "Assumptions!C20"),
             _binding("noi", "Summary!C7"),
+            _binding("noi", "Operating Forecast!C15"),
             _binding("vacancy", "Assumptions!C13"),
+            _binding("vacancy", "Operating Forecast!C9"),
             _binding("dscr", "Summary!C17"),
+            _binding("dscr", "Summary!G10"),
+            _binding("interest", "Debt Schedule!F6"),
+            _binding("principal", "Debt Schedule!G6"),
         ],
         facts=[
             _fact("Assumptions!C20", rate),
             _fact("Summary!C7", 3288000),
+            _fact("Operating Forecast!C15", 3288000),
             _fact("Assumptions!C13", 0.05),
-            _fact("Summary!C17", 1.30),
+            _fact("Operating Forecast!C9", 0.05),
+            _fact("Summary!C17", _cached(book, "Summary", "D17")),
+            _fact("Summary!G10", capacity),
         ],
     )
-    assert [row["concept"] for row in got] == ["cap_rate"]
+    assert CITED_BY_TYPE["real_estate_income"] == ("cap_rate",)
+    assert [row["concept"] for row in got] == list(CITED_BY_TYPE["real_estate_income"])
     assert Decimal(_sheet(got[0])[0]) * 100 == Decimal("5.75")
+    assert Decimal(str(capacity)) not in {Decimal(value) for value in _sheet(got[0])}
     assert got[0]["status"] == "cited"
 
 

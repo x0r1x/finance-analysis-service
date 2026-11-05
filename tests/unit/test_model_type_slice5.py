@@ -2,9 +2,35 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import openpyxl
+
 from finance_analysis.application.catalog import load_catalog
+from finance_analysis.domain.book_cite import CITED_BY_TYPE
 from finance_analysis.domain.model_type import infer
 from tests.workbook_labels import resolved_workbook
+
+_BOOKS = Path(__file__).resolve().parents[1] / "fixtures" / "model_books"
+# Точные подписи DebtLens. G10 — вторая подпись DSCR в шапке ёмкости, не коэффициент 1,30x.
+_DEBTLENS_HITS = (
+    ("Summary", "C7", "Year 1 net operating income", "noi"),
+    ("Summary", "G10", "DSCR", "dscr"),
+    ("Summary", "C17", "Debt service coverage ratio", "dscr"),
+    ("Assumptions", "C13", "Year 1 vacancy", "vacancy"),
+    ("Assumptions", "C20", "Underwriting capitalization rate", "cap_rate"),
+    ("Operating Forecast", "C9", "Vacancy", "vacancy"),
+    ("Operating Forecast", "C15", "Net operating income", "noi"),
+    ("Debt Schedule", "F6", "Interest", "interest"),
+    ("Debt Schedule", "G6", "Principal", "principal"),
+)
+_DEBTLENS_FREE = (
+    ("Assumptions", "C21", "Exit capitalization rate"),
+    ("Operating Forecast", "C11", "Vacancy loss"),
+    ("Assumptions", "C27", "Minimum DSCR"),
+    ("Summary", "C13", "DSCR capacity"),
+    ("Sensitivity", "C16", "Value adj. / Cap rate"),
+)
 
 
 def _catalog():
@@ -127,6 +153,54 @@ def test_enterprise_and_equity_without_wacc_are_not_confident_dcf():
     assert got.confident is False
     assert got.reason == "unknown"
     assert got.labels == ()
+
+
+def test_debtlens_stays_confident_real_estate_income_at_full_score():
+    """Книга связывает шесть понятий и остаётся уверенным real_estate_income со score 1.0.
+
+    Близкие подписи не привязываются. Цитата типа по-прежнему только cap_rate.
+    """
+
+    book = "debtlens/DebtLens_Underwriting_Model.xlsx"
+    package = load_catalog()
+    grid = openpyxl.load_workbook(_BOOKS / book, data_only=False)
+    hits: list[tuple[str, str, str, str]] = []
+    try:
+        for sheet, coord, text, concept in _DEBTLENS_HITS:
+            assert grid[sheet][coord].value == text
+            assert package.resolve(text).concept == concept
+        for sheet, coord, text in _DEBTLENS_FREE:
+            assert grid[sheet][coord].value == text
+            assert package.resolve(text) is None, text
+        assert package.resolve("Cap rate") is None
+        for sheet in grid.worksheets:
+            for row in sheet.iter_rows():
+                for cell in row:
+                    label = cell.value
+                    if (
+                        not isinstance(label, str)
+                        or not label.strip()
+                        or label.startswith("=")
+                    ):
+                        continue
+                    found = package.resolve(label)
+                    if found is not None:
+                        hits.append(
+                            (sheet.title, cell.coordinate, label, found.concept)
+                        )
+    finally:
+        grid.close()
+    assert hits == list(_DEBTLENS_HITS)
+    bound, sheets = resolved_workbook(book)
+    assert bound == frozenset(
+        {"cap_rate", "dscr", "interest", "noi", "principal", "vacancy"}
+    )
+    got = infer(_catalog(), bound=bound, sheets=sheets, accept=0.6, gap=0.15)
+    assert got.confident is True
+    assert got.primary == "real_estate_income"
+    assert got.labels == ("real_estate_income",)
+    assert got.scores["real_estate_income"] == 1.0
+    assert CITED_BY_TYPE["real_estate_income"] == ("cap_rate",)
 
 
 def test_fixture_workbooks_classify_from_their_own_labels():
