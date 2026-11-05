@@ -31,6 +31,46 @@ _DEBTLENS_FREE = (
     ("Summary", "C13", "DSCR capacity"),
     ("Sensitivity", "C16", "Value adj. / Cap rate"),
 )
+# Одиннадцать подписей solar_dogu. Project Size (AC) и €/W (DC) — известные принятые
+# привязки installed_capacity: тело AC совпадает после снятия скобки, €/W (DC) приходит
+# через аббревиатуру dc. Глоссарий и сопоставитель пока не чиним.
+_SOLAR_HITS = (
+    ("Model", "J14", "Capex", "capex"),
+    ("Model", "M16", "€/W (DC)", "installed_capacity"),
+    ("Model", "B20", "Project Size (DC)", "installed_capacity"),
+    ("Model", "B21", "Project Size (AC)", "installed_capacity"),
+    ("Model", "B23", "Degredation ", "degradation"),
+    ("Model", "B58", "Annual Energy per year", "energy_generation"),
+    ("Model", "B61", "PPA Power Price", "energy_tariff"),
+    ("Model", "B164", "EBITDA", "ebitda"),
+    ("Model", "C168", "Interest", "interest"),
+    ("Model", "C169", "Principal", "principal"),
+    ("Model", "B220", "EBITDA", "ebitda"),
+)
+_SOLAR_FREE = (
+    ("Model", "B62", "Post PPA Power Price"),
+    ("Model", "H15", "P50"),
+    ("Model", "F18", "P50"),
+    ("Model", "F20", "P90"),
+    ("Model", "F21", "P99"),
+    ("Model", "G86", "P99"),
+    ("Model", "N16", "€/W (AC)"),
+    ("Model", "G17", "Production"),
+    ("Model", "I37", "DSCR P50 minimum"),
+    ("Model", "I38", "DSCR P99 minimum"),
+    ("Model", "B57", "Revenue"),
+    ("Model", "B218", "Revenue"),
+    ("Model", "B55", "Degredation Year/Inflation year"),
+    ("Model", "B59", "% of original output"),
+    ("Model", "B54", "Production Year"),
+    ("Model", "B63", "Total Revenue"),
+    ("Model", "B78", "EBITDA, used for financing"),
+    ("Model", "B148", "EBITDA for year"),
+    ("Model", "B91", "Less: Interest"),
+    ("Model", "B105", "Less: Principal"),
+    ("Model", "P16", "Post PPA Term"),
+    ("Model", "G206", "Post PPA Rate"),
+)
 
 
 def _catalog():
@@ -201,6 +241,82 @@ def test_debtlens_stays_confident_real_estate_income_at_full_score():
     assert got.labels == ("real_estate_income",)
     assert got.scores["real_estate_income"] == 1.0
     assert CITED_BY_TYPE["real_estate_income"] == ("cap_rate", "noi", "vacancy")
+
+
+def test_solar_dogu_stays_confident_renewables_dpm_at_full_score():
+    """Книга solar_dogu связывает восемь понятий и остаётся уверенным renewables_dpm со score 1.0.
+
+    Близкие подписи не привязываются. Сигнал остаётся concepts_bound_any и держит
+    installed_capacity. Цитата типа — degradation, energy_generation и energy_tariff.
+    """
+
+    book = "solar/Solar Financial Model.xlsx"
+    package = load_catalog()
+    grid = openpyxl.load_workbook(_BOOKS / book, data_only=False)
+    hits: list[tuple[str, str, str, str]] = []
+    try:
+        for sheet, coord, text, concept in _SOLAR_HITS:
+            assert grid[sheet][coord].value == text
+            assert package.resolve(text).concept == concept
+        # Известные принятые привязки. (AC) — точное тело, €/W (DC) — аббревиатура dc.
+        ac = package.resolve_match("Project Size (AC)")
+        per_dc = package.resolve_match("€/W (DC)")
+        assert ac is not None and ac[0].concept == "installed_capacity" and ac[1] == "exact"
+        assert (
+            per_dc is not None
+            and per_dc[0].concept == "installed_capacity"
+            and per_dc[1] == "abbrev"
+        )
+        for sheet, coord, text in _SOLAR_FREE:
+            assert grid[sheet][coord].value == text
+            assert package.resolve(text) is None, text
+        for sheet in grid.worksheets:
+            for row in sheet.iter_rows():
+                for cell in row:
+                    label = cell.value
+                    if (
+                        not isinstance(label, str)
+                        or not label.strip()
+                        or label.startswith("=")
+                    ):
+                        continue
+                    found = package.resolve(label)
+                    if found is not None:
+                        hits.append((sheet.title, cell.coordinate, label, found.concept))
+    finally:
+        grid.close()
+    assert hits == list(_SOLAR_HITS)
+    bound, sheets = resolved_workbook(book)
+    assert sheets == frozenset({"Model"})
+    assert bound == frozenset(
+        {
+            "capex",
+            "degradation",
+            "ebitda",
+            "energy_generation",
+            "energy_tariff",
+            "installed_capacity",
+            "interest",
+            "principal",
+        }
+    )
+    catalog = _catalog()
+    signal = catalog.types["renewables_dpm"].signals
+    assert tuple(item.kind for item in signal) == ("concepts_bound_any",)
+    assert "installed_capacity" in signal[0].concepts
+    got = infer(catalog, bound=bound, sheets=sheets, accept=0.6, gap=0.15)
+    assert got.confident is True
+    assert got.primary == "renewables_dpm"
+    assert got.labels == ("renewables_dpm",)
+    assert got.scores["renewables_dpm"] == 1.0
+    others = {name: score for name, score in got.scores.items() if name != "renewables_dpm"}
+    assert others and set(others.values()) == {0.0}
+    assert CITED_BY_TYPE["renewables_dpm"] == (
+        "degradation",
+        "energy_generation",
+        "energy_tariff",
+    )
+    assert "installed_capacity" not in CITED_BY_TYPE["renewables_dpm"]
 
 
 def test_fixture_workbooks_classify_from_their_own_labels():

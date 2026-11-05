@@ -88,6 +88,17 @@ def _label(relative: str, sheet: str, coord: str):
         book.close()
 
 
+def _span(relative: str, sheet: str, ref: str, *, data_only: bool) -> list:
+    book = openpyxl.load_workbook(_ROOT / relative, data_only=data_only)
+    try:
+        block = book[sheet][ref]
+        if not isinstance(block, tuple):
+            return [block.value]
+        return [cell.value for cell in block[0]]
+    finally:
+        book.close()
+
+
 def _row_numbers(relative: str, sheet: str, row: int, start: int) -> list:
     book = openpyxl.load_workbook(_ROOT / relative, data_only=True)
     try:
@@ -219,16 +230,34 @@ def test_meridian_cites_wacc_and_both_bridges_unsummed():
 
 
 def test_solar_cites_degradation_generation_and_tariff_not_capacity():
-    """Деградация 0,5%, первый год выработки 50 370, тариф 72,75. Мощность DC/AC не цитируется."""
+    """Деградация Model!D23 равна 0,005. Выработка H58:AK58 — 30 значений, первое около 50 370.
+
+    Тариф H61:AA61 — двадцать раз 72,75. AB61:AK61 — десять нулей кэша формулы IFERROR,
+    не пустые ячейки. Цитата отдаёт 30 наблюдений и не включает installed_capacity.
+    """
 
     book = "solar/Solar Financial Model.xlsx"
     package = load_catalog()
     assert package.resolve(_label(book, "Model", "B23")).concept == "degradation"
     assert package.resolve(_label(book, "Model", "B58")).concept == "energy_generation"
     assert package.resolve(_label(book, "Model", "B61")).concept == "energy_tariff"
-    degradation = _cached(book, "Model", "D23")
-    generation = _row_numbers(book, "Model", 58, 8)
-    tariff = _row_numbers(book, "Model", 61, 8)
+    assert _span(book, "Model", "D23", data_only=False) == [0.005]
+    degradation = _span(book, "Model", "D23", data_only=True)
+    generation = _span(book, "Model", "H58:AK58", data_only=True)
+    generation_formulas = _span(book, "Model", "H58:AK58", data_only=False)
+    ppa = _span(book, "Model", "H61:AA61", data_only=True)
+    after = _span(book, "Model", "AB61:AK61", data_only=True)
+    after_formulas = _span(book, "Model", "AB61:AK61", data_only=False)
+    assert degradation == [0.005]
+    assert len(generation) == 30
+    assert round(generation[0], 0) == 50370
+    assert all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in generation)
+    assert all(isinstance(item, str) and item.startswith("=") for item in generation_formulas)
+    assert ppa == [72.75] * 20
+    assert after == [0] * 10
+    assert all(item is not None for item in after)
+    assert all(isinstance(item, str) and item.startswith("=IFERROR(") for item in after_formulas)
+    tariff = ppa + after
     got = cite_type_book_rows(
         source="inferred",
         primary="renewables_dpm",
@@ -236,23 +265,33 @@ def test_solar_cites_degradation_generation_and_tariff_not_capacity():
             _binding("degradation", "Model!B23"),
             _binding("energy_generation", "Model!B58"),
             _binding("energy_tariff", "Model!B61"),
+            _binding("installed_capacity", "Model!M16"),
             _binding("installed_capacity", "Model!B20"),
             _binding("installed_capacity", "Model!B21"),
         ],
         facts=[
-            _fact("Model!B23", degradation),
+            _fact("Model!B23", degradation[0]),
             *[_fact("Model!B58", value) for value in generation],
             *[_fact("Model!B61", value) for value in tariff],
             _fact("Model!B20", 25),
             _fact("Model!B21", 20),
         ],
     )
+    assert CITED_BY_TYPE["renewables_dpm"] == (
+        "degradation",
+        "energy_generation",
+        "energy_tariff",
+    )
     assert [row["concept"] for row in got] == list(CITED_BY_TYPE["renewables_dpm"])
+    assert len(got[0]["observations"]) == 1
     assert Decimal(_sheet(got[0])[0]) == Decimal("0.005")
-    assert len(_sheet(got[1])) == 30
+    assert len(got[1]["observations"]) == 30
+    assert _sheet(got[1]) == [format(Decimal(str(value)), "f") for value in generation]
     assert round(Decimal(_sheet(got[1])[0]), 0) == Decimal(50370)
-    assert len(_sheet(got[2])) == 30
-    assert Decimal(_sheet(got[2])[0]) == Decimal("72.75")
+    assert len(got[2]["observations"]) == 30
+    assert [Decimal(value) for value in _sheet(got[2])] == [Decimal("72.75")] * 20 + [
+        Decimal(0)
+    ] * 10
     assert "installed_capacity" not in {row["concept"] for row in got}
 
 
