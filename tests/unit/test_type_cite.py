@@ -42,8 +42,17 @@ def _binding(concept: str, row_key: str, *, primary: bool = True) -> dict:
     }
 
 
-def _fact(row_key: str, value) -> dict:
-    return {"row_key": row_key, "normalized_value": value}
+def _fact(row_key: str, value, *, scale: int = 1000, status: str = "cached") -> dict:
+    """Кэш листа в `value_dec`, масштаб — отдельно. Цитата не должна взять масштаб."""
+
+    sheet = None if value is None else Decimal(str(value))
+    return {
+        "row_key": row_key,
+        "value_dec": None if sheet is None else format(sheet, "f"),
+        "normalized_value": None if sheet is None else format(sheet * scale, "f"),
+        "scale_factor": scale,
+        "value_status": status,
+    }
 
 
 def _cached(relative: str, sheet: str, coord: str):
@@ -352,6 +361,63 @@ def test_unresolved_and_other_primaries_do_not_cite():
         source="profile", primary="real_estate_income", bindings=bindings, facts=facts
     )
     assert cited[0]["status"] == "cited"
+
+
+def test_cited_number_is_value_dec_not_the_scaled_amount():
+    """512,4 на листе не превращается в 512400000."""
+
+    got = cite_type_book_rows(
+        source="inferred",
+        primary="real_estate_income",
+        bindings=[_binding("cap_rate", "Assumptions!C20")],
+        facts=[
+            {
+                "row_key": "Assumptions!C20",
+                "value_dec": "512.4",
+                "normalized_value": "512400000",
+                "scale_factor": 1_000_000,
+                "value_status": "cached",
+            }
+        ],
+    )
+    assert got[0]["status"] == "cited"
+    assert got[0]["values"] == ["512.4"]
+
+
+def test_missing_value_dec_is_not_replaced_by_normalized_value():
+    got = cite_type_book_rows(
+        source="inferred",
+        primary="real_estate_income",
+        bindings=[_binding("cap_rate", "Assumptions!C20")],
+        facts=[
+            {
+                "row_key": "Assumptions!C20",
+                "normalized_value": "0.0575",
+                "value_status": "cached",
+            }
+        ],
+    )
+    assert got[0]["status"] == "absent"
+    assert got[0]["values"] == []
+
+
+def test_empty_and_error_statuses_are_not_quoted_as_numbers():
+    got = cite_type_book_rows(
+        source="inferred",
+        primary="bank_leasing",
+        bindings=[
+            _binding("lease_interest_income", "income"),
+            _binding("npl_share", "share"),
+            _binding("provision_coverage", "cover"),
+        ],
+        facts=[
+            {"row_key": "income", "value_dec": "260", "value_status": "empty"},
+            {"row_key": "share", "value_dec": "0.125", "value_status": "error"},
+            {"row_key": "cover", "value_dec": "0.5", "value_status": "missing"},
+        ],
+    )
+    assert [row["values"] for row in got] == [[], [], []]
+    assert [row["status"] for row in got] == ["absent", "absent", "absent"]
 
 
 def test_citation_stays_out_of_the_ratio_matrix_and_an_empty_list_adds_no_key():
