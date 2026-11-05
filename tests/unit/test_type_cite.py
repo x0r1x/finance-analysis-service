@@ -19,8 +19,6 @@ _ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "model_books"
 _HELD_OUT = frozenset(
     {
         "installed_capacity",
-        "noi",
-        "vacancy",
         "dscr",
         "moic",
         "exit_enterprise_value",
@@ -39,14 +37,18 @@ def _binding(
     primary: bool = True,
     source: str = "inferred",
     status: str = "bound",
+    label: str | None = None,
 ) -> dict:
-    return {
+    row = {
         "effective_concept": concept,
         "is_primary": primary,
         "status": status,
         "row_key": row_key,
         "source": source,
     }
+    if label is not None:
+        row["matched_label_id"] = label
+    return row
 
 
 def _fact(
@@ -254,32 +256,146 @@ def test_solar_cites_degradation_generation_and_tariff_not_capacity():
     assert "installed_capacity" not in {row["concept"] for row in got}
 
 
-def test_debtlens_cites_only_the_cap_rate():
-    """Assumptions!C20 — подпись ставки 5,75%. NOI, вакансия и DSCR в цитату не входят."""
+def test_debtlens_cites_cap_rate_and_the_year_one_scalars():
+    """Год 1: NOI Summary!D7 и вакансия Assumptions!D13. Ряд прогноза и DSCR не цитируются."""
 
     book = "debtlens/DebtLens_Underwriting_Model.xlsx"
     package = load_catalog()
+    noi_label = _label(book, "Summary", "C7")
+    vacancy_label = _label(book, "Assumptions", "C13")
+    forecast_noi = _label(book, "Operating Forecast", "C15")
+    forecast_vacancy = _label(book, "Operating Forecast", "C9")
+    assert package.resolve(noi_label).concept == "noi"
+    assert package.resolve(forecast_noi).concept == "noi"
+    assert package.resolve(vacancy_label).concept == "vacancy"
+    assert package.resolve(forecast_vacancy).concept == "vacancy"
     assert package.resolve(_label(book, "Assumptions", "C20")).concept == "cap_rate"
+    assert package.resolve(_label(book, "Summary", "C17")).concept == "dscr"
+    assert package.resolve(_label(book, "Summary", "G10")).concept == "dscr"
     rate = _cached(book, "Assumptions", "D20")
+    capacity = _cached(book, "Summary", "H10")
+    noi_series = _row_numbers(book, "Operating Forecast", 15, 4)
+    vacancy_series = _row_numbers(book, "Operating Forecast", 9, 4)
+    assert noi_series[0] == 3_288_000 and len(noi_series) > 1
+    assert vacancy_series[0] == 0.05 and len(vacancy_series) > 1
     got = cite_type_book_rows(
         source="inferred",
         primary="real_estate_income",
         bindings=[
-            _binding("cap_rate", "Assumptions!C20"),
-            _binding("noi", "Summary!C7"),
-            _binding("vacancy", "Assumptions!C13"),
-            _binding("dscr", "Summary!C17"),
+            _binding(
+                "cap_rate",
+                "Assumptions!C20",
+                label=_label(book, "Assumptions", "C20"),
+            ),
+            _binding("noi", "Summary!C7", label=noi_label),
+            _binding("noi", "Operating Forecast!C15", label=forecast_noi),
+            _binding("vacancy", "Assumptions!C13", label=vacancy_label),
+            _binding("vacancy", "Operating Forecast!C9", label=forecast_vacancy),
+            _binding("dscr", "Summary!C17", label=_label(book, "Summary", "C17")),
+            _binding("dscr", "Summary!G10", label=_label(book, "Summary", "G10")),
+            _binding("interest", "Debt Schedule!F6"),
+            _binding("principal", "Debt Schedule!G6"),
         ],
         facts=[
             _fact("Assumptions!C20", rate),
-            _fact("Summary!C7", 3288000),
+            _fact("Summary!C7", 3_288_000),
+            *[_fact("Operating Forecast!C15", value) for value in noi_series],
             _fact("Assumptions!C13", 0.05),
-            _fact("Summary!C17", 1.30),
+            *[_fact("Operating Forecast!C9", value) for value in vacancy_series],
+            _fact("Summary!C17", _cached(book, "Summary", "D17")),
+            _fact("Summary!G10", capacity),
         ],
     )
-    assert [row["concept"] for row in got] == ["cap_rate"]
-    assert Decimal(_sheet(got[0])[0]) * 100 == Decimal("5.75")
-    assert got[0]["status"] == "cited"
+    assert CITED_BY_TYPE["real_estate_income"] == ("cap_rate", "noi", "vacancy")
+    by_concept = {row["concept"]: row for row in got}
+    assert list(by_concept) == list(CITED_BY_TYPE["real_estate_income"])
+    assert by_concept["cap_rate"]["row_key"] == "Assumptions!C20"
+    assert Decimal(_sheet(by_concept["cap_rate"])[0]) * 100 == Decimal("5.75")
+    assert by_concept["noi"]["row_key"] == "Summary!C7"
+    assert _sheet(by_concept["noi"]) == ["3288000"]
+    assert by_concept["vacancy"]["row_key"] == "Assumptions!C13"
+    assert _sheet(by_concept["vacancy"]) == ["0.05"]
+    assert all(row["status"] == "cited" for row in got)
+    quoted = {Decimal(value) for row in got for value in _sheet(row)}
+    assert Decimal(str(capacity)) not in quoted
+    assert round(capacity / 1_000_000, 1) == 33.5
+    assert "dscr" not in by_concept
+
+
+def test_year_one_label_wins_when_the_forecast_row_is_the_only_primary():
+    """Каскад может оставить ряд прогноза единственной основной строкой. Цитата берёт год 1."""
+
+    got = cite_type_book_rows(
+        source="inferred",
+        primary="real_estate_income",
+        bindings=[
+            _binding(
+                "noi",
+                "Summary!C7",
+                primary=False,
+                status="ambiguous",
+                label="Year 1 net operating income",
+            ),
+            _binding("noi", "Operating Forecast!C15", label="Net operating income"),
+            _binding(
+                "vacancy",
+                "Assumptions!C13",
+                primary=False,
+                label="Year 1 vacancy",
+            ),
+            _binding("vacancy", "Operating Forecast!C9", label="Vacancy"),
+            _binding("cap_rate", "Assumptions!C20"),
+        ],
+        facts=[
+            _fact("Summary!C7", 3_288_000, scale=1),
+            _fact("Operating Forecast!C15", 3_288_000, scale=1),
+            _fact("Operating Forecast!C15", 3_400_000, scale=1),
+            _fact("Assumptions!C13", 0.05, scale=1),
+            _fact("Operating Forecast!C9", 0.05, scale=1),
+            _fact("Operating Forecast!C9", 0.07, scale=1),
+            _fact("Assumptions!C20", 0.0575, scale=1),
+        ],
+    )
+    by_concept = {row["concept"]: row for row in got}
+    assert by_concept["noi"]["status"] == "cited"
+    assert by_concept["noi"]["row_key"] == "Summary!C7"
+    assert _sheet(by_concept["noi"]) == ["3288000"]
+    assert by_concept["vacancy"]["row_key"] == "Assumptions!C13"
+    assert _sheet(by_concept["vacancy"]) == ["0.05"]
+
+
+def test_two_exact_labels_without_the_preferred_phrase_stay_ambiguous():
+    """Нет предпочтительной подписи — две основные строки не схлопываются, короткая не побеждает."""
+
+    got = cite_type_book_rows(
+        source="inferred",
+        primary="real_estate_income",
+        bindings=[
+            _binding("noi", "Summary!C7", label="Net operating income"),
+            _binding("noi", "Operating Forecast!C15", label="Net operating income"),
+            _binding(
+                "cap_rate",
+                "Assumptions!C20",
+                label="Underwriting capitalization rate",
+            ),
+            _binding("dscr", "Summary!C17", label="Debt service coverage ratio"),
+            _binding("dscr", "Summary!G10", label="DSCR"),
+        ],
+        facts=[
+            _fact("Summary!C7", 3_288_000, scale=1),
+            _fact("Operating Forecast!C15", 33_502_954, scale=1),
+            _fact("Assumptions!C20", 0.0575, scale=1),
+            _fact("Summary!C17", 1.30, scale=1),
+            _fact("Summary!G10", 33_502_954, scale=1),
+        ],
+    )
+    by_concept = {row["concept"]: row for row in got}
+    assert by_concept["noi"]["status"] == "ambiguous"
+    assert by_concept["noi"]["observations"] == []
+    assert "row_key" not in by_concept["noi"]
+    assert by_concept["cap_rate"]["status"] == "cited"
+    assert "dscr" not in by_concept
+    assert all(Decimal(value) < 100 for value in _sheet(by_concept["cap_rate"]))
 
 
 def test_escrow_cites_inflow_disclosure_and_rate():

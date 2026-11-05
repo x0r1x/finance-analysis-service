@@ -59,14 +59,38 @@ def test_meridian_wacc_and_equity_bridge():
 
 
 def test_debtlens_noi_cap_rate_vacancy_and_dscr():
-    noi = _cell("debtlens", "DebtLens_Underwriting_Model.xlsx", "Summary", "D7")
-    cap_rate = _cell("debtlens", "DebtLens_Underwriting_Model.xlsx", "Assumptions", "D20")
-    vacancy = _cell("debtlens", "DebtLens_Underwriting_Model.xlsx", "Assumptions", "D13")
-    dscr = _cell("debtlens", "DebtLens_Underwriting_Model.xlsx", "Summary", "D17")
-    assert noi == 3_288_000
+    """Шесть ячеек инвентаря. Summary!G10/H10 — шапка ёмкости около 33,5 млн, не второй DSCR 1,30x."""
+
+    name = "DebtLens_Underwriting_Model.xlsx"
+    noi = _cell("debtlens", name, "Summary", "D7")
+    noi_again = _cell("debtlens", name, "Operating Forecast", "D15")
+    cap_rate = _cell("debtlens", name, "Assumptions", "D20")
+    vacancy = _cell("debtlens", name, "Assumptions", "D13")
+    vacancy_again = _cell("debtlens", name, "Operating Forecast", "D9")
+    dscr = _cell("debtlens", name, "Summary", "D17")
+    capacity = _cell("debtlens", name, "Summary", "H10")
+    assert noi == noi_again == 3_288_000
     assert cap_rate == 0.0575
-    assert vacancy == 0.05
+    assert vacancy == vacancy_again == 0.05
     assert round(dscr, 2) == 1.30
+    assert _cell("debtlens", name, "Summary", "C7") == "Year 1 net operating income"
+    assert (
+        _cell("debtlens", name, "Operating Forecast", "C15") == "Net operating income"
+    )
+    assert (
+        _cell("debtlens", name, "Assumptions", "C20")
+        == "Underwriting capitalization rate"
+    )
+    assert _cell("debtlens", name, "Assumptions", "C13") == "Year 1 vacancy"
+    assert _cell("debtlens", name, "Operating Forecast", "C9") == "Vacancy"
+    assert _cell("debtlens", name, "Summary", "C17") == "Debt service coverage ratio"
+    assert _cell("debtlens", name, "Summary", "G7") == "Capacity"
+    assert _cell("debtlens", name, "Summary", "H7") == "Amount"
+    assert _cell("debtlens", name, "Summary", "G10") == "DSCR"
+    assert _cell("debtlens", name, "Summary", "C13") == "DSCR capacity"
+    assert capacity == _cell("debtlens", name, "Summary", "D13")
+    assert round(capacity / 1_000_000, 1) == 33.5
+    assert round(capacity, 2) != 1.30
 
 
 def test_solar_capacity_generation_tariff_and_dscr():

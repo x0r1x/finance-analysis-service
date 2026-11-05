@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from finance_analysis.domain.glossary import label_surface
+
 # Пустое, ошибочное и отсутствующее значение не являются числом ячейки.
 _NOT_A_NUMBER = frozenset({"empty", "not_applicable", "error", "missing"})
 _BOUND = frozenset({"bound", "bound_with_warning"})
@@ -19,8 +21,16 @@ CITED_BY_TYPE = {
     "bank_leasing": ("lease_interest_income", "npl_share", "provision_coverage"),
     "dcf_valuation": ("wacc", "terminal_value", "enterprise_value", "equity_value"),
     "renewables_dpm": ("degradation", "energy_generation", "energy_tariff"),
-    "real_estate_income": ("cap_rate",),
+    "real_estate_income": ("cap_rate", "noi", "vacancy"),
     "development_escrow": ("escrow_inflow", "escrow_disclosure", "effective_rate"),
+}
+
+# Полная подпись типа. Более короткая метка сюда не попадает и победителем не становится.
+PREFERRED_LABEL = {
+    "real_estate_income": {
+        "noi": "Year 1 net operating income",
+        "vacancy": "Year 1 vacancy",
+    }
 }
 
 
@@ -43,7 +53,7 @@ def cite_type_book_rows(
         return []
     cited = []
     for concept in concepts:
-        status, row = _unique_row(concept, bindings, source, absent)
+        status, row = _unique_row(concept, bindings, source, absent, primary)
         if row is None:
             cited.append({"concept": concept, "status": status, "observations": []})
             continue
@@ -63,20 +73,24 @@ def _unique_row(
     bindings: list[dict],
     type_source: str,
     absent: frozenset[str],
+    primary: str | None,
 ) -> tuple[str, dict | None]:
-    """Одна основная строка. Несколько основных не схлопываются в последнюю."""
+    """Одна основная строка. Несколько основных не схлопываются в последнюю.
 
-    rows = []
-    for row in bindings:
-        if row.get("effective_concept") != concept or not row.get("is_primary"):
-            continue
-        if row.get("status") not in _BOUND:
-            continue
-        if concept in absent and row.get("source") not in _HUMAN:
-            continue
-        if type_source in _HUMAN and row.get("source") not in _HUMAN:
-            continue
-        rows.append(row)
+    Предпочтительная подпись типа забирает свою строку целиком, даже если каскад
+    оставил основной другой ряд. Без такой подписи выбор не делается.
+    """
+
+    preferred = _preferred_rows(concept, bindings, type_source, absent, primary)
+    if preferred:
+        if len(preferred) == 1:
+            return "cited", preferred[0]
+        return "ambiguous", None
+    rows = [
+        row
+        for row in bindings
+        if _citable(row, concept, type_source, absent, primary_only=True)
+    ]
     keys = []
     for row in rows:
         key = row.get("row_key")
@@ -87,6 +101,62 @@ def _unique_row(
     if len(keys) > 1:
         return "ambiguous", None
     return "absent", None
+
+
+def _preferred_rows(
+    concept: str,
+    bindings: list[dict],
+    type_source: str,
+    absent: frozenset[str],
+    primary: str | None,
+) -> list[dict] | None:
+    """Строки с полной предпочтительной подписью. `None` — правила для понятия нет.
+
+    Человеческая основная строка это правило не перекрывает. Пустой список значит,
+    что подпись в книге не встретилась и дальше работает обычный выбор одной строки.
+    """
+
+    text = PREFERRED_LABEL.get(primary or "", {}).get(concept)
+    if not text:
+        return None
+    primaries = [
+        row
+        for row in bindings
+        if _citable(row, concept, type_source, absent, primary_only=True)
+    ]
+    if any(row.get("source") in _HUMAN for row in primaries):
+        return None
+    wanted = label_surface(text)
+    found: dict[str, dict] = {}
+    for row in bindings:
+        if not _citable(row, concept, type_source, absent, primary_only=False):
+            continue
+        label = row.get("matched_label_id")
+        if not isinstance(label, str) or label_surface(label) != wanted:
+            continue
+        found.setdefault(str(row.get("row_key") or ""), row)
+    return list(found.values())
+
+
+def _citable(
+    row: dict,
+    concept: str,
+    type_source: str,
+    absent: frozenset[str],
+    *,
+    primary_only: bool,
+) -> bool:
+    if row.get("effective_concept") != concept:
+        return False
+    if primary_only and not row.get("is_primary"):
+        return False
+    status = row.get("status")
+    allowed = _BOUND if primary_only else _BOUND | {"ambiguous"}
+    if status not in allowed:
+        return False
+    if concept in absent and row.get("source") not in _HUMAN:
+        return False
+    return type_source not in _HUMAN or row.get("source") in _HUMAN
 
 
 def _observations(facts: list[dict], row_key: str) -> list[dict]:
