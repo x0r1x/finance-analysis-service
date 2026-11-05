@@ -94,17 +94,39 @@ def test_debtlens_noi_cap_rate_vacancy_and_dscr():
 
 
 def test_solar_capacity_generation_tariff_and_dscr():
-    dc = _cell("solar", "Solar Financial Model.xlsx", "Model", "D20")
-    ac = _cell("solar", "Solar Financial Model.xlsx", "Model", "D21")
-    degradation = _cell("solar", "Solar Financial Model.xlsx", "Model", "D23")
-    p50 = _cell("solar", "Solar Financial Model.xlsx", "Model", "G18")
-    tariff = _cell("solar", "Solar Financial Model.xlsx", "Model", "H61")
-    dscr_p50 = _cell("solar", "Solar Financial Model.xlsx", "Model", "H108")
-    dscr_p99 = _cell("solar", "Solar Financial Model.xlsx", "Model", "H109")
+    """Кэш якорей. H58:AK58 — 30 значений выработки. Весь тариф H61:AK61 — формула IFERROR.
+
+    H61:AA61 кэширует 72,75. AB61:AK61 кэширует ноль, ячейки не пустые.
+    """
+
+    name = "Solar Financial Model.xlsx"
+    dc = _cell("solar", name, "Model", "D20")
+    ac = _cell("solar", name, "Model", "D21")
+    degradation = _cell("solar", name, "Model", "D23")
+    p50 = _cell("solar", name, "Model", "G18")
+    tariff = _cell("solar", name, "Model", "H61")
+    dscr_p50 = _cell("solar", name, "Model", "H108")
+    dscr_p99 = _cell("solar", name, "Model", "H109")
+    cached = openpyxl.load_workbook(_ROOT / "solar" / name, data_only=True)
+    formulas = openpyxl.load_workbook(_ROOT / "solar" / name, data_only=False)
+    try:
+        generation = [cell.value for cell in cached["Model"]["H58:AK58"][0]]
+        ppa = [cell.value for cell in cached["Model"]["H61:AA61"][0]]
+        after = [cell.value for cell in cached["Model"]["AB61:AK61"][0]]
+        tariff_formulas = [cell.value for cell in formulas["Model"]["H61:AK61"][0]]
+    finally:
+        cached.close()
+        formulas.close()
     assert dc == 25 and ac == 20
     assert degradation == 0.005
     assert round(p50, 0) == 50370
     assert tariff == 72.75
+    assert len(generation) == 30 and generation[0] == p50
+    assert ppa == [72.75] * 20
+    assert after == [0] * 10
+    assert all(item is not None for item in ppa + after)
+    assert len(tariff_formulas) == 30
+    assert all(isinstance(item, str) and item.startswith("=IFERROR(") for item in tariff_formulas)
     assert dscr_p50 == 1.35
     assert round(dscr_p99, 3) == 1.132
     # В книге нет строки capacity factor: P50 МВт·ч / (мощность AC × 8760 ч).
