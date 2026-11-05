@@ -158,7 +158,7 @@ def test_enterprise_and_equity_without_wacc_are_not_confident_dcf():
 def test_debtlens_stays_confident_real_estate_income_at_full_score():
     """Книга связывает шесть понятий и остаётся уверенным real_estate_income со score 1.0.
 
-    Близкие подписи не привязываются. Цитата типа по-прежнему только cap_rate.
+    Близкие подписи не привязываются. Цитата типа — cap_rate, noi и vacancy.
     """
 
     book = "debtlens/DebtLens_Underwriting_Model.xlsx"
@@ -200,7 +200,7 @@ def test_debtlens_stays_confident_real_estate_income_at_full_score():
     assert got.primary == "real_estate_income"
     assert got.labels == ("real_estate_income",)
     assert got.scores["real_estate_income"] == 1.0
-    assert CITED_BY_TYPE["real_estate_income"] == ("cap_rate",)
+    assert CITED_BY_TYPE["real_estate_income"] == ("cap_rate", "noi", "vacancy")
 
 
 def test_fixture_workbooks_classify_from_their_own_labels():
