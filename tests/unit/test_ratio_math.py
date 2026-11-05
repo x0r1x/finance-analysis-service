@@ -585,6 +585,78 @@ def test_ambiguous_base_boundary_lists_candidates_and_does_not_reconcile():
     assert conflicted[0].params["candidates"] == ["2024@факт", "2024@план"]
 
 
+def test_plan_and_forecast_periods_stay_out_of_the_actual_window():
+    """План раньше факта не сверяется. Период без маркера остаётся. Точный id плана сверяется сам."""
+
+    rows, bindings = _statement_pair()
+    periods = [
+        _quarter("q-open", 1),
+        {**_quarter("q-plan", 2), "marker_class": "plan"},
+        {**_quarter("q-mark", 3), "period_marker": "прогноз"},
+        _quarter("2024@forecast", 4),
+        _quarter("q-fact", 5),
+    ]
+    facts = _pair_facts("q-open", "q-plan", "q-mark", "2024@forecast", "q-fact")
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, actuals_end="q-fact")
+    )
+    assert [item.locations[0].period_id for item in found] == ["q-open", "q-fact"]
+    profile = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, profile={"actuals_end": "q-fact"})
+    )
+    assert [item.locations[0].period_id for item in profile] == ["q-open", "q-fact"]
+    marked = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[
+                {**_quarter("2024@план", 1), "marker_class": "actual"},
+                {**_quarter("q-fact", 2), "marker_class": "actual"},
+            ],
+            facts=_pair_facts("2024@план", "q-fact"),
+            bindings=bindings,
+        )
+    )
+    assert [item.locations[0].period_id for item in marked] == ["q-fact"]
+    structural = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[{**_quarter("q1@план", 1)}, _quarter("q2", 2), _quarter("q3", 3)],
+            facts=[
+                {**_fact("model", "100", "q1@план"), "cell_id": "ДДС!B"},
+                {**_fact("model", "100", "q2"), "cell_id": "ДДС!C"},
+                {**_fact("model", "130", "q3"), "cell_id": "ДДС!D"},
+                {**_fact("form", "110", "q1@план"), "cell_id": "ОФР!B"},
+                {**_fact("form", "110", "q2"), "cell_id": "ОФР!C"},
+            ],
+            bindings=bindings,
+            links=[{"cell": "ДДС!D", "row_key": "model", "period_id": "q3", "formula": "=C10"}],
+        )
+    )
+    assert [item.locations[0].period_id for item in structural] == ["q2"]
+    assert structural[0].params["actuals_source"] == "structural"
+    empty = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[{**_quarter("2024@план", 1), "period_key_base": "2024"}],
+            facts=_pair_facts("2024@план"),
+            bindings=bindings,
+            actuals_end="2024",
+        )
+    )
+    assert len(empty) == 1
+    assert empty[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
+    exact = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[_quarter("2023@план", 1), _quarter("q-open", 2), _quarter("2024@план", 3)],
+            facts=_pair_facts("2023@план", "q-open", "2024@план"),
+            bindings=bindings,
+            actuals_end="2024@план",
+        )
+    )
+    assert [item.locations[0].period_id for item in exact] == ["q-open", "2024@план"]
+
+
 def test_actuals_end_journal_keeps_the_latest_value():
     from finance_analysis.domain.audit import (
         actuals_end_from_journal,

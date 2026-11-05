@@ -539,8 +539,11 @@ def _boundary_cut(ordered: list[dict], value: str) -> tuple[int | None, list[dic
     return None, [ordered[index] for index in matches]
 
 
-def _clearly_actual(period: dict) -> bool:
-    """Класс `actual`, явный маркер факта или суффикс `period_id`. Противоречие — не факт."""
+_PLAN_CLASSES = frozenset({"plan", "estimate"})
+
+
+def _marker_signals(period: dict) -> list[str]:
+    """Класс, маркер и суффикс `period_id`, как их читает словарь маркеров."""
 
     seen = []
     klass = period.get("marker_class")
@@ -552,7 +555,30 @@ def _clearly_actual(period: dict) -> bool:
     suffix = _period_suffix(period.get("period_id"))
     if suffix:
         seen.append(marker_class(suffix) or "other")
+    return seen
+
+
+def _clearly_actual(period: dict) -> bool:
+    """Класс `actual`, явный маркер факта или суффикс `period_id`. Противоречие — не факт."""
+
+    seen = _marker_signals(period)
     return bool(seen) and set(seen) == {"actual"}
+
+
+def _clearly_plan(period: dict) -> bool:
+    """План или прогноз: достаточно одного сигнала класса `plan` или `estimate`."""
+
+    return any(item in _PLAN_CLASSES for item in _marker_signals(period))
+
+
+def _drop_plans(window: list[dict], keep_id: str | None) -> list[dict]:
+    """План и прогноз из окна факта. Точный `period_id` явной границы остаётся сам."""
+
+    return [
+        period
+        for period in window
+        if not _clearly_plan(period) or (keep_id is not None and period.get("period_id") == keep_id)
+    ]
 
 
 def _period_suffix(period_id) -> str | None:
@@ -579,7 +605,7 @@ def _resolve_actuals(data: AuditInput) -> tuple | None:
 
     `("window", периоды, источник, граница)` — окно сверки. `("ambiguous",
     кандидаты, граница)` — база назвала несколько периодов и фактический не
-    один. `None` — граница не определена, в том числе явное значение без периода.
+    один. `None` — граница не определена: значение без периода или окно из одних планов.
     """
 
     decision = _text(data.actuals_end)
@@ -588,7 +614,9 @@ def _resolve_actuals(data: AuditInput) -> tuple | None:
     if decision:
         return _named_window(data, decision, "explicit")
     if marked:
-        ordered = _dedupe(marked)
+        ordered = _drop_plans(_dedupe(marked), None)
+        if not ordered:
+            return None
         return ("window", ordered, "explicit", str(ordered[-1].get("period_id")))
     if config:
         return _named_window(data, config, "explicit")
@@ -602,9 +630,10 @@ def _named_window(data: AuditInput, value: str, source: str) -> tuple | None:
     window, ambiguous = _periods_through(data.periods, value)
     if ambiguous:
         return ("ambiguous", ambiguous, value)
-    if not window:
+    kept = _drop_plans(window, value if source == "explicit" else None)
+    if not kept:
         return None
-    return ("window", window, source, value)
+    return ("window", kept, source, value)
 
 
 def _structural_end(data: AuditInput) -> str | None:
