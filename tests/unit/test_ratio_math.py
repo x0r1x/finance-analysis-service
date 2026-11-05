@@ -1148,6 +1148,219 @@ def test_units_row_that_only_copies_revenue_does_not_veto_the_revenue_input():
     assert found[0].params["traced_cells"] == ["Фин отчетность РСБУ!N25"]
 
 
+def _sheet_class_profile() -> dict:
+    return {
+        "sheet_class": {
+            "Фин отчетность РСБУ": "reporting",
+            "Предпосылки": "assumptions",
+            "Предпосылки_": "assumptions",
+        }
+    }
+
+
+def _year_quarters(first: int, last: int) -> list[tuple[str, int, str]]:
+    ends = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
+    found = []
+    index = 1
+    for year in range(first, last + 1):
+        for quarter in range(1, 5):
+            found.append((f"{year}Q{quarter}", index, f"{year}-{ends[quarter]}"))
+            index += 1
+    return found
+
+
+def _reporting_book() -> AuditInput:
+    """Отчётность кончается на N25/2016Q3. Поздние ставки, займы и capex лежат в допущениях."""
+
+    quarters = _year_quarters(2016, 2020)
+    rows = [
+        {"row_key": "model", "binding_key": "model", "scale": "k", "scale_factor": 1000},
+        {"row_key": "op", "binding_key": "op"},
+        {"row_key": "form", "binding_key": "form"},
+        {"row_key": "rsbu", "binding_key": "rsbu"},
+        {"row_key": "depr", "binding_key": "depr"},
+        {"row_key": "rate", "binding_key": "rate"},
+    ]
+    bindings = [
+        _binding("revenue", "model", evidence={"period_basis": "period", "period_basis_source": "label"}),
+        _binding(
+            "revenue",
+            "form",
+            is_primary=False,
+            evidence={"role": "reference", "period_basis": "ytd", "period_basis_source": "header"},
+        ),
+        _binding("operating_profit", "op", evidence={"period_basis": "period", "period_basis_source": "label"}),
+    ]
+    periods = [{**_quarter("2015Q4", 0, end="2015-12-31"), "axis_id": "report"}]
+    for axis in ("model", "form", "report", "assumptions"):
+        periods.extend({**_quarter(period, index, end=end), "axis_id": axis} for period, index, end in quarters)
+    revenue_inputs = {"2016Q1": "Фин отчетность РСБУ!K25", "2016Q2": "Фин отчетность РСБУ!L25", "2016Q3": "Фин отчетность РСБУ!N25"}
+    assumptions = {
+        "Предпосылки!G186": "2016Q4",
+        "Предпосылки_!K62": "2016Q4",
+        "Предпосылки!R190": "2019Q3",
+        "Предпосылки!R202": "2019Q3",
+        "Предпосылки!U191": "2020Q2",
+        "Предпосылки!U198": "2020Q2",
+        "Предпосылки!W180": "2020Q4",
+    }
+    facts = [
+        {**_fact("rsbu", "100", period), "axis_id": "report", "cell_id": cell}
+        for period, cell in revenue_inputs.items()
+    ]
+    facts.append({**_fact("depr", "50", "2015Q4"), "axis_id": "report", "cell_id": "Фин отчетность РСБУ!K43"})
+    facts.append(
+        {
+            "row_key": "depr",
+            "axis_id": "report",
+            "period_id": "2016Q4",
+            "cell_id": "Фин отчетность РСБУ!N43",
+            "normalized_value": None,
+            "value_status": "empty",
+        }
+    )
+    facts.extend(
+        {**_fact("rate", "1", period), "axis_id": "assumptions", "cell_id": cell} for cell, period in assumptions.items()
+    )
+    links = []
+    for period, _index, _end in quarters:
+        year, quarter = int(period[:4]), int(period[-1])
+        facts.append(
+            {**_fact("model", "4000", period), "axis_id": "model", "cell_id": f"Денежные потоки!{period}"}
+        )
+        facts.append({**_fact("op", "1", period), "axis_id": "model", "cell_id": f"Опер!{period}"})
+        links.append(
+            {
+                "cell": f"Опер!{period}",
+                "row_key": "op",
+                "period_id": period,
+                "formula": "=K43",
+                "ref_cell": "Фин отчетность РСБУ!K43",
+            }
+        )
+        if period in revenue_inputs:
+            links.append(
+                {
+                    "cell": f"Денежные потоки!{period}",
+                    "row_key": "model",
+                    "period_id": period,
+                    "formula": f"={revenue_inputs[period]}",
+                    "ref_cell": revenue_inputs[period],
+                }
+            )
+        else:
+            links.append(
+                {
+                    "cell": f"Денежные потоки!{period}",
+                    "row_key": "model",
+                    "period_id": period,
+                    "formula": "=G186",
+                    "ref_cell": "Предпосылки!G186",
+                }
+            )
+        if (year, quarter) < (2016, 4):
+            continue
+        form_value = str(4 * quarter)
+        facts.append(
+            {**_fact("form", form_value, period), "axis_id": "form", "cell_id": f"ОПиУ!{period}", "normalized_value": form_value}
+        )
+        for earlier, _earlier_index, _earlier_end in quarters:
+            if earlier[:4] == period[:4] and earlier <= period:
+                links.append(
+                    {
+                        "cell": f"ОПиУ!{period}",
+                        "row_key": "form",
+                        "period_id": period,
+                        "formula": "=год",
+                        "ref_cell": f"Денежные потоки!{earlier}",
+                    }
+                )
+    links.append(
+        {
+            "cell": "Опер!2016Q4",
+            "row_key": "op",
+            "period_id": "2016Q4",
+            "formula": "=N43",
+            "ref_cell": "Фин отчетность РСБУ!N43",
+        }
+    )
+    for cell, period in assumptions.items():
+        links.append(
+            {
+                "cell": f"Опер!{period}",
+                "row_key": "op",
+                "period_id": period,
+                "formula": f"={cell}",
+                "ref_cell": cell,
+            }
+        )
+    return AuditInput(
+        rows=rows,
+        periods=periods,
+        facts=facts,
+        bindings=bindings,
+        links=links,
+        profile=_sheet_class_profile(),
+    )
+
+
+def test_reporting_sheet_inputs_set_the_boundary_and_assumptions_stay_diagnostics():
+    """Последний ввод отчётности — 2016Q3. Поздние допущения границу не двигают и не отменяют."""
+
+    data = _reporting_book()
+    found = STATEMENT_REFERENCE.check(data)
+    assert [item.params["cause"] for item in found] == ["actuals_no_overlap"]
+    assert found[0].params["message"] == (
+        "факт заканчивается на 2016Q3, форма начинается с 2016Q4, общих периодов для сверки нет"
+    )
+    assert found[0].params["actuals_source"] == "structural_traced"
+    assert found[0].params["actuals_end"] == "2016Q3"
+    assert "Фин отчетность РСБУ!N25" in found[0].params["traced_cells"]
+    assert "Фин отчетность РСБУ!K43" not in found[0].params["traced_cells"]
+    notes = found[0].params["forecast_assumptions"]
+    assert [item["message"] for item in notes] == ["допущения прогноза, не факт"] * len(notes)
+    assert [(item["cell"], item["period"]) for item in notes] == [
+        ("Предпосылки!G186", "2016Q4"),
+        ("Предпосылки_!K62", "2016Q4"),
+        ("Предпосылки!R190", "2019Q3"),
+        ("Предпосылки!R202", "2019Q3"),
+        ("Предпосылки!U191", "2020Q2"),
+        ("Предпосылки!U198", "2020Q2"),
+        ("Предпосылки!W180", "2020Q4"),
+    ]
+    covered = STATEMENT_REFERENCE.check(AuditInput(
+        rows=data.rows,
+        periods=data.periods,
+        facts=data.facts,
+        bindings=data.bindings,
+        links=data.links,
+        profile=data.profile,
+        actuals_end="2020Q4",
+    ))
+    assert covered == []
+
+
+def test_without_a_reporting_input_the_traced_boundary_stays_ambiguous():
+    """Нет ввода на листе отчётности — дата не угадывается, допущения остаются в диагностике."""
+
+    rows, bindings, periods, facts, links = _open_revenue_chain()
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=periods,
+            facts=facts,
+            bindings=bindings,
+            links=links,
+            profile={"sheet_class": {"Фин отчетность РСБУ": "assumptions"}},
+        )
+    )
+    assert found[0].params["cause"] == "structural_traced_ambiguous"
+    assert found[0].params["message"].startswith("граница фактов неоднозначна")
+    assert found[0].params["candidates"] == []
+    assert "actuals_end" not in found[0].params
+    assert any(item["cell"] == "Фин отчетность РСБУ!N25" and item["message"] == "допущения прогноза, не факт" for item in found[0].params["forecast_assumptions"])
+
+
 def test_boundary_that_misses_the_row_axis_stays_undetermined():
     rows, bindings = _statement_pair()
     quarters = [{**_quarter(period, index), "axis_id": "pl"} for index, period in enumerate(("2016Q1", "2016Q2", "2016Q3"), start=1)]

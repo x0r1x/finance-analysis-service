@@ -30,6 +30,9 @@ _STATEMENT_DIVERGENCE = "Строка модели расходится с от�
 _ACTUAL_UNKNOWN = "фактические периоды не определены, сверка с отчётностью не выполнена"
 _ACTUAL_AMBIGUOUS = "граница факта «{value}» неоднозначна, сверка с отчётностью не выполнена: {candidates}"
 _TRACED_AMBIGUOUS = "граница фактов неоднозначна, сверка с отчётностью не выполнена: {candidates}"
+_FORECAST_ASSUMPTION = "допущения прогноза, не факт"
+_CLASS_REPORTING = frozenset({"reporting", "отчетность"})
+_CLASS_ASSUMPTIONS = frozenset({"assumptions", "предпосылки"})
 _YTD_GAP = "для сверки нарастающего итога на {period} не хватает значения модели за {missing}, период пропущен"
 _AXIS_MISS = "значение границы фактов не попало на ось сверяемой строки"
 _NO_OVERLAP = "факт заканчивается на {end}, форма начинается с {start}, общих периодов для сверки нет"
@@ -630,11 +633,11 @@ def _resolve_actuals(data: AuditInput) -> tuple | None:
         return None
     if boundary[0] == "traced_ambiguous":
         return boundary
-    source, end, cells = boundary
+    source, end, cells, *rest = boundary
     resolved = _named_window(data, end, source)
     if resolved is None or resolved[0] != "window":
         return resolved
-    return (*resolved, cells)
+    return (*resolved, cells, rest[0] if rest else [])
 
 
 def _named_window(data: AuditInput, value: str, source: str) -> tuple | None:
@@ -665,14 +668,121 @@ def _structural_boundary(data: AuditInput) -> tuple[str, str, list[str]] | None:
     if traced is None:
         return None
     if traced[0] == "ambiguous":
-        return ("traced_ambiguous", traced[1])
+        return ("traced_ambiguous", traced[1], traced[2] if len(traced) > 2 else [])
     period_id, cells, both = traced[1], traced[2], traced[3]
+    diagnostics = traced[4] if len(traced) > 4 else []
     if not _trace_accepted(data, period_id, span, both):
         return None
-    return "structural_traced", period_id, cells
+    return "structural_traced", period_id, cells, diagnostics
+
+
+def _sheet_classes(data: AuditInput) -> dict[str, str]:
+    """Класс листа из профиля `sheet_class`. Пустой словарь — класс по имени не угадывается."""
+
+    raw = (data.profile or {}).get("sheet_class")
+    if not isinstance(raw, dict):
+        return {}
+    found = {}
+    for name, klass in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        token = str(klass or "").casefold().replace("ё", "е").strip()
+        if token in _CLASS_REPORTING:
+            found[sheet_name_key(name)] = "reporting"
+        elif token in _CLASS_ASSUMPTIONS:
+            found[sheet_name_key(name)] = "assumptions"
+    return found
+
+
+def _cell_sheet(cell: str) -> str:
+    return cell.split("!", 1)[0] if "!" in cell else ""
+
+
+def _reporting_traced(data: AuditInput, classes: dict[str, str]) -> tuple | None:
+    """Общая граница книги: последний ввод отчётности, который формулы реально читают.
+
+    Более ранний ввод отчётности не спорит. Ввод допущений границу не двигает.
+    """
+
+    reporting: list[dict] = []
+    assumptions: list[dict] = []
+    seen: set[str] = set()
+    targets: list[str] = []
+    saw = False
+    for concept in _STATEMENT_CONCEPTS:
+        primary = _primary(data, concept)
+        if primary is None or not _all_formula(data, primary.get("row_key")):
+            continue
+        saw = True
+        targets.extend(_row_axes(data, primary.get("row_key")))
+        keys = [primary.get("row_key")]
+        keys.extend(ref.get("row_key") for ref in _form_rows(data, concept, primary))
+        for key in keys:
+            if not key:
+                continue
+            for refs in _precedent_refs(data, key).values():
+                for ref in refs:
+                    if not ref or ref in seen:
+                        continue
+                    fact = data.facts_by_cell.get(ref)
+                    if fact is None or not fact.get("cell_id"):
+                        continue
+                    if _fact_formula(data, fact) or _fact_number(fact) is None:
+                        continue
+                    seen.add(ref)
+                    kind = classes.get(sheet_name_key(_cell_sheet(ref)))
+                    if kind == "reporting":
+                        reporting.append(fact)
+                    elif kind == "assumptions":
+                        assumptions.append(fact)
+    if not saw:
+        return None
+    notes = _assumption_notes(data, assumptions)
+    if not reporting:
+        return ("ambiguous", [], notes)
+    best = max(_input_rank(data, fact) for fact in reporting)
+    latest = [fact for fact in reporting if _input_rank(data, fact) == best]
+    mapped: list[str] = []
+    cells: list[str] = []
+    for fact in latest:
+        ids = []
+        for axis in dict.fromkeys(targets):
+            item = _map_cut(data, str(fact.get("row_key")), str(fact.get("period_id")), axis)
+            if item and item not in ids:
+                ids.append(item)
+        cell = str(fact.get("cell_id"))
+        if len(ids) != 1:
+            grouped: dict[str, list[str]] = {}
+            for item in latest:
+                _remember_cut(grouped, str(item.get("period_id")), [str(item.get("cell_id"))])
+            return ("ambiguous", _ordered_cuts(data, grouped), notes)
+        mapped.append(ids[0])
+        if cell not in cells:
+            cells.append(cell)
+    if len(set(mapped)) != 1:
+        grouped = {}
+        for period, cell in zip(mapped, cells, strict=True):
+            _remember_cut(grouped, period, [cell])
+        return ("ambiguous", _ordered_cuts(data, grouped), notes)
+    return ("cut", mapped[0], cells, True, notes)
+
+
+def _assumption_notes(data: AuditInput, facts: list[dict]) -> list[dict]:
+    notes = []
+    seen: set[str] = set()
+    for fact in sorted(facts, key=lambda item: _input_rank(data, item)):
+        cell = str(fact.get("cell_id"))
+        if cell in seen:
+            continue
+        seen.add(cell)
+        notes.append({"cell": cell, "period": str(fact.get("period_id")), "message": _FORECAST_ASSUMPTION})
+    return notes
 
 
 def _traced_boundary(data: AuditInput) -> tuple | None:
+    classes = _sheet_classes(data)
+    if classes:
+        return _reporting_traced(data, classes)
     grouped: dict[str, list[str]] = {}
     main_ids: set[str] = set()
     form_ids: set[str] = set()
@@ -693,10 +803,10 @@ def _traced_boundary(data: AuditInput) -> tuple | None:
         return None
     ordered = _ordered_cuts(data, grouped)
     if len(ordered) > 1:
-        return ("ambiguous", ordered)
+        return ("ambiguous", ordered, [])
     period, cells = ordered[0]
     both = period in main_ids and form_ids == {period}
-    return ("cut", period, cells, both)
+    return ("cut", period, cells, both, [])
 
 
 def _remember_cut(grouped: dict[str, list[str]], period: str, cells: list[str]) -> None:
@@ -1112,9 +1222,11 @@ class StatementReference(Rule):
         if resolved[0] == "traced_ambiguous":
             if not _has_statement_pair(data):
                 return []
-            return [_traced_ambiguous(self, data, resolved[1])]
+            return [_traced_ambiguous(self, data, resolved[1], resolved[2] if len(resolved) > 2 else [])]
         _kind, actual, source, end, *extra = resolved
         traced = extra[0] if extra else []
+        notes = extra[1] if len(extra) > 1 else []
+        noted = {"forecast_assumptions": notes} if notes else {}
         findings = []
         axis_miss = False
         compared = False
@@ -1166,6 +1278,7 @@ class StatementReference(Rule):
                                     "actuals_end": end,
                                     **({"scale_source": scale_source} if scale_source else {}),
                                     **({"traced_cells": list(traced)} if traced else {}),
+                                    **noted,
                                 },
                             )
                         )
@@ -1196,6 +1309,7 @@ class StatementReference(Rule):
                                     data, primary["row_key"], ref["row_key"], [], period["period_id"]
                                 ),
                                 **({"scale_source": scale_source} if scale_source else {}),
+                                **noted,
                             },
                         )
                     )
@@ -1217,6 +1331,7 @@ class StatementReference(Rule):
                                     "fact_end": finish.get("period_id"),
                                     "form_start": start.get("period_id"),
                                     **({"traced_cells": list(traced)} if traced else {}),
+                                    **noted,
                                 },
                             )
                         )
@@ -1418,7 +1533,9 @@ def _calendar_year(period: dict) -> int | None:
     return None
 
 
-def _traced_ambiguous(rule: StatementReference, data: AuditInput, cuts: list[tuple[str, list[str]]]) -> Finding:
+def _traced_ambiguous(
+    rule: StatementReference, data: AuditInput, cuts: list[tuple[str, list[str]]], notes: list[dict] | None = None
+) -> Finding:
     """Несколько настоящих дат прослеженного ввода. Ни одну не выбираем и сверку не глушим общей фразой."""
 
     labels = [f"{period} ({', '.join(cells)})" if cells else period for period, cells in cuts]
@@ -1431,6 +1548,7 @@ def _traced_ambiguous(rule: StatementReference, data: AuditInput, cuts: list[tup
             "message": _TRACED_AMBIGUOUS.format(candidates=", ".join(labels)),
             "candidates": [period for period, _cells in cuts],
             "cells": cells,
+            **({"forecast_assumptions": notes} if notes else {}),
         },
     )
 
