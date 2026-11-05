@@ -17,6 +17,7 @@ from finance_analysis.domain.audit import (
 )
 from finance_analysis.domain.metrics import coverage_ratio
 from finance_analysis.domain.model_type import sheet_name_key
+from finance_analysis.domain.period_basis import basis_of
 from finance_analysis.domain.periods import marker_class, split_period_key
 
 _TOLERANCE = Decimal("0.005")
@@ -28,6 +29,7 @@ _ICR_AMBIGUOUS = "На оси расчёта ICR несколько справо
 _STATEMENT_DIVERGENCE = "Строка модели расходится с отчётной формой на фактическом {grain}."
 _ACTUAL_UNKNOWN = "фактические периоды не определены, сверка с отчётностью не выполнена"
 _ACTUAL_AMBIGUOUS = "граница факта «{value}» неоднозначна, сверка с отчётностью не выполнена: {candidates}"
+_YTD_GAP = "для сверки нарастающего итога на {period} не хватает значения модели за {missing}, период пропущен"
 # Проценты не сверяются: начисление и уплата — разные основания, это сравнение отложено.
 _STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income")
 _GRAIN_WORD = {"quarter": "квартале", "month": "месяце", "year": "году"}
@@ -798,11 +800,30 @@ class StatementReference(Rule):
             message = _STATEMENT_DIVERGENCE.format(grain=_grain_word(grain))
             model_values = _cached(data, primary["row_key"])
             for ref in _form_rows(data, concept, primary):
-                reported = _cached(data, ref["row_key"])
+                reported, scale_source = _reported_values(data, concept, ref)
                 for period in comparable:
-                    key = (period["axis_id"], period["period_id"])
-                    left = _same_period(model_values, key)
-                    right = _same_period(reported, key)
+                    left, right, missing = _aligned_values(data, primary, ref, period, model_values, reported)
+                    if missing:
+                        findings.append(
+                            self.finding(
+                                data,
+                                row_key=primary["row_key"],
+                                axis_id=period["axis_id"],
+                                period_id=period["period_id"],
+                                params={
+                                    "cause": "ytd_incomplete",
+                                    "concept": concept,
+                                    "message": _YTD_GAP.format(
+                                        period=period["period_id"], missing=", ".join(missing)
+                                    ),
+                                    "missing": missing,
+                                    "actuals_source": source,
+                                    "actuals_end": end,
+                                    **({"scale_source": scale_source} if scale_source else {}),
+                                },
+                            )
+                        )
+                        continue
                     if left is None or right is None or _within(left, right):
                         continue
                     findings.append(
@@ -821,10 +842,184 @@ class StatementReference(Rule):
                                 "cells": _named_cells(
                                     data, primary["row_key"], ref["row_key"], [], period["period_id"]
                                 ),
+                                **({"scale_source": scale_source} if scale_source else {}),
                             },
                         )
                     )
         return findings
+
+
+def _reported_values(data: AuditInput, concept: str, ref: dict) -> tuple[dict[tuple[str, str], Decimal], str | None]:
+    """Числа формы. Пустой масштаб строки берётся у ячеек-источников, если он один и тот же."""
+
+    values = _cached(data, ref["row_key"])
+    factor, source = _scale_for_form(data, concept, ref)
+    if factor is None:
+        return values, source
+    return {key: value * factor for key, value in values.items()}, source
+
+
+def _scale_for_form(data: AuditInput, concept: str, ref: dict) -> tuple[Decimal | None, str | None]:
+    if _has_scale_hint(data, ref["row_key"]):
+        return None, "given"
+    factor = _dependency_scale(data, ref["row_key"])
+    if factor is None or _scale_conflicts(data, concept, ref["row_key"], factor):
+        return None, None
+    return factor, "inferred_from_dependencies"
+
+
+def _has_scale_hint(data: AuditInput, row_key: str) -> bool:
+    row = data.rows_by_key.get(row_key) or {}
+    if row.get("unit") or row.get("scale"):
+        return True
+    return _row_factor(data, row_key) is not None
+
+
+def _row_factor(data: AuditInput, row_key: str) -> Decimal | None:
+    factors = []
+    for fact in data.facts:
+        if fact.get("row_key") != row_key:
+            continue
+        scale = fact.get("scale_factor")
+        if scale in (None, ""):
+            continue
+        factors.append(Decimal(str(scale)))
+    if len(set(factors)) != 1:
+        return None
+    return factors[0]
+
+
+def _dependency_scale(data: AuditInput, row_key: str) -> Decimal | None:
+    """Общий масштаб ячеек, на которые ссылаются формулы строки. Разные масштабы не угадываются."""
+
+    factors: list[Decimal] = []
+    seen: set[str] = set()
+    stack = [fact.get("cell_id") for fact in data.facts if fact.get("row_key") == row_key and fact.get("cell_id")]
+    while stack:
+        cell = stack.pop()
+        if not cell or cell in seen:
+            continue
+        seen.add(cell)
+        for ref in _refs_of(data, cell):
+            fact = data.facts_by_cell.get(ref)
+            if fact is None:
+                continue
+            scale = fact.get("scale_factor")
+            if scale not in (None, ""):
+                factors.append(Decimal(str(scale)))
+                continue
+            if fact.get("cell_id"):
+                stack.append(fact["cell_id"])
+    if len(set(factors)) != 1:
+        return None
+    return factors[0]
+
+
+def _refs_of(data: AuditInput, cell: str) -> list[str]:
+    found = []
+    link = data.link_cells.get(cell)
+    if link is not None:
+        found.extend(link.refs)
+    for row in data.links:
+        ref = row.get("ref_cell")
+        if row.get("cell") == cell and ref and ref not in found:
+            found.append(ref)
+    return found
+
+
+def _scale_conflicts(data: AuditInput, concept: str, row_key: str, factor: Decimal) -> bool:
+    """Другая привязанная строка того же понятия с явным масштабом его не подтверждает."""
+
+    for binding in data.bindings:
+        other = binding.get("row_key")
+        if not other or other == row_key or binding.get("status") not in _BOUND:
+            continue
+        if (binding.get("effective_concept") or binding.get("concept")) != concept:
+            continue
+        own = _row_factor(data, other)
+        if own is not None and own != factor:
+            return True
+    return False
+
+
+def _aligned_values(
+    data: AuditInput,
+    primary: dict,
+    ref: dict,
+    period: dict,
+    model_values: dict[tuple[str, str], Decimal],
+    reported: dict[tuple[str, str], Decimal],
+) -> tuple[Decimal | None, Decimal | None, list[str]]:
+    """Пара для сверки. Нарастающий итог сравнивается с суммой модели с начала года, без вычитания формы."""
+
+    key = (period.get("axis_id"), period.get("period_id"))
+    right = _same_period(reported, key)
+    if basis_of(ref)[0] == "ytd" and basis_of(primary)[0] == "period":
+        total, missing = _year_to_date(data, primary.get("row_key"), model_values, period)
+        if missing:
+            return None, None, missing
+        if total is not None:
+            return total, right, []
+    return _same_period(model_values, key), right, []
+
+
+def _year_to_date(
+    data: AuditInput, row_key: str | None, values: dict[tuple[str, str], Decimal], period: dict
+) -> tuple[Decimal | None, list[str]]:
+    """Сумма модели с начала фискального года. Без года сумма не строится: сравнивается сам период."""
+
+    axes = set(_row_axes(data, row_key or ""))
+    home = next(
+        (
+            item
+            for item in data.periods
+            if item.get("axis_id") in axes and item.get("period_id") == period.get("period_id")
+        ),
+        None,
+    )
+    if home is None:
+        return None, []
+    year = _calendar_year(home)
+    if year is None:
+        return None, []
+    ordered = _order(
+        [
+            item
+            for item in data.periods
+            if item.get("axis_id") == home.get("axis_id") and _calendar_year(item) == year
+        ]
+    )
+    index = next((pos for pos, item in enumerate(ordered) if item.get("period_id") == home.get("period_id")), None)
+    if index is None:
+        return None, []
+    missing = []
+    total = Decimal(0)
+    for item in ordered[: index + 1]:
+        key = (item.get("axis_id"), item.get("period_id"))
+        if key not in values:
+            missing.append(str(item.get("period_id")))
+            continue
+        total += values[key]
+    if missing:
+        return None, missing
+    return total, []
+
+
+def _calendar_year(period: dict) -> int | None:
+    year = period.get("calendar_year")
+    if isinstance(year, int) and not isinstance(year, bool):
+        return year
+    for key in ("period_start", "period_end"):
+        raw = period.get(key)
+        if isinstance(raw, datetime):
+            return raw.year
+        if isinstance(raw, date):
+            return raw.year
+        if isinstance(raw, str):
+            parsed = _iso_date(raw[:10])
+            if parsed is not None:
+                return parsed.year
+    return None
 
 
 def _ambiguous_boundary(rule: StatementReference, data: AuditInput, periods: list[dict], value: str) -> Finding:

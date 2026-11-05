@@ -657,6 +657,116 @@ def test_plan_and_forecast_periods_stay_out_of_the_actual_window():
     assert [item.locations[0].period_id for item in exact] == ["q-open", "2024@план"]
 
 
+def _scaled_quarter(period: str, index: int, year: int, axis: str = "model") -> dict:
+    return {**_quarter(period, index), "axis_id": axis, "calendar_year": year}
+
+
+def test_ytd_form_compares_model_cumulative_sum_at_an_inferred_scale():
+    """Форма нарастающим итогом сверяется с суммой модели с начала года. Масштаб берётся у источников."""
+
+    rows = [
+        {"row_key": "model", "binding_key": "model"},
+        {"row_key": "form", "binding_key": "form"},
+        {"row_key": "flm", "binding_key": "flm"},
+    ]
+    bindings = [
+        _binding("revenue", "model", evidence={"period_basis": "period", "period_basis_source": "label"}),
+        _binding(
+            "revenue",
+            "form",
+            is_primary=False,
+            evidence={"role": "reference", "period_basis": "ytd", "period_basis_source": "header"},
+        ),
+        _binding("revenue", "flm", is_primary=False),
+    ]
+    periods = [
+        _scaled_quarter("2016Q1", 1, 2016),
+        _scaled_quarter("2016Q2", 2, 2016),
+        _scaled_quarter("2016Q3", 3, 2016),
+        _scaled_quarter("2016Q4", 4, 2016),
+        _scaled_quarter("2017Q1", 5, 2017),
+    ]
+    model = {"2016Q1": "10000", "2016Q2": "20000", "2016Q3": "30000", "2016Q4": "40000", "2017Q1": "5000"}
+    form = {"2016Q1": "10", "2016Q2": "30", "2016Q3": "60", "2016Q4": "100", "2017Q1": "5"}
+    facts = [
+        {
+            **_fact("model", value, period),
+            "axis_id": "model",
+            "cell_id": f"ДДС!{period}",
+            "scale_factor": 1000,
+            "normalized_value": value,
+        }
+        for period, value in model.items()
+    ]
+    facts += [
+        {**_fact("form", value, period), "axis_id": "form", "cell_id": f"ОПиУ!{period}", "normalized_value": value}
+        for period, value in form.items()
+    ]
+    facts.append({**_fact("flm", "100000", "2016Q4"), "axis_id": "flm", "cell_id": "FLM!B12", "scale_factor": 1000})
+    links = [
+        {"cell": f"ОПиУ!{period}", "row_key": "form", "period_id": period, "formula": f"=ДДС!{period}", "ref_cell": f"ДДС!{period}"}
+        for period in model
+    ]
+    matched = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, links=links, actuals_end="2017Q1")
+    )
+    assert matched == []
+    without_flm = [fact for fact in facts if fact.get("row_key") != "flm"]
+    assert (
+        STATEMENT_REFERENCE.check(
+            AuditInput(rows=rows, periods=periods, facts=without_flm, bindings=bindings, links=links, actuals_end="2017Q1")
+        )
+        == []
+    )
+    close = form | {"2016Q4": "100.0000001"}
+    close_facts = [fact for fact in facts if fact.get("row_key") != "form"]
+    close_facts += [
+        {**_fact("form", value, period), "axis_id": "form", "cell_id": f"ОПиУ!{period}", "normalized_value": value}
+        for period, value in close.items()
+    ]
+    assert (
+        STATEMENT_REFERENCE.check(
+            AuditInput(rows=rows, periods=periods, facts=close_facts, bindings=bindings, links=links, actuals_end="2017Q1")
+        )
+        == []
+    )
+    gapped = [fact for fact in facts if not (fact.get("row_key") == "model" and fact.get("period_id") == "2016Q2")]
+    gaps = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=gapped, bindings=bindings, links=links, actuals_end="2017Q1")
+    )
+    assert [item.params["cause"] for item in gaps] == ["ytd_incomplete", "ytd_incomplete", "ytd_incomplete"]
+    assert gaps[0].params["missing"] == ["2016Q2"]
+    assert "2016Q3" in gaps[1].params["message"]
+    conflicted = [fact if fact.get("row_key") != "flm" else {**fact, "scale_factor": 1} for fact in facts]
+    raw = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=conflicted, bindings=bindings, links=links, actuals_end="2016Q1")
+    )
+    assert raw[0].params["model"] == "10000"
+    assert raw[0].params["reported"] == "10"
+    assert "scale_source" not in raw[0].params
+    given_facts = [
+        {
+            **_fact("form", "5000", "2016Q1"),
+            "axis_id": "form",
+            "cell_id": "ОПиУ!2016Q1",
+            "scale_factor": 1000,
+            "normalized_value": "5000",
+        }
+    ]
+    given = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=periods[:1],
+            facts=[fact for fact in facts if fact.get("period_id") == "2016Q1" and fact.get("row_key") == "model"] + given_facts,
+            bindings=bindings,
+            links=links,
+            actuals_end="2016Q1",
+        )
+    )
+    assert given[0].params["scale_source"] == "given"
+    assert given[0].params["reported"] == "5000"
+
+
 def test_actuals_end_journal_keeps_the_latest_value():
     from finance_analysis.domain.audit import (
         actuals_end_from_journal,
