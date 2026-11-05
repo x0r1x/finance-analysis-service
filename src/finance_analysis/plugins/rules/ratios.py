@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from decimal import Decimal
 
 from finance_analysis.domain.audit import (
@@ -428,19 +429,231 @@ def _named_cells(
     return cells
 
 
+_CONFLICT = "conflict"
+
+
+def _text(value) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _iso_date(text: str) -> date | None:
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _period_end(period: dict) -> date | None:
+    raw = period.get("period_end")
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if isinstance(raw, str) and raw:
+        return _iso_date(raw[:10])
+    return None
+
+
+def _order(periods: list[dict]) -> list[dict]:
+    def key(period: dict) -> tuple:
+        index = period.get("period_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            index = 10**9
+        return index, str(period.get("period_id") or "")
+
+    return sorted(periods, key=key)
+
+
+def _dedupe(periods: list[dict]) -> list[dict]:
+    seen: set = set()
+    found = []
+    for period in _order(periods):
+        pid = period.get("period_id")
+        if pid in seen:
+            continue
+        seen.add(pid)
+        found.append(period)
+    return found
+
+
+def _periods_through(periods: list[dict], value: str) -> list[dict]:
+    """Периоды до границы включительно. Граница — `period_id` или дата конца."""
+
+    if value in {period.get("period_id") for period in periods}:
+        selected = []
+        by_axis: dict[str, list[dict]] = {}
+        for period in periods:
+            by_axis.setdefault(period.get("axis_id"), []).append(period)
+        for rows in by_axis.values():
+            ordered = _order(rows)
+            keys = [row.get("period_id") for row in ordered]
+            selected.extend(ordered[: keys.index(value) + 1])
+        return _dedupe(selected)
+    boundary = _iso_date(value)
+    if boundary is None:
+        return []
+    return _dedupe(
+        [period for period in periods if (end := _period_end(period)) is not None and end <= boundary]
+    )
+
+
+def _resolve_actuals(data: AuditInput) -> tuple[list[dict], str, str] | None:
+    """Каскад границы факта: явное решение, маркер, профиль, затем структура.
+
+    `None` — граница не определена. Пустой список — граница задана, но в неё
+    не попал ни один период.
+    """
+
+    decision = _text(data.actuals_end)
+    marked = [period for period in data.periods if period.get("marker_class") == "actual"]
+    config = _text((data.profile or {}).get("actuals_end"))
+    if decision:
+        return _periods_through(data.periods, decision), "explicit", decision
+    if marked:
+        ordered = _dedupe(marked)
+        return ordered, "explicit", str(ordered[-1].get("period_id"))
+    if config:
+        return _periods_through(data.periods, config), "explicit", config
+    end = _structural_end(data)
+    if end is None:
+        return None
+    window = _periods_through(data.periods, end)
+    if not window:
+        return None
+    return window, "structural", end
+
+
+def _structural_end(data: AuditInput) -> str | None:
+    """Последний фактический период, если смена формулы и охват формы называют одно и то же."""
+
+    formula = _agreed(_formula_cuts(data))
+    span = _agreed(_span_cuts(data))
+    if formula in (None, _CONFLICT) or span in (None, _CONFLICT) or formula != span:
+        return None
+    return formula
+
+
+def _agreed(cuts: list[str | None]) -> str | None:
+    present = [cut for cut in cuts if cut]
+    if not present:
+        return None
+    if len(set(present)) != 1:
+        return _CONFLICT
+    return present[0]
+
+
+def _formula_cuts(data: AuditInput) -> list[str | None]:
+    cuts = []
+    for concept in _STATEMENT_CONCEPTS:
+        primary = _primary(data, concept)
+        if primary is None:
+            continue
+        cuts.append(_formula_cut(data, primary))
+    return cuts
+
+
+def _formula_cut(data: AuditInput, primary: dict) -> str | None:
+    """Последний ввод перед формулами. Смешанный ряд границу не даёт."""
+
+    grain = _primary_grain(data, primary)
+    row_key = primary.get("row_key")
+    timeline = _timeline(data, grain)
+    kinds = [_cell_kind(data, row_key, period) for period in timeline]
+    compact = [(period, kind) for period, kind in zip(timeline, kinds, strict=True) if kind != "blank"]
+    if not compact:
+        return None
+    labels = [kind for _, kind in compact]
+    inputs = labels.count("input")
+    if inputs == 0 or "formula" not in labels:
+        return None
+    if labels != ["input"] * inputs + ["formula"] * (len(labels) - inputs):
+        return None
+    return str(compact[inputs - 1][0].get("period_id"))
+
+
+def _cell_kind(data: AuditInput, row_key: str | None, period: dict) -> str:
+    facts = [
+        fact
+        for fact in data.facts
+        if fact.get("row_key") == row_key and fact.get("period_id") == period.get("period_id")
+    ]
+    if not facts:
+        return "blank"
+    if any(_fact_formula(data, fact) for fact in facts):
+        return "formula"
+    if any(_fact_number(fact) is not None for fact in facts):
+        return "input"
+    return "blank"
+
+
+def _fact_formula(data: AuditInput, fact: dict) -> bool:
+    cell = fact.get("cell_id")
+    if cell and cell in data.link_cells:
+        return True
+    return any(
+        link.get("row_key") == fact.get("row_key")
+        and link.get("period_id") == fact.get("period_id")
+        and (link.get("formula") or link.get("cell"))
+        for link in data.links
+    )
+
+
+def _span_cuts(data: AuditInput) -> list[str | None]:
+    cuts = []
+    for concept in _STATEMENT_CONCEPTS:
+        primary = _primary(data, concept)
+        if primary is None:
+            continue
+        grain = _primary_grain(data, primary)
+        timeline = _timeline(data, grain)
+        for ref in _form_rows(data, concept, primary):
+            cuts.append(_span_cut(data, timeline, ref["row_key"]))
+    return cuts
+
+
+def _span_cut(data: AuditInput, timeline: list[dict], row_key: str) -> str | None:
+    """Последний заполненный период формы перед пустым хвостом."""
+
+    if not timeline:
+        return None
+    values = _cached(data, row_key)
+    filled = [
+        _same_period(values, (period.get("axis_id"), period.get("period_id"))) is not None for period in timeline
+    ]
+    if not any(filled) or all(filled):
+        return None
+    gap = filled.index(False)
+    if any(filled[gap:]):
+        return None
+    return str(timeline[gap - 1].get("period_id"))
+
+
+def _timeline(data: AuditInput, grain: str | None) -> list[dict]:
+    return _dedupe([period for period in data.periods if _grain_ok(period, grain)])
+
+
+def _grain_ok(period: dict, grain: str | None) -> bool:
+    if grain is None:
+        return True
+    return str(period.get("grain") or grain).lower() == grain
+
+
 class StatementReference(Rule):
     """Сверяет основную строку модели со строкой отчётной формы.
 
     Строка формы — привязанная строка того же понятия на листе формы. Роль
     `reference` по решению 40 остаётся только у копии, чьи значения уже совпали,
     и здесь заново не назначается. Сверяются фактические периоды той же
-    зернистости, что у основной строки. Проценты в сверку не входят.
-    Правило не переносит основную строку.
+    зернистости, что у основной строки. Граница факта — каскад `actuals_end`:
+    решение, маркер или профиль, иначе согласованный структурный срез.
+    Проценты в сверку не входят. Правило не переносит основную строку.
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
-        actual = [period for period in data.periods if period.get("marker_class") == "actual"]
-        if not actual:
+        resolved = _resolve_actuals(data)
+        if resolved is None:
             if data.periods and _has_statement_pair(data):
                 return [
                     self.finding(
@@ -448,6 +661,10 @@ class StatementReference(Rule):
                         params={"cause": "actual_unknown", "message": _ACTUAL_UNKNOWN},
                     )
                 ]
+            return []
+        actual, source, end = resolved
+        # shortcut: пустое явное окно молчит, а не пишет «не определены»; сказать отдельно, когда такая книга появится
+        if not actual:
             return []
         findings = []
         for concept in _STATEMENT_CONCEPTS:
@@ -477,6 +694,8 @@ class StatementReference(Rule):
                                 "message": message,
                                 "model": str(left),
                                 "reported": str(right),
+                                "actuals_source": source,
+                                "actuals_end": end,
                                 "cells": _named_cells(
                                     data, primary["row_key"], ref["row_key"], [], period["period_id"]
                                 ),

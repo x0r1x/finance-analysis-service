@@ -41,7 +41,7 @@ from finance_analysis.domain.mapping import label_id, structure_pass
 HEAD = "glossary/_head.json"
 PROPOSALS = "glossary/proposals.json"
 INDEX = "glossary/_label_index.json"
-_PROFILE_FIELDS = frozenset({"sign_convention", "marker_class", "model_type_default", "dscr_definition"})
+_PROFILE_FIELDS = frozenset({"sign_convention", "marker_class", "model_type_default", "dscr_definition", "actuals_end"})
 _SIGNS = frozenset({"outflow_negative", "outflow_positive"})
 _MARKERS = frozenset({None, "actual", "plan"})
 PROPOSAL_TYPES = frozenset({"synonym_of", "new_concept_under", "not_a_concept", "book_local"})
@@ -398,7 +398,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class, model_type_default и dscr_definition",
+                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition и actuals_end",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -427,6 +427,11 @@ class GlossaryStore:
             raise InvalidArgument("sign_convention: outflow_negative или outflow_positive")
         if "marker_class" in body and body["marker_class"] not in _MARKERS:
             raise InvalidArgument("marker_class: null, actual или plan")
+        if "actuals_end" in body and body["actuals_end"] is not None:
+            end = body["actuals_end"]
+            if not isinstance(end, str) or not end.strip() or len(end.strip()) > 64:
+                raise InvalidArgument("actuals_end: период или дата")
+            body = {**body, "actuals_end": end.strip()}
         async with self._lock:
             current, etag = await self._profile(profile)
             if _token(if_none_match) == "*":
@@ -437,6 +442,8 @@ class GlossaryStore:
                     saved["model_type_default"] = body["model_type_default"]
                 if "dscr_definition" in body:
                     saved["dscr_definition"] = body["dscr_definition"]
+                if body.get("actuals_end"):
+                    saved["actuals_end"] = body["actuals_end"]
                 return await self._write_profile(profile, 1, saved, etag)
             if current is None or not if_match:
                 raise PreconditionRequired("нужен If-Match или If-None-Match: *")
@@ -454,6 +461,11 @@ class GlossaryStore:
                 saved["dscr_definition"] = body["dscr_definition"]
             elif "dscr_definition" in current["body"]:
                 saved["dscr_definition"] = current["body"]["dscr_definition"]
+            if "actuals_end" in body:
+                if body.get("actuals_end"):
+                    saved["actuals_end"] = body["actuals_end"]
+            elif current["body"].get("actuals_end"):
+                saved["actuals_end"] = current["body"]["actuals_end"]
             return await self._write_profile(profile, int(current["seq"]) + 1, saved, etag)
 
     async def profile_ref(self, profile: str) -> str | None:

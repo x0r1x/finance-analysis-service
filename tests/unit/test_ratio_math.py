@@ -231,6 +231,7 @@ def test_statement_reference_reports_when_actual_periods_are_unknown():
     found = STATEMENT_REFERENCE.check(data)
     assert len(found) == 1
     assert found[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
+    assert "actuals_source" not in found[0].params
     assert STATEMENT_REFERENCE.check(AuditInput(periods=[_period()])) == []
 
 
@@ -255,6 +256,8 @@ def test_actual_quarter_compares_a_model_primary_with_a_reference_statement():
     assert len(found) == 1
     assert found[0].params["message"] == "Строка модели расходится с отчётной формой на фактическом квартале."
     assert found[0].params["concept"] == "revenue"
+    assert found[0].params["actuals_source"] == "explicit"
+    assert found[0].params["actuals_end"] == "p"
     assert found[0].locations[0].period_id == "p"
     close = AuditInput(
         rows=data.rows,
@@ -263,6 +266,140 @@ def test_actual_quarter_compares_a_model_primary_with_a_reference_statement():
         bindings=data.bindings,
     )
     assert STATEMENT_REFERENCE.check(close) == []
+
+
+def _quarter(period: str, index: int, *, end: str | None = None) -> dict:
+    row = {
+        "axis_id": "Sheet!r1",
+        "period_id": period,
+        "period_key_base": period,
+        "period_index": index,
+        "grain": "quarter",
+        "marker_class": None,
+    }
+    if end:
+        row["period_end"] = end
+    return row
+
+
+def _statement_pair() -> tuple[list[dict], list[dict]]:
+    rows = [{"row_key": "model", "binding_key": "model"}, {"row_key": "form", "binding_key": "form"}]
+    bindings = [
+        _binding("revenue", "model"),
+        _binding("revenue", "form", is_primary=False, evidence={"role": "reference"}),
+    ]
+    return rows, bindings
+
+
+def test_actuals_end_decision_stops_before_a_structural_cut():
+    """Решение `actuals_end.set` сильнее согласованного среза по формуле и форме."""
+
+    rows, bindings = _statement_pair()
+    data = AuditInput(
+        rows=rows,
+        periods=[_quarter("q1", 1), _quarter("q2", 2), _quarter("q3", 3)],
+        facts=[
+            {**_fact("model", "100", "q1"), "cell_id": "ДДС!B10"},
+            {**_fact("model", "100", "q2"), "cell_id": "ДДС!C10"},
+            {**_fact("model", "100", "q3"), "cell_id": "ДДС!D10"},
+            {**_fact("form", "110", "q1"), "cell_id": "ОФР!B10"},
+            {**_fact("form", "120", "q2"), "cell_id": "ОФР!C10"},
+        ],
+        bindings=bindings,
+        links=[{"cell": "ДДС!D10", "row_key": "model", "period_id": "q3", "formula": "=C10"}],
+        actuals_end="q1",
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert [item.locations[0].period_id for item in found] == ["q1"]
+    assert found[0].params["actuals_source"] == "explicit"
+    assert found[0].params["actuals_end"] == "q1"
+
+
+def test_actuals_end_from_profile_is_explicit():
+    rows, bindings = _statement_pair()
+    data = AuditInput(
+        rows=rows,
+        periods=[
+            _quarter("q1", 1, end="2024-03-31"),
+            _quarter("q2", 2, end="2024-06-30"),
+            _quarter("q3", 3, end="2024-09-30"),
+        ],
+        facts=[
+            *[{**_fact("model", "100", period), "cell_id": cell} for period, cell in (("q1", "ДДС!B"), ("q2", "ДДС!C"), ("q3", "ДДС!D"))],
+            *[{**_fact("form", "110", period), "cell_id": cell} for period, cell in (("q1", "ОФР!B"), ("q2", "ОФР!C"), ("q3", "ОФР!D"))],
+        ],
+        bindings=bindings,
+        profile={"actuals_end": "2024-06-30"},
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert [item.locations[0].period_id for item in found] == ["q1", "q2"]
+    assert {item.params["actuals_source"] for item in found} == {"explicit"}
+    assert {item.params["actuals_end"] for item in found} == {"2024-06-30"}
+
+
+def test_structural_cut_reconciles_when_formula_and_statement_agree():
+    from finance_analysis.application.analyses import _citations
+
+    rows, bindings = _statement_pair()
+    data = AuditInput(
+        rows=rows,
+        periods=[_quarter("q1", 1), _quarter("q2", 2), _quarter("q3", 3)],
+        facts=[
+            {**_fact("model", "100", "q1"), "cell_id": "ДДС!B10"},
+            {**_fact("model", "100", "q2"), "cell_id": "ДДС!C10"},
+            {**_fact("model", "130", "q3"), "cell_id": "ДДС!D10"},
+            {**_fact("form", "100", "q1"), "cell_id": "ОФР!B10"},
+            {**_fact("form", "110", "q2"), "cell_id": "ОФР!C10"},
+        ],
+        bindings=bindings,
+        links=[{"cell": "ДДС!D10", "row_key": "model", "period_id": "q3", "formula": "=C10*1.1"}],
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert [item.locations[0].period_id for item in found] == ["q2"]
+    assert found[0].params["actuals_source"] == "structural"
+    assert found[0].params["actuals_end"] == "q2"
+    cited = _citations(data, found)
+    assert cited
+    assert {item["actuals_source"] for item in cited} == {"structural"}
+    assert {item["actuals_end"] for item in cited} == {"q2"}
+
+
+def test_conflicting_structural_signals_do_not_reconcile():
+    rows, bindings = _statement_pair()
+    data = AuditInput(
+        rows=rows,
+        periods=[_quarter("q1", 1), _quarter("q2", 2), _quarter("q3", 3)],
+        facts=[
+            {**_fact("model", "100", "q1"), "cell_id": "ДДС!B10"},
+            {**_fact("model", "100", "q2"), "cell_id": "ДДС!C10"},
+            {**_fact("model", "130", "q3"), "cell_id": "ДДС!D10"},
+            {**_fact("form", "110", "q1"), "cell_id": "ОФР!B10"},
+        ],
+        bindings=bindings,
+        links=[{"cell": "ДДС!D10", "row_key": "model", "period_id": "q3", "formula": "=C10"}],
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert len(found) == 1
+    assert found[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
+    assert "actuals_source" not in found[0].params
+
+
+def test_actuals_end_journal_keeps_the_latest_value():
+    from finance_analysis.domain.audit import (
+        actuals_end_from_journal,
+        actuals_end_value_error,
+    )
+
+    events = [
+        {"type": "actuals_end.set", "seq": 1, "value": "q1"},
+        {"type": "actuals_end.set", "seq": 2, "value": "q2"},
+        {"type": "phase.set", "seq": 3, "value": "operation"},
+    ]
+    assert actuals_end_from_journal(events, 2) == "q2"
+    assert actuals_end_from_journal(events, 1) == "q1"
+    assert actuals_end_value_error("q1", [{"period_id": "q1"}]) is None
+    assert actuals_end_value_error("2024-06-30", []) is None
+    assert actuals_end_value_error("нет", []) == "период границы факта не найден"
 
 
 def test_bound_statement_row_is_compared_only_at_the_primary_grain():

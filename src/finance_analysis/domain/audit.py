@@ -10,6 +10,7 @@ import hashlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import date
 from functools import cached_property
 
 from finance_analysis.domain.book import SEP
@@ -138,6 +139,8 @@ class AuditInput:
     dscr_variant: str | None = None
     # Имена листов отчётных форм. Пустое множество оставляет сверку только у роли reference.
     statement_sheets: frozenset[str] = frozenset()
+    # Явная граница факта из решения `actuals_end.set`: период или дата конца.
+    actuals_end: str | None = None
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:
@@ -211,6 +214,50 @@ class AuditInput:
         link = self.link_cells.get(cell)
         row_key = link.row_key if link and link.row_key in self.rows_by_key else None
         return Location(cell, row_key, None, None)
+
+
+def actuals_end_from_journal(events: list[dict], state_seq: int) -> str | None:
+    """Последняя запись `actuals_end.set` не новее `state_seq`."""
+
+    found = None
+    seq = -1
+    for event in events:
+        if event.get("type") != "actuals_end.set":
+            continue
+        number = event.get("seq")
+        if isinstance(number, bool) or not isinstance(number, int) or number > state_seq or number < seq:
+            continue
+        value = event.get("value")
+        if isinstance(value, str) and value.strip():
+            seq = number
+            found = value.strip()
+    return found
+
+
+def actuals_end_value_error(value, periods: list[dict]) -> str | None:
+    """Граница факта — дата ISO или период этой книги."""
+
+    if not isinstance(value, str) or not value.strip():
+        return "граница факта должна быть периодом или датой"
+    text = value.strip()
+    if _iso_date(text) is not None:
+        return None
+    names = {
+        name
+        for period in periods
+        for name in (period.get("period_id"), period.get("period_key_base"))
+        if name
+    }
+    if text in names:
+        return None
+    return "период границы факта не найден"
+
+
+def _iso_date(text: str) -> date | None:
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def project_finance_dscr(data: AuditInput) -> bool:

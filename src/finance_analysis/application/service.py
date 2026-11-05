@@ -49,6 +49,7 @@ from finance_analysis.application.project import (
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.application.sheet_roles import sheet_roles_version
 from finance_analysis.application.tools import build_tools
+from finance_analysis.domain.audit import actuals_end_value_error
 from finance_analysis.domain.book import (
     FAS_PROJECTION_VERSION,
     FAS_SCHEMA_VERSION,
@@ -183,6 +184,7 @@ def _json_default(value):
 
 _DECISION_KINDS = {
     "phase.set": "phase.set",
+    "actuals_end.set": "actuals_end.set",
     "concept.set": "concept.set",
     "concept.confirm": "concept.confirmed",
     "concept.reject": "concept.rejected",
@@ -193,7 +195,7 @@ _DECISION_KINDS = {
     "profile.set": "profile.set",
     "model_type.set": "model_type.set",
 }
-_BOOK_KINDS = frozenset({"concept.absent", "profile.set", "model_type.set"})
+_BOOK_KINDS = frozenset({"concept.absent", "profile.set", "model_type.set", "actuals_end.set"})
 _CONCEPT_VALUE = frozenset({"concept.set", "concept.confirmed", "concept.rejected", "concept.absent"})
 
 
@@ -1383,6 +1385,11 @@ class FasService:
                 taken = _concept_taken(events, target, concept)
                 seen_concepts.add(concept)
             order = None
+            if event_type == "actuals_end.set":
+                problem = actuals_end_value_error(item.get("value"), periods)
+                if problem:
+                    results.append(_rejected(index, "schema_invalid", problem))
+                    continue
             if event_type == "phase.set":
                 order = _phase_order(periods, events, target, item.get("value"))
             supersedes = item.get("supersedes") if isinstance(item.get("supersedes"), dict) else None
