@@ -15,6 +15,7 @@ from itertools import pairwise
 from finance_analysis.domain.coverage import is_coverage_test_period
 from finance_analysis.domain.metrics import (
     RATIO,
+    _assume_sheet_units,
     _axes_of,
     _groups,
     _payment,
@@ -127,17 +128,22 @@ def _missing(metric: str, bindings: list[dict], needed: tuple[str, ...], absent:
             for row in bindings
             if row.get("status") == "ambiguous" and row.get("effective_concept") in needed
         ]
+    names = [name for name in needed if name not in primaries]
     if ambiguous:
-        return _result(
+        result = _result(
             metric, [], needs=[{"kind": "concept", "reason": "ambiguous", "subject": ambiguous[0]}], status="needs_input"
         )
+        result["missing_inputs"] = names or [ambiguous[0]]
+        return result
     marked = absent_concepts(bindings, absent)
     for name in needed:
         if name not in primaries:
             reason = "absent_in_book" if name in marked else "concept_unknown"
-            return _result(
+            result = _result(
                 metric, [], needs=[{"kind": "concept", "reason": reason, "subject": name}], status="missing_input"
             )
+            result["missing_inputs"] = names
+            return result
     return None
 
 
@@ -339,12 +345,13 @@ def loan_life_ratio(
         return missing
     primaries = _primaries(bindings, absent)
     aligned = aligned_keys(periods)
-    cfads = _sums(facts, primaries["cfads"], aligned, periods)
-    debt = _sums(facts, primaries["debt_service"], aligned, periods)
-    balance = _sums(facts, primaries["debt_outstanding"], aligned, periods)
+    warnings: list[dict] = []
+    sheet = _assume_sheet_units(facts, [primaries["cfads"], primaries["debt_outstanding"]], warnings)
+    cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
+    debt = _sums(facts, primaries["debt_service"], aligned, periods, sheet=sheet)
+    balance = _sums(facts, primaries["debt_outstanding"], aligned, periods, sheet=sheet)
     rate_by_key = _sums(facts, primaries["discount_rate"], aligned, periods)
     rates = sorted(set(rate_by_key.values()))
-    warnings: list[dict] = []
     rows: list[dict] = []
     for axis in sorted(_axes_of(facts, primaries["debt_service"])):
         ordered = _ordered(periods, axis)

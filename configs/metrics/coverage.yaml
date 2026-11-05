@@ -1,4 +1,9 @@
 # DSCR и ICR. Частное считает Python Decimal, не SQL.
+# interest_paid в таксономии нет: имя живёт только в этом порядке.
+interest_order:
+  icr: [interest, interest_paid]
+  corporate_covenant: [interest, interest_paid]
+  pf: [interest_paid, interest]
 metrics:
   dscr:
     numerator: [cfads]

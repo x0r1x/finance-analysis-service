@@ -25,6 +25,7 @@ SCALE_ASSUMED = (
     "Масштаб одной стороны не подтверждён. Принято, что обе стороны выражены в единицах книги, "
     "и коэффициент рассчитан по числам на листе."
 )
+INTEREST_BASIS_FALLBACK = "В знаменателе взяты уплаченные проценты: строки начисленных процентов нет."
 MIXED_BASIS = "Способ показа числителя и знаменателя различается. Коэффициент не рассчитан."
 _BOUND = frozenset({"bound", "bound_with_warning"})
 # Источники привязки от человека: только они отменяют `concept.absent` (§5.10.5).
@@ -38,6 +39,24 @@ def quantize_ratio(value: Decimal) -> Decimal:
         return value.quantize(RATIO)
 
 
+def interest_choice(primaries: dict, order: tuple[str, ...] | list[str]) -> tuple[str | None, dict | None]:
+    """Первое имя порядка, у которого есть основная строка.
+
+    Предупреждение только когда взяты уплаченные проценты.
+    """
+
+    for name in order:
+        if name not in primaries:
+            continue
+        if name == "interest_paid":
+            return name, {
+                "code": "interest_basis_fallback",
+                "params": {"concept": name, "message": INTEREST_BASIS_FALLBACK},
+            }
+        return name, None
+    return None, None
+
+
 def coverage_ratio(
     *,
     metric: str,
@@ -49,6 +68,7 @@ def coverage_ratio(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    interest_order: dict | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -59,14 +79,39 @@ def coverage_ratio(
     from finance_analysis.domain.coverage import is_coverage_test_period
 
     primaries = _primaries(bindings, absent)
+    order = interest_order or {}
+    warnings: list[dict] = []
+    fallback_parts: tuple[str, str] | None = None
     if metric == "dscr":
-        needed = ("cfads", "debt_service")
+        if "debt_service" in primaries or not order.get("pf"):
+            needed = ("cfads", "debt_service")
+            denominator_name = "debt_service"
+        else:
+            chosen, warning = interest_choice(primaries, order["pf"])
+            if "cfads" not in primaries:
+                needed = ("cfads",)
+                denominator_name = "debt_service"
+            elif chosen is None:
+                needed = ("cfads", "debt_service")
+                denominator_name = "debt_service"
+            elif "principal" not in primaries:
+                needed = ("cfads", "principal")
+                denominator_name = "principal"
+            else:
+                needed = ("cfads", chosen, "principal")
+                denominator_name = chosen
+                fallback_parts = (chosen, "principal")
+                if warning:
+                    warnings.append(warning)
     elif metric == "icr":
-        needed = ("interest",)
+        chosen, warning = interest_choice(primaries, order.get("icr", ("interest",)))
+        needed = (chosen or "interest",)
+        denominator_name = chosen or "interest"
+        if warning:
+            warnings.append(warning)
     else:
         return {"metric": metric, "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"}
     missing = [name for name in needed if name not in primaries]
-    warnings: list[dict] = []
     numerator_name = None
     if metric == "icr":
         if "ebitda" in primaries and "ebit" in primaries:
@@ -93,6 +138,7 @@ def coverage_ratio(
             "metric": metric,
             "rows": [],
             "needs_input": [{"kind": "concept", "reason": "ambiguous", "subject": ambiguous[0]}],
+            "missing_inputs": missing or [ambiguous[0]],
             "warnings": warnings,
             "status": "needs_input",
         }
@@ -103,13 +149,15 @@ def coverage_ratio(
             "metric": metric,
             "rows": [],
             "needs_input": [{"kind": "concept", "reason": reason, "subject": subject}],
+            "missing_inputs": list(missing),
             "warnings": warnings,
             "status": "missing_input",
         }
-    denominator_name = "debt_service" if metric == "dscr" else "interest"
     numerator_basis = _flow_basis(primaries[numerator_name])
     denominator_basis = _flow_basis(primaries[denominator_name])
     named = {numerator_name: primaries[numerator_name], denominator_name: primaries[denominator_name]}
+    if fallback_parts is not None:
+        named["principal"] = primaries["principal"]
     if unconfirmed_scale(facts, list(named.values())):
         components, scales = _scale_bundle(facts, named)
         return _explained(
@@ -122,6 +170,8 @@ def coverage_ratio(
             components=components,
             scales=scales,
         )
+    if fallback_parts is not None and _flow_basis(primaries["principal"]) != denominator_basis:
+        return _explained(metric, periods, "basis_mismatch", MIXED_BASIS, warnings)
     if numerator_basis != denominator_basis and not (numerator_basis == "ltm" and denominator_basis == "period"):
         message = MIXED_BASIS
         if metric == "icr":
@@ -129,6 +179,9 @@ def coverage_ratio(
         return _explained(metric, periods, "basis_mismatch", message, warnings)
     sheet = _assume_sheet_units(facts, list(named.values()), warnings)
     if numerator_basis == "ltm" and denominator_basis == "period":
+        extra = []
+        if fallback_parts is not None:
+            extra.append(primaries["principal"])
         return _ltm_numerator(
             metric,
             facts,
@@ -141,11 +194,23 @@ def coverage_ratio(
             explicit_phases=explicit_phases,
             marker_class=marker_class,
             sheet=sheet,
+            extra_denominators=extra,
         )
     aligned = aligned_keys(periods)
     numerator = _sums(facts, primaries[numerator_name], aligned, periods, sheet=sheet)
-    denominator = _sums(facts, primaries[denominator_name], aligned, periods, sheet=sheet)
-    home = _axes_of(facts, primaries[denominator_name])
+    if fallback_parts is None:
+        denominator = _sums(facts, primaries[denominator_name], aligned, periods, sheet=sheet)
+        home = _axes_of(facts, primaries[denominator_name])
+    else:
+        paid = _sums(facts, primaries[fallback_parts[0]], aligned, periods, sheet=sheet)
+        repaid = _sums(facts, primaries["principal"], aligned, periods, sheet=sheet)
+        # Платёж считается по каждой части отдельно и только потом складывается.
+        # Сумма до знака уменьшает знаменатель, если у частей разные знаки.
+        denominator = {
+            key: _payment(paid[key], sign_convention) + _payment(repaid[key], sign_convention)
+            for key in paid.keys() & repaid.keys()
+        }
+        home = _axes_of(facts, primaries[fallback_parts[0]]) | _axes_of(facts, primaries["principal"])
     if metric == "icr" and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
         raw = _sums(facts, primaries[numerator_name], aligned, None, sheet=sheet)
         if not _numerator_misses_axis(raw, denominator, periods, aligned, home):
@@ -192,6 +257,8 @@ def coverage_ratio(
             numerator_name: _component_cells(facts, primaries[numerator_name], [period]),
             denominator_name: _component_cells(facts, primaries[denominator_name], [period]),
         }
+        if fallback_parts is not None:
+            built["components"]["principal"] = _component_cells(facts, primaries["principal"], [period])
         rows.append(built)
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
@@ -209,11 +276,14 @@ def _ltm_numerator(
     explicit_phases: bool,
     marker_class: str | None,
     sheet: bool = False,
+    extra_denominators: list[dict] | None = None,
 ) -> dict:
     """Числитель `ltm` делится на сумму знаменателя за двенадцать месяцев до его конца.
 
-    Привязка строк не меняется. Неполное окно даёт `partial_window`. Окно то же,
-    что у отношения чистого долга к EBITDA.
+    Дополнительные строки знаменателя, например основной долг рядом с процентами,
+    входят в ту же сумму. Платёж берётся по каждой строке отдельно. Привязка строк
+    не меняется. Неполное окно даёт `partial_window`. Окно то же, что у отношения
+    чистого долга к EBITDA.
     """
 
     from finance_analysis.domain.cover_metrics import _window
@@ -221,7 +291,10 @@ def _ltm_numerator(
 
     aligned = aligned_keys(periods)
     numerator = _sums(facts, numerator_binding, aligned, periods, sheet=sheet)
-    denominator = _sums(facts, denominator_binding, aligned, periods, sheet=sheet)
+    denominator_bindings = [denominator_binding, *(extra_denominators or [])]
+    denominators = [
+        (binding, _sums(facts, binding, aligned, periods, sheet=sheet)) for binding in denominator_bindings
+    ]
     numerator_axes = _axes_of(facts, numerator_binding)
     denominator_axes = _axes_of(facts, denominator_binding)
     ordered = _dated_periods([period for period in periods if period["axis_id"] in denominator_axes])
@@ -242,10 +315,13 @@ def _ltm_numerator(
         complete = True
         for item in window:
             dkey = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
-            if dkey not in denominator:
-                complete = False
+            for _binding, series in denominators:
+                if dkey not in series:
+                    complete = False
+                    break
+                total += _payment(series[dkey], sign_convention)
+            if not complete:
                 break
-            total += _payment(denominator[dkey], sign_convention)
         if not complete:
             rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
             continue
@@ -266,16 +342,13 @@ def _ltm_numerator(
             value = quantize_ratio(numerator[key] / total)
         row = _row(metric, period, value, "computed", None)
         row["window"] = [item["period_id"] for item in window]
-        numerator_name = str(numerator_binding.get("concept") or ("cfads" if metric == "dscr" else "ebitda"))
-        denominator_name = str(denominator_binding.get("concept") or ("debt_service" if metric == "dscr" else "interest"))
-        row["components"] = {
-            numerator_name: _component_cells(facts, numerator_binding, [period]),
-            denominator_name: _component_cells(facts, denominator_binding, window),
-        }
-        row["scale_factor"] = {
-            numerator_name: _stored_scale(facts, numerator_binding),
-            denominator_name: _stored_scale(facts, denominator_binding),
-        }
+        numerator_name = _bound_name(numerator_binding, "cfads" if metric == "dscr" else "ebitda")
+        row["components"] = {numerator_name: _component_cells(facts, numerator_binding, [period])}
+        row["scale_factor"] = {numerator_name: _stored_scale(facts, numerator_binding)}
+        for binding, _series in denominators:
+            name = _bound_name(binding, "debt_service" if metric == "dscr" else "interest")
+            row["components"][name] = _component_cells(facts, binding, window)
+            row["scale_factor"][name] = _stored_scale(facts, binding)
         rows.append(row)
         computed = True
     if not rows:
@@ -365,6 +438,12 @@ def _basis_message(numerator_name: str, numerator: dict, denominator: dict) -> s
         f"Строка {title} имеет способ показа «{left}», а строка процентов — «{right}». "
         "ICR по этим строкам не рассчитан."
     )
+
+
+def _bound_name(binding: dict, default: str) -> str:
+    """Имя понятия основной строки. Берётся `effective_concept`, а не сырое `concept`."""
+
+    return str(binding.get("effective_concept") or binding.get("concept") or default)
 
 
 def _flow_basis(binding: dict) -> str:

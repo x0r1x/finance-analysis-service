@@ -406,6 +406,45 @@ def test_hybrid_of_escrow_and_project_finance_keeps_both_labels():
     assert catalog.types["corporate"].variants["dscr"] == "corporate_covenant"
 
 
+def test_ltm_ebitda_is_one_cell_and_cites_the_net_debt_cell():
+    import json
+
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    periods = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    debt_periods = [
+        {**period, "axis_id": "debt", "timeline_id": "debt", "period_id": f"D{index}"}
+        for index, period in enumerate(periods, start=1)
+    ]
+    facts = []
+    for index, ebitda in ((1, "10"), (2, "10"), (3, "10"), (4, "40")):
+        facts.append(_fact("e", f"Q{index}", ebitda, cell=f"E{index}"))
+        facts.append({**_fact("n", f"D{index}", "100", cell=f"N{index}"), "axis_id": "debt"})
+    ebitda = _bind("ebitda", "e")
+    ebitda["evidence_json"] = json.dumps({"period_basis": "ltm", "period_basis_source": "header"})
+    got = composed_ratio(
+        "net_debt_ebitda",
+        catalog.composed["net_debt_ebitda"],
+        facts=facts,
+        bindings=[_bind("net_debt", "n"), ebitda],
+        periods=[*periods, *debt_periods],
+    )
+    by_period = {row["period_id"]: row for row in got["rows"]}
+    assert by_period["Q1"]["status"] == "computed"
+    assert by_period["Q1"]["value"] == Decimal("10.0000000000")
+    assert by_period["Q4"]["status"] == "computed"
+    assert by_period["Q4"]["value"] == Decimal("2.5000000000")
+    assert by_period["Q4"]["window"] == ["Q4"]
+    cited = ratio_cells(by_period["Q4"], facts, [_bind("net_debt", "n"), ebitda], [*periods, *debt_periods], frozenset())
+    assert {item["cell_id"] for item in cited} == {"N4", "E4"}
+
+
 def test_net_debt_ebitda_uses_the_ending_stock_and_raw_ebitda():
     from finance_analysis.domain.covenant import composed_ratio
 
@@ -504,6 +543,95 @@ def test_net_debt_ebitda_reports_when_net_debt_is_off_the_ratio_axis():
     assert not any(row["status"] == "computed" for row in got["rows"])
 
 
+def test_net_debt_on_another_axis_is_read_at_the_same_period_end():
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    periods = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    debt_periods = [
+        {**period, "axis_id": "debt", "timeline_id": "debt", "period_id": f"D{index}"}
+        for index, period in enumerate(periods, start=1)
+    ]
+    facts = []
+    for index in range(1, 5):
+        facts.append(_fact("e", f"Q{index}", "10"))
+        facts.append({**_fact("n", f"D{index}", "100"), "axis_id": "debt"})
+    got = composed_ratio(
+        "net_debt_ebitda",
+        catalog.composed["net_debt_ebitda"],
+        facts=facts,
+        bindings=[_bind("net_debt", "n"), _bind("ebitda", "e")],
+        periods=[*periods, *debt_periods],
+    )
+    final = next(row for row in got["rows"] if row["period_id"] == "Q4")
+    assert final["status"] == "computed"
+    assert final["value"] == Decimal("2.5000000000")
+
+
+def test_two_stocks_with_one_period_end_follow_grain_not_list_order():
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    quarters = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    debt = [
+        {**period, "axis_id": "debt", "timeline_id": "debt", "period_id": f"D{index}"}
+        for index, period in enumerate(quarters, start=1)
+    ]
+    annual = {
+        "axis_id": "year",
+        "timeline_id": "year",
+        "period_id": "Y",
+        "period_index": 1,
+        "grain": "year",
+        "period_start": date(2024, 1, 1),
+        "period_end": date(2024, 12, 31),
+    }
+    facts = [_fact("e", f"Q{index}", "10") for index in range(1, 5)]
+    facts += [{**_fact("n", f"D{index}", "100"), "axis_id": "debt"} for index in range(1, 5)]
+    facts.append({**_fact("n", "Y", "400"), "axis_id": "year"})
+    bindings = [_bind("net_debt", "n"), _bind("ebitda", "e")]
+    for periods in ([*quarters, *debt, annual], [annual, *reversed(debt), *reversed(quarters)]):
+        got = composed_ratio(
+            "net_debt_ebitda",
+            catalog.composed["net_debt_ebitda"],
+            facts=facts,
+            bindings=bindings,
+            periods=list(periods),
+        )
+        final = next(row for row in got["rows"] if row["period_id"] == "Q4")
+        assert final["status"] == "computed"
+        assert final["value"] == Decimal("2.5000000000")
+    other = [
+        {**period, "axis_id": "other", "timeline_id": "other", "period_id": f"O{index}"}
+        for index, period in enumerate(quarters, start=1)
+    ]
+    mixed = facts + [{**_fact("n", f"O{index}", "250"), "axis_id": "other"} for index in range(1, 5)]
+    ambiguous = composed_ratio(
+        "net_debt_ebitda",
+        catalog.composed["net_debt_ebitda"],
+        facts=mixed,
+        bindings=bindings,
+        periods=[*quarters, *debt, *other],
+    )
+    final = next(row for row in ambiguous["rows"] if row["period_id"] == "Q4")
+    assert final["status"] == "not_computed"
+    assert final["value"] is None
+    assert final["message"] == (
+        "На одну дату конца периода приходится несколько остатков одной зернистости. "
+        "Остаток не выбран, коэффициент не рассчитан."
+    )
+
+
 def test_net_debt_off_the_ratio_axis_is_reported_before_the_window_is_full():
     from finance_analysis.domain.covenant import composed_ratio
 
@@ -543,6 +671,165 @@ def test_escrow_coverage_is_balance_over_outstanding():
     )
     assert got["rows"][0]["value"] == Decimal("2.0000000000")
     assert got["status"] == "succeeded"
+
+
+def test_interest_order_is_read_from_coverage_config():
+    order = _catalog().interest_order
+    assert order["icr"] == ("interest", "interest_paid")
+    assert order["corporate_covenant"] == ("interest", "interest_paid")
+    assert order["pf"] == ("interest_paid", "interest")
+
+
+def test_icr_uses_accrued_interest_before_paid_interest():
+    from finance_analysis.domain.metrics import INTEREST_BASIS_FALLBACK, coverage_ratio
+
+    order = _catalog().interest_order
+    periods = [_year()]
+    both = coverage_ratio(
+        metric="icr",
+        facts=[_fact("e", "Y1", "40"), _fact("i", "Y1", "-10"), _fact("p", "Y1", "-4")],
+        bindings=[_bind("ebitda", "e"), _bind("interest", "i"), _bind("interest_paid", "p")],
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+        interest_order=order,
+    )
+    assert both["rows"][0]["value"] == Decimal("4.0000000000")
+    assert not any(item["code"] == "interest_basis_fallback" for item in both["warnings"])
+    paid = coverage_ratio(
+        metric="icr",
+        facts=[_fact("e", "Y1", "40"), _fact("p", "Y1", "-8")],
+        bindings=[_bind("ebitda", "e"), _bind("interest_paid", "p")],
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+        interest_order=order,
+    )
+    assert paid["rows"][0]["value"] == Decimal("5.0000000000")
+    assert paid["warnings"][-1]["params"]["message"] == INTEREST_BASIS_FALLBACK
+
+
+def test_corporate_dscr_names_each_missing_input():
+    from finance_analysis.application.analyses import _absent_params
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    got = composed_ratio(
+        "dscr",
+        catalog.composed["dscr.corporate_covenant"],
+        facts=[_fact("e", "Y1", "100"), _fact("i", "Y1", "-10"), _fact("p", "Y1", "5")],
+        bindings=[_bind("ebitda", "e"), _bind("interest", "i"), _bind("principal", "p")],
+        periods=[_year()],
+    )
+    params = _absent_params("dscr", got)
+    assert params["inputs"] == ["cash_taxes", "capex"]
+    assert params["message"] == "Для расчёта DSCR не хватает понятий: cash_taxes, capex."
+    quiet = _absent_params("llcr", {"needs_input": [{"subject": "cfads"}]})
+    assert quiet == {"metric": "llcr"}
+
+
+def test_pf_dscr_without_debt_service_names_the_missing_input():
+    from finance_analysis.domain.metrics import coverage_ratio
+
+    order = _catalog().interest_order
+    common = {
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "interest_order": order,
+    }
+    no_cfads = coverage_ratio(
+        metric="dscr",
+        facts=[_fact("i", "Y1", "-10"), _fact("d", "Y1", "100")],
+        bindings=[_bind("interest", "i"), _bind("debt_outstanding", "d")],
+        **common,
+    )
+    assert no_cfads["status"] == "missing_input"
+    assert no_cfads["needs_input"][0]["subject"] == "cfads"
+    from finance_analysis.application.analyses import _absent_params
+
+    assert _absent_params("dscr", no_cfads)["message"] == "Для расчёта DSCR не хватает понятий: cfads."
+    no_principal = coverage_ratio(
+        metric="dscr",
+        facts=[_fact("c", "Y1", "40"), _fact("i", "Y1", "-10"), _fact("d", "Y1", "100")],
+        bindings=[_bind("cfads", "c"), _bind("interest", "i"), _bind("debt_outstanding", "d")],
+        **common,
+    )
+    assert no_principal["needs_input"][0]["subject"] == "principal"
+    summed = coverage_ratio(
+        metric="dscr",
+        facts=[_fact("c", "Y1", "40"), _fact("i", "Y1", "-6"), _fact("p", "Y1", "-4")],
+        bindings=[_bind("cfads", "c"), _bind("interest", "i"), _bind("principal", "p")],
+        **common,
+    )
+    assert summed["rows"][0]["value"] == Decimal("4.0000000000")
+    assert "principal" in summed["rows"][0]["components"]
+
+
+def test_interest_and_principal_of_opposite_signs_are_paid_apart():
+    from finance_analysis.domain.metrics import coverage_ratio
+
+    got = coverage_ratio(
+        metric="dscr",
+        facts=[_fact("c", "Y1", "40"), _fact("i", "Y1", "10"), _fact("p", "Y1", "-40")],
+        bindings=[_bind("cfads", "c"), _bind("interest", "i"), _bind("principal", "p")],
+        periods=[_year()],
+        period_phase={},
+        explicit_phases=False,
+        interest_order=_catalog().interest_order,
+    )
+    assert got["rows"][0]["status"] == "computed"
+    assert got["rows"][0]["value"] == Decimal("0.8000000000")
+
+
+def test_debt_service_still_beats_the_interest_fallback():
+    from finance_analysis.domain.metrics import coverage_ratio
+
+    got = coverage_ratio(
+        metric="dscr",
+        facts=[_fact("c", "Y1", "40"), _fact("s", "Y1", "-10"), _fact("i", "Y1", "-1"), _fact("p", "Y1", "-1")],
+        bindings=[
+            _bind("cfads", "c"),
+            _bind("debt_service", "s"),
+            _bind("interest", "i"),
+            _bind("principal", "p"),
+        ],
+        periods=[_year()],
+        period_phase={},
+        explicit_phases=False,
+        interest_order=_catalog().interest_order,
+    )
+    assert got["rows"][0]["value"] == Decimal("4.0000000000")
+    assert "principal" not in got["rows"][0]["components"]
+
+
+def test_corporate_dscr_falls_back_to_paid_interest():
+    from finance_analysis.domain.metrics import INTEREST_BASIS_FALLBACK
+
+    catalog = _catalog()
+    got = covenant_dscr(
+        facts=[
+            _fact("e", "Y1", "100"),
+            _fact("t", "Y1", "10"),
+            _fact("c", "Y1", "20"),
+            _fact("p", "Y1", "30"),
+            _fact("r", "Y1", "10"),
+        ],
+        bindings=[
+            _bind("ebitda", "e"),
+            _bind("cash_taxes", "t"),
+            _bind("capex", "c"),
+            _bind("interest_paid", "p"),
+            _bind("principal", "r"),
+        ],
+        periods=[_year()],
+        default=catalog.composed["dscr.corporate_covenant"],
+        concepts=_CONCEPTS | {"interest_paid"},
+        money=_MONEY | {"interest_paid"},
+        interest_order=catalog.interest_order,
+    )
+    assert got["rows"][0]["value"] == Decimal("1.7500000000")
+    assert got["warnings"][-1]["params"]["message"] == INTEREST_BASIS_FALLBACK
 
 
 def _quarter(index: int, start: date, end: date) -> dict:

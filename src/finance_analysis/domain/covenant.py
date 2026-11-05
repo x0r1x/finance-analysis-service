@@ -21,12 +21,14 @@ from finance_analysis.domain.metrics import (
     SCALE_UNCONFIRMED,
     _assume_sheet_units,
     _axes_of,
+    _component_cells,
     _flow_basis,
     _payment,
     _primaries,
     _sums,
     aligned_keys,
     coverage_ratio,
+    interest_choice,
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
@@ -136,10 +138,16 @@ def covenant_dscr(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    interest_order: dict | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
         profile, profile_ref, default, concepts=concepts, money=money
     )
+    definition, fallback = _swap_interest(
+        definition, _primaries(bindings, absent), (interest_order or {}).get("corporate_covenant", ())
+    )
+    if fallback:
+        notes = [*notes, fallback]
     result = composed_ratio(
         "dscr",
         definition,
@@ -192,17 +200,23 @@ def composed_ratio(
     basis = {name: basis_of(primaries[name])[0] for name in series}
     roll = formula.window == "period" and _rolls(primaries, formula)
     window_name = "LTM" if roll else formula.window
+    # Строка EBITDA со способом `ltm` уже покрывает двенадцать месяцев.
+    # Четыре квартала такой строки не складываются и не требуют полного окна.
+    ebitda_ltm = metric == "net_debt_ebitda" and basis.get("ebitda") == "ltm"
+    span_name = "period" if ebitda_ltm else window_name
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
+    stock = series.get("net_debt") or {}
     rows = []
     for axis in sorted(_axes_of(facts, primaries[home_name])):
         ordered = _ordered(periods, axis)
         axis_keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in ordered]
-        debt_on_axis = metric != "net_debt_ebitda" or any(key in series["net_debt"] for key in axis_keys)
+        dated = any(_stock_choice(item, periods, aligned, stock)[0] is not None for item in ordered)
+        debt_on_axis = metric != "net_debt_ebitda" or any(key in stock for key in axis_keys) or dated
         for period in ordered:
             marker = period.get("marker_class")
             if marker_class and marker and marker != marker_class:
                 continue
-            keys, window, problem = _span(window_name, ordered, period, aligned, axis)
+            keys, window, problem = _span(span_name, ordered, period, aligned, axis)
             if problem and not debt_on_axis:
                 rows.append(
                     _line(metric, period, None, "input_absent", "input_absent", inputs, window, message=_NET_DEBT_ABSENT)
@@ -213,7 +227,21 @@ def composed_ratio(
                 rows.append(_line(metric, period, None, "not_computed", problem, inputs, window, message=message))
                 continue
             if metric == "net_debt_ebitda":
-                numerator = _ending(keys, series, "net_debt")
+                numerator, stock_problem = _stock_choice(period, periods, aligned, stock)
+                if stock_problem:
+                    rows.append(
+                        _line(
+                            metric,
+                            period,
+                            None,
+                            "not_computed",
+                            stock_problem,
+                            inputs,
+                            window,
+                            message=_AMBIGUOUS_STOCK,
+                        )
+                    )
+                    continue
                 denominator = _part(keys, series, "ebitda", sign_convention, False, basis)
                 if numerator is None and not any(key in series["net_debt"] for key in keys):
                     rows.append(
@@ -239,7 +267,14 @@ def composed_ratio(
                 status = "no_debt_service" if metric == "dscr" else "missing_input"
                 rows.append(_line(metric, period, None, status, "zero_denominator", inputs, window))
                 continue
-            rows.append(_line(metric, period, _ratio(numerator, denominator), "computed", None, inputs, window))
+            line = _line(metric, period, _ratio(numerator, denominator), "computed", None, inputs, window)
+            if metric == "net_debt_ebitda":
+                used = [period] if ebitda_ltm else [item for item in ordered if item["period_id"] in set(window or [])]
+                line["components"] = {
+                    "net_debt": _component_cells(facts, primaries["net_debt"], _same_end(periods, period)),
+                    "ebitda": _component_cells(facts, primaries["ebitda"], used or [period]),
+                }
+            rows.append(line)
     status = "succeeded"
     message = None
     absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
@@ -250,6 +285,9 @@ def composed_ratio(
         if any(row.get("reason") == "partial_window" for row in rows):
             status = "partial_window"
             message = PARTIAL_DENOMINATOR
+    elif any(row.get("reason") == "ambiguous_stock" for row in rows) and not any(row["status"] == "computed" for row in rows):
+        status = "not_computed"
+        message = _AMBIGUOUS_STOCK
     result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
     if message:
         result["message"] = message
@@ -281,6 +319,7 @@ def select_ratio(
     composed: dict[str, Composed],
     concepts: frozenset[str],
     money: frozenset[str],
+    interest_order: dict | None = None,
 ) -> dict:
     """Вариант `corporate_covenant` считает определение из профиля или из каталога."""
 
@@ -305,6 +344,7 @@ def select_ratio(
             default=composed["dscr.corporate_covenant"],
             concepts=concepts,
             money=money,
+            interest_order=interest_order,
         )
     formula = composed.get(metric)
     if formula is not None:
@@ -318,7 +358,31 @@ def select_ratio(
             marker_class=common["marker_class"],
             absent=common["absent"],
         )
-    return coverage_ratio(metric=metric, **common)
+    return coverage_ratio(metric=metric, interest_order=interest_order, **common)
+
+
+def _swap_interest(formula: Composed, primaries: dict, order: tuple[str, ...] | list[str]) -> tuple[Composed, dict | None]:
+    """Подменяет начисленные проценты следующим именем порядка, если основной строки нет."""
+
+    names = (
+        *formula.numerator.plus,
+        *formula.numerator.minus,
+        *formula.denominator.plus,
+        *formula.denominator.minus,
+    )
+    if "interest" not in names or not order:
+        return formula, None
+    chosen, warning = interest_choice(primaries, order)
+    if chosen is None or chosen == "interest":
+        return formula, None
+
+    def replace(side: Side) -> Side:
+        return Side(
+            tuple(chosen if name == "interest" else name for name in side.plus),
+            tuple(chosen if name == "interest" else name for name in side.minus),
+        )
+
+    return Composed(replace(formula.numerator), replace(formula.denominator), formula.window), warning
 
 
 def _span(window: str, ordered: list[dict], period: dict, aligned: dict, axis: str):
@@ -337,10 +401,67 @@ def _span(window: str, ordered: list[dict], period: dict, aligned: dict, axis: s
     return keys, [item["period_id"] for item in span], None
 
 
-def _ending(keys, series: dict, name: str) -> Decimal | None:
-    if not keys or keys[-1] not in series[name]:
-        return None
-    return series[name][keys[-1]]
+_AMBIGUOUS_STOCK = (
+    "На одну дату конца периода приходится несколько остатков одной зернистости. "
+    "Остаток не выбран, коэффициент не рассчитан."
+)
+
+
+def _stock_choice(
+    period: dict, periods: list[dict], aligned: dict, values: dict
+) -> tuple[Decimal | None, str | None]:
+    """Остаток на дату конца периода, без зависимости от порядка списка.
+
+    Сначала берётся остаток той же оси. Если его нет, берётся единственный
+    остаток той же зернистости. Несколько таких остатков не выбираются молча:
+    метод возвращает причину `ambiguous_stock`. Ось без своей даты остаток не отдаёт.
+    """
+
+    axis = period["axis_id"]
+    own = aligned.get((axis, period["period_id"]), (axis, period["period_id"]))
+    if own in values:
+        return values[own], None
+    end = period.get("period_end")
+    if end is None:
+        return None, None
+    seen: dict[tuple, dict] = {}
+    for item in periods:
+        if item.get("period_end") != end:
+            continue
+        key = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
+        if key in values:
+            seen[key] = item
+    if not seen:
+        return None, None
+    same_axis = {key: item for key, item in seen.items() if item.get("axis_id") == axis}
+    grain = period.get("grain")
+    pool = same_axis or (
+        {key: item for key, item in seen.items() if grain and item.get("grain") == grain} if grain else {}
+    )
+    if len(pool) == 1:
+        return values[next(iter(pool))], None
+    if len(pool) > 1:
+        return None, "ambiguous_stock"
+    return None, None
+
+
+def _same_end(periods: list[dict], period: dict) -> list[dict]:
+    """Периоды с той же датой конца, включая период оси коэффициента.
+
+    Остаток на другой оси цитируется по этой дате. Период без даты остаётся один.
+    """
+
+    end = period.get("period_end")
+    found = []
+    seen = set()
+    for item in periods:
+        own = (item.get("axis_id"), item.get("period_id"))
+        if own in seen:
+            continue
+        if own == (period.get("axis_id"), period.get("period_id")) or (end is not None and item.get("period_end") == end):
+            seen.add(own)
+            found.append(item)
+    return found or [period]
 
 
 def _total(keys, series: dict, side: Side, convention: str, *, pay_plus: bool, basis: dict | None = None) -> Decimal | None:
