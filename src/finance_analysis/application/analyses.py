@@ -27,6 +27,7 @@ from finance_analysis.application.rule_engine import (
     run_rules,
     select_rules,
 )
+from finance_analysis.application.sheet_roles import load_sheet_roles
 from finance_analysis.domain.audit import AuditInput, Finding, Location
 from finance_analysis.domain.book import (
     FAS_VERSION,
@@ -480,6 +481,7 @@ class Analyses:
             absent=await self._absent(job_id, target),
             applicable_metrics=live,
             dscr_variant=_dscr_variant(self.service.model_types, verdict),
+            statement_sheets=frozenset(load_sheet_roles().statement),
         )
 
     async def _absent(self, job_id: str, target: Target) -> frozenset[str]:
@@ -946,6 +948,7 @@ class Analyses:
             absent=absent,
             applicable_metrics=live,
             dscr_variant=_dscr_variant(self.service.model_types, verdict),
+            statement_sheets=frozenset(load_sheet_roles().statement),
         )
         found = run_rules(rules, data)
         return [item for item in found if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]

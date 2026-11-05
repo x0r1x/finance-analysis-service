@@ -136,6 +136,8 @@ class AuditInput:
     applicable_metrics: frozenset[str] | None = None
     # Вариант DSCR подтверждённого типа. None — вызывающий не назвал вариант, формула базы.
     dscr_variant: str | None = None
+    # Имена листов отчётных форм. Пустое множество оставляет сверку только у роли reference.
+    statement_sheets: frozenset[str] = frozenset()
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:

@@ -14,6 +14,7 @@ from finance_analysis.domain.audit import (
     project_finance_dscr,
 )
 from finance_analysis.domain.metrics import coverage_ratio
+from finance_analysis.domain.model_type import sheet_name_key
 
 _TOLERANCE = Decimal("0.005")
 _BOUND = frozenset({"bound", "bound_with_warning"})
@@ -21,9 +22,11 @@ _EMPTY_REFERENCE = "справочная строка пуста"
 _INCOMPLETE_NUMERATOR = "справочный расчёт книги неполон: числитель пуст"
 _ICR_DIVERGENCE = "Справочный коэффициент книги расходится с расчётом FAS."
 _ICR_AMBIGUOUS = "На оси расчёта ICR несколько справочных строк покрытия. Сверка не выполнена."
-_STATEMENT_DIVERGENCE = "Строка модели расходится с отчётной формой на фактическом квартале."
+_STATEMENT_DIVERGENCE = "Строка модели расходится с отчётной формой на фактическом {grain}."
 _ACTUAL_UNKNOWN = "фактические периоды не определены, сверка с отчётностью не выполнена"
-_STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income", "interest")
+# Проценты не сверяются: начисление и уплата — разные основания, это сравнение отложено.
+_STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income")
+_GRAIN_WORD = {"quarter": "квартале", "month": "месяце", "year": "году"}
 
 
 def _primary(data: AuditInput, concept: str) -> dict | None:
@@ -426,9 +429,13 @@ def _named_cells(
 
 
 class StatementReference(Rule):
-    """На фактических кварталах сверяет основную строку модели со строкой формы.
+    """Сверяет основную строку модели со строкой отчётной формы.
 
-    Строка формы остаётся reference. Правило не переносит основную строку.
+    Строка формы — привязанная строка того же понятия на листе формы. Роль
+    `reference` по решению 40 остаётся только у копии, чьи значения уже совпали,
+    и здесь заново не назначается. Сверяются фактические периоды той же
+    зернистости, что у основной строки. Проценты в сверку не входят.
+    Правило не переносит основную строку.
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
@@ -447,19 +454,13 @@ class StatementReference(Rule):
             primary = _primary(data, concept)
             if primary is None:
                 continue
-            references = [
-                row
-                for row in data.bindings
-                if row.get("row_key")
-                and row.get("row_key") != primary.get("row_key")
-                and (row.get("effective_concept") or row.get("concept")) == concept
-                and _role(row) == "reference"
-                and row.get("status") in _BOUND
-            ]
+            grain = _primary_grain(data, primary)
+            comparable = _same_grain(actual, grain)
+            message = _STATEMENT_DIVERGENCE.format(grain=_grain_word(grain))
             model_values = _cached(data, primary["row_key"])
-            for ref in references:
+            for ref in _form_rows(data, concept, primary):
                 reported = _cached(data, ref["row_key"])
-                for period in actual:
+                for period in comparable:
                     key = (period["axis_id"], period["period_id"])
                     left = _same_period(model_values, key)
                     right = _same_period(reported, key)
@@ -473,7 +474,7 @@ class StatementReference(Rule):
                             period_id=period["period_id"],
                             params={
                                 "concept": concept,
-                                "message": _STATEMENT_DIVERGENCE,
+                                "message": message,
                                 "model": str(left),
                                 "reported": str(right),
                                 "cells": _named_cells(
@@ -485,21 +486,68 @@ class StatementReference(Rule):
         return findings
 
 
+def _form_rows(data: AuditInput, concept: str, primary: dict) -> list[dict]:
+    """Строки формы того же понятия, которые остались привязанными и не стали основными.
+
+    Роль `reference` тоже принимается: это копия, и расхождение с ней всё ещё находка.
+    Лист формы узнаётся по именам, которые передал аудит. Роль строке не назначается.
+    """
+
+    found = []
+    for row in data.bindings:
+        if not row.get("row_key") or row.get("row_key") == primary.get("row_key"):
+            continue
+        if (row.get("effective_concept") or row.get("concept")) != concept:
+            continue
+        if row.get("status") not in _BOUND:
+            continue
+        if _role(row) == "reference" or _on_statement_sheet(data, row["row_key"]):
+            found.append(row)
+    return found
+
+
 def _has_statement_pair(data: AuditInput) -> bool:
-    """Есть основная строка и строка-ссылка одного понятия отчётности."""
+    """Есть основная строка и строка формы одного понятия отчётности."""
 
     for concept in _STATEMENT_CONCEPTS:
         primary = _primary(data, concept)
-        if primary is None:
-            continue
-        for row in data.bindings:
-            if row.get("row_key") == primary.get("row_key"):
-                continue
-            if (row.get("effective_concept") or row.get("concept")) != concept:
-                continue
-            if _role(row) == "reference" and row.get("status") in _BOUND:
-                return True
+        if primary is not None and _form_rows(data, concept, primary):
+            return True
     return False
+
+
+def _on_statement_sheet(data: AuditInput, row_key: str) -> bool:
+    sheet = str((data.rows_by_key.get(row_key) or {}).get("sheet") or "")
+    if not sheet:
+        return False
+    folded = sheet_name_key(sheet)
+    return any(folded == sheet_name_key(name) for name in data.statement_sheets)
+
+
+def _primary_grain(data: AuditInput, primary: dict) -> str | None:
+    """Зернистость основной строки. Несколько зерён или их отсутствие не угадываются."""
+
+    axes = {fact.get("axis_id") for fact in data.facts if fact.get("row_key") == primary.get("row_key")}
+    grains = {
+        str(period.get("grain")).lower()
+        for period in data.periods
+        if period.get("axis_id") in axes and period.get("grain")
+    }
+    if len(grains) == 1:
+        return next(iter(grains))
+    return None
+
+
+def _same_grain(periods: list[dict], grain: str | None) -> list[dict]:
+    """Оставляет периоды зернистости основной строки. Без известного зерна список не режется."""
+
+    if grain is None:
+        return periods
+    return [period for period in periods if str(period.get("grain") or grain).lower() == grain]
+
+
+def _grain_word(grain: str | None) -> str:
+    return _GRAIN_WORD.get(grain or "", "квартале")
 
 
 def _role(row: dict) -> str | None:

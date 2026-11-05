@@ -265,6 +265,99 @@ def test_actual_quarter_compares_a_model_primary_with_a_reference_statement():
     assert STATEMENT_REFERENCE.check(close) == []
 
 
+def test_bound_statement_row_is_compared_only_at_the_primary_grain():
+    from finance_analysis.application.sheet_roles import load_sheet_roles
+    from tests.unit.test_row_selection import _assigned, _row
+
+    assigned = _assigned(
+        [
+            _row("cash", "Выручка за кв.", sheet="Денежные потоки"),
+            _row("form", "Выручка", sheet="ОФР", label_path=["нарастающим итогом"]),
+        ]
+    )
+    assert assigned["cash"].is_primary and assigned["cash"].evidence["selection"] == "period_basis"
+    assert assigned["form"].status == "bound" and assigned["form"].is_primary is False
+    assert assigned["form"].evidence.get("role") != "reference"
+    sheets = frozenset(load_sheet_roles().statement)
+    quarters = [
+        {
+            "axis_id": "cash",
+            "period_id": f"Q{index}",
+            "period_key_base": f"Q{index}",
+            "marker_class": "actual",
+            "grain": "quarter",
+        }
+        for index in range(1, 5)
+    ]
+    year = {
+        "axis_id": "year",
+        "period_id": "Y",
+        "period_key_base": "Y",
+        "marker_class": "actual",
+        "grain": "year",
+    }
+    cash_values = ["10", "20", "30", "40"]
+    form_values = ["100", "200", "300", "400"]
+    data = AuditInput(
+        rows=[
+            {"row_key": "cash", "binding_key": "cash", "sheet": "Денежные потоки"},
+            {"row_key": "form", "binding_key": "form", "sheet": "ОФР"},
+        ],
+        periods=[*quarters, year],
+        facts=[
+            *[_fact("cash", value, f"Q{index}") | {"axis_id": "cash", "cell_id": f"ДДС!{index}"} for index, value in enumerate(cash_values, start=1)],
+            *[_fact("form", value, f"Q{index}") | {"axis_id": "form", "cell_id": f"ОФР!{index}"} for index, value in enumerate(form_values, start=1)],
+            _fact("cash", "1", "Y") | {"axis_id": "cash", "cell_id": "ДДС!Y"},
+            _fact("form", "9", "Y") | {"axis_id": "form", "cell_id": "ОФР!Y"},
+        ],
+        bindings=[
+            {
+                "row_key": "cash",
+                "binding_key": "cash",
+                "is_primary": assigned["cash"].is_primary,
+                "status": assigned["cash"].status,
+                "effective_concept": assigned["cash"].concept,
+                "evidence": assigned["cash"].evidence,
+            },
+            {
+                "row_key": "form",
+                "binding_key": "form",
+                "is_primary": assigned["form"].is_primary,
+                "status": assigned["form"].status,
+                "effective_concept": assigned["form"].concept,
+                "evidence": assigned["form"].evidence,
+            },
+        ],
+        statement_sheets=sheets,
+    )
+    found = STATEMENT_REFERENCE.check(data)
+    assert [item.locations[0].period_id for item in found] == ["Q1", "Q2", "Q3", "Q4"]
+    assert {item.params["message"] for item in found} == {
+        "Строка модели расходится с отчётной формой на фактическом квартале."
+    }
+    month = AuditInput(
+        rows=data.rows,
+        periods=[{**quarters[0], "grain": "month"}],
+        facts=[_fact("cash", "10", "Q1") | {"axis_id": "cash"}, _fact("form", "100", "Q1") | {"axis_id": "form"}],
+        bindings=data.bindings,
+        statement_sheets=sheets,
+    )
+    assert STATEMENT_REFERENCE.check(month)[0].params["message"] == (
+        "Строка модели расходится с отчётной формой на фактическом месяце."
+    )
+    interest = AuditInput(
+        rows=data.rows,
+        periods=[quarters[0]],
+        facts=[_fact("cash", "10", "Q1") | {"axis_id": "cash"}, _fact("form", "80", "Q1") | {"axis_id": "form"}],
+        bindings=[
+            _binding("interest", "cash"),
+            _binding("interest", "form", is_primary=False),
+        ],
+        statement_sheets=sheets,
+    )
+    assert STATEMENT_REFERENCE.check(interest) == []
+
+
 def test_ratio_mismatch_and_marker_mix_and_pair_status():
     bindings = [_binding("cfads", "c"), _binding("debt_service", "d"), _binding("dscr", "m")]
     far = AuditInput(
