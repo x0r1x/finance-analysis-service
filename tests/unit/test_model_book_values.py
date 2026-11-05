@@ -94,7 +94,10 @@ def test_debtlens_noi_cap_rate_vacancy_and_dscr():
 
 
 def test_solar_capacity_generation_tariff_and_dscr():
-    """Кэш якорей. H58:AK58 — 30 значений выработки. H61:AA61 — 72,75, AB61:AK61 — нули IFERROR."""
+    """Кэш якорей. H58:AK58 — 30 значений выработки. Весь тариф H61:AK61 — формула IFERROR.
+
+    H61:AA61 кэширует 72,75. AB61:AK61 кэширует ноль, ячейки не пустые.
+    """
 
     name = "Solar Financial Model.xlsx"
     dc = _cell("solar", name, "Model", "D20")
@@ -110,7 +113,7 @@ def test_solar_capacity_generation_tariff_and_dscr():
         generation = [cell.value for cell in cached["Model"]["H58:AK58"][0]]
         ppa = [cell.value for cell in cached["Model"]["H61:AA61"][0]]
         after = [cell.value for cell in cached["Model"]["AB61:AK61"][0]]
-        after_formulas = [cell.value for cell in formulas["Model"]["AB61:AK61"][0]]
+        tariff_formulas = [cell.value for cell in formulas["Model"]["H61:AK61"][0]]
     finally:
         cached.close()
         formulas.close()
@@ -121,7 +124,9 @@ def test_solar_capacity_generation_tariff_and_dscr():
     assert len(generation) == 30 and generation[0] == p50
     assert ppa == [72.75] * 20
     assert after == [0] * 10
-    assert all(isinstance(item, str) and item.startswith("=IFERROR(") for item in after_formulas)
+    assert all(item is not None for item in ppa + after)
+    assert len(tariff_formulas) == 30
+    assert all(isinstance(item, str) and item.startswith("=IFERROR(") for item in tariff_formulas)
     assert dscr_p50 == 1.35
     assert round(dscr_p99, 3) == 1.132
     # В книге нет строки capacity factor: P50 МВт·ч / (мощность AC × 8760 ч).

@@ -12,6 +12,7 @@ from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.domain.book import FAS_SCHEMA_VERSION
 from finance_analysis.domain.book_cite import CITED_BY_TYPE, cite_type_book_rows
+from finance_analysis.domain.glossary import normalize_label
 from finance_analysis.domain.model_type import applicability, open_concepts
 from finance_analysis.domain.questions import concept_questions
 
@@ -88,15 +89,13 @@ def _label(relative: str, sheet: str, coord: str):
         book.close()
 
 
-def _span(relative: str, sheet: str, ref: str, *, data_only: bool) -> list:
-    book = openpyxl.load_workbook(_ROOT / relative, data_only=data_only)
-    try:
-        block = book[sheet][ref]
-        if not isinstance(block, tuple):
-            return [block.value]
-        return [cell.value for cell in block[0]]
-    finally:
-        book.close()
+def _band(grid, row: int, start: int, end: int) -> list[tuple[str, object]]:
+    """Ячейки строки слева направо: `Model!H58` и значение."""
+
+    return [
+        (f"Model!{grid.cell(row, column).coordinate}", grid.cell(row, column).value)
+        for column in range(start, end + 1)
+    ]
 
 
 def _row_numbers(relative: str, sheet: str, row: int, start: int) -> list:
@@ -229,11 +228,32 @@ def test_meridian_cites_wacc_and_both_bridges_unsummed():
     assert left + right != left
 
 
-def test_solar_cites_degradation_generation_and_tariff_not_capacity():
-    """Деградация Model!D23 равна 0,005. Выработка H58:AK58 — 30 значений, первое около 50 370.
+def _solar_series(row_key: str, cells, years, periods) -> list[dict]:
+    """Факты строки в обратном порядке. Период берётся из книги, не из порядка вставки."""
 
-    Тариф H61:AA61 — двадцать раз 72,75. AB61:AK61 — десять нулей кэша формулы IFERROR,
-    не пустые ячейки. Цитата отдаёт 30 наблюдений и не включает installed_capacity.
+    facts = []
+    for (cell_id, value), (_, year), (_, index) in reversed(
+        list(zip(cells, years, periods, strict=True))
+    ):
+        facts.append(
+            _fact(
+                row_key,
+                value,
+                cell_id=cell_id,
+                axis_id="Model",
+                period_id=str(year),
+                period_index=index,
+            )
+        )
+    return facts
+
+
+def test_solar_cites_degradation_generation_and_tariff_not_capacity():
+    """Деградация Model!D23 равна 0,005. Выработка H58:AK58 и тариф H61:AK61 — по 30 ячеек.
+
+    Год и номер периода читаются из строки книги. Наблюдения идут по period_index,
+    а не по порядку фактов. Хвост AB61:AK61 — нули кэша IFERROR, не пустые слоты.
+    Весь ряд H61:AK61 — формула IFERROR. installed_capacity в цитату типа не входит.
     """
 
     book = "solar/Solar Financial Model.xlsx"
@@ -241,23 +261,44 @@ def test_solar_cites_degradation_generation_and_tariff_not_capacity():
     assert package.resolve(_label(book, "Model", "B23")).concept == "degradation"
     assert package.resolve(_label(book, "Model", "B58")).concept == "energy_generation"
     assert package.resolve(_label(book, "Model", "B61")).concept == "energy_tariff"
-    assert _span(book, "Model", "D23", data_only=False) == [0.005]
-    degradation = _span(book, "Model", "D23", data_only=True)
-    generation = _span(book, "Model", "H58:AK58", data_only=True)
-    generation_formulas = _span(book, "Model", "H58:AK58", data_only=False)
-    ppa = _span(book, "Model", "H61:AA61", data_only=True)
-    after = _span(book, "Model", "AB61:AK61", data_only=True)
-    after_formulas = _span(book, "Model", "AB61:AK61", data_only=False)
-    assert degradation == [0.005]
-    assert len(generation) == 30
-    assert round(generation[0], 0) == 50370
-    assert all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in generation)
-    assert all(isinstance(item, str) and item.startswith("=") for item in generation_formulas)
-    assert ppa == [72.75] * 20
-    assert after == [0] * 10
-    assert all(item is not None for item in after)
-    assert all(isinstance(item, str) and item.startswith("=IFERROR(") for item in after_formulas)
-    tariff = ppa + after
+    cached = openpyxl.load_workbook(_ROOT / book, data_only=True)
+    formulas = openpyxl.load_workbook(_ROOT / book, data_only=False)
+    try:
+        start, end = 8, 37  # H:AK
+        generation = _band(cached["Model"], 58, start, end)
+        tariff = _band(cached["Model"], 61, start, end)
+        years = _band(cached["Model"], 53, start, end)
+        periods = _band(cached["Model"], 54, start, end)
+        generation_formulas = _band(formulas["Model"], 58, start, end)
+        tariff_formulas = _band(formulas["Model"], 61, start, end)
+        assert formulas["Model"]["D23"].value == 0.005
+        assert cached["Model"]["D23"].value == 0.005
+    finally:
+        cached.close()
+        formulas.close()
+    generation_ids = [cell_id for cell_id, _ in generation]
+    tariff_ids = [cell_id for cell_id, _ in tariff]
+    assert [year for _, year in years] == list(range(2020, 2050))
+    assert [index for _, index in periods] == list(range(1, 31))
+    assert generation_ids[0] == "Model!H58" and generation_ids[-1] == "Model!AK58"
+    assert tariff_ids[0] == "Model!H61" and tariff_ids[19] == "Model!AA61"
+    assert tariff_ids[20] == "Model!AB61" and tariff_ids[-1] == "Model!AK61"
+    assert round(generation[0][1], 0) == 50370
+    assert [value for _, value in tariff[:20]] == [72.75] * 20
+    assert [value for _, value in tariff[20:]] == [0] * 10
+    assert all(value is not None for _, value in tariff)
+    assert all(
+        isinstance(formula, str) and formula.startswith("=")
+        for _, formula in generation_formulas
+    )
+    assert all(
+        isinstance(formula, str) and formula.startswith("=IFERROR(")
+        for _, formula in tariff_formulas
+    )
+    generation_facts = _solar_series("Model!B58", generation, years, periods)
+    tariff_facts = _solar_series("Model!B61", tariff, years, periods)
+    assert generation_facts[0]["cell_id"] == "Model!AK58"
+    assert tariff_facts[0]["cell_id"] == "Model!AK61"
     got = cite_type_book_rows(
         source="inferred",
         primary="renewables_dpm",
@@ -270,11 +311,11 @@ def test_solar_cites_degradation_generation_and_tariff_not_capacity():
             _binding("installed_capacity", "Model!B21"),
         ],
         facts=[
-            _fact("Model!B23", degradation[0]),
-            *[_fact("Model!B58", value) for value in generation],
-            *[_fact("Model!B61", value) for value in tariff],
-            _fact("Model!B20", 25),
-            _fact("Model!B21", 20),
+            _fact("Model!B23", 0.005, cell_id="Model!D23"),
+            *generation_facts,
+            *tariff_facts,
+            _fact("Model!B20", 25, cell_id="Model!D20"),
+            _fact("Model!B21", 20, cell_id="Model!D21"),
         ],
     )
     assert CITED_BY_TYPE["renewables_dpm"] == (
@@ -283,16 +324,104 @@ def test_solar_cites_degradation_generation_and_tariff_not_capacity():
         "energy_tariff",
     )
     assert [row["concept"] for row in got] == list(CITED_BY_TYPE["renewables_dpm"])
-    assert len(got[0]["observations"]) == 1
-    assert Decimal(_sheet(got[0])[0]) == Decimal("0.005")
-    assert len(got[1]["observations"]) == 30
-    assert _sheet(got[1]) == [format(Decimal(str(value)), "f") for value in generation]
-    assert round(Decimal(_sheet(got[1])[0]), 0) == Decimal(50370)
-    assert len(got[2]["observations"]) == 30
-    assert [Decimal(value) for value in _sheet(got[2])] == [Decimal("72.75")] * 20 + [
-        Decimal(0)
-    ] * 10
     assert "installed_capacity" not in {row["concept"] for row in got}
+    degradation = got[0]["observations"]
+    assert len(degradation) == 1
+    assert degradation[0]["cell_id"] == "Model!D23"
+    assert degradation[0]["value_status"] == "cached"
+    assert Decimal(degradation[0]["value"]) == Decimal("0.005")
+    for row, cells in ((got[1], generation), (got[2], tariff)):
+        observed = row["observations"]
+        assert len(observed) == 30
+        assert [item["cell_id"] for item in observed] == [cell_id for cell_id, _ in cells]
+        assert [item["period_index"] for item in observed] == list(range(1, 31))
+        assert [item["period_id"] for item in observed] == [str(year) for year in range(2020, 2050)]
+        assert [item["axis_id"] for item in observed] == ["Model"] * 30
+        assert [item["value_status"] for item in observed] == ["cached"] * 30
+        assert [item["value"] for item in observed] == [
+            format(Decimal(str(value)), "f") for _, value in cells
+        ]
+    assert round(Decimal(got[1]["observations"][0]["value"]), 0) == Decimal(50370)
+    tail = got[2]["observations"][20:]
+    assert [item["cell_id"] for item in tail] == [cell_id for cell_id, _ in tariff[20:]]
+    assert [item["value"] for item in tail] == ["0"] * 10
+    assert [item["value_status"] for item in tail] == ["cached"] * 10
+    blank = cite_type_book_rows(
+        source="inferred",
+        primary="renewables_dpm",
+        bindings=[_binding("energy_tariff", "Model!B61")],
+        facts=[
+            _fact(
+                "Model!B61",
+                0,
+                status="empty",
+                cell_id="Model!AB61",
+                axis_id="Model",
+                period_id="2040",
+                period_index=21,
+            )
+        ],
+    )
+    assert blank[2]["observations"][0]["value"] is None
+    assert blank[2]["observations"][0]["value_status"] == "empty"
+    assert blank[2]["observations"][0]["cell_id"] == "Model!AB61"
+
+
+def test_solar_capacity_primaries_stay_ambiguous_if_cited(monkeypatch):
+    """Тела Project Size (DC) и (AC) совпадают. Две и три основные строки не схлопываются.
+
+    Пока понятие не в CITED_BY_TYPE, тип его не отдаёт. Если бы отдавал, выбор строки
+    был бы ambiguous и наблюдения пустые: последняя из B20, B21 и M16 не побеждает.
+    """
+
+    book = "solar/Solar Financial Model.xlsx"
+    package = load_catalog()
+    dc = _label(book, "Model", "B20")
+    ac = _label(book, "Model", "B21")
+    per_w = _label(book, "Model", "M16")
+    assert dc == "Project Size (DC)" and ac == "Project Size (AC)"
+    assert per_w == "€/W (DC)"
+    assert normalize_label(dc) == normalize_label(ac) == "project size"
+    assert normalize_label(per_w) != "project size"
+    assert package.resolve(dc).concept == "installed_capacity"
+    assert package.resolve(ac).concept == "installed_capacity"
+    assert package.resolve_match(per_w)[1] == "abbrev"
+    original = CITED_BY_TYPE["renewables_dpm"]
+    assert original == ("degradation", "energy_generation", "energy_tariff")
+    assert "installed_capacity" not in original
+    monkeypatch.setitem(CITED_BY_TYPE, "renewables_dpm", (*original, "installed_capacity"))
+    pair = [
+        _binding("installed_capacity", "Model!B20", label=dc),
+        _binding("installed_capacity", "Model!B21", label=ac),
+    ]
+    triple = [*pair, _binding("installed_capacity", "Model!M16", label=per_w)]
+    facts = [
+        _fact("Model!B20", 25, scale=1, cell_id="Model!D20"),
+        _fact("Model!B21", 20, scale=1, cell_id="Model!D21"),
+        _fact("Model!M16", 1, scale=1, cell_id="Model!M16"),
+    ]
+    for bindings in (pair, triple):
+        got = cite_type_book_rows(
+            source="inferred",
+            primary="renewables_dpm",
+            bindings=bindings,
+            facts=facts,
+        )
+        capacity = got[-1]
+        assert capacity["concept"] == "installed_capacity"
+        assert capacity["status"] == "ambiguous"
+        assert capacity["observations"] == []
+        assert "row_key" not in capacity
+    alone = cite_type_book_rows(
+        source="inferred",
+        primary="renewables_dpm",
+        bindings=[_binding("installed_capacity", "Model!B20", label=dc)],
+        facts=facts,
+    )
+    assert alone[-1]["status"] == "cited"
+    assert alone[-1]["row_key"] == "Model!B20"
+    assert alone[-1]["observations"][0]["cell_id"] == "Model!D20"
+    assert alone[-1]["observations"][0]["value"] == "25"
 
 
 def test_debtlens_cites_cap_rate_and_the_year_one_scalars():
