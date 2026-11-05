@@ -172,6 +172,26 @@ def test_empty_and_invalid_values_are_not_citations():
     assert got[1]["status"] == "absent" and got[1]["observations"] == []
 
 
+def test_non_finite_decimals_are_not_citations():
+    """NaN и бесконечность не становятся значением цитаты."""
+
+    got = cite_lbo_book_rows(
+        source="inferred",
+        primary="lbo_ma",
+        bindings=[_binding("moic", "r"), _binding("exit_enterprise_value", "e")],
+        facts=[
+            _fact("r", Decimal("NaN"), "2.13", cell_id="Returns!C9"),
+            _fact("r", Decimal("Infinity"), "2.13", cell_id="Returns!D9"),
+            _fact("e", Decimal("-Infinity"), "1417.151736", cell_id="Returns!C4"),
+        ],
+    )
+    assert got[0]["status"] == "absent" and got[0]["observations"] == []
+    assert got[1]["status"] == "absent" and got[1]["observations"] == []
+    rendered = str(got)
+    assert "NaN" not in rendered
+    assert "Infinity" not in rendered
+
+
 def test_observation_keeps_cell_provenance():
     got = cite_lbo_book_rows(
         source="inferred",

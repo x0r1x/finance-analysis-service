@@ -119,9 +119,12 @@ def _decimal_text(number) -> str | None:
     if number is None or isinstance(number, bool):
         return None
     try:
-        text = format(Decimal(str(number)), "f")
+        value = Decimal(str(number))
     except (InvalidOperation, ValueError):
         return None
+    if not value.is_finite():
+        return None
+    text = format(value, "f")
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text
