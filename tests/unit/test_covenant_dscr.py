@@ -573,6 +573,65 @@ def test_net_debt_on_another_axis_is_read_at_the_same_period_end():
     assert final["value"] == Decimal("2.5000000000")
 
 
+def test_two_stocks_with_one_period_end_follow_grain_not_list_order():
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    quarters = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    debt = [
+        {**period, "axis_id": "debt", "timeline_id": "debt", "period_id": f"D{index}"}
+        for index, period in enumerate(quarters, start=1)
+    ]
+    annual = {
+        "axis_id": "year",
+        "timeline_id": "year",
+        "period_id": "Y",
+        "period_index": 1,
+        "grain": "year",
+        "period_start": date(2024, 1, 1),
+        "period_end": date(2024, 12, 31),
+    }
+    facts = [_fact("e", f"Q{index}", "10") for index in range(1, 5)]
+    facts += [{**_fact("n", f"D{index}", "100"), "axis_id": "debt"} for index in range(1, 5)]
+    facts.append({**_fact("n", "Y", "400"), "axis_id": "year"})
+    bindings = [_bind("net_debt", "n"), _bind("ebitda", "e")]
+    for periods in ([*quarters, *debt, annual], [annual, *reversed(debt), *reversed(quarters)]):
+        got = composed_ratio(
+            "net_debt_ebitda",
+            catalog.composed["net_debt_ebitda"],
+            facts=facts,
+            bindings=bindings,
+            periods=list(periods),
+        )
+        final = next(row for row in got["rows"] if row["period_id"] == "Q4")
+        assert final["status"] == "computed"
+        assert final["value"] == Decimal("2.5000000000")
+    other = [
+        {**period, "axis_id": "other", "timeline_id": "other", "period_id": f"O{index}"}
+        for index, period in enumerate(quarters, start=1)
+    ]
+    mixed = facts + [{**_fact("n", f"O{index}", "250"), "axis_id": "other"} for index in range(1, 5)]
+    ambiguous = composed_ratio(
+        "net_debt_ebitda",
+        catalog.composed["net_debt_ebitda"],
+        facts=mixed,
+        bindings=bindings,
+        periods=[*quarters, *debt, *other],
+    )
+    final = next(row for row in ambiguous["rows"] if row["period_id"] == "Q4")
+    assert final["status"] == "not_computed"
+    assert final["value"] is None
+    assert final["message"] == (
+        "На одну дату конца периода приходится несколько остатков одной зернистости. "
+        "Остаток не выбран, коэффициент не рассчитан."
+    )
+
+
 def test_net_debt_off_the_ratio_axis_is_reported_before_the_window_is_full():
     from finance_analysis.domain.covenant import composed_ratio
 
