@@ -30,6 +30,8 @@ _STATEMENT_DIVERGENCE = "Строка модели расходится с от�
 _ACTUAL_UNKNOWN = "фактические периоды не определены, сверка с отчётностью не выполнена"
 _ACTUAL_AMBIGUOUS = "граница факта «{value}» неоднозначна, сверка с отчётностью не выполнена: {candidates}"
 _YTD_GAP = "для сверки нарастающего итога на {period} не хватает значения модели за {missing}, период пропущен"
+_AXIS_MISS = "значение границы фактов не попало на ось сверяемой строки"
+_NO_OVERLAP = "факт заканчивается на {end}, форма начинается с {start}, общих периодов для сверки нет"
 # Проценты не сверяются: начисление и уплата — разные основания, это сравнение отложено.
 _STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income")
 _GRAIN_WORD = {"quarter": "квартале", "month": "месяце", "year": "году"}
@@ -872,6 +874,16 @@ def _immediately_before(data: AuditInput, earlier: dict, later: dict) -> bool:
     return ordered.index(later.get("period_id")) == ordered.index(earlier.get("period_id")) + 1
 
 
+def _boundary_hits_axis(data: AuditInput, primary: dict, actual: list[dict]) -> bool:
+    """Граница попала в период оси сверяемой строки, а не только в чужую ось того же имени."""
+
+    axes = _row_axes(data, primary.get("row_key") or "")
+    if not axes:
+        return False
+    ids = {period.get("period_id") for period in data.periods if period.get("axis_id") in axes}
+    return any(period.get("period_id") in ids for period in actual)
+
+
 def _agreed(cuts: list[str | None]) -> str | None:
     present = [cut for cut in cuts if cut]
     if not present:
@@ -1016,16 +1028,36 @@ class StatementReference(Rule):
         _kind, actual, source, end, *extra = resolved
         traced = extra[0] if extra else []
         findings = []
+        axis_miss = False
+        compared = False
         for concept in _STATEMENT_CONCEPTS:
             primary = _primary(data, concept)
             if primary is None:
                 continue
             grain = _primary_grain(data, primary)
             comparable = _same_grain(actual, grain)
+            if source == "explicit" and not _boundary_hits_axis(data, primary, actual):
+                axis_miss = True
+                findings.append(
+                    self.finding(
+                        data,
+                        row_key=primary["row_key"],
+                        params={
+                            "cause": "actuals_end_axis_miss",
+                            "message": _AXIS_MISS,
+                            "actuals_end": end,
+                            "grain": grain or "",
+                            "axis_id": ",".join(sorted(_row_axes(data, primary.get("row_key") or ""))),
+                        },
+                    )
+                )
+                continue
             message = _STATEMENT_DIVERGENCE.format(grain=_grain_word(grain))
             model_values = _cached(data, primary["row_key"])
             for ref in _form_rows(data, concept, primary):
                 reported, scale_source = _reported_values(data, concept, ref)
+                overlap = False
+                gaps = False
                 for period in comparable:
                     left, right, missing = _aligned_values(data, primary, ref, period, model_values, reported)
                     if missing:
@@ -1049,8 +1081,14 @@ class StatementReference(Rule):
                                 },
                             )
                         )
+                        gaps = True
+                        compared = True
                         continue
-                    if left is None or right is None or _within(left, right):
+                    if left is None or right is None:
+                        continue
+                    overlap = True
+                    compared = True
+                    if _within(left, right):
                         continue
                     findings.append(
                         self.finding(
@@ -1073,6 +1111,32 @@ class StatementReference(Rule):
                             },
                         )
                     )
+                if not overlap and not gaps:
+                    start = _first_filled(data, ref.get("row_key"))
+                    finish = _order(comparable)[-1] if comparable else None
+                    if start is not None and finish is not None:
+                        findings.append(
+                            self.finding(
+                                data,
+                                row_key=primary["row_key"],
+                                params={
+                                    "cause": "actuals_no_overlap",
+                                    "message": _NO_OVERLAP.format(
+                                        end=finish.get("period_id"), start=start.get("period_id")
+                                    ),
+                                    "actuals_source": source,
+                                    "actuals_end": end,
+                                    "fact_end": finish.get("period_id"),
+                                    "form_start": start.get("period_id"),
+                                    **({"traced_cells": list(traced)} if traced else {}),
+                                },
+                            )
+                        )
+                        compared = True
+        if axis_miss and not compared and _has_statement_pair(data):
+            findings.append(
+                self.finding(data, params={"cause": "actual_unknown", "message": _ACTUAL_UNKNOWN})
+            )
         return findings
 
 

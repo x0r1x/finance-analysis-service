@@ -846,6 +846,107 @@ def test_formula_row_traces_the_input_switch_and_ignores_a_nonzero_forecast():
     assert disagreed[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
 
 
+def test_boundary_that_misses_the_row_axis_stays_undetermined():
+    rows, bindings = _statement_pair()
+    quarters = [{**_quarter(period, index), "axis_id": "pl"} for index, period in enumerate(("2016Q1", "2016Q2", "2016Q3"), start=1)]
+    year = {"axis_id": "inputs", "period_id": "2023", "period_key_base": "2023", "period_index": 1, "grain": "year"}
+    facts = [
+        {**_fact("model", "100", "2016Q1"), "axis_id": "pl", "cell_id": "ДДС!B"},
+        {**_fact("form", "110", "2016Q1"), "axis_id": "pl", "cell_id": "ОФР!B"},
+    ]
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=[*quarters, year], facts=facts, bindings=bindings, actuals_end="2023")
+    )
+    assert [item.params["message"] for item in found] == [
+        "значение границы фактов не попало на ось сверяемой строки",
+        "фактические периоды не определены, сверка с отчётностью не выполнена",
+    ]
+    assert found[0].params["actuals_end"] == "2023"
+    assert found[0].params["grain"] == "quarter"
+    assert found[0].params["axis_id"] == "pl"
+    marked = [{**period, "marker_class": None} for period in quarters]
+    marked_year = {**year, "marker_class": "actual"}
+    by_marker = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=[*marked, marked_year], facts=facts, bindings=bindings)
+    )
+    assert by_marker[0].params["cause"] == "actuals_end_axis_miss"
+    assert by_marker[1].params["cause"] == "actual_unknown"
+
+
+def test_fact_window_without_form_periods_names_both_ends():
+    rows, bindings = _statement_pair()
+    periods = []
+    ends = {"2016Q3": "2016-09-30", "2016Q4": "2016-12-31"}
+    for index, period in enumerate(("2016Q3", "2016Q4"), start=1):
+        for axis in ("model", "form"):
+            periods.append({**_quarter(period, index, end=ends[period]), "axis_id": axis})
+    explicit = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=periods,
+            facts=[
+                {**_fact("model", "100", "2016Q3"), "axis_id": "model", "cell_id": "ДДС!Q3"},
+                {**_fact("model", "100", "2016Q4"), "axis_id": "model", "cell_id": "ДДС!Q4"},
+                {**_fact("form", "110", "2016Q4"), "axis_id": "form", "cell_id": "ОПиУ!Q4"},
+            ],
+            bindings=bindings,
+            actuals_end="2016Q3",
+        )
+    )
+    assert explicit[0].params["message"] == (
+        "факт заканчивается на 2016Q3, форма начинается с 2016Q4, общих периодов для сверки нет"
+    )
+    assert explicit[0].params["fact_end"] == "2016Q3"
+    assert explicit[0].params["form_start"] == "2016Q4"
+    traced_rows = rows + [{"row_key": "rsbu", "binding_key": "rsbu"}]
+    traced_periods = []
+    full = {"2016Q1": "2016-03-31", "2016Q2": "2016-06-30", "2016Q3": "2016-09-30", "2016Q4": "2016-12-31"}
+    rsbu_ids = {"2016Q1": "n1", "2016Q2": "n2", "2016Q3": "n3", "2016Q4": "n4"}
+    for index, period in enumerate(full, start=1):
+        for axis in ("model", "form"):
+            traced_periods.append({**_quarter(period, index, end=full[period]), "axis_id": axis})
+        traced_periods.append({**_quarter(rsbu_ids[period], index, end=full[period]), "axis_id": "rsbu"})
+    facts = []
+    links = []
+    for period, rsbu in rsbu_ids.items():
+        facts.append({**_fact("model", "100", period), "axis_id": "model", "cell_id": f"ДДС!{period}"})
+        links.append(
+            {
+                "cell": f"ДДС!{period}",
+                "row_key": "model",
+                "period_id": period,
+                "formula": f"={rsbu}",
+                "ref_cell": f"Фин отчетность РСБУ!{rsbu}",
+            }
+        )
+        cell = "Фин отчетность РСБУ!N25" if period == "2016Q3" else f"Фин отчетность РСБУ!{rsbu}"
+        facts.append({**_fact("rsbu", "100", rsbu), "axis_id": "rsbu", "cell_id": cell})
+        if period == "2016Q4":
+            links.append(
+                {
+                    "cell": cell,
+                    "row_key": "rsbu",
+                    "period_id": rsbu,
+                    "formula": "=N25*(1+K25)",
+                    "ref_cell": "Фин отчетность РСБУ!N25",
+                }
+            )
+    facts.append({**_fact("form", "110", "2016Q4"), "axis_id": "form", "cell_id": "ОПиУ!2016Q4"})
+    links.append(
+        {"cell": "ОПиУ!2016Q4", "row_key": "form", "period_id": "2016Q4", "formula": "=ДДС!2016Q4", "ref_cell": "ДДС!2016Q4"}
+    )
+    traced = STATEMENT_REFERENCE.check(
+        AuditInput(rows=traced_rows, periods=traced_periods, facts=facts, bindings=bindings, links=links)
+    )
+    assert [item.params["message"] for item in traced] == [
+        "факт заканчивается на 2016Q3, форма начинается с 2016Q4, общих периодов для сверки нет"
+    ]
+    assert traced[0].params["actuals_source"] == "structural_traced"
+    assert traced[0].params["traced_cells"] == ["Фин отчетность РСБУ!N25"]
+    assert traced[0].params["fact_end"] == "2016Q3"
+    assert traced[0].params["form_start"] == "2016Q4"
+
+
 def test_actuals_end_journal_keeps_the_latest_value():
     from finance_analysis.domain.audit import (
         actuals_end_from_journal,
