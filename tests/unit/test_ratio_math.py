@@ -910,7 +910,13 @@ def test_formula_row_traces_the_input_switch_and_ignores_a_nonzero_forecast():
     disagreed = STATEMENT_REFERENCE.check(
         AuditInput(rows=rows + [{"row_key": "other", "binding_key": "other"}], periods=periods + other_periods, facts=facts, bindings=bindings, links=links)
     )
-    assert disagreed[0].params["message"] == "фактические периоды не определены, сверка с отчётностью не выполнена"
+    assert disagreed[0].params["cause"] == "structural_traced_ambiguous"
+    assert disagreed[0].params["message"] == (
+        "граница фактов неоднозначна, сверка с отчётностью не выполнена: "
+        "2016Q2 (Прочее!B2), 2016Q3 (Фин отчетность РСБУ!N25)"
+    )
+    assert disagreed[0].params["candidates"] == ["2016Q2", "2016Q3"]
+    assert disagreed[0].params["cells"] == ["Прочее!B2", "Фин отчетность РСБУ!N25"]
 
 
 def test_all_input_source_row_traces_the_latest_cell_that_feeds_the_chain():
@@ -993,6 +999,152 @@ def test_all_input_source_row_traces_the_latest_cell_that_feeds_the_chain():
     assert found[0].params["actuals_source"] == "structural_traced"
     assert found[0].params["fact_end"] == "2016Q3"
     assert found[0].params["form_start"] == "2016Q4"
+    assert found[0].params["traced_cells"] == ["Фин отчетность РСБУ!N25"]
+
+
+def _open_revenue_chain() -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict]]:
+    """Формульные модель и форма. Последний ввод выручки — N25 на 2016Q3, форма с 2016Q4."""
+
+    rows = [
+        {"row_key": "model", "binding_key": "model"},
+        {"row_key": "form", "binding_key": "form"},
+        {"row_key": "assumptions", "binding_key": "assumptions"},
+        {"row_key": "rsbu", "binding_key": "rsbu"},
+    ]
+    bindings = [
+        _binding("revenue", "model", evidence={"period_basis": "period", "period_basis_source": "label"}),
+        _binding(
+            "revenue",
+            "form",
+            is_primary=False,
+            evidence={"role": "reference", "period_basis": "ytd", "period_basis_source": "header"},
+        ),
+    ]
+    ends = {"2016Q1": "2016-03-31", "2016Q2": "2016-06-30", "2016Q3": "2016-09-30", "2016Q4": "2016-12-31"}
+    rsbu_ids = {"2016Q1": "n1", "2016Q2": "n2", "2016Q3": "n3", "2016Q4": "n4"}
+    cells = {
+        "2016Q1": "Фин отчетность РСБУ!K25",
+        "2016Q2": "Фин отчетность РСБУ!L25",
+        "2016Q3": "Фин отчетность РСБУ!N25",
+        "2016Q4": "Фин отчетность РСБУ!O25",
+    }
+    periods = []
+    for index, period in enumerate(ends, start=1):
+        for axis in ("model", "form", "assumptions"):
+            periods.append({**_quarter(period, index, end=ends[period]), "axis_id": axis})
+        periods.append({**_quarter(rsbu_ids[period], index, end=ends[period]), "axis_id": "rsbu"})
+    facts = []
+    links = []
+    for period, rsbu in rsbu_ids.items():
+        facts.append({**_fact("rsbu", "100", rsbu), "axis_id": "rsbu", "cell_id": cells[period]})
+        source = "2016Q3" if period == "2016Q4" else period
+        if period != "2016Q4":
+            facts.append(
+                {**_fact("assumptions", "100", period), "axis_id": "assumptions", "cell_id": f"Предпосылки_!{period}"}
+            )
+            links.append(
+                {
+                    "cell": f"Предпосылки_!{period}",
+                    "row_key": "assumptions",
+                    "period_id": period,
+                    "formula": f"={cells[period]}",
+                    "ref_cell": cells[period],
+                }
+            )
+        facts.append({**_fact("model", "100", period), "axis_id": "model", "cell_id": f"Денежные потоки!{period}"})
+        links.append(
+            {
+                "cell": f"Денежные потоки!{period}",
+                "row_key": "model",
+                "period_id": period,
+                "formula": f"=Предпосылки_!{source}",
+                "ref_cell": f"Предпосылки_!{source}",
+            }
+        )
+    facts.append({**_fact("form", "400", "2016Q4"), "axis_id": "form", "cell_id": "ОПиУ!D11"})
+    for period in ends:
+        links.append(
+            {
+                "cell": "ОПиУ!D11",
+                "row_key": "form",
+                "period_id": "2016Q4",
+                "formula": "=F32+G32+H32+I32",
+                "ref_cell": f"Денежные потоки!{period}",
+            }
+        )
+    return rows, bindings, periods, facts, links
+
+
+def _units_row(periods, facts, links, *, graph_period: str, fact_period: str, reference_input: bool) -> None:
+    """Строка «Продажи, ед.»: формулы E19:H19 копируют выручку, N19 — ввод штук."""
+
+    periods.extend(
+        [
+            {**_quarter("u1", 1, end="2016-03-31"), "axis_id": "units"},
+            {**_quarter(fact_period, 4, end="2016-12-31"), "axis_id": "units"},
+        ]
+    )
+    facts.append({**_fact("units", "8", "u1"), "axis_id": "units", "cell_id": "Предпосылки!N19"})
+    facts.append({**_fact("units", "8", fact_period), "axis_id": "units", "cell_id": "Предпосылки!E19"})
+    links.append(
+        {
+            "cell": "Предпосылки!E19",
+            "row_key": "units",
+            "period_id": graph_period,
+            "formula": "=Фин отчетность РСБУ!N25",
+            "ref_cell": "Фин отчетность РСБУ!N25",
+        }
+    )
+    links.append(
+        {
+            "cell": "Денежные потоки!2016Q1",
+            "row_key": "model",
+            "period_id": "2016Q1",
+            "formula": "=E19",
+            "ref_cell": "Предпосылки!E19",
+        }
+    )
+    if reference_input:
+        links.append(
+            {
+                "cell": "Денежные потоки!2016Q2",
+                "row_key": "model",
+                "period_id": "2016Q2",
+                "formula": "=N19",
+                "ref_cell": "Предпосылки!N19",
+            }
+        )
+
+
+def test_mismatched_formula_period_does_not_invent_a_units_cut():
+    """E19 в графе на другом периоде, чем факт: N19 не становится срезом 2016Q1."""
+
+    rows, bindings, periods, facts, links = _open_revenue_chain()
+    rows.append({"row_key": "units", "binding_key": "units", "label": "Продажи, ед."})
+    _units_row(periods, facts, links, graph_period="u-graph", fact_period="u4", reference_input=True)
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, links=links)
+    )
+    assert [item.params["cause"] for item in found] == ["actuals_no_overlap"]
+    assert found[0].params["message"] == (
+        "факт заканчивается на 2016Q3, форма начинается с 2016Q4, общих периодов для сверки нет"
+    )
+    assert found[0].params["actuals_source"] == "structural_traced"
+    assert found[0].params["traced_cells"] == ["Фин отчетность РСБУ!N25"]
+
+
+def test_units_row_that_only_copies_revenue_does_not_veto_the_revenue_input():
+    """Согласованные периоды штук не отменяют N25, если ввод штук не питает выручку."""
+
+    rows, bindings, periods, facts, links = _open_revenue_chain()
+    rows.append({"row_key": "units", "binding_key": "units", "label": "Продажи, ед."})
+    _units_row(periods, facts, links, graph_period="u4", fact_period="u4", reference_input=False)
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, links=links)
+    )
+    assert [item.params["cause"] for item in found] == ["actuals_no_overlap"]
+    assert found[0].params["actuals_source"] == "structural_traced"
+    assert found[0].params["fact_end"] == "2016Q3"
     assert found[0].params["traced_cells"] == ["Фин отчетность РСБУ!N25"]
 
 

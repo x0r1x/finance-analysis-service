@@ -29,6 +29,7 @@ _ICR_AMBIGUOUS = "На оси расчёта ICR несколько справо
 _STATEMENT_DIVERGENCE = "Строка модели расходится с отчётной формой на фактическом {grain}."
 _ACTUAL_UNKNOWN = "фактические периоды не определены, сверка с отчётностью не выполнена"
 _ACTUAL_AMBIGUOUS = "граница факта «{value}» неоднозначна, сверка с отчётностью не выполнена: {candidates}"
+_TRACED_AMBIGUOUS = "граница фактов неоднозначна, сверка с отчётностью не выполнена: {candidates}"
 _YTD_GAP = "для сверки нарастающего итога на {period} не хватает значения модели за {missing}, период пропущен"
 _AXIS_MISS = "значение границы фактов не попало на ось сверяемой строки"
 _NO_OVERLAP = "факт заканчивается на {end}, форма начинается с {start}, общих периодов для сверки нет"
@@ -627,6 +628,8 @@ def _resolve_actuals(data: AuditInput) -> tuple | None:
     boundary = _structural_boundary(data)
     if boundary is None:
         return None
+    if boundary[0] == "traced_ambiguous":
+        return boundary
     source, end, cells = boundary
     resolved = _named_window(data, end, source)
     if resolved is None or resolved[0] != "window":
@@ -649,6 +652,7 @@ def _structural_boundary(data: AuditInput) -> tuple[str, str, list[str]] | None:
 
     Ненулевое значение прогноза фактом не считается. Строка целиком из ввода даёт
     последнюю ячейку ввода, которая питает цепочку, без перехода в формулу на ней.
+    Несколько настоящих дат не выбираются молча: это «граница фактов неоднозначна».
     """
 
     formula = _agreed(_formula_cuts(data))
@@ -660,48 +664,64 @@ def _structural_boundary(data: AuditInput) -> tuple[str, str, list[str]] | None:
     traced = _traced_boundary(data)
     if traced is None:
         return None
-    period_id, cells, both = traced
+    if traced[0] == "ambiguous":
+        return ("traced_ambiguous", traced[1])
+    period_id, cells, both = traced[1], traced[2], traced[3]
     if not _trace_accepted(data, period_id, span, both):
         return None
     return "structural_traced", period_id, cells
 
 
-def _traced_boundary(data: AuditInput) -> tuple[str, list[str], bool] | None:
-    cuts = []
-    cells: list[str] = []
-    both = True
+def _traced_boundary(data: AuditInput) -> tuple | None:
+    grouped: dict[str, list[str]] = {}
+    main_ids: set[str] = set()
+    form_ids: set[str] = set()
     saw = False
     for concept in _STATEMENT_CONCEPTS:
         primary = _primary(data, concept)
         if primary is None or not _all_formula(data, primary.get("row_key")):
             continue
         saw = True
-        main = _trace_row(data, primary.get("row_key"))
-        form_cuts = [cut for ref in _form_rows(data, concept, primary) if (cut := _trace_row(data, ref.get("row_key")))]
-        form_ids = {item[0] for item in form_cuts}
-        if main and form_ids == {main[0]}:
-            cuts.append(main[0])
-            cells.extend(main[1])
-            for item in form_cuts:
-                cells.extend(item[1])
-            continue
-        chosen = main[0] if main else next(iter(form_ids), None)
-        if chosen is None or (form_ids and chosen not in form_ids) or len(form_ids) > 1:
-            return None
-        cuts.append(chosen)
-        both = False
-        if main and main[0] == chosen:
-            cells.extend(main[1])
-        for item in form_cuts:
-            if item[0] == chosen:
-                cells.extend(item[1])
-    if not saw:
+        for period, group in _trace_row(data, primary.get("row_key")):
+            main_ids.add(period)
+            _remember_cut(grouped, period, group)
+        for ref in _form_rows(data, concept, primary):
+            for period, group in _trace_row(data, ref.get("row_key")):
+                form_ids.add(period)
+                _remember_cut(grouped, period, group)
+    if not saw or not grouped:
         return None
-    agreed = _agreed(cuts)
-    if agreed in (None, _CONFLICT):
-        return None
-    unique = list(dict.fromkeys(cells))
-    return agreed, unique, both
+    ordered = _ordered_cuts(data, grouped)
+    if len(ordered) > 1:
+        return ("ambiguous", ordered)
+    period, cells = ordered[0]
+    both = period in main_ids and form_ids == {period}
+    return ("cut", period, cells, both)
+
+
+def _remember_cut(grouped: dict[str, list[str]], period: str, cells: list[str]) -> None:
+    bucket = grouped.setdefault(period, [])
+    for cell in cells:
+        if cell not in bucket:
+            bucket.append(cell)
+
+
+def _ordered_cuts(data: AuditInput, grouped: dict[str, list[str]]) -> list[tuple[str, list[str]]]:
+    def rank(period_id: str) -> tuple:
+        ends = []
+        indexes = []
+        for period in data.periods:
+            if period.get("period_id") != period_id:
+                continue
+            end = _period_end(period)
+            if end is not None:
+                ends.append(end)
+            index = period.get("period_index")
+            if isinstance(index, int) and not isinstance(index, bool):
+                indexes.append(index)
+        return (min(ends) if ends else date.max, min(indexes) if indexes else 10**9, period_id)
+
+    return [(period, sorted(grouped[period])) for period in sorted(grouped, key=rank)]
 
 
 def _trace_accepted(data: AuditInput, period_id: str, span: str | None, both: bool) -> bool:
@@ -727,35 +747,54 @@ def _all_formula(data: AuditInput, row_key: str | None) -> bool:
     return saw
 
 
-def _trace_row(data: AuditInput, row_key: str | None) -> tuple[str, list[str]] | None:
+def _trace_row(data: AuditInput, row_key: str | None) -> list[tuple[str, list[str]]]:
+    """Срезы прецедентов, которые реально питают строку. Разные даты не схлопываются."""
+
     if not row_key:
-        return None
+        return []
     targets = _row_axes(data, row_key)
     found: list[tuple[str, list[str]]] = []
     for other, refs in _precedent_refs(data, row_key).items():
-        switched = _row_switch(data, other)
-        if switched is not None:
-            cut, cells = switched, _input_cells(data, other, switched)
-        else:
-            leaf = _latest_hardcoded(data, other, refs)
-            if leaf is None:
-                continue
-            cut, cells = str(leaf.get("period_id")), [str(leaf["cell_id"])]
+        chosen = _precedent_cut(data, other, refs)
+        if chosen is None:
+            continue
+        cut, cells = chosen
         mapped = next((item for axis in targets if (item := _map_cut(data, other, cut, axis))), None)
         if mapped is None:
             continue
         found.append((mapped, cells))
-    if not found:
+    return found
+
+
+def _precedent_cut(data: AuditInput, row_key: str, refs: list[str]) -> tuple[str, list[str]] | None:
+    """Срез строки прецедента. Чужой период формулы и чужое понятие срез не дают."""
+
+    switched = _row_switch(data, row_key)
+    if switched is not None and _formula_periods_match(data, row_key):
+        cells = [cell for cell in _input_cells(data, row_key, switched) if cell in refs]
+        if cells:
+            return switched, cells
+    leaf = _latest_hardcoded(data, row_key, refs)
+    if leaf is None:
         return None
-    ids = {item[0] for item in found}
-    if len(ids) != 1:
-        return None
-    traced: list[str] = []
-    for _period, group in found:
-        for cell in group:
-            if cell not in traced:
-                traced.append(cell)
-    return next(iter(ids)), traced
+    return str(leaf.get("period_id")), [str(leaf["cell_id"])]
+
+
+def _formula_periods_match(data: AuditInput, row_key: str) -> bool:
+    """Период формулы в графе совпадает с периодом её факта. Иначе смена ввода ложная."""
+
+    saw = False
+    for fact in data.facts:
+        if fact.get("row_key") != row_key:
+            continue
+        cell = fact.get("cell_id")
+        link = data.link_cells.get(cell) if cell else None
+        if link is None:
+            continue
+        saw = True
+        if link.period_id != fact.get("period_id"):
+            return False
+    return saw
 
 
 def _row_switch(data: AuditInput, row_key: str) -> str | None:
@@ -1070,6 +1109,10 @@ class StatementReference(Rule):
             if not _has_statement_pair(data):
                 return []
             return [_ambiguous_boundary(self, data, resolved[1], resolved[2])]
+        if resolved[0] == "traced_ambiguous":
+            if not _has_statement_pair(data):
+                return []
+            return [_traced_ambiguous(self, data, resolved[1])]
         _kind, actual, source, end, *extra = resolved
         traced = extra[0] if extra else []
         findings = []
@@ -1373,6 +1416,28 @@ def _calendar_year(period: dict) -> int | None:
             if parsed is not None:
                 return parsed.year
     return None
+
+
+def _traced_ambiguous(rule: StatementReference, data: AuditInput, cuts: list[tuple[str, list[str]]]) -> Finding:
+    """Несколько настоящих дат прослеженного ввода. Ни одну не выбираем и сверку не глушим общей фразой."""
+
+    labels = [f"{period} ({', '.join(cells)})" if cells else period for period, cells in cuts]
+    cells = [cell for _period, group in cuts for cell in group]
+    return rule.finding(
+        data,
+        locations=[_cell_location(data, cell) for cell in cells],
+        params={
+            "cause": "structural_traced_ambiguous",
+            "message": _TRACED_AMBIGUOUS.format(candidates=", ".join(labels)),
+            "candidates": [period for period, _cells in cuts],
+            "cells": cells,
+        },
+    )
+
+
+def _cell_location(data: AuditInput, cell: str) -> Location:
+    fact = data.facts_by_cell.get(cell) or {}
+    return Location(cell, fact.get("row_key"), fact.get("axis_id"), fact.get("period_id"))
 
 
 def _ambiguous_boundary(rule: StatementReference, data: AuditInput, periods: list[dict], value: str) -> Finding:
