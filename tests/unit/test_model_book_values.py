@@ -30,16 +30,32 @@ def test_halyard_moic_irr_sources_and_leverage():
 
 
 def test_meridian_wacc_and_equity_bridge():
-    wacc = _cell("meridian", "meridian_dcf.recalc_libreoffice.xlsx", "WACC", "C19")
-    ev_perpetuity = _cell("meridian", "meridian_dcf.recalc_libreoffice.xlsx", "DCF", "C36")
-    ev_exit = _cell("meridian", "meridian_dcf.recalc_libreoffice.xlsx", "DCF", "D36")
-    equity_perpetuity = _cell("meridian", "meridian_dcf.recalc_libreoffice.xlsx", "DCF", "C46")
-    equity_exit = _cell("meridian", "meridian_dcf.recalc_libreoffice.xlsx", "DCF", "D46")
+    """Кэш Meridian хранит середину года, оба терминальных метода и полный мост к капиталу."""
+    name = "meridian_dcf.recalc_libreoffice.xlsx"
+    wacc = _cell("meridian", name, "WACC", "C19")
+    ev_perpetuity = _cell("meridian", name, "DCF", "C36")
+    ev_exit = _cell("meridian", name, "DCF", "D36")
+    equity_perpetuity = _cell("meridian", name, "DCF", "C46")
+    equity_exit = _cell("meridian", name, "DCF", "D46")
+    mid_year = _cell("meridian", name, "Inputs", "C7")
+    growth = _cell("meridian", name, "Inputs", "C15")
+    exit_multiple = _cell("meridian", name, "Inputs", "C16")
+    debt = _cell("meridian", name, "Inputs", "C19")
+    preferred = _cell("meridian", name, "Inputs", "C20")
+    minority = _cell("meridian", name, "Inputs", "C21")
+    cash = _cell("meridian", name, "Inputs", "C22")
+    non_operating = _cell("meridian", name, "Inputs", "C23")
     assert round(wacc, 4) == 0.0961
     assert round(ev_perpetuity, 1) == 5717.6
     assert round(ev_exit, 1) == 6192.8
     assert round(equity_perpetuity, 1) == 5087.6
     assert round(equity_exit, 1) == 5562.8
+    assert mid_year == 1
+    assert growth == 0.025
+    assert exit_multiple == 10
+    assert (debt, preferred, minority, cash, non_operating) == (900, 0, 40, 250, 60)
+    assert equity_perpetuity == ev_perpetuity - 900 - 0 - 40 + 250 + 60
+    assert equity_exit == ev_exit - 900 - 0 - 40 + 250 + 60
 
 
 def test_debtlens_noi_cap_rate_vacancy_and_dscr():
