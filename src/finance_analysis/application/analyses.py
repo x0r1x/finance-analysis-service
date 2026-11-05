@@ -36,6 +36,7 @@ from finance_analysis.domain.book import (
     ReportNotReady,
     sha256_bytes,
 )
+from finance_analysis.domain.book_cite import cite_type_book_rows
 from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.cover_metrics import (
     BASES,
@@ -100,6 +101,18 @@ TRACE_DEPTH_MAX = 32
 
 def _dscr_variant(catalog, verdict) -> str | None:
     return confirmed_variants(catalog, verdict).get("dscr")
+
+
+def _attach_book_rows(envelope: dict, got: dict) -> None:
+    """Кладёт цитаты строк книги в результат, только когда список не пуст.
+
+    Пустой список у другого типа и у нерешённого типа ключ не добавляет:
+    набор полей этих книг остаётся прежним.
+    """
+
+    rows = got.get("book_rows") or []
+    if rows:
+        envelope["result_data"]["book_rows"] = rows
 
 
 def _absent_params(metric: str, result: dict) -> dict:
@@ -737,6 +750,13 @@ class Analyses:
             "absent": common["absent"],
             "applicability": uses,
             "model_type": verdict.as_dict(),
+            "book_rows": cite_type_book_rows(
+                source=verdict.source,
+                primary=verdict.primary,
+                bindings=bindings,
+                facts=facts,
+                absent=common["absent"],
+            ),
         }
 
     async def _execute_ratios(self, job_id: str, target: Target, analysis_id: str, metrics: list[str], actor: Actor) -> dict:
@@ -772,6 +792,7 @@ class Analyses:
         }
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
+        _attach_book_rows(envelope, got)
         await self._annotate(envelope)
         stored = _ratio_stored(job_id, target, analysis_id, head, computed)
         await self._save_tables(job_id, target, analysis_id, "ratios", {"ratios": stored}, envelope, actor, started)
@@ -886,6 +907,7 @@ class Analyses:
             }
             envelope["versions"]["model_types"] = self.service.model_types.version
             envelope["result_data"]["metrics"] = got["applicability"]
+            _attach_book_rows(envelope, got)
             await self._annotate(envelope)
             if await self._cancelled(op_id):
                 return
