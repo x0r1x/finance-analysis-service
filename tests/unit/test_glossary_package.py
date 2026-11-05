@@ -183,6 +183,61 @@ def test_replace_upload_reads_and_profile_list(tmp_path):
     asyncio.run(run())
 
 
+def test_null_clears_actuals_end_and_sheet_class_and_omission_keeps_them(tmp_path):
+    """Явный null снимает границу и класс листа. Пропуск поля их не трогает. null у dscr отвергается."""
+
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.glossary_store import GlossaryStore
+    from finance_analysis.domain.errors import InvalidArgument
+
+    async def run():
+        gloss = GlossaryStore(LocalStore(tmp_path))
+        saved = await gloss.put_profile(
+            "bank",
+            {
+                "sign_convention": "outflow_negative",
+                "actuals_end": "2020Q4",
+                "sheet_class": {"Отчёт": "reporting", "Предпосылки": "assumptions"},
+            },
+            if_match=None,
+            if_none_match="*",
+        )
+        kept = await gloss.put_profile(
+            "bank",
+            {"sign_convention": "outflow_positive"},
+            if_match=saved["etag"],
+            if_none_match=None,
+        )
+        assert kept["body"]["actuals_end"] == "2020Q4"
+        assert kept["body"]["sheet_class"] == {"Отчёт": "reporting", "Предпосылки": "assumptions"}
+        cleared = await gloss.put_profile(
+            "bank",
+            {"actuals_end": None, "sheet_class": None},
+            if_match=kept["etag"],
+            if_none_match=None,
+        )
+        assert "actuals_end" not in cleared["body"]
+        assert "sheet_class" not in cleared["body"]
+        restored = await gloss.put_profile(
+            "bank",
+            {"actuals_end": "2020Q4", "sheet_class": {"Отчёт": "reporting"}},
+            if_match=cleared["etag"],
+            if_none_match=None,
+        )
+        with pytest.raises(InvalidArgument):
+            await gloss.put_profile(
+                "bank",
+                {"dscr_definition": None},
+                if_match=restored["etag"],
+                if_none_match=None,
+            )
+        body = await gloss.profile_body("bank")
+        assert body["actuals_end"] == "2020Q4"
+        assert body["sheet_class"] == {"Отчёт": "reporting"}
+
+    asyncio.run(run())
+
+
 def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
     from finance_analysis.adapters.storage.store import LocalStore
     from finance_analysis.application.glossary_store import GlossaryStore

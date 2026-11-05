@@ -12,6 +12,7 @@ EVENT_TYPES = frozenset(
         "concept.ignored",
         "concept.absent",
         "phase.set",
+        "actuals_end.set",
         "sign.set",
         "unit.set",
         "profile.set",
