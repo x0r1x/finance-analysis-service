@@ -767,6 +767,73 @@ def test_ytd_form_compares_model_cumulative_sum_at_an_inferred_scale():
     assert given[0].params["reported"] == "5000"
 
 
+def test_form_inherits_scale_from_the_source_row_when_facts_have_none():
+    """Сумма ячеек модели: множитель k/1000 лежит в строке, факты его не несут, форма без единицы."""
+
+    rows = [
+        {"row_key": "model", "binding_key": "model", "scale": "k", "scale_factor": 1000},
+        {"row_key": "form", "binding_key": "form"},
+    ]
+    bindings = [
+        _binding("revenue", "model", evidence={"period_basis": "period", "period_basis_source": "label"}),
+        _binding(
+            "revenue",
+            "form",
+            is_primary=False,
+            evidence={"role": "reference", "period_basis": "ytd", "period_basis_source": "header"},
+        ),
+    ]
+    periods = []
+    for axis in ("model", "form"):
+        periods += [
+            _scaled_quarter("2016Q1", 1, 2016, axis),
+            _scaled_quarter("2016Q2", 2, 2016, axis),
+            _scaled_quarter("2016Q3", 3, 2016, axis),
+            _scaled_quarter("2016Q4", 4, 2016, axis),
+        ]
+    model = {
+        "2016Q1": ("10000", "Денежные потоки!F32"),
+        "2016Q2": ("20000", "Денежные потоки!G32"),
+        "2016Q3": ("30000", "Денежные потоки!H32"),
+        "2016Q4": ("40000", "Денежные потоки!I32"),
+    }
+    form = {"2016Q1": "10", "2016Q2": "30", "2016Q3": "60", "2016Q4": "100"}
+    form_cells = {"2016Q1": "ОПиУ!B11", "2016Q2": "ОПиУ!C11", "2016Q3": "ОПиУ!D11", "2016Q4": "ОПиУ!E11"}
+    facts = [
+        {**_fact("model", value, period), "axis_id": "model", "cell_id": cell, "normalized_value": value}
+        for period, (value, cell) in model.items()
+    ]
+    facts += [
+        {**_fact("form", value, period), "axis_id": "form", "cell_id": form_cells[period], "normalized_value": value}
+        for period, value in form.items()
+    ]
+    assert all(fact.get("scale_factor") in (None, "") for fact in facts)
+    links = []
+    ordered = list(model)
+    for index, period in enumerate(ordered):
+        for source in ordered[: index + 1]:
+            links.append(
+                {
+                    "cell": form_cells[period],
+                    "row_key": "form",
+                    "period_id": period,
+                    "formula": "=" + "+".join(model[item][1] for item in ordered[: index + 1]),
+                    "ref_cell": model[source][1],
+                }
+            )
+    matched = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=facts, bindings=bindings, links=links, actuals_end="2016Q4")
+    )
+    assert matched == []
+    off = [fact if fact.get("cell_id") != "ОПиУ!E11" else {**fact, "normalized_value": "90"} for fact in facts]
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(rows=rows, periods=periods, facts=off, bindings=bindings, links=links, actuals_end="2016Q4")
+    )
+    assert found[0].params["scale_source"] == "inferred_from_dependencies"
+    assert found[0].params["reported"] == "90000"
+    assert found[0].params["model"] == "100000"
+
+
 def test_formula_row_traces_the_input_switch_and_ignores_a_nonzero_forecast():
     """Граница формульной строки — последняя введённая ячейка прецедента, не ненулевой прогноз."""
 

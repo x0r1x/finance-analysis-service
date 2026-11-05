@@ -1141,7 +1141,7 @@ class StatementReference(Rule):
 
 
 def _reported_values(data: AuditInput, concept: str, ref: dict) -> tuple[dict[tuple[str, str], Decimal], str | None]:
-    """Числа формы. Пустой масштаб строки берётся у ячеек-источников, если он один и тот же."""
+    """Числа формы. Пустой масштаб строки берётся у строки-источника, если он один и тот же."""
 
     values = _cached(data, ref["row_key"])
     factor, source = _scale_for_form(data, concept, ref)
@@ -1167,21 +1167,36 @@ def _has_scale_hint(data: AuditInput, row_key: str) -> bool:
 
 
 def _row_factor(data: AuditInput, row_key: str) -> Decimal | None:
+    """Масштаб строки: множитель строки важнее пустого множителя факта."""
+
+    own = _metadata_factor(data.rows_by_key.get(row_key) or {})
+    if own is not None:
+        return own
     factors = []
     for fact in data.facts:
         if fact.get("row_key") != row_key:
             continue
-        scale = fact.get("scale_factor")
-        if scale in (None, ""):
-            continue
-        factors.append(Decimal(str(scale)))
+        scale = _metadata_factor(fact)
+        if scale is not None:
+            factors.append(scale)
     if len(set(factors)) != 1:
         return None
     return factors[0]
 
 
+def _metadata_factor(row: dict) -> Decimal | None:
+    scale = row.get("scale_factor")
+    if scale in (None, ""):
+        return None
+    return Decimal(str(scale))
+
+
 def _dependency_scale(data: AuditInput, row_key: str) -> Decimal | None:
-    """Общий масштаб ячеек, на которые ссылаются формулы строки. Разные масштабы не угадываются."""
+    """Общий масштаб строк, на которые ссылаются формулы. Разные масштабы не угадываются.
+
+    Множитель лежит в строке-источнике. Пустой scale_factor факта его не отменяет,
+    и формульная строка с известным масштабом дальше не разворачивается.
+    """
 
     factors: list[Decimal] = []
     seen: set[str] = set()
@@ -1195,9 +1210,11 @@ def _dependency_scale(data: AuditInput, row_key: str) -> Decimal | None:
             fact = data.facts_by_cell.get(ref)
             if fact is None:
                 continue
-            scale = fact.get("scale_factor")
-            if scale not in (None, ""):
-                factors.append(Decimal(str(scale)))
+            scale = _metadata_factor(fact)
+            if scale is None and fact.get("row_key"):
+                scale = _metadata_factor(data.rows_by_key.get(fact["row_key"]) or {})
+            if scale is not None:
+                factors.append(scale)
                 continue
             if fact.get("cell_id"):
                 stack.append(fact["cell_id"])
