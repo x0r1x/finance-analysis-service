@@ -90,7 +90,7 @@
         "reason": null
       },
       "false_positives": [],
-      "gap": 0.5,
+      "gap": 1.0,
       "id": "toll_road",
       "labels": [
         "project_finance"
@@ -107,7 +107,7 @@
         "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
-        "lbo_ma": 0.5,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
         "project_finance": 1.0,
         "real_estate_income": 0.0,
@@ -115,8 +115,8 @@
       },
       "top1": "project_finance",
       "top1_score": 1.0,
-      "top2": "lbo_ma",
-      "top2_score": 0.5
+      "top2": "bank_leasing",
+      "top2_score": 0.0
     },
     {
       "confident": true,
@@ -129,7 +129,7 @@
         "reason": null
       },
       "false_positives": [],
-      "gap": 0.5,
+      "gap": 1.0,
       "id": "port",
       "labels": [
         "investment_project"
@@ -146,7 +146,7 @@
         "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 1.0,
-        "lbo_ma": 0.5,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
         "project_finance": 0.0,
         "real_estate_income": 0.0,
@@ -154,8 +154,8 @@
       },
       "top1": "investment_project",
       "top1_score": 1.0,
-      "top2": "lbo_ma",
-      "top2_score": 0.5
+      "top2": "bank_leasing",
+      "top2_score": 0.0
     },
     {
       "confident": true,
@@ -316,12 +316,12 @@
         "reason": "unknown"
       },
       "false_positives": [],
-      "gap": 0.5,
+      "gap": 0.0,
       "id": "partial_npv",
       "labels": [],
       "meets_accept": false,
-      "meets_gap": true,
-      "primary": "lbo_ma",
+      "meets_gap": false,
+      "primary": "bank_leasing",
       "primary_hit": null,
       "question_hit": true,
       "reason": "unknown",
@@ -331,15 +331,15 @@
         "dcf_valuation": 0.0,
         "development_escrow": 0.0,
         "investment_project": 0.0,
-        "lbo_ma": 0.5,
+        "lbo_ma": 0.0,
         "ppp_concession": 0.0,
         "project_finance": 0.0,
         "real_estate_income": 0.0,
         "renewables_dpm": 0.0
       },
-      "top1": "lbo_ma",
-      "top1_score": 0.5,
-      "top2": "bank_leasing",
+      "top1": "bank_leasing",
+      "top1_score": 0.0,
+      "top2": "corporate",
       "top2_score": 0.0
     },
     {
