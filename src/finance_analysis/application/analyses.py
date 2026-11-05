@@ -41,6 +41,7 @@ from finance_analysis.domain.book import (
     ReportNotReady,
     sha256_bytes,
 )
+from finance_analysis.domain.book_cite import cite_type_book_rows
 from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.cover_metrics import (
     BASES,
@@ -109,10 +110,10 @@ def _dscr_variant(catalog, verdict) -> str | None:
 
 
 def _attach_book_rows(envelope: dict, got: dict) -> None:
-    """Кладёт цитаты LBO в результат, только когда список не пуст.
+    """Кладёт цитаты строк книги в результат, только когда список не пуст.
 
-    Пустой список у проектного финансирования и у нерешённого типа ключ не
-    добавляет: набор полей этих книг остаётся прежним.
+    Пустой список у другого типа и у нерешённого типа ключ не добавляет:
+    набор полей этих книг остаётся прежним.
     """
 
     rows = got.get("book_rows") or []
@@ -801,6 +802,13 @@ class Analyses:
             "applicability": uses,
             "model_type": verdict.as_dict(),
             "book_rows": cite_lbo_book_rows(
+                source=verdict.source,
+                primary=verdict.primary,
+                bindings=bindings,
+                facts=facts,
+                absent=common["absent"],
+            )
+            or cite_type_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,
                 bindings=bindings,
