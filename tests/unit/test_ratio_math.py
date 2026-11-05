@@ -1355,10 +1355,215 @@ def test_without_a_reporting_input_the_traced_boundary_stays_ambiguous():
         )
     )
     assert found[0].params["cause"] == "structural_traced_ambiguous"
-    assert found[0].params["message"].startswith("граница фактов неоднозначна")
+    assert found[0].params["message"] == "на листах reporting нет ввода, который читают формулы"
+    assert not found[0].locations
     assert found[0].params["candidates"] == []
     assert "actuals_end" not in found[0].params
     assert any(item["cell"] == "Фин отчетность РСБУ!N25" and item["message"] == "допущения прогноза, не факт" for item in found[0].params["forecast_assumptions"])
+
+
+def test_different_period_ids_of_one_date_are_not_two_boundaries():
+    """pl-q3 и cf-q3 кончаются в один день. Разные id не делают границу неоднозначной."""
+
+    ends = {"q1": "2016-03-31", "q2": "2016-06-30", "q3": "2016-09-30", "q4": "2016-12-31"}
+    periods = []
+    for index, (key, end) in enumerate(ends.items(), start=1):
+        for axis in ("pl", "cf", "report", "form"):
+            periods.append({**_quarter(f"{axis}-{key}", index, end=end), "axis_id": axis})
+    rows = [
+        {"row_key": "revenue", "binding_key": "revenue"},
+        {"row_key": "profit", "binding_key": "profit"},
+        {"row_key": "form-revenue", "binding_key": "form-revenue"},
+        {"row_key": "form-profit", "binding_key": "form-profit"},
+        {"row_key": "report", "binding_key": "report"},
+    ]
+    bindings = [
+        _binding("revenue", "revenue", evidence={"period_basis": "period", "period_basis_source": "label"}),
+        _binding("revenue", "form-revenue", is_primary=False, evidence={"role": "reference"}),
+        _binding("operating_profit", "profit", evidence={"period_basis": "period", "period_basis_source": "label"}),
+        _binding("operating_profit", "form-profit", is_primary=False, evidence={"role": "reference"}),
+    ]
+    facts = [
+        {**_fact("report", "40", "report-q1"), "axis_id": "report", "cell_id": "Отчёт!K25"},
+        {**_fact("report", "100", "report-q3"), "axis_id": "report", "cell_id": "Отчёт!N25"},
+    ]
+    links = []
+    for axis, row in (("pl", "revenue"), ("cf", "profit")):
+        for key in ends:
+            facts.append({**_fact(row, "100", f"{axis}-{key}"), "axis_id": axis, "cell_id": f"{row}!{key}"})
+            links.append(
+                {
+                    "cell": f"{row}!{key}",
+                    "row_key": row,
+                    "period_id": f"{axis}-{key}",
+                    "formula": "=N25",
+                    "ref_cell": "Отчёт!N25",
+                }
+            )
+    for row, key in (("form-revenue", "form-q4"), ("form-profit", "form-q4")):
+        facts.append({**_fact(row, "100", key), "axis_id": "form", "cell_id": f"{row}!q4"})
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=periods,
+            facts=facts,
+            bindings=bindings,
+            links=links,
+            profile={"sheet_class": {"Отчёт": "reporting"}},
+        )
+    )
+    assert found
+    assert {item.params["cause"] for item in found} == {"actuals_no_overlap"}
+    assert {item.params["actuals_source"] for item in found} == {"structural_traced"}
+    assert {item.params["actuals_end"] for item in found} == {"2016-09-30"}
+    assert all("Отчёт!N25" in item.params["traced_cells"] for item in found)
+
+
+def test_ytd_without_a_year_is_skipped_instead_of_the_quarter():
+    """Год не из чего взять: нарастающий итог не сравнивается с кварталом модели."""
+
+    rows = [{"row_key": "model", "binding_key": "model"}, {"row_key": "form", "binding_key": "form"}]
+    bindings = [
+        _binding("revenue", "model", evidence={"period_basis": "period", "period_basis_source": "label"}),
+        _binding(
+            "revenue",
+            "form",
+            is_primary=False,
+            evidence={"role": "reference", "period_basis": "ytd", "period_basis_source": "header"},
+        ),
+    ]
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=[_quarter("q1", 1), _quarter("q2", 2)],
+            facts=[
+                _fact("model", "100", "q1"),
+                _fact("model", "200", "q2"),
+                _fact("form", "100", "q1"),
+                _fact("form", "300", "q2"),
+            ],
+            bindings=bindings,
+            actuals_end="q2",
+        )
+    )
+    assert [item.params["cause"] for item in found] == ["ytd_incomplete", "ytd_incomplete"]
+    assert [item.params["message"] for item in found] == [
+        "для сверки нарастающего итога на q1 год не определён, период пропущен",
+        "для сверки нарастающего итога на q2 год не определён, период пропущен",
+    ]
+    assert all("model" not in item.params for item in found)
+
+
+def test_a_non_numeric_scale_factor_does_not_abort_the_audit():
+    """«тыс.» и «1 000» не число: множитель пуст, и правило не роняет прогон."""
+
+    from finance_analysis.application.rule_engine import run_rules
+    from finance_analysis.plugins.rules.ratios import _metadata_factor
+
+    assert _metadata_factor({"scale_factor": "тыс."}) is None
+    assert _metadata_factor({"scale_factor": "1 000"}) is None
+    assert _metadata_factor({"scale_factor": 1000}) == Decimal(1000)
+    rows = [
+        {"row_key": "model", "binding_key": "model", "scale_factor": "тыс."},
+        {"row_key": "form", "binding_key": "form"},
+    ]
+    bindings = [
+        _binding("revenue", "model"),
+        _binding("revenue", "form", is_primary=False, evidence={"role": "reference"}),
+    ]
+    found = run_rules(
+        [STATEMENT_REFERENCE],
+        AuditInput(
+            rows=rows,
+            periods=[_quarter("q1", 1)],
+            facts=[
+                {**_fact("model", "100", "q1"), "scale_factor": "1 000"},
+                _fact("form", "110", "q1"),
+            ],
+            bindings=bindings,
+            actuals_end="q1",
+        ),
+    )
+    assert found[0].params["model"] == "100"
+    assert found[0].params["reported"] == "110"
+
+
+def test_period_index_on_another_axis_does_not_choose_the_latest_input():
+    """Без даты конца большой индекс чужой оси не становится последним вводом."""
+
+    rows = [
+        {"row_key": "model", "binding_key": "model"},
+        {"row_key": "form", "binding_key": "form"},
+        {"row_key": "early", "binding_key": "early"},
+        {"row_key": "late", "binding_key": "late"},
+    ]
+    bindings = [
+        _binding("revenue", "model"),
+        _binding("revenue", "form", is_primary=False, evidence={"role": "reference"}),
+    ]
+    periods = [
+        {**_quarter("m1", 1), "axis_id": "model"},
+        {**_quarter("early", 50), "axis_id": "early"},
+        {**_quarter("late", 1), "axis_id": "late"},
+        {**_quarter("f1", 1), "axis_id": "form"},
+    ]
+    facts = [
+        {**_fact("model", "100", "m1"), "axis_id": "model", "cell_id": "ДДС!A"},
+        {**_fact("early", "1", "early"), "axis_id": "early", "cell_id": "Отчёт!A1"},
+        {**_fact("late", "1", "late"), "axis_id": "late", "cell_id": "Отчёт!B1"},
+        {**_fact("form", "100", "f1"), "axis_id": "form", "cell_id": "ОФР!A"},
+    ]
+    links = [
+        {"cell": "ДДС!A", "row_key": "model", "period_id": "m1", "formula": "=A1", "ref_cell": "Отчёт!A1"},
+        {"cell": "ДДС!A", "row_key": "model", "period_id": "m1", "formula": "=B1", "ref_cell": "Отчёт!B1"},
+    ]
+    found = STATEMENT_REFERENCE.check(
+        AuditInput(
+            rows=rows,
+            periods=periods,
+            facts=facts,
+            bindings=bindings,
+            links=links,
+            profile={"sheet_class": {"Отчёт": "reporting"}},
+        )
+    )
+    assert found[0].params["cause"] == "structural_traced_ambiguous"
+    assert set(found[0].params["candidates"]) == {"early", "late"}
+    assert set(found[0].params["cells"]) == {"Отчёт!A1", "Отчёт!B1"}
+    assert "actuals_end" not in found[0].params
+
+
+def test_formula_period_identity_includes_the_axis():
+    """Формула на другой оси с тем же period_id не делает ввод формулой и не подтверждает период."""
+
+    from finance_analysis.plugins.rules.ratios import (
+        _fact_formula,
+        _formula_periods_match,
+    )
+
+    report = {**_fact("rsbu", "100", "q1"), "axis_id": "report", "cell_id": "Отчёт!N25"}
+    shadow = {**_fact("rsbu", "1", "q1"), "axis_id": "shadow", "cell_id": "Тень!A1"}
+    shared = AuditInput(
+        periods=[{**_quarter("q1", 1), "axis_id": "shadow"}],
+        facts=[report, shadow],
+        links=[
+            {"cell": "Тень!A1", "row_key": "rsbu", "period_id": "q1", "formula": "=N25", "ref_cell": "Отчёт!N25"}
+        ],
+    )
+    assert _fact_formula(shared, report) is False
+    assert _fact_formula(shared, shadow) is True
+    mismatched = AuditInput(
+        periods=[{**_quarter("q1", 1), "axis_id": "shadow"}],
+        facts=[report],
+        links=[{"cell": "Отчёт!N25", "row_key": "rsbu", "period_id": "q1", "formula": "=1"}],
+    )
+    assert _formula_periods_match(mismatched, "rsbu") is False
+    aligned = AuditInput(
+        periods=[{**_quarter("q1", 1), "axis_id": "report"}],
+        facts=[report],
+        links=[{"cell": "Отчёт!N25", "row_key": "rsbu", "period_id": "q1", "formula": "=1"}],
+    )
+    assert _formula_periods_match(aligned, "rsbu") is True
 
 
 def test_shared_period_id_does_not_count_as_the_boundary_on_the_model_axis():
@@ -1558,6 +1763,7 @@ def test_bound_statement_row_is_compared_only_at_the_primary_grain():
             "period_key_base": f"Q{index}",
             "marker_class": "actual",
             "grain": "quarter",
+            "calendar_year": 2024,
         }
         for index in range(1, 5)
     ]
@@ -1609,7 +1815,7 @@ def test_bound_statement_row_is_compared_only_at_the_primary_grain():
     }
     month = AuditInput(
         rows=data.rows,
-        periods=[{**quarters[0], "grain": "month"}],
+        periods=[{**quarters[0], "grain": "month", "calendar_year": 2024}],
         facts=[_fact("cash", "10", "Q1") | {"axis_id": "cash"}, _fact("form", "100", "Q1") | {"axis_id": "form"}],
         bindings=data.bindings,
         statement_sheets=sheets,

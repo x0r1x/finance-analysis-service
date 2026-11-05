@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from finance_analysis.domain.audit import (
     ROWS,
@@ -34,6 +34,9 @@ _FORECAST_ASSUMPTION = "допущения прогноза, не факт"
 _CLASS_REPORTING = frozenset({"reporting", "отчетность"})
 _CLASS_ASSUMPTIONS = frozenset({"assumptions", "предпосылки"})
 _YTD_GAP = "для сверки нарастающего итога на {period} не хватает значения модели за {missing}, период пропущен"
+_YTD_NO_YEAR = "для сверки нарастающего итога на {period} год не определён, период пропущен"
+_NO_REPORTING = "на листах reporting нет ввода, который читают формулы"
+_NO_YEAR = "year"
 _AXIS_MISS = "значение границы фактов не попало на ось сверяемой строки"
 _NO_OVERLAP = "факт заканчивается на {end}, форма начинается с {start}, общих периодов для сверки нет"
 # Проценты не сверяются: начисление и уплата — разные основания, это сравнение отложено.
@@ -742,37 +745,88 @@ def _reporting_traced(data: AuditInput, classes: dict[str, str]) -> tuple | None
     notes = _assumption_notes(data, assumptions)
     if not reporting:
         return ("ambiguous", [], notes)
-    best = max(_input_rank(data, fact) for fact in reporting)
-    latest = [fact for fact in reporting if _input_rank(data, fact) == best]
+    latest = _tied_latest(data, reporting)
     mapped: list[str] = []
     cells: list[str] = []
     for fact in latest:
-        ids = []
-        for axis in dict.fromkeys(targets):
-            item = _map_cut(data, str(fact.get("row_key")), str(fact.get("period_id")), axis)
-            if item and item not in ids:
-                ids.append(item)
+        boundary = _one_boundary(data, fact, targets)
         cell = str(fact.get("cell_id"))
-        if len(ids) != 1:
-            grouped: dict[str, list[str]] = {}
-            for item in latest:
-                _remember_cut(grouped, str(item.get("period_id")), [str(item.get("cell_id"))])
-            return ("ambiguous", _ordered_cuts(data, grouped), notes)
-        mapped.append(ids[0])
+        if boundary is None:
+            return ("ambiguous", _cuts_of(data, latest), notes)
+        mapped.append(boundary)
         if cell not in cells:
             cells.append(cell)
-    if len(set(mapped)) != 1:
-        grouped = {}
+    agreed = _agree_boundaries(data, mapped)
+    if agreed is None:
+        grouped: dict[str, list[str]] = {}
         for period, cell in zip(mapped, cells, strict=True):
             _remember_cut(grouped, period, [cell])
         return ("ambiguous", _ordered_cuts(data, grouped), notes)
-    return ("cut", mapped[0], cells, True, notes)
+    return ("cut", agreed, cells, True, notes)
+
+
+def _cuts_of(data: AuditInput, facts: list[dict]) -> list[tuple[str, list[str]]]:
+    grouped: dict[str, list[str]] = {}
+    for fact in facts:
+        _remember_cut(grouped, str(fact.get("period_id")), [str(fact.get("cell_id"))])
+    return _ordered_cuts(data, grouped)
+
+
+def _one_boundary(data: AuditInput, fact: dict, targets: list[str]) -> str | None:
+    """Один логический период на осях сверки. Разные `period_id` одной даты конца — не две границы."""
+
+    periods = []
+    seen: set[tuple] = set()
+    for axis in dict.fromkeys(targets):
+        item = _map_cut(data, str(fact.get("row_key")), str(fact.get("period_id")), axis)
+        if not item or (axis, item) in seen:
+            continue
+        seen.add((axis, item))
+        period = next(
+            (row for row in data.periods if row.get("axis_id") == axis and str(row.get("period_id")) == str(item)),
+            None,
+        )
+        if period is not None:
+            periods.append(period)
+    if not periods:
+        return None
+    ids = list(dict.fromkeys(str(period.get("period_id")) for period in periods))
+    if len(ids) == 1:
+        return ids[0]
+    ends = [_period_end(period) for period in periods]
+    if all(end is not None for end in ends) and len(set(ends)) == 1:
+        return ends[0].isoformat()
+    return None
+
+
+def _agree_boundaries(data: AuditInput, values: list[str]) -> str | None:
+    if not values:
+        return None
+    if len(set(values)) == 1:
+        return values[0]
+    ends = []
+    for value in values:
+        parsed = _iso_date(value)
+        if parsed is not None:
+            ends.append(parsed)
+            continue
+        found = {
+            end
+            for period in data.periods
+            if str(period.get("period_id")) == value and (end := _period_end(period)) is not None
+        }
+        if len(found) != 1:
+            return None
+        ends.append(next(iter(found)))
+    if len(set(ends)) != 1:
+        return None
+    return ends[0].isoformat()
 
 
 def _assumption_notes(data: AuditInput, facts: list[dict]) -> list[dict]:
     notes = []
     seen: set[str] = set()
-    for fact in sorted(facts, key=lambda item: _input_rank(data, item)):
+    for fact in sorted(facts, key=lambda item: (*_input_rank(data, item), str(item.get("cell_id") or ""))):
         cell = str(fact.get("cell_id"))
         if cell in seen:
             continue
@@ -904,9 +958,23 @@ def _formula_periods_match(data: AuditInput, row_key: str) -> bool:
         if link is None:
             continue
         saw = True
-        if link.period_id != fact.get("period_id"):
+        if not _link_period_on_axis(data, fact, link.period_id, cell):
             return False
     return saw
+
+
+def _link_period_on_axis(data: AuditInput, fact: dict, period_id, cell: str | None) -> bool:
+    """Период формулы — пара оси факта и `period_id`, а не одноимённый период чужой оси."""
+
+    if period_id != fact.get("period_id"):
+        return False
+    axis = fact.get("axis_id")
+    owner = data.facts_by_cell.get(cell) if cell else None
+    if owner is not None and owner.get("axis_id") != axis:
+        return False
+    if axis is None:
+        return True
+    return any(item.get("axis_id") == axis and item.get("period_id") == period_id for item in data.periods)
 
 
 def _row_switch(data: AuditInput, row_key: str) -> str | None:
@@ -996,11 +1064,17 @@ def _latest_hardcoded(data: AuditInput, row_key: str, refs: list[str]) -> dict |
         leaves.append(fact)
     if not leaves:
         return None
-    return max(leaves, key=lambda fact: _input_rank(data, fact))
+    latest = _tied_latest(data, leaves)
+    if len(latest) == 1 or len({fact.get("axis_id") for fact in latest}) == 1:
+        return latest[-1]
+    ends = [_period_end(_fact_period(data, fact) or {}) for fact in latest]
+    if any(end is None for end in ends) or len(set(ends)) != 1:
+        return None
+    return latest[0]
 
 
-def _input_rank(data: AuditInput, fact: dict) -> tuple:
-    period = next(
+def _fact_period(data: AuditInput, fact: dict) -> dict | None:
+    return next(
         (
             item
             for item in data.periods
@@ -1008,11 +1082,34 @@ def _input_rank(data: AuditInput, fact: dict) -> tuple:
         ),
         None,
     )
-    end = _period_end(period) if period else None
-    index = period.get("period_index") if period else None
-    if not isinstance(index, int) or isinstance(index, bool):
-        index = -1
-    return (end or date.min, index, str(fact.get("period_id") or ""))
+
+
+def _input_rank(data: AuditInput, fact: dict) -> tuple:
+    """Дата конца. Индекс периода сравнивается только внутри одной оси, в `_tied_latest`."""
+
+    end = _period_end(_fact_period(data, fact) or {})
+    return (end is not None, end or date.min)
+
+
+def _tied_latest(data: AuditInput, facts: list[dict]) -> list[dict]:
+    """Последние по дате. Номер периода чужой оси эту дату не выбирает."""
+
+    if not facts:
+        return []
+    best = max(_input_rank(data, fact) for fact in facts)
+    latest = [fact for fact in facts if _input_rank(data, fact) == best]
+    if len({fact.get("axis_id") for fact in latest}) != 1:
+        return latest
+
+    def index(fact: dict) -> int:
+        period = _fact_period(data, fact)
+        value = period.get("period_index") if period else None
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        return -1
+
+    top = max(index(fact) for fact in latest)
+    return [fact for fact in latest if index(fact) == top]
 
 
 def _form_starts_after(data: AuditInput, period_id: str) -> bool:
@@ -1151,12 +1248,19 @@ def _fact_formula(data: AuditInput, fact: dict) -> bool:
     cell = fact.get("cell_id")
     if cell and cell in data.link_cells:
         return True
-    return any(
-        link.get("row_key") == fact.get("row_key")
-        and link.get("period_id") == fact.get("period_id")
-        and (link.get("formula") or link.get("cell"))
-        for link in data.links
-    )
+    axis = fact.get("axis_id")
+    for link in data.links:
+        if link.get("row_key") != fact.get("row_key") or link.get("period_id") != fact.get("period_id"):
+            continue
+        if not (link.get("formula") or link.get("cell")):
+            continue
+        owner = data.facts_by_cell.get(link.get("cell") or "")
+        if owner is not None and owner.get("axis_id") != axis:
+            continue
+        if owner is None and link.get("cell") not in (None, cell):
+            continue
+        return True
+    return False
 
 
 def _span_cuts(data: AuditInput) -> list[str | None]:
@@ -1267,6 +1371,7 @@ class StatementReference(Rule):
                 for period in comparable:
                     left, right, missing = _aligned_values(data, primary, ref, period, model_values, reported)
                     if missing:
+                        unknown_year = missing == [_NO_YEAR]
                         findings.append(
                             self.finding(
                                 data,
@@ -1276,10 +1381,12 @@ class StatementReference(Rule):
                                 params={
                                     "cause": "ytd_incomplete",
                                     "concept": concept,
-                                    "message": _YTD_GAP.format(
-                                        period=period["period_id"], missing=", ".join(missing)
+                                    "message": (
+                                        _YTD_NO_YEAR.format(period=period["period_id"])
+                                        if unknown_year
+                                        else _YTD_GAP.format(period=period["period_id"], missing=", ".join(missing))
                                     ),
-                                    "missing": missing,
+                                    "missing": [] if unknown_year else missing,
                                     "actuals_source": source,
                                     "actuals_end": end,
                                     **({"scale_source": scale_source} if scale_source else {}),
@@ -1397,7 +1504,10 @@ def _metadata_factor(row: dict) -> Decimal | None:
     scale = row.get("scale_factor")
     if scale in (None, ""):
         return None
-    return Decimal(str(scale))
+    try:
+        return Decimal(str(scale))
+    except InvalidOperation:
+        return None
 
 
 def _dependency_scale(data: AuditInput, row_key: str) -> Decimal | None:
@@ -1445,7 +1555,7 @@ def _refs_of(data: AuditInput, cell: str) -> list[str]:
 
 
 def _scale_conflicts(data: AuditInput, concept: str, row_key: str, factor: Decimal) -> bool:
-    """Другая привязанная строка того же понятия с явным масштабом его не подтверждает."""
+    """Другой множитель того же понятия отвергает масштаб. Без конфликта масштаб принимается."""
 
     for binding in data.bindings:
         other = binding.get("row_key")
@@ -1467,7 +1577,7 @@ def _aligned_values(
     model_values: dict[tuple[str, str], Decimal],
     reported: dict[tuple[str, str], Decimal],
 ) -> tuple[Decimal | None, Decimal | None, list[str]]:
-    """Пара для сверки. Нарастающий итог сравнивается с суммой модели с начала года, без вычитания формы."""
+    """Пара для сверки. Нарастающий итог сравнивается с суммой модели с начала календарного года."""
 
     key = (period.get("axis_id"), period.get("period_id"))
     right = _same_period(reported, key)
@@ -1483,7 +1593,7 @@ def _aligned_values(
 def _year_to_date(
     data: AuditInput, row_key: str | None, values: dict[tuple[str, str], Decimal], period: dict
 ) -> tuple[Decimal | None, list[str]]:
-    """Сумма модели с начала фискального года. Без года сумма не строится: сравнивается сам период."""
+    """Сумма модели с начала календарного года. Без года пара пропускается, а не сравнивается с кварталом."""
 
     axes = set(_row_axes(data, row_key or ""))
     home = next(
@@ -1498,7 +1608,7 @@ def _year_to_date(
         return None, []
     year = _calendar_year(home)
     if year is None:
-        return None, []
+        return None, [_NO_YEAR]
     ordered = _order(
         [
             item
@@ -1544,14 +1654,18 @@ def _traced_ambiguous(
 ) -> Finding:
     """Несколько настоящих дат прослеженного ввода. Ни одну не выбираем и сверку не глушим общей фразой."""
 
-    labels = [f"{period} ({', '.join(cells)})" if cells else period for period, cells in cuts]
     cells = [cell for _period, group in cuts for cell in group]
+    if cuts:
+        labels = [f"{period} ({', '.join(group)})" if group else period for period, group in cuts]
+        message = _TRACED_AMBIGUOUS.format(candidates=", ".join(labels))
+    else:
+        message = _NO_REPORTING
     return rule.finding(
         data,
         locations=[_cell_location(data, cell) for cell in cells],
         params={
             "cause": "structural_traced_ambiguous",
-            "message": _TRACED_AMBIGUOUS.format(candidates=", ".join(labels)),
+            "message": message,
             "candidates": [period for period, _cells in cuts],
             "cells": cells,
             **({"forecast_assumptions": notes} if notes else {}),
