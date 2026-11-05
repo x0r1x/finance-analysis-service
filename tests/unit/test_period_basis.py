@@ -969,6 +969,46 @@ def test_ltm_numerator_uses_a_full_denominator_window():
     assert rolled["rows"][0]["reason"] == "partial_window"
 
 
+def test_ltm_cfads_adds_interest_and_principal_across_the_same_window():
+    from finance_analysis.application.model_types import load_model_types
+
+    quarters = _quarters(2024, 4)
+    last = quarters[-1]
+    facts = (
+        [
+            {
+                "row_key": "c",
+                "axis_id": last["axis_id"],
+                "period_id": last["period_id"],
+                "normalized_value": Decimal("80"),
+            }
+        ]
+        + _series("i", quarters, ["-10", "-10", "-10", "-10"])
+        + _series("p", quarters, ["-40", "-40", "-40", "-40"])
+    )
+    got = coverage_ratio(
+        metric="dscr",
+        interest_order=load_model_types().interest_order,
+        **_common(
+            quarters,
+            facts,
+            [
+                _binding(
+                    "cfads",
+                    "c",
+                    evidence_json=json.dumps({"period_basis": "ltm", "period_basis_source": "header"}),
+                ),
+                _binding("interest", "i"),
+                _binding("principal", "p"),
+            ],
+        ),
+    )
+    row = next(item for item in got["rows"] if item["period_id"] == last["period_id"])
+    assert row["status"] == "computed"
+    assert row["value"] == Decimal("0.4000000000")
+    assert set(row["components"]) == {"cfads", "interest", "principal"}
+
+
 def test_parenthetical_finance_costs_stay_exact_and_do_not_replace_the_period_row():
     rows = [
         _row("flow", "Interest", sheet="Cash flow"),

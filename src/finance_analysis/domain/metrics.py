@@ -179,6 +179,9 @@ def coverage_ratio(
         return _explained(metric, periods, "basis_mismatch", message, warnings)
     sheet = _assume_sheet_units(facts, list(named.values()), warnings)
     if numerator_basis == "ltm" and denominator_basis == "period":
+        extra = []
+        if fallback_parts is not None:
+            extra.append(primaries["principal"])
         return _ltm_numerator(
             metric,
             facts,
@@ -191,6 +194,7 @@ def coverage_ratio(
             explicit_phases=explicit_phases,
             marker_class=marker_class,
             sheet=sheet,
+            extra_denominators=extra,
         )
     aligned = aligned_keys(periods)
     numerator = _sums(facts, primaries[numerator_name], aligned, periods, sheet=sheet)
@@ -267,11 +271,14 @@ def _ltm_numerator(
     explicit_phases: bool,
     marker_class: str | None,
     sheet: bool = False,
+    extra_denominators: list[dict] | None = None,
 ) -> dict:
     """Числитель `ltm` делится на сумму знаменателя за двенадцать месяцев до его конца.
 
-    Привязка строк не меняется. Неполное окно даёт `partial_window`. Окно то же,
-    что у отношения чистого долга к EBITDA.
+    Дополнительные строки знаменателя, например основной долг рядом с процентами,
+    входят в ту же сумму. Платёж берётся по каждой строке отдельно. Привязка строк
+    не меняется. Неполное окно даёт `partial_window`. Окно то же, что у отношения
+    чистого долга к EBITDA.
     """
 
     from finance_analysis.domain.cover_metrics import _window
@@ -279,7 +286,10 @@ def _ltm_numerator(
 
     aligned = aligned_keys(periods)
     numerator = _sums(facts, numerator_binding, aligned, periods, sheet=sheet)
-    denominator = _sums(facts, denominator_binding, aligned, periods, sheet=sheet)
+    denominator_bindings = [denominator_binding, *(extra_denominators or [])]
+    denominators = [
+        (binding, _sums(facts, binding, aligned, periods, sheet=sheet)) for binding in denominator_bindings
+    ]
     numerator_axes = _axes_of(facts, numerator_binding)
     denominator_axes = _axes_of(facts, denominator_binding)
     ordered = _dated_periods([period for period in periods if period["axis_id"] in denominator_axes])
@@ -300,10 +310,13 @@ def _ltm_numerator(
         complete = True
         for item in window:
             dkey = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
-            if dkey not in denominator:
-                complete = False
+            for _binding, series in denominators:
+                if dkey not in series:
+                    complete = False
+                    break
+                total += _payment(series[dkey], sign_convention)
+            if not complete:
                 break
-            total += _payment(denominator[dkey], sign_convention)
         if not complete:
             rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
             continue
@@ -324,16 +337,13 @@ def _ltm_numerator(
             value = quantize_ratio(numerator[key] / total)
         row = _row(metric, period, value, "computed", None)
         row["window"] = [item["period_id"] for item in window]
-        numerator_name = str(numerator_binding.get("concept") or ("cfads" if metric == "dscr" else "ebitda"))
-        denominator_name = str(denominator_binding.get("concept") or ("debt_service" if metric == "dscr" else "interest"))
-        row["components"] = {
-            numerator_name: _component_cells(facts, numerator_binding, [period]),
-            denominator_name: _component_cells(facts, denominator_binding, window),
-        }
-        row["scale_factor"] = {
-            numerator_name: _stored_scale(facts, numerator_binding),
-            denominator_name: _stored_scale(facts, denominator_binding),
-        }
+        numerator_name = _bound_name(numerator_binding, "cfads" if metric == "dscr" else "ebitda")
+        row["components"] = {numerator_name: _component_cells(facts, numerator_binding, [period])}
+        row["scale_factor"] = {numerator_name: _stored_scale(facts, numerator_binding)}
+        for binding, _series in denominators:
+            name = _bound_name(binding, "debt_service" if metric == "dscr" else "interest")
+            row["components"][name] = _component_cells(facts, binding, window)
+            row["scale_factor"][name] = _stored_scale(facts, binding)
         rows.append(row)
         computed = True
     if not rows:
@@ -423,6 +433,12 @@ def _basis_message(numerator_name: str, numerator: dict, denominator: dict) -> s
         f"Строка {title} имеет способ показа «{left}», а строка процентов — «{right}». "
         "ICR по этим строкам не рассчитан."
     )
+
+
+def _bound_name(binding: dict, default: str) -> str:
+    """Имя понятия основной строки. Берётся `effective_concept`, а не сырое `concept`."""
+
+    return str(binding.get("effective_concept") or binding.get("concept") or default)
 
 
 def _flow_basis(binding: dict) -> str:
