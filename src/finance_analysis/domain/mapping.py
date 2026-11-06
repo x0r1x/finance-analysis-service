@@ -13,7 +13,13 @@ from finance_analysis.domain.calibration import (
 )
 from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.components import component_records, scenario_of
-from finance_analysis.domain.glossary import GlossaryPackage, label_scan, label_surface
+from finance_analysis.domain.glossary import (
+    GlossaryPackage,
+    generic_case_label,
+    label_scan,
+    label_surface,
+    stated_price_terms,
+)
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import (
     apply_block_titles,
@@ -195,6 +201,13 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         "label": {"id": label_id(hit.concept, hit.kind, hit.text), "kind": hit.kind, "text": hit.text},
         "match_strength": strength,
     }
+    if strength == "section_heading":
+        evidence["match_provenance"] = "section_heading"
+        evidence["section_heading"] = _nearest_heading(row)
+    terms, source = _price_terms(row, strength)
+    if terms and source:
+        evidence["price_terms"] = terms
+        evidence["price_terms_source"] = source
     return Assignment(hit.concept, status, "inferred", True, hit.text, "normal", None, evidence)
 
 
@@ -230,17 +243,83 @@ def _ambiguous_label(row: dict, glossary: GlossaryPackage) -> Assignment | None:
 
 
 def lexical_hit(row: dict, glossary: GlossaryPackage):
-    """Стадия 1: точная метка глоссария, если её не отсеяли % и отрицательные метки."""
+    """Стадия 1: точная метка глоссария, если её не отсеяли % и отрицательные метки.
+
+    Своя метка важнее заголовка. Заголовок смотрится, только когда метка сама
+    не разобрана. Метка нескольких понятий заголовком не выбирается.
+    """
 
     label = str(row.get("label") or "")
     found = glossary.resolve_match(label)
+    if found is not None:
+        hit, _strength = found
+        # Та же стадия 4, что у модельных кандидатов: единица (unit.set приоритетнее), % и negative.
+        if not structure_pass(row, glossary.concepts[hit.concept], label=label):
+            return None
+        return found
+    return _heading_hit(row, glossary, label)
+
+
+def _heading_hit(row: dict, glossary: GlossaryPackage, label: str):
+    """Одно понятие ближайшего заголовка, если метка строки — общий кейс.
+
+    Ближайший заголовок — последняя часть пути, иначе родитель. Предок дальше
+    не читается. Заголовок должен дать ровно одно понятие точным совпадением.
+    Аббревиатура и метка нескольких понятий строку не привязывают.
+    """
+
+    if len(glossary.ambiguous_hits(label)) >= 2 or not generic_case_label(label):
+        return None
+    heading = _nearest_heading(row)
+    if not heading or glossary.ambiguous_hits(heading):
+        return None
+    found = glossary.resolve_match(heading)
     if found is None:
         return None
-    hit, _strength = found
-    # Та же стадия 4, что у модельных кандидатов: единица (unit.set приоритетнее), % и negative.
+    hit, strength = found
+    if strength != "exact":
+        return None
     if not structure_pass(row, glossary.concepts[hit.concept], label=label):
         return None
-    return found
+    return hit, "section_heading"
+
+
+def _nearest_heading(row: dict) -> str | None:
+    """Последняя часть пути метки. Без пути — родитель. Дальше предки не идут."""
+
+    path = _label_path(row)
+    if path:
+        text = path[-1].strip()
+        return text or None
+    parent = row.get("parent_label")
+    if isinstance(parent, str) and parent.strip():
+        return parent.strip()
+    return None
+
+
+def _price_terms(row: dict, strength: str) -> tuple[str | None, str | None]:
+    """Основа цены строки. Своя метка сильнее заголовка, который дал понятие."""
+
+    own = stated_price_terms(str(row.get("label") or ""))
+    if own:
+        return own, "label"
+    if strength != "section_heading":
+        return None, None
+    via = stated_price_terms(_nearest_heading(row) or "")
+    if via:
+        return via, "section_heading"
+    return None, None
+
+
+def _terms_key(item: Assignment) -> str | None:
+    terms = item.evidence.get("price_terms")
+    if terms in {"real", "nominal"}:
+        return str(terms)
+    return None
+
+
+def _via_heading(item: Assignment) -> bool:
+    return item.evidence.get("match_provenance") == "section_heading"
 
 
 def label_id(concept: str, kind: str, text: str) -> str:
@@ -256,11 +335,19 @@ def _one_primary(
     filtered: dict[str, list[dict]] | None = None,
     calendar: dict | None = None,
 ) -> None:
-    owners: dict[str, list[int]] = {}
+    owners: dict[tuple[str, str | None], list[int]] = {}
     for index, (_row, item) in enumerate(draft):
         if item.is_primary and item.concept and item.status in {"bound", "bound_with_warning"}:
-            owners.setdefault(item.concept, []).append(index)
+            # Разная основа цены — не одна величина. Пул основной строки у каждой свой.
+            owners.setdefault((item.concept, _terms_key(item)), []).append(index)
     for indexes in list(owners.values()):
+        headed = [index for index in indexes if _via_heading(draft[index][1])]
+        labeled = [index for index in indexes if index not in headed]
+        if labeled and headed:
+            for index in headed:
+                row, item = draft[index]
+                draft[index] = (row, _drop_primary(item))
+            indexes = labeled
         # Аббревиатура в скобке не спорит с телом той же метки (§5.5).
         # Её снимаем до частей и сценария, чтобы слабое совпадение не стало bound.
         if len(indexes) >= 2:
@@ -324,6 +411,34 @@ def _one_primary(
         for index in drop:
             row, item = draft[index]
             draft[index] = (row, _drop_primary(item, ambiguous=True))
+    _release_split_terms(draft)
+
+
+def _release_split_terms(draft: list[tuple[dict, Assignment]]) -> None:
+    """Две основы одного понятия не выбирают одну основную строку и не становятся ничьей.
+
+    `draft` — пары строки и привязки. Если у понятия две основные строки с разной
+    `price_terms`, обе остаются `bound`, но ни одна не основная. Выбор реальной
+    цены вместо номинальной здесь не делается. В `evidence` пишется
+    `selection: price_terms`. Строки одной основы этот шаг не трогает.
+    """
+
+    primaries: dict[str, list[int]] = {}
+    for index, (_row, item) in enumerate(draft):
+        if item.is_primary and item.concept and item.status in {"bound", "bound_with_warning"}:
+            primaries.setdefault(item.concept, []).append(index)
+    for indexes in primaries.values():
+        if len(indexes) < 2:
+            continue
+        terms = {_terms_key(draft[index][1]) for index in indexes}
+        if len(terms) < 2:
+            continue
+        for index in indexes:
+            row, item = draft[index]
+            draft[index] = (
+                row,
+                replace(item, is_primary=False, evidence={**item.evidence, "selection": "price_terms"}),
+            )
 
 
 def _drop_primary(item: Assignment, *, ambiguous: bool = False) -> Assignment:

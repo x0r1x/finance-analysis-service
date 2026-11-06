@@ -21,15 +21,18 @@ PACKT = job_id("packt")
 RVI = job_id("rvi")
 # Счётчики fact-строк: связанные, неоднозначные, неизвестные и неприменимые.
 # У Packt роль reference снимает ничьи interest и principal, поэтому связанных строк 9, а неоднозначных 2.
-# У RVI «Merchant price (real)» и «Merchant price (nominal)» — два точных совпадения
-# forecast_energy_tariff. Каскад не выбирает одну основную, обе строки ambiguous.
-# Было 5/6/218. Договорная цена PPA к прогнозу не привязана.
+# У RVI «Merchant price (real)» и «Merchant price (nominal)» — точные метки
+# forecast_energy_tariff с разной основой цены. Обе строки bound, ни одна не основная.
+# Mid case, Low case и Applied (real terms) под заголовком
+# Electricity price forecast (real terms) связаны по заголовку и тоже не основные.
+# Было 5/8/216. Стало 10 связанных, 6 неоднозначных и 213 неизвестных.
+# Числа сверены с живой книгой и ждут подтверждения.
 _COUNTS = {
     "packt": {"bound": 9, "ambiguous": 2, "unknown": 82, "not_applicable": 4},
-    "rvi": {"bound": 5, "ambiguous": 8, "unknown": 216, "not_applicable": 9},
+    "rvi": {"bound": 10, "ambiguous": 6, "unknown": 213, "not_applicable": 9},
 }
 # Неизвестные и неоднозначные строки минус входы метрик, которые тип модели не спрашивает.
-_OPEN = {"packt": 84, "rvi": 221}
+_OPEN = {"packt": 84, "rvi": 216}
 # У Packt interest уже основная строка. У RVI три неоднозначные строки interest остаются.
 _DROPPED = {"packt": (0, []), "rvi": (3, ["interest"])}
 # У Packt interest связан, поэтому ICR считается. LLCR и PLCR по-прежнему пропущены.

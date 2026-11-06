@@ -115,15 +115,29 @@ def test_real_and_nominal_merchant_prices_keep_their_own_surface():
         _fact("nominal", "Merchant price (nominal)"),
     ]
     assigned = assign_rows(rows, [], package)
+    terms = {"real": "real", "nominal": "nominal"}
     for key, label in (("real", "Merchant price (real)"), ("nominal", "Merchant price (nominal)")):
         item = assigned[key]
         assert item.concept == "forecast_energy_tariff"
-        assert item.status == "ambiguous" and item.is_primary is False
+        assert item.status == "bound" and item.is_primary is False
+        assert item.evidence["selection"] == "price_terms"
         assert item.matched_label == label
         assert item.evidence["label"]["text"] == label
         assert item.evidence["label"]["id"] == label_id("forecast_energy_tariff", "alt", label)
+        assert item.evidence["price_terms"] == terms[key]
+        assert item.evidence["price_terms_source"] == "label"
+        assert "match_provenance" not in item.evidence
     alone = assign_rows([rows[1]], [], package)["nominal"]
     assert alone.status == "bound" and alone.matched_label == "Merchant price (nominal)"
+    assert alone.evidence["price_terms"] == "nominal"
+    same = assign_rows(
+        [_fact("a", "Merchant price (real)"), _fact("b", "Merchant price (real)")],
+        [],
+        package,
+    )
+    assert same["a"].status == "ambiguous" and same["b"].status == "ambiguous"
+    assert same["a"].is_primary is False and same["b"].is_primary is False
+    assert same["a"].evidence["price_terms"] == "real" and same["b"].evidence["price_terms"] == "real"
 
 
 def test_ambiguous_label_stays_known_through_resolve_and_release():
@@ -202,8 +216,109 @@ async def test_glossary_resolve_lists_ambiguous_candidates_and_skips_the_model(t
     assert missed["results"][0]["candidates"] == []
 
 
-def _fact(key: str, label: str) -> dict:
-    return {"kind": "fact", "label": label, "binding_key": key, "row_key": key, "unit": "EUR/MWh"}
+_HEADING = ["Electricity price forecast (real terms)"]
+
+
+def test_generic_case_rows_follow_the_section_and_leave_a_labeled_row_alone():
+    package = load_catalog()
+    rows = [
+        _fact("real", "Merchant price (real)", ["Revenue", "Revenue prices", "Merchant"]),
+        _fact("nominal", "Merchant price (nominal)", ["Revenue", "Revenue prices", "Merchant"]),
+        _fact("mid", "Mid case", _HEADING),
+        _fact("low", "Low case", _HEADING),
+        _fact("applied", "Applied (real terms)", _HEADING),
+        _fact("ppa", "PPA Power Price", _HEADING),
+        _fact("index", "Escalation / inflation index merchant forecast", ["Merchant price forecast"]),
+        _fact("opex", "Mid case", ["Operating costs"]),
+        _fact("ancestor", "Low case", ["Electricity price forecast (real terms)", "Spare block"]),
+    ]
+    assigned = assign_rows(rows, [], package)
+    real = assigned["real"]
+    assert real.concept == "forecast_energy_tariff" and real.status == "bound" and real.is_primary is False
+    assert real.evidence["price_terms"] == "real" and real.evidence["selection"] == "price_terms"
+    assert "match_provenance" not in real.evidence
+    nominal = assigned["nominal"]
+    assert nominal.status == "bound" and nominal.is_primary is False
+    assert nominal.evidence["price_terms"] == "nominal" and nominal.evidence["selection"] == "price_terms"
+    sources = {"mid": "section_heading", "low": "section_heading", "applied": "label"}
+    for key, source in sources.items():
+        item = assigned[key]
+        assert item.concept == "forecast_energy_tariff", key
+        assert item.status == "bound" and item.is_primary is False, key
+        assert item.evidence["match_provenance"] == "section_heading", key
+        assert item.evidence["match_strength"] == "section_heading", key
+        assert item.evidence["section_heading"] == "Electricity price forecast (real terms)", key
+        assert item.matched_label == "Electricity price forecast", key
+        assert item.evidence["price_terms"] == "real" and item.evidence["price_terms_source"] == source, key
+    ppa = assigned["ppa"]
+    assert ppa.concept == "energy_tariff" and ppa.status == "bound" and ppa.is_primary
+    assert "match_provenance" not in ppa.evidence and "price_terms" not in ppa.evidence
+    assert assigned["index"].status == "unknown" and assigned["index"].concept is None
+    assert assigned["opex"].status == "unknown" and assigned["opex"].concept is None
+    assert assigned["ancestor"].status == "unknown" and assigned["ancestor"].concept is None
+
+
+def test_one_generic_row_under_a_resolving_heading_is_the_primary():
+    package = load_catalog()
+    item = assign_rows([_fact("mid", "Mid case", _HEADING)], [], package)["mid"]
+    assert item.status == "bound" and item.is_primary
+    assert item.concept == "forecast_energy_tariff"
+    assert item.evidence["price_terms"] == "real"
+    assert item.evidence["price_terms_source"] == "section_heading"
+    parent = _fact("low", "Low case")
+    parent["parent_label"] = "Electricity price forecast (real terms)"
+    via_parent = assign_rows([parent], [], package)["low"]
+    assert via_parent.concept == "forecast_energy_tariff"
+    assert via_parent.evidence["match_provenance"] == "section_heading"
+
+
+def test_a_labeled_row_stays_primary_when_its_terms_are_the_only_ones():
+    package = load_catalog()
+    assigned = assign_rows(
+        [_fact("real", "Merchant price (real)"), _fact("mid", "Mid case", _HEADING)],
+        [],
+        package,
+    )
+    real = assigned["real"]
+    assert real.status == "bound" and real.is_primary
+    assert real.evidence["price_terms"] == "real" and "selection" not in real.evidence
+    mid = assigned["mid"]
+    assert mid.status == "bound" and mid.is_primary is False
+    assert mid.evidence["match_provenance"] == "section_heading"
+
+
+def test_heading_rows_that_share_terms_stay_a_tie():
+    package = load_catalog()
+    assigned = assign_rows(
+        [_fact("mid", "Mid case", _HEADING), _fact("low", "Low case", _HEADING)],
+        [],
+        package,
+    )
+    for key in ("mid", "low"):
+        item = assigned[key]
+        assert item.concept == "forecast_energy_tariff"
+        assert item.status == "ambiguous" and item.is_primary is False
+        assert item.evidence["match_provenance"] == "section_heading"
+        assert item.evidence["price_terms"] == "real"
+
+
+def test_generic_label_under_an_ambiguous_heading_stays_unbound():
+    package = _pair(ambiguous=True)
+    item = assign_rows([_fact("mid", "Mid case", ["electricity price"])], [], package)["mid"]
+    assert item.status == "unknown" and item.concept is None
+    shared = assign_rows([_fact("shared", "electricity price")], [], package)["shared"]
+    assert shared.status == "ambiguous" and shared.concept is None
+    assert {candidate["concept"] for candidate in shared.evidence["candidates"]} == {
+        "energy_tariff",
+        "forecast_energy_tariff",
+    }
+
+
+def _fact(key: str, label: str, path: list[str] | None = None) -> dict:
+    row = {"kind": "fact", "label": label, "binding_key": key, "row_key": key, "unit": "EUR/MWh"}
+    if path is not None:
+        row["label_path"] = list(path)
+    return row
 
 
 def _release_document() -> dict:
