@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import yaml
 from ulid import ULID
+
+LOG = logging.getLogger("fas.glossary")
 
 from finance_analysis.application.catalog import load_git_document
 from finance_analysis.domain.book import canonical_json, sha256_bytes
@@ -116,6 +119,8 @@ class GlossaryStore:
         self._lock = asyncio.Lock()
         # Shadow-гейт (§5.11.3): async (version) -> отчёт с passed. Ставит composition root.
         self.gate = None
+        # Публикация SemanticModelVersion при релизе/активации глоссария (фаза 2).
+        self.on_publish: Callable[[str], Awaitable[str]] | None = None
         self.canary_share = 10
 
     async def peek(self) -> dict | None:
@@ -128,6 +133,16 @@ class GlossaryStore:
             if head is not None:
                 return head
             return await self._publish_git(etag)
+
+    async def recover_semantic_model(self) -> str | None:
+        """Повторно публикует SMV для активного глоссария (идемпотентно)."""
+
+        head = await self.peek()
+        if head is None or not head.get("active"):
+            return None
+        if self.on_publish is None:
+            return None
+        return await self.on_publish(head["active"])
 
     async def release(
         self,
@@ -1004,7 +1019,18 @@ class GlossaryStore:
         except AlreadyExists:
             return
 
+    async def _publish_smv(self, version: str) -> None:
+        """Публикует SMV; ошибки не откатывают уже записанную голову глоссария."""
+
+        if self.on_publish is None:
+            return
+        try:
+            await self.on_publish(version)
+        except Exception:
+            LOG.exception("публикация SemanticModelVersion для %s не удалась", version)
+
     async def _notify(self, version: str) -> None:
+        await self._publish_smv(version)
         if self.support is None:
             return
         await self.support.publish("fas:glossary:changed", version)

@@ -76,6 +76,16 @@ def report_index_prefix(job_id: str) -> str:
     return f"{book(job_id)}/_reports/"
 
 
+def semantic_model_manifest(version: str) -> str:
+    from finance_analysis.domain.ids import derive_key as check_hex16
+
+    return f"semantic_models/{check_hex16(version)}.json"
+
+
+def semantic_model_head() -> str:
+    return "semantic_models/_head.json"
+
+
 def log_key(job_id: str, seq: int) -> str:
     if seq < 1 or seq > 10**20:
         from finance_analysis.domain.errors import InvalidId

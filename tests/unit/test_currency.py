@@ -25,7 +25,7 @@ def _rows(alias: str) -> list[dict]:
 def test_service_version_is_0_23():
     assert FAS_VERSION == "0.23.0"
     assert __version__ == "0.23.0"
-    assert FAS_SCHEMA_VERSION == "1.0"
+    assert FAS_SCHEMA_VERSION == "1.1"
 
 
 def test_dim_row_schema_has_currency_source():

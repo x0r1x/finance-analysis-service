@@ -1008,7 +1008,7 @@ def test_book_rows_are_attached_on_ratios_and_full():
 
 
 def test_citation_stays_out_of_the_ratio_matrix_and_an_empty_list_adds_no_key():
-    assert FAS_SCHEMA_VERSION == "1.0"
+    assert FAS_SCHEMA_VERSION == "1.1"
     catalog = load_model_types()
     for concepts in CITED_BY_TYPE.values():
         assert set(concepts).isdisjoint(RATIO_METRICS)

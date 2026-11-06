@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 from pathlib import Path
 
 import uvicorn
+
+LOG = logging.getLogger("fas.main")
 
 from finance_analysis.adapters.api.app import create_app
 from finance_analysis.adapters.builder.fixture import FixtureBuilder
@@ -97,6 +100,11 @@ def main() -> None:
         async def lifespan(_app: FastAPI):
             service, support = await assemble(settings)
             await service.sweep_orphans()
+            # Идемпотентно восстановить SMV _head после сбоя on_publish.
+            try:
+                await service.recover_semantic_model()
+            except Exception:
+                LOG.exception("recover_semantic_model на старте не удался")
             await service.refresh_owner_lease()
             service.hold_owner()
             _app.state.service = service

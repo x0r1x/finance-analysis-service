@@ -154,16 +154,16 @@ def test_golden_row_assembles_full_provenance():
     assert payload["is_primary"] is True
 
 
-def test_smv_stub_passed_through_without_replacing_derive_key():
+def test_smv_passed_through_without_replacing_derive_key():
     book = _golden_book()
     record = assemble_financial_fact_provenance(
         book["fact_observation"][0],
         rows=book["dim_row"],
         periods=book["dim_period"],
         bindings=book["bindings"],
-        semantic_model_version="smv-stub-phase2",
+        semantic_model_version="0123456789abcdef",
     )
-    assert record.semantic_model_version == "smv-stub-phase2"
+    assert record.semantic_model_version == "0123456789abcdef"
     assert record.derive_key == _DERIVE
 
 

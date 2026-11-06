@@ -11,7 +11,7 @@ from datetime import date, datetime
 from finance_analysis.domain.derive_fingerprint import configs_root, derive_fingerprint
 
 FAS_VERSION = "0.23.0"
-FAS_SCHEMA_VERSION = "1.0"
+FAS_SCHEMA_VERSION = "1.1"
 SEP = "›"
 
 

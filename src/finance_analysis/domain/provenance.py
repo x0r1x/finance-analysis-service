@@ -78,7 +78,7 @@ def assemble_financial_fact_provenance(
     """Собрать FinancialFactProvenance из одной ячейки и справочников §4.4.
 
     Join: fact_observation ⨝ dim_row ⨝ bindings ⨝ dim_period
-    [⟕ row_semantics]. ``semantic_model_version`` — stub до фазы 2 SMV.
+    [⟕ row_semantics]. ``semantic_model_version`` — публичный SMV (фаза 2), не derive_key.
     """
 
     model_id = _req(fact, "model_id")

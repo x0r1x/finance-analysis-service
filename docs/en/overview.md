@@ -20,4 +20,4 @@ FAS does not parse Excel, does not recalculate formulas, and does not call a mod
 
 Behavior that this page does not spell out is in [design-v0.23.md](../design-v0.23.md), §0 and §1. Where that document and the code disagree, the code is what the service does.
 
-The meta-layer target model and delivery phases are in [meta-layer.md](../meta-layer.md) and [meta-layer-roadmap.md](../meta-layer-roadmap.md) (Russian). The financial-fact provenance contract (phase 1) is [financial-fact-provenance.md](../financial-fact-provenance.md) (Russian).
+The meta-layer target model and delivery phases are in [meta-layer.md](../meta-layer.md) and [meta-layer-roadmap.md](../meta-layer-roadmap.md) (Russian). The financial-fact provenance contract (phase 1) is [financial-fact-provenance.md](../financial-fact-provenance.md) (Russian). The public `SemanticModelVersion` (phase 2) is [semantic-model-version.md](../semantic-model-version.md) (Russian).

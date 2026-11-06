@@ -298,7 +298,7 @@ def test_unresolved_type_and_other_primaries_do_not_cite():
 def test_citation_stays_out_of_the_ratio_matrix():
     """Цитата не входит в матрицу коэффициентов. Второй сигнал типа — только moic. Схема 1.0."""
 
-    assert FAS_SCHEMA_VERSION == "1.0"
+    assert FAS_SCHEMA_VERSION == "1.1"
     assert "moic" not in RATIO_METRICS
     assert "exit_enterprise_value" not in RATIO_METRICS
     catalog = load_model_types()

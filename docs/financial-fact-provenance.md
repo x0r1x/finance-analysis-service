@@ -69,9 +69,9 @@ fact_observation
 | `nature` | `row_semantics` | `nature` | нет (опц. join) |
 | `aggregation` | `row_semantics` | `aggregation` | нет (опц. join) |
 | `excluded` | `row_semantics` | `excluded` | нет (опц. join) |
-| `semantic_model_version` | *(вне §4.4)* | stub до фазы 2 | нет |
+| `semantic_model_version` | *(вне §4.4)* | публичный SMV ([спека](semantic-model-version.md)) | нет |
 
-`semantic_model_version` — заглушка публичного `SemanticModelVersion` (фаза 2). Пока передаётся снаружи сборки или остаётся `null`; **не** подменяет `derive_key`.
+`semantic_model_version` — публичный `SemanticModelVersion` (фаза 2). Передаётся снаружи сборки (из `_head.versions.semantic_model`); **не** подменяет `derive_key`.
 
 ## 3. Запрет дубля факта
 
@@ -90,8 +90,8 @@ fact_observation
 - источник и версии привязки (`binding_source`, `glossary_version`, `taxonomy_version`);  
 - `build_key`;  
 - `derive_key`;  
-- `semantic_model_version` (stub, может быть `null`).
+- `semantic_model_version` (может быть `null`, если вызывающий не передал SMV).
 
 ## 5. Не-цели этого документа
 
-UI; новый датасет значений; изменение схем Parquet; `SemanticModelVersion` как вычисляемый манифест (фаза 2); Iceberg/Hive.
+UI; новый датасет значений; изменение схем Parquet ради provenance; Iceberg/Hive. Вычисление манифеста SMV — [semantic-model-version.md](semantic-model-version.md).
