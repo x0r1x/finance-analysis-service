@@ -264,15 +264,18 @@ class GlossaryStore:
         names = sorted(str(name) for name in (document.get("concepts") or {}))
         return {"concepts": names, "state": state_of(await self.ensure())}
 
-    async def composition(self, version: str | None) -> dict[str, tuple[str, ...]]:
-        """Состав понятий (`composition`, §5.1) релиза, с которым построено состояние книги."""
+    async def composed_of(self, version: str | None) -> dict[str, tuple[str, ...]]:
+        """Проекция `composed_of` (§5.1) релиза, с которым построено состояние книги.
+
+        Сумму частей эта проекция не считает и во вход метрики не подставляет.
+        """
 
         try:
             document = await self._document(version) if version else await self._active_document()
         except NotFound:
             document = await self._active_document()
         concepts = package_of(document).concepts
-        return {name: concept.composition for name, concept in concepts.items() if concept.composition}
+        return {name: concept.composed_of for name, concept in concepts.items() if concept.composed_of}
 
     async def concept_dimensions(self, version: str | None) -> dict[str, str]:
         """Размерность каждого понятия релиза, с которым построено состояние книги."""

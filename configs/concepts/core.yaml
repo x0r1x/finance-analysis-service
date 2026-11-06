@@ -6,13 +6,15 @@ concepts:
     temporal_nature: flow
     expected_sign: inflow
     expects_formula: true
-    related: [dscr, llcr, plcr]
+    relations:
+      related_to: [dscr]
   debt_service:
     semantic_role: measure
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
-    composition: [interest, principal]
+    relations:
+      composed_of: [interest, principal]
     validation:
       not_all_zero: true
   interest:

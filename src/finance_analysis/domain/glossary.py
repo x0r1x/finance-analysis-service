@@ -219,6 +219,19 @@ class LabelHit:
     text: str
 
 
+# Первая версия. equivalent_to и replaced_by зарезервированы и в конфиг не принимаются.
+ACTIVE_RELATION_TYPES = frozenset({"composed_of", "broader_than", "related_to"})
+RESERVED_RELATION_TYPES = frozenset({"equivalent_to", "replaced_by"})
+
+
+@dataclass(frozen=True)
+class ConceptRelation:
+    """Ребро от понятия-источника к понятию-цели. Обратное ребро не подразумевается."""
+
+    type: str
+    target: str
+
+
 @dataclass(frozen=True)
 class Concept:
     id: str
@@ -228,8 +241,7 @@ class Concept:
     expected_sign: str | None
     expects_formula: bool
     prefer: str | None
-    composition: tuple[str, ...]
-    related: tuple[str, ...]
+    relations: tuple[ConceptRelation, ...]
     validation_range: tuple[str, str] | None
     not_all_zero: bool
     plausible: tuple[object, ...]
@@ -243,6 +255,21 @@ class Concept:
     billing_period: str | None = None
     object_aggregation: str | None = None
     weight: str | None = None
+
+    def relation_targets(self, kind: str) -> tuple[str, ...]:
+        return tuple(item.target for item in self.relations if item.type == kind)
+
+    @property
+    def composed_of(self) -> tuple[str, ...]:
+        return self.relation_targets("composed_of")
+
+    @property
+    def broader_than(self) -> tuple[str, ...]:
+        return self.relation_targets("broader_than")
+
+    @property
+    def related_to(self) -> tuple[str, ...]:
+        return self.relation_targets("related_to")
 
     @property
     def kind(self) -> str:
@@ -375,12 +402,13 @@ def build_package(document: dict, glossaries: Mapping[str, dict], dictionaries: 
         raise GlossaryInvalid(["taxonomy"])
     concepts: dict[str, Concept] = {}
     owned: dict[str, LabelHit] = {}
+    known = {check_concept_id(str(key)) for key in raw}
     for key, body in raw.items():
         name = check_concept_id(str(key))
         glossary = glossaries.get(name)
         if not isinstance(glossary, dict):
             raise GlossaryInvalid([name])
-        concepts[name] = _concept(name, body if isinstance(body, dict) else {}, glossary, owned)
+        concepts[name] = _concept(name, body if isinstance(body, dict) else {}, glossary, owned, known)
     bad_weight = [
         concept.id
         for concept in concepts.values()
@@ -393,6 +421,7 @@ def build_package(document: dict, glossaries: Mapping[str, dict], dictionaries: 
     ]
     if bad_weight:
         raise GlossaryInvalid(bad_weight)
+    _check_relations(concepts)
     return GlossaryPackage(
         taxonomy=taxonomy,
         concepts=MappingProxyType(concepts),
@@ -402,7 +431,7 @@ def build_package(document: dict, glossaries: Mapping[str, dict], dictionaries: 
     )
 
 
-def _concept(name: str, body: dict, glossary: dict, owned: dict[str, LabelHit]) -> Concept:
+def _concept(name: str, body: dict, glossary: dict, owned: dict[str, LabelHit], known: set[str]) -> Concept:
     declared = glossary.get("concept")
     if declared != name:
         raise GlossaryInvalid([str(declared), name])
@@ -436,8 +465,7 @@ def _concept(name: str, body: dict, glossary: dict, owned: dict[str, LabelHit]) 
         weight=axes["weight"] if isinstance(axes["weight"], str) else None,
         expects_formula=bool(body.get("expects_formula", False)),
         prefer=_optional_str(body.get("prefer"), name),
-        composition=_names(body.get("composition"), name),
-        related=_names(body.get("related"), name),
+        relations=_relations(body, name, known),
         validation_range=_range(validation.get("range"), name),
         not_all_zero=bool(validation.get("not_all_zero", False)),
         plausible=tuple(body.get("plausible") or ()),
@@ -518,12 +546,126 @@ def _string_map(raw, name: str) -> dict[str, str]:
     return out
 
 
-def _names(raw, name: str) -> tuple[str, ...]:
+def _relations(body: dict, name: str, known: set[str]) -> tuple[ConceptRelation, ...]:
+    """Новая карта `relations` или прежние ключи уже выпущенного документа.
+
+    `composition` читается как `composed_of`. Из `related` остаются только понятия пакета:
+    прежний список cfads называл ещё идентификаторы метрик. Рядом с `relations` старые ключи отвергаются.
+    """
+
+    legacy = [key for key in ("composition", "related") if key in body]
+    if legacy and "relations" in body:
+        raise GlossaryInvalid([name, "legacy:relations"])
+    raw = body.get("relations")
+    if legacy:
+        raw = {}
+        if "composition" in body:
+            raw["composed_of"] = body["composition"]
+        related = body.get("related")
+        if isinstance(related, list):
+            kept = [item for item in related if isinstance(item, str) and item in known]
+            if kept:
+                raw["related_to"] = kept
+        elif "related" in body:
+            raise GlossaryInvalid([name, "related"])
+        if not raw:
+            return ()
     if raw is None:
         return ()
-    if not isinstance(raw, list):
-        raise GlossaryInvalid([name])
-    return tuple(check_concept_id(str(item)) for item in raw)
+    if not isinstance(raw, dict):
+        raise GlossaryInvalid([name, "relations"])
+    found: list[ConceptRelation] = []
+    seen: set[tuple[str, str]] = set()
+    for kind, targets in raw.items():
+        label = str(kind)
+        if label in RESERVED_RELATION_TYPES:
+            raise GlossaryInvalid([name, f"reserved:{label}"])
+        if label not in ACTIVE_RELATION_TYPES:
+            raise GlossaryInvalid([name, f"unknown:{label}"])
+        if not isinstance(targets, list) or not targets:
+            raise GlossaryInvalid([name, label])
+        for item in targets:
+            if not isinstance(item, str):
+                raise GlossaryInvalid([name, label])
+            target = check_concept_id(item)
+            if target == name:
+                raise GlossaryInvalid([name, f"cycle:{label}", target])
+            if (label, target) in seen:
+                raise GlossaryInvalid([name, f"duplicate:{label}", target])
+            seen.add((label, target))
+            found.append(ConceptRelation(label, target))
+    return tuple(found)
+
+
+def _check_relations(concepts: Mapping[str, Concept]) -> None:
+    """Цель есть в пакете. Циклов нет у composed_of, broader_than и поля публикации broader."""
+
+    bad: list[str] = []
+    composed: dict[str, tuple[str, ...]] = {}
+    hierarchy: dict[str, tuple[str, ...]] = {}
+    parents: dict[str, set[str]] = {}
+    published: dict[str, tuple[str, ...]] = {}
+    for concept in concepts.values():
+        for relation in concept.relations:
+            if relation.target not in concepts:
+                bad.append(f"missing:{relation.target}")
+        if concept.composed_of:
+            composed[concept.id] = concept.composed_of
+        if concept.broader_than:
+            hierarchy[concept.id] = concept.broader_than
+            for target in concept.broader_than:
+                parents.setdefault(target, set()).add(concept.id)
+        parent = concept.broader
+        if parent is None:
+            continue
+        if parent == concept.id or parent not in concepts:
+            bad.append(concept.id)
+            continue
+        published[concept.id] = (parent,)
+        declared = parents.get(concept.id)
+        if declared is not None and declared != {parent}:
+            bad.append(concept.id)
+    for kind, edges in (("composed_of", composed), ("broader_than", hierarchy), ("broader", published)):
+        member = _cycle_member(edges)
+        if member:
+            bad.append(f"cycle:{kind}")
+            bad.append(member)
+    if bad:
+        raise GlossaryInvalid(_unique(bad))
+
+
+def _cycle_member(edges: Mapping[str, tuple[str, ...]]) -> str | None:
+    color: dict[str, int] = {}
+
+    def walk(node: str) -> str | None:
+        color[node] = 1
+        for nxt in edges.get(node, ()):
+            state = color.get(nxt, 0)
+            if state == 1:
+                return nxt
+            if state == 0:
+                found = walk(nxt)
+                if found:
+                    return found
+        color[node] = 2
+        return None
+
+    for node in edges:
+        if color.get(node, 0) == 0:
+            found = walk(node)
+            if found:
+                return found
+    return None
+
+
+def _unique(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 
 def _optional_str(raw, name: str) -> str | None:

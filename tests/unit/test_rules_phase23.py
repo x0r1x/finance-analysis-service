@@ -305,7 +305,7 @@ def test_missing_total_row_after_concept_absent():
             _binding("interest", A),
             _binding("principal", B),
         ],
-        composition={"debt_service": ("interest", "principal")},
+        composed_of={"debt_service": ("interest", "principal")},
     )
     found = _codes("missing_total_row", data)
     assert found[0].params["concept"] == "debt_service"

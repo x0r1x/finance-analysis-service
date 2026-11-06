@@ -52,12 +52,26 @@ def ratio_numerator(data: LabelingInput) -> list[Vote]:
     return votes
 
 
+def _identity_parts(data: LabelingInput) -> dict[str, tuple[str, ...]]:
+    """Части lf.identity. composed_of задаёт их; явный список тождеств добавляет то, чего в связи нет.
+
+    Расхождение списка с composed_of не подменяет связь: голос читает связь.
+    Сумма в метрику отсюда не попадает.
+    """
+
+    found = {concept.id: concept.composed_of for concept in data.concepts.values() if concept.composed_of}
+    for left, parts in data.identities.items():
+        if left not in found:
+            found[left] = tuple(parts)
+    return found
+
+
 def identity(data: LabelingInput) -> list[Vote]:
     """Строка по формуле и значениям равна сумме привязанных людьми слагаемых → голос за левую часть."""
 
     keys = _key_of(data)
     votes = []
-    for left, parts in sorted(data.identities.items()):
+    for left, parts in sorted(_identity_parts(data).items()):
         rows = [data.bound(part, sources=HUMAN) for part in parts]
         if not all(rows):
             continue
@@ -107,10 +121,15 @@ def rollforward(data: LabelingInput) -> list[Vote]:
 
 
 def sum_component(data: LabelingInput) -> list[Vote]:
-    """Слагаемое итога, привязанного к debt_service → «компонент DS» (кандидат narrower, не синоним)."""
+    """Слагаемое итога, привязанного к debt_service → «компонент DS» (кандидат narrower, не синоним).
+
+    Голос требует, чтобы у понятия была связь composed_of. Список целей ряд не отбирает и не суммирует:
+    в голос попадают прецеденты строки итога.
+    """
 
     ds = data.bound("debt_service")
-    if not ds:
+    concept = data.concepts.get("debt_service")
+    if not ds or concept is None or not concept.composed_of:
         return []
     keys = _key_of(data)
     return [

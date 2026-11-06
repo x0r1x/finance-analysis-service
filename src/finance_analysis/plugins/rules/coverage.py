@@ -186,7 +186,7 @@ class MissingTotalRow(Rule):
             ]
             if not needed:
                 continue
-            parts = data.composition.get(concept, ())
+            parts = data.composed_of.get(concept, ())
             locations = [
                 Location(None, row["row_key"], None, None)
                 for row in data.bindings

@@ -106,6 +106,10 @@ def test_package_resolves_display_labels_and_keeps_ranges_as_text():
     package = load_catalog()
     assert package.ids == _IDS
     assert package.concepts["debt_service"].not_all_zero is True
+    assert package.concepts["debt_service"].composed_of == ("interest", "principal")
+    assert package.concepts["cfads"].related_to == ("dscr",)
+    assert package.concepts["cfads"].broader is None
+    assert package.concepts["cfads"].broader_than == ()
     assert package.concepts["discount_rate"].validation_range == ("0", "0.30")
     assert package.concepts["ebit"].kind == "measure"
     assert normalize_label("Ёлка") == normalize_label("елка")
@@ -320,6 +324,137 @@ def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
         assert head["active"]
 
     asyncio.run(run())
+
+
+_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}}
+
+
+def _measure(**extra) -> dict:
+    body = {"kind": "measure", "unit": "money"}
+    body.update(extra)
+    return body
+
+
+def _gloss(name: str, **extra) -> dict:
+    base = {"concept": name, "pref": {"ru": name, "en": name}}
+    base.update(extra)
+    return base
+
+
+def _concepts(bodies: dict[str, dict], glossaries: dict | None = None):
+    return build_package(
+        {"taxonomy": "core-1", "concepts": bodies},
+        glossaries or {name: _gloss(name) for name in bodies},
+        _DICTS,
+    )
+
+
+def test_catalog_relations_match_the_identity_file():
+    from finance_analysis.application.catalog import load_identities
+
+    package = load_catalog()
+    assert load_identities()["debt_service"] == list(package.concepts["debt_service"].composed_of)
+
+
+def test_legacy_composition_is_read_and_metric_ids_in_related_are_dropped():
+    package = _concepts(
+        {
+            "debt_service": _measure(composition=["interest", "principal"]),
+            "interest": _measure(),
+            "principal": _measure(),
+            "cfads": _measure(related=["dscr", "llcr", "plcr"]),
+            "dscr": _measure(),
+        }
+    )
+    assert package.concepts["debt_service"].composed_of == ("interest", "principal")
+    assert package.concepts["cfads"].related_to == ("dscr",)
+    with pytest.raises(GlossaryInvalid) as caught:
+        _concepts(
+            {
+                "a": _measure(composition=["b"], relations={"composed_of": ["b"]}),
+                "b": _measure(),
+            }
+        )
+    assert "legacy:relations" in caught.value.labels
+
+
+def test_unknown_and_reserved_relation_types_fail():
+    bodies = {"a": _measure(relations={"see_also": ["b"]}), "b": _measure()}
+    with pytest.raises(GlossaryInvalid) as caught:
+        _concepts(bodies)
+    assert "unknown:see_also" in caught.value.labels
+    reserved = {"a": _measure(relations={"equivalent_to": ["b"]}), "b": _measure()}
+    with pytest.raises(GlossaryInvalid) as reserved_caught:
+        _concepts(reserved)
+    assert "reserved:equivalent_to" in reserved_caught.value.labels
+    replaced = {"a": _measure(relations={"replaced_by": ["b"]}), "b": _measure()}
+    with pytest.raises(GlossaryInvalid) as replaced_caught:
+        _concepts(replaced)
+    assert "reserved:replaced_by" in replaced_caught.value.labels
+
+
+def test_duplicate_missing_and_cyclic_relations_fail():
+    with pytest.raises(GlossaryInvalid) as duplicate:
+        _concepts({"a": _measure(relations={"related_to": ["b", "b"]}), "b": _measure()})
+    assert "duplicate:related_to" in duplicate.value.labels
+    with pytest.raises(GlossaryInvalid) as missing:
+        _concepts({"a": _measure(relations={"related_to": ["missing"]})})
+    assert "missing:missing" in missing.value.labels
+    with pytest.raises(GlossaryInvalid) as composed:
+        _concepts(
+            {
+                "a": _measure(relations={"composed_of": ["b"]}),
+                "b": _measure(relations={"composed_of": ["a"]}),
+            }
+        )
+    assert "cycle:composed_of" in composed.value.labels
+    with pytest.raises(GlossaryInvalid) as hierarchy:
+        _concepts(
+            {
+                "a": _measure(relations={"broader_than": ["b"]}),
+                "b": _measure(relations={"broader_than": ["a"]}),
+            }
+        )
+    assert "cycle:broader_than" in hierarchy.value.labels
+
+
+def test_published_broader_stays_and_must_agree_with_broader_than():
+    agreed = _concepts(
+        {
+            "parent": _measure(relations={"broader_than": ["child"]}),
+            "child": _measure(),
+        },
+        {
+            "parent": _gloss("parent"),
+            "child": _gloss("child", broader="parent"),
+        },
+    )
+    assert agreed.concepts["child"].broader == "parent"
+    assert agreed.concepts["parent"].broader_than == ("child",)
+    only_edge = _concepts(
+        {"parent": _measure(relations={"broader_than": ["child"]}), "child": _measure()}
+    )
+    assert only_edge.concepts["child"].broader is None
+    with pytest.raises(GlossaryInvalid) as conflict:
+        _concepts(
+            {
+                "parent": _measure(relations={"broader_than": ["child"]}),
+                "other": _measure(),
+                "child": _measure(),
+            },
+            {
+                "parent": _gloss("parent"),
+                "other": _gloss("other"),
+                "child": _gloss("child", broader="other"),
+            },
+        )
+    assert "child" in conflict.value.labels
+    with pytest.raises(GlossaryInvalid) as cycle:
+        _concepts(
+            {"a": _measure(), "b": _measure()},
+            {"a": _gloss("a", broader="b"), "b": _gloss("b", broader="a")},
+        )
+    assert "cycle:broader" in cycle.value.labels
 
 
 def test_catch_glossary_remaps_a_newer_version_once():
