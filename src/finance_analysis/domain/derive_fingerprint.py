@@ -30,6 +30,7 @@ PACKAGE_SOURCES = (
     "domain/references.py",
     "domain/semantics.py",
     "domain/glossary.py",
+    "domain/dictionaries.py",
     "domain/candidates.py",
     "domain/calibration.py",
     "domain/model_type.py",
@@ -45,6 +46,7 @@ PACKAGE_SOURCES = (
 CONFIG_SOURCES = (
     "configs/sheet_roles.yaml",
     "configs/concepts/core.yaml",
+    "configs/glossary/dictionaries.yaml",
     "configs/model_types",
 )
 

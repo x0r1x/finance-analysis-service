@@ -10,7 +10,7 @@ from finance_analysis.domain.glossary import GlossaryInvalid, build_package
 from finance_analysis.domain.glossary_release import apply_ops, label_diff, package_of
 from finance_analysis.domain.mapping import assign_rows, label_id
 
-_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}}
+_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"], "plan": ["план"], "estimate": ["e"]}}
 _FORECAST = (
     "Прогнозный тариф",
     "ожидаемая цена реализации",

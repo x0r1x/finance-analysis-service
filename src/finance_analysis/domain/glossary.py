@@ -858,15 +858,51 @@ def _range(raw, name: str) -> tuple[str, str] | None:
     raise GlossaryInvalid([name])
 
 
-def _groups(raw, name: str) -> dict[str, tuple[str, ...]]:
-    # shortcut: словарь потоков — стартовые слова, пополнять когда строка книги остаётся без знака
-    if not isinstance(raw, dict):
+_REQUIRED_MARKERS = ("actual", "plan", "estimate")
+
+
+def parse_dictionary_groups(raw, name: str) -> dict[str, tuple[str, ...]]:
+    """Строгая проверка flows/markers: только непустые строки после strip, без тихого отбрасывания.
+
+    Для ``markers`` обязательны непустые ``actual``, ``plan``, ``estimate``;
+    один и тот же casefold-токен в двух классах — ``GlossaryInvalid``.
+    """
+
+    if not isinstance(raw, Mapping):
         raise GlossaryInvalid([name])
     out: dict[str, tuple[str, ...]] = {}
     for key, value in raw.items():
-        if not isinstance(key, str) or not isinstance(value, list):
+        if not isinstance(key, str) or not isinstance(value, (list, tuple)):
             raise GlossaryInvalid([name])
-        if not all(isinstance(item, str) and item for item in value):
-            raise GlossaryInvalid([name, key])
-        out[key] = tuple(value)
+        kept: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise GlossaryInvalid([name, key])
+            token = item.strip()
+            if not token:
+                raise GlossaryInvalid([name, key])
+            kept.append(token)
+        out[key] = tuple(kept)
+    if name == "markers":
+        return _validate_marker_classes(out)
     return out
+
+
+def _validate_marker_classes(parsed: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+    for required in _REQUIRED_MARKERS:
+        if not parsed.get(required):
+            raise GlossaryInvalid(["markers", required])
+    owner: dict[str, str] = {}
+    for klass, values in parsed.items():
+        for item in values:
+            fold = item.casefold()
+            previous = owner.get(fold)
+            if previous is not None and previous != klass:
+                raise GlossaryInvalid(["markers", item])
+            owner[fold] = klass
+    return parsed
+
+
+def _groups(raw, name: str) -> dict[str, tuple[str, ...]]:
+    # shortcut: словарь потоков — стартовые слова, пополнять когда строка книги остаётся без знака
+    return parse_dictionary_groups(raw, name)

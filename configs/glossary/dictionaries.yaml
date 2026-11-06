@@ -1,4 +1,5 @@
-# Тот же набор, что MARKER_* в domain/periods.py. Домен файл не читает.
+# Единый источник для потоков (row_semantics) и классов маркеров периода.
+# Каталог глоссария и domain/periods читают этот файл; Python-константы не дублируют токены.
 flows:
   inflow: [приток, поступление, inflow, receipt, receipts]
   outflow: [отток, выплата, платеж, outflow, payment, payments]

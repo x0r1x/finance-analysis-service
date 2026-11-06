@@ -133,7 +133,7 @@ def test_second_pref_on_one_language_fails():
         build_package(
             _body(),
             _glossary(pref={"ru": ["одна", "вторая"], "en": "Cash flow"}),
-            {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}},
+            {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"], "plan": ["план"], "estimate": ["e"]}},
         )
     assert caught.value.labels == ["одна", "вторая"]
 
@@ -143,7 +143,7 @@ def test_same_label_in_pref_and_alt_fails():
         build_package(
             _body(),
             _glossary(alt={"ru": ["Денежный поток"]}),
-            {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}},
+            {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"], "plan": ["план"], "estimate": ["e"]}},
         )
     assert caught.value.labels == ["Денежный поток", "Денежный поток"]
 
@@ -153,7 +153,7 @@ def test_alt_without_pref_in_that_language_fails():
         build_package(
             _body(),
             _glossary(alt={"de": ["ДПОД"]}),
-            {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}},
+            {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"], "plan": ["план"], "estimate": ["e"]}},
         )
     assert caught.value.labels == ["ДПОД"]
 
@@ -327,7 +327,7 @@ def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
     asyncio.run(run())
 
 
-_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}}
+_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"], "plan": ["план"], "estimate": ["e"]}}
 
 
 def _measure(**extra) -> dict:

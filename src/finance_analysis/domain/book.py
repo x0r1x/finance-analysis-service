@@ -8,12 +8,23 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from finance_analysis.domain.derive_fingerprint import derive_fingerprint
+from finance_analysis.domain.derive_fingerprint import configs_root, derive_fingerprint
 
 FAS_VERSION = "0.23.0"
 FAS_SCHEMA_VERSION = "1.0"
-FAS_PROJECTION_VERSION = "2"
 SEP = "›"
+
+
+def _dictionaries_stamp() -> str:
+    """Короткий хеш dictionaries.yaml: правка маркеров меняет build_key после рестарта."""
+
+    path = configs_root() / "configs" / "glossary" / "dictionaries.yaml"
+    body = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(body).hexdigest()[:12]
+
+
+# База 3 — SSOT маркеров из YAML; суффикс — содержимое dictionaries.yaml.
+FAS_PROJECTION_VERSION = f"3:{_dictionaries_stamp()}"
 
 _WS = re.compile(r"\s+")
 
