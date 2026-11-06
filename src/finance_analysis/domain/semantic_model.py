@@ -25,6 +25,16 @@ SMV_CONFIG_SOURCES = (
 )
 
 HEAD_KEY = "semantic_models/_head.json"
+REQUIRED_COMPONENTS = (
+    "taxonomy",
+    "glossary",
+    "metrics",
+    "model_types",
+    "dimensions",
+    "rules",
+    "schema",
+)
+_HEX16 = frozenset("0123456789abcdef")
 
 
 def semantic_model_key(version: str) -> str:
@@ -86,8 +96,38 @@ def manifest_body(version: str, components: Mapping, *, created_at_utc: str) -> 
     }
 
 
-def head_body(version: str, *, updated_at_utc: str) -> dict:
-    return {"active": version, "updated_at_utc": updated_at_utc}
+def head_body(version: str, *, updated_at_utc: str, seq: int = 1) -> dict:
+    return {"active": version, "updated_at_utc": updated_at_utc, "seq": int(seq)}
+
+
+def validate_manifest(body: Mapping) -> dict:
+    """Проверяет контракт манифеста: обязательные компоненты и version == hash(components)."""
+
+    if not isinstance(body, Mapping):
+        raise TypeError("манифест SMV должен быть объектом")
+    version = body.get("version")
+    components = body.get("components")
+    if not isinstance(version, str) or len(version) != 16 or set(version) - _HEX16:
+        raise ValueError("version манифеста SMV должен быть 16-hex")
+    if not isinstance(components, Mapping):
+        raise TypeError("components манифеста SMV обязательны")
+    missing = [name for name in REQUIRED_COMPONENTS if name not in components]
+    if missing:
+        raise ValueError(f"в манифесте SMV нет компонентов: {', '.join(missing)}")
+    taxonomy = components.get("taxonomy")
+    dimensions = components.get("dimensions")
+    if not isinstance(taxonomy, Mapping) or not taxonomy.get("id") or not taxonomy.get("stamp"):
+        raise ValueError("taxonomy манифеста SMV: нужны id и stamp")
+    if not isinstance(dimensions, Mapping) or not dimensions.get("id") or not dimensions.get("stamp"):
+        raise ValueError("dimensions манифеста SMV: нужны id и stamp")
+    for name in ("glossary", "metrics", "model_types", "rules", "schema"):
+        value = components.get(name)
+        if value in (None, ""):
+            raise ValueError(f"компонент SMV {name} пуст")
+    expected = semantic_model_version_for(components)
+    if version != expected:
+        raise ValueError(f"version манифеста SMV {version} != hash(components) {expected}")
+    return dict(body)
 
 
 def live_components(

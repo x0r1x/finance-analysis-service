@@ -1,4 +1,4 @@
-"""SemanticModelVersion: воспроизводимость и отличие от derive_key."""
+"""SemanticModelVersion: воспроизводимость, lifecycle ensure/publish, анализ vs книга."""
 
 from __future__ import annotations
 
@@ -11,10 +11,12 @@ import pytest
 
 from finance_analysis.adapters.storage.parquet_io import PyarrowParquet, load_schema
 from finance_analysis.adapters.storage.store import LocalStore
+from finance_analysis.application.analyses import Target
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.application.rule_engine import load_rules
 from finance_analysis.application.service import FasService
 from finance_analysis.domain.book import FAS_SCHEMA_VERSION, Head, derive_key_for
+from finance_analysis.domain.errors import AlreadyExists
 from finance_analysis.domain.semantic_model import (
     HEAD_KEY,
     live_components,
@@ -23,7 +25,9 @@ from finance_analysis.domain.semantic_model import (
     semantic_model_key,
     semantic_model_version_for,
     stamp_path,
+    validate_manifest,
 )
+from finance_analysis.plugins.rules import RULES
 
 
 def _components(**overrides) -> dict:
@@ -42,6 +46,17 @@ def _components(**overrides) -> dict:
     return base
 
 
+def _service(store) -> SimpleNamespace:
+    rules = {code: rule.version for code, rule in load_rules().items()}
+    service = SimpleNamespace(store=store, model_types=load_model_types(), _rules_versions=rules)
+    service.ensure_semantic_model = FasService.ensure_semantic_model.__get__(service, SimpleNamespace)
+    service.publish_semantic_model_head = FasService.publish_semantic_model_head.__get__(
+        service, SimpleNamespace
+    )
+    service.publish_semantic_model = FasService.publish_semantic_model.__get__(service, SimpleNamespace)
+    return service
+
+
 def test_same_inputs_same_semantic_model_version():
     left = semantic_model_version_for(_components())
     right = semantic_model_version_for(_components())
@@ -53,6 +68,27 @@ def test_glossary_change_bumps_smv_not_via_derive_inputs_alone():
     left = semantic_model_version_for(_components(glossary="g-1"))
     right = semantic_model_version_for(_components(glossary="g-2"))
     assert left != right
+
+
+def test_metrics_stamp_change_bumps_smv():
+    left = semantic_model_version_for(_components(metrics="bbbbbbbbbbbbbbbb"))
+    right = semantic_model_version_for(_components(metrics="ffffffffffffffff"))
+    assert left != right
+
+
+def test_rules_version_change_bumps_smv():
+    left = rules_stamp({"missing_total_row": "1"})
+    right = rules_stamp({"missing_total_row": "2"})
+    assert left != right
+    assert semantic_model_version_for(_components(rules=left[:16])) != semantic_model_version_for(
+        _components(rules=right[:16])
+    )
+
+
+def test_builtin_rules_declare_nonempty_versions():
+    assert RULES
+    for rule in RULES:
+        assert isinstance(rule.version, str) and rule.version.strip(), rule.code
 
 
 def test_state_seq_changes_derive_key_not_smv():
@@ -99,6 +135,24 @@ def test_rules_stamp_order_independent():
     assert rules_stamp({"a": "1"}) != rules_stamp({"a": "2"})
 
 
+def test_validate_manifest_requires_hash_match_and_components():
+    components = _components()
+    version = semantic_model_version_for(components)
+    body = {
+        "version": version,
+        "components": components,
+        "fas_version": "0.23.0",
+        "created_at_utc": "2026-11-06T00:00:00Z",
+    }
+    assert validate_manifest(body)["version"] == version
+    with pytest.raises(ValueError, match="hash"):
+        validate_manifest({**body, "version": "0123456789abcdef"})
+    broken = dict(components)
+    broken["glossary"] = ""
+    with pytest.raises(ValueError, match="пуст"):
+        validate_manifest({**body, "version": semantic_model_version_for(broken), "components": broken})
+
+
 def test_run_schema_adds_smv_beside_derive_key():
     doc = load_schema("run")
     names = [column["name"] for column in doc["columns"]]
@@ -108,36 +162,105 @@ def test_run_schema_adds_smv_beside_derive_key():
 
 
 @pytest.mark.asyncio
-async def test_ensure_semantic_model_persists_manifest(tmp_path: Path):
+async def test_ensure_does_not_write_global_head(tmp_path: Path):
     store = LocalStore(tmp_path / "store")
-    rules = {code: rule.version for code, rule in load_rules().items()}
-    model_types = load_model_types()
-    service = SimpleNamespace(store=store, model_types=model_types, _rules_versions=rules)
-    version = await FasService.ensure_semantic_model(service, "g-test")
-    again = await FasService.ensure_semantic_model(service, "g-test")
-    assert version == again
-    assert len(version) == 16
+    service = _service(store)
+    version = await FasService.ensure_semantic_model(service, "g-old")
+    assert await store.stat(HEAD_KEY) is None
     manifest = json.loads(await store.get(semantic_model_key(version)))
-    assert manifest["version"] == version
-    assert manifest["components"]["glossary"] == "g-test"
-    pointer = json.loads(await store.get(HEAD_KEY))
-    assert pointer["active"] == version
+    assert validate_manifest(manifest)["components"]["glossary"] == "g-old"
+    again = await FasService.ensure_semantic_model(service, "g-old")
+    assert again == version
 
-    # Книжный ответ держит SMV рядом с derive_key (как describe).
+
+@pytest.mark.asyncio
+async def test_historical_ensure_does_not_roll_back_head(tmp_path: Path):
+    store = LocalStore(tmp_path / "store")
+    service = _service(store)
+    current = await FasService.publish_semantic_model(service, "g-2")
+    pointer = json.loads(await store.get(HEAD_KEY))
+    assert pointer["active"] == current
+    historical = await FasService.ensure_semantic_model(service, "g-1")
+    assert historical != current
+    assert json.loads(await store.get(HEAD_KEY))["active"] == current
+    # Исторический манифест остаётся.
+    assert validate_manifest(json.loads(await store.get(semantic_model_key(historical))))
+
+
+@pytest.mark.asyncio
+async def test_publish_head_cas_is_idempotent_and_advances_seq(tmp_path: Path):
+    store = LocalStore(tmp_path / "store")
+    service = _service(store)
+    first = await FasService.publish_semantic_model(service, "g-1")
+    head = json.loads(await store.get(HEAD_KEY))
+    assert head["active"] == first
+    assert head["seq"] == 1
+    same = await FasService.publish_semantic_model_head(service, first)
+    assert same["active"] == first
+    assert same["seq"] == 1
+    second = await FasService.publish_semantic_model(service, "g-2")
+    assert second != first
+    head = json.loads(await store.get(HEAD_KEY))
+    assert head["active"] == second
+    assert head["seq"] == 2
+
+
+@pytest.mark.asyncio
+async def test_publish_head_survives_concurrent_put_if_absent(tmp_path: Path):
+    store = LocalStore(tmp_path / "store")
+    service = _service(store)
+    version = await FasService.ensure_semantic_model(service, "g-1")
+    # Имитация гонки: head уже создан другим процессом на другую версию.
+    other = await FasService.ensure_semantic_model(service, "g-2")
+    await store.put_if_absent(
+        HEAD_KEY,
+        json.dumps({"active": other, "updated_at_utc": "t0", "seq": 1}, sort_keys=True).encode(),
+    )
+    body = await FasService.publish_semantic_model_head(service, version)
+    assert body["active"] == version
+    assert body["seq"] == 2
+
+
+@pytest.mark.asyncio
+async def test_analysis_uses_live_smv_while_book_pin_stays(tmp_path: Path):
+    store = LocalStore(tmp_path / "store")
+    service = _service(store)
+    book_smv = await FasService.ensure_semantic_model(service, "g-1")
+    # Имитация смены metrics после материализации: подменяем stamp через _rules_versions bump.
+    service._rules_versions = {**service._rules_versions, "missing_total_row": "99-test"}
+    live = await FasService.ensure_semantic_model(service, "g-1")
+    assert live != book_smv
     head = Head(
         build_key="0123456789abcdef",
         state_seq=0,
         derive_key="fedcba9876543210",
-        versions={"glossary": "g-test", "semantic_model": version, "profile": "p-0"},
+        versions={"glossary": "g-1", "semantic_model": book_smv, "profile": "p-0"},
     )
-    book = {
-        "derive_key": head.derive_key,
-        "semantic_model_version": head.versions.get("semantic_model"),
-        "versions": head.versions,
-    }
-    assert book["semantic_model_version"] == version
-    assert book["semantic_model_version"] != book["derive_key"]
-    assert book["versions"]["semantic_model"] == book["semantic_model_version"]
+    target = Target(
+        head=head,
+        build=head.build_key,
+        manifest={},
+        fresh=False,
+        analysis_semantic_model=live,
+    )
+    versions = target.versions_with_smv(derive_key=head.derive_key)
+    assert versions["semantic_model"] == live
+    assert versions["book_semantic_model"] == book_smv
+    assert head.versions["semantic_model"] == book_smv
+
+
+@pytest.mark.asyncio
+async def test_old_manifest_immutable_after_config_change(tmp_path: Path):
+    store = LocalStore(tmp_path / "store")
+    service = _service(store)
+    old = await FasService.ensure_semantic_model(service, "g-1")
+    raw = await store.get(semantic_model_key(old))
+    service._rules_versions = {**service._rules_versions, "missing_total_row": "changed"}
+    new = await FasService.ensure_semantic_model(service, "g-1")
+    assert new != old
+    assert await store.get(semantic_model_key(old)) == raw
+    with pytest.raises(AlreadyExists):
+        await store.put_if_absent(semantic_model_key(old), b"tamper")
 
 
 @pytest.mark.asyncio
@@ -172,3 +295,17 @@ async def test_run_parquet_writes_smv_beside_derive_key(tmp_path: Path):
     assert names.index("semantic_model_version") == names.index("derive_key") + 1
     assert table.column("semantic_model_version")[0].as_py() == "0123456789abcdef"
     assert table.column("derive_key")[0].as_py() == "fedcba9876543210"
+
+
+@pytest.mark.asyncio
+async def test_glossary_notify_survives_smv_publish_failure(tmp_path: Path):
+    from finance_analysis.application.glossary_store import GlossaryStore
+
+    store = LocalStore(tmp_path / "store")
+
+    async def boom(_version: str):
+        raise RuntimeError("object store down")
+
+    glossary = GlossaryStore(store)
+    glossary.on_publish = boom
+    await glossary._notify("g-1")  # не поднимает — глоссарий уже активирован

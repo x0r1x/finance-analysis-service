@@ -185,6 +185,8 @@ class Target:
     manifest: dict
     fresh: bool
     derived: str | None = None
+    # SMV определений, фактически использованных в анализе (live), не pin книги.
+    analysis_semantic_model: str | None = None
 
     @property
     def is_latest(self) -> bool | None:
@@ -197,6 +199,23 @@ class Target:
         """Производное состояние этой сборки на текущем `state_seq`, если оно построено."""
 
         return self.head.derive_key if self.build == self.head.build_key else self.derived
+
+    @property
+    def semantic_model(self) -> str | None:
+        """SMV прогона: live, иначе pin книги."""
+
+        return self.analysis_semantic_model or (self.head.versions or {}).get("semantic_model")
+
+    def versions_with_smv(self, **extra) -> dict:
+        """versions ответа: live SMV прогона + исторический pin книги."""
+
+        book_smv = (self.head.versions or {}).get("semantic_model")
+        return {
+            **(self.head.versions or {}),
+            **extra,
+            "semantic_model": self.semantic_model,
+            "book_semantic_model": book_smv,
+        }
 
 
 def _scope(body: dict) -> dict:
@@ -482,19 +501,17 @@ class Analyses:
             derived = await self._derived_at(job_id, build, head.state_seq)
             if derived is None and head.derive_key:
                 derived = await svc.derive_for_build(job_id, head, build)
-        versions = dict(head.versions)
-        if not versions.get("semantic_model"):
-            versions["semantic_model"] = await svc.ensure_semantic_model(versions.get("glossary"))
-            head = Head(
-                build_key=head.build_key,
-                state_seq=head.state_seq,
-                derive_key=head.derive_key,
-                versions=versions,
-                mdl_version=head.mdl_version,
-                fence=head.fence,
-                token=head.token,
-            )
-        return Target(head=head, build=build, manifest=manifest, fresh=fresh, derived=derived)
+        # Анализ пинит live SMV (актуальные metrics/rules + glossary книги).
+        # Pin книги в head.versions.semantic_model не перезаписывается.
+        live_smv = await svc.ensure_semantic_model((head.versions or {}).get("glossary"))
+        return Target(
+            head=head,
+            build=build,
+            manifest=manifest,
+            fresh=fresh,
+            derived=derived,
+            analysis_semantic_model=live_smv,
+        )
 
     async def _derived_at(self, job_id: str, build: str, state_seq: int) -> str | None:
         async for item in self.store.list(f"books/{job_id}/{build}/derived/"):
@@ -855,13 +872,9 @@ class Analyses:
             "analysis_id": analysis_id,
             "status": "succeeded",
             "builder_ref": target.manifest.get("builder_ref"),
-            "versions": {
-                **head.versions,
-                "fas": FAS_VERSION,
-                "state_seq": head.state_seq,
-                "derive_key": target.derive_key,
-                "semantic_model": head.versions.get("semantic_model"),
-            },
+            "versions": target.versions_with_smv(
+                fas=FAS_VERSION, state_seq=head.state_seq, derive_key=target.derive_key
+            ),
             "build_key": target.build,
             "is_latest": target.is_latest,
             "summary": {"code": "ratios_completed", "params": {"rows": len(computed)}, "text": None},
@@ -895,13 +908,9 @@ class Analyses:
             "analysis_id": analysis_id,
             "status": "succeeded",
             "builder_ref": target.manifest.get("builder_ref"),
-            "versions": {
-                **head.versions,
-                "fas": FAS_VERSION,
-                "state_seq": head.state_seq,
-                "derive_key": target.derive_key,
-                "semantic_model": head.versions.get("semantic_model"),
-            },
+            "versions": target.versions_with_smv(
+                fas=FAS_VERSION, state_seq=head.state_seq, derive_key=target.derive_key
+            ),
             "build_key": target.build,
             "is_latest": target.is_latest,
             "summary": {"code": "impact_completed", "params": {"drivers": len(view["drivers"])}, "text": None},
@@ -976,14 +985,12 @@ class Analyses:
                 "analysis_id": analysis_id,
                 "status": "succeeded",
                 "builder_ref": target.manifest.get("builder_ref"),
-                "versions": {
-                    **head.versions,
-                    "rules": {rule.code: rule.version for rule in rules},
-                    "fas": FAS_VERSION,
-                    "state_seq": head.state_seq,
-                    "derive_key": target.derive_key,
-                    "semantic_model": head.versions.get("semantic_model"),
-                },
+                "versions": target.versions_with_smv(
+                    rules={rule.code: rule.version for rule in rules},
+                    fas=FAS_VERSION,
+                    state_seq=head.state_seq,
+                    derive_key=target.derive_key,
+                ),
                 "build_key": target.build,
                 "is_latest": target.is_latest,
                 "summary": {"code": "full_completed", "params": {"metrics": metrics, "findings": len(findings)}, "text": None},
@@ -1075,7 +1082,6 @@ class Analyses:
         svc = self.service
         head = target.head
         finished = _now()
-        smv = head.versions.get("semantic_model") or envelope.get("versions", {}).get("semantic_model")
         run_row = {
             "analysis_id": analysis_id,
             "model_id": job_id,
@@ -1091,7 +1097,8 @@ class Analyses:
             "profile_id": head.versions.get("profile"),
             "profile_version": head.versions.get("profile"),
             "derive_key": target.derive_key,
-            "semantic_model_version": smv,
+            "semantic_model_version": target.semantic_model
+            or envelope.get("versions", {}).get("semantic_model"),
             "fas_version": FAS_VERSION,
             "created_at_utc": started,
             "finished_at_utc": finished,
@@ -1198,15 +1205,13 @@ class Analyses:
             "analysis_id": analysis_id,
             "status": "succeeded",
             "builder_ref": ref,
-            "versions": {
-                **head.versions,
-                "latest_glossary": head.versions.get("glossary"),
-                "rules": {rule.code: rule.version for rule in rules},
-                "fas": FAS_VERSION,
-                "state_seq": head.state_seq,
-                "derive_key": target.derive_key,
-                "semantic_model": head.versions.get("semantic_model"),
-            },
+            "versions": target.versions_with_smv(
+                latest_glossary=head.versions.get("glossary"),
+                rules={rule.code: rule.version for rule in rules},
+                fas=FAS_VERSION,
+                state_seq=head.state_seq,
+                derive_key=target.derive_key,
+            ),
             "build_key": target.build,
             "is_latest": target.is_latest,
             "summary": {
@@ -1256,7 +1261,7 @@ class Analyses:
                     "profile_id": head.versions.get("profile"),
                     "profile_version": head.versions.get("profile"),
                     "derive_key": target.derive_key,
-                    "semantic_model_version": head.versions.get("semantic_model")
+                    "semantic_model_version": target.semantic_model
                     or envelope["versions"].get("semantic_model"),
                     "fas_version": FAS_VERSION,
                     "created_at_utc": started,

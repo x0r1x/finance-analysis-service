@@ -56,7 +56,29 @@ SMV **не** включает журнал решений, модели эмбе
 
 Не бампают SMV сами по себе: запись в журнал книги, смена профиля, калибратора, embed-моделей, `sheet_roles_version`, `fas_derive_version`, `state_seq` — они бампают `derive_key`.
 
-Запись манифеста: `put_if_absent` на `semantic_models/{version}.json`; указатель `_head.json` обновляется на активный id при публикации (релиз глоссария и смена пакетных входов при материализации книги).
+### Запись в object store
+
+| Операция | Когда | Что делает |
+|---|---|---|
+| `ensure_semantic_model(glossary)` | материализация книги, анализ, восстановление | `put_if_absent` манифеста; **не** трогает глобальный указатель |
+| `publish_semantic_model_head(version)` | только публикация актуального набора | CAS (`put_if_absent` / `put_if_match`) на `semantic_models/_head.json` |
+| `publish_semantic_model(glossary)` | релиз / активация / откат глоссария | ensure + publish head |
+
+Историческая книга или анализ со старым `glossary` вызывает только `ensure` — указатель актуальной семантики **не откатывается**.
+
+### Книга vs анализ
+
+| Слой | Поле | Смысл |
+|---|---|---|
+| Pin книги | `_head.versions.semantic_model` | SMV на момент последней материализации / свёртки книги |
+| Прогон анализа | `AnalysisResult.versions.semantic_model`, `run.semantic_model_version` | **live** SMV определений, фактически использованных в расчёте (текущие metrics/rules + glossary книги) |
+| История в ответе анализа | `versions.book_semantic_model` | pin книги на момент прогона (может отличаться от live) |
+
+Если после материализации изменились `configs/metrics/` (или rules/schema/…), повторный анализ той же книги пишет **новый** SMV в `run`, а pin книги остаётся прежним, пока книгу снова не материализуют.
+
+### Правила аудита
+
+SMV учитывает `Rule.version`. Изменение реализации правила **без** bump `version` недопустимо: SMV не отразит смену поведения. Закреплено тестом на непустые версии и bump `rules_stamp`.
 
 ## 4. Контракт манифеста и поля
 
@@ -71,19 +93,23 @@ SMV **не** включает журнал решений, модели эмбе
 }
 ```
 
-**Указатель** `semantic_models/_head.json`: `{ "active": "<version>", "updated_at_utc": "…" }`.
+Инвариант: `version == sha256(canonical_json(components))[:16]`. Все компоненты §1 обязательны и непусты (`validate_manifest`).
+
+**Указатель** `semantic_models/_head.json`: `{ "active": "<version>", "updated_at_utc": "…", "seq": N }` — только CAS.
 
 **Поля:**
 
 | Место | Поле |
 |---|---|
-| `_head.json` книги | `versions.semantic_model` |
+| `_head.json` книги | `versions.semantic_model` (pin материализации) |
 | ответ с данными книги | `semantic_model_version` рядом с `derive_key`; также в `versions.semantic_model` |
-| `AnalysisResult.versions` | `semantic_model` рядом с `derive_key` |
-| `run.parquet` | колонка `semantic_model_version` (схема `run@1.1`) |
-| `FinancialFactProvenance` | `semantic_model_version` (больше не stub) |
+| `AnalysisResult.versions` | `semantic_model` (live) рядом с `derive_key`; `book_semantic_model` (pin) |
+| `run.parquet` | колонка `semantic_model_version` = live (схема `run@1.1`) |
+| `FinancialFactProvenance` | `semantic_model_version` |
 
 `derive_key` не удаляется и не переименовывается.
+
+Публикация SMV после активации глоссария — best-effort: ошибка object store не откатывает голову глоссария; повтор — `GlossaryStore.recover_semantic_model()` / следующий релиз (идемпотентно).
 
 ## 5. Матрица: SMV vs только `derive_key`
 

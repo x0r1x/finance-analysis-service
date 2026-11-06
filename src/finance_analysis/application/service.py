@@ -117,6 +117,7 @@ from finance_analysis.domain.semantic_model import (
     live_components,
     manifest_body,
     semantic_model_version_for,
+    validate_manifest,
 )
 from finance_analysis.domain.signals import lf_accuracy
 from finance_analysis.domain.state import fold
@@ -336,7 +337,8 @@ class FasService:
         self.fold_runs = 0
         self._fold_locks: dict[str, asyncio.Lock] = {}
         self._rules_versions = {code: rule.version for code, rule in load_rules().items()}
-        self.glossary.on_publish = self.ensure_semantic_model
+        # Публикация указателя — только при публикации актуального набора (глоссарий).
+        self.glossary.on_publish = self.publish_semantic_model
         self._tasks: set[asyncio.Task] = set()
         self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
@@ -506,7 +508,7 @@ class FasService:
         )
 
     async def ensure_semantic_model(self, glossary_version: str | None = None) -> str:
-        """Считает SMV, пишет манифест и указатель; возвращает 16-hex id."""
+        """Гарантирует неизменяемый манифест конкретной версии; _head не трогает."""
 
         glossary = glossary_version or "none"
         components = live_components(
@@ -516,16 +518,52 @@ class FasService:
         )
         version = semantic_model_version_for(components)
         created = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        body = manifest_body(version, components, created_at_utc=created)
+        body = validate_manifest(manifest_body(version, components, created_at_utc=created))
         try:
             await self.store.put_if_absent(keys.semantic_model_manifest(version), dumps_manifest(body))
         except AlreadyExists:
             pass
-        await self.store.put(keys.semantic_model_head(), dumps_manifest(head_body(version, updated_at_utc=created)))
+        return version
+
+    async def publish_semantic_model_head(self, version: str) -> dict:
+        """CAS-обновляет semantic_models/_head.json на актуальную публикацию."""
+
+        key = keys.semantic_model_head()
+        updated = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for _ in range(8):
+            meta = await self.store.stat(key)
+            if meta is None:
+                body = head_body(version, updated_at_utc=updated, seq=1)
+                try:
+                    await self.store.put_if_absent(key, dumps_manifest(body))
+                    return body
+                except AlreadyExists:
+                    continue
+            current = json.loads(await self.store.get(key))
+            if current.get("active") == version:
+                return current
+            body = head_body(
+                version,
+                updated_at_utc=updated,
+                seq=int(current.get("seq") or 0) + 1,
+            )
+            try:
+                await self.store.put_if_match(key, dumps_manifest(body), meta.etag)
+                return body
+            except PreconditionFailed:
+                continue
+        raise DependencyUnavailable("не удалось обновить semantic_models/_head")
+
+    async def publish_semantic_model(self, glossary_version: str | None = None) -> str:
+        """Манифест + указатель актуального набора (релиз/активация глоссария)."""
+
+        version = await self.ensure_semantic_model(glossary_version)
+        await self.publish_semantic_model_head(version)
         return version
 
     async def _versions_dict(self, versions: Versions) -> dict:
         payload = versions.as_dict()
+        # Книга фиксирует SMV материализации; глобальный _head не откатывается.
         payload["semantic_model"] = await self.ensure_semantic_model(versions.glossary)
         return payload
 

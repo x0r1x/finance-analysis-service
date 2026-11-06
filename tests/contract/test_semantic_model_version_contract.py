@@ -30,6 +30,8 @@ async def test_book_and_run_expose_smv_beside_derive_key(local_service):
 
     manifest = json.loads(await local_service.store.get(semantic_model_key(body["semantic_model_version"])))
     assert manifest["version"] == body["semantic_model_version"]
+    # Глобальный _head обновляется публикацией глоссария, не материализацией книги.
+    await local_service.publish_semantic_model(head.versions.get("glossary"))
     pointer = json.loads(await local_service.store.get(HEAD_KEY))
     assert pointer["active"] == body["semantic_model_version"]
 
@@ -50,6 +52,7 @@ async def test_book_and_run_expose_smv_beside_derive_key(local_service):
 
     assert envelope["versions"]["derive_key"]
     assert envelope["versions"]["semantic_model"]
+    assert envelope["versions"].get("book_semantic_model") == head.versions["semantic_model"]
     run_key = f"books/{JOB}/{head.build_key}/results/{analysis_id}/run.parquet"
     table = pq.read_table(local_service.store.physical(run_key))
     names = table.column_names
