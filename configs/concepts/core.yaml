@@ -6,13 +6,15 @@ concepts:
     temporal_nature: flow
     expected_sign: inflow
     expects_formula: true
-    related: [dscr, llcr, plcr]
+    relations:
+      related_to: [dscr]
   debt_service:
     semantic_role: measure
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
-    composition: [interest, principal]
+    relations:
+      composed_of: [interest, principal]
     validation:
       not_all_zero: true
   interest:
@@ -212,14 +214,16 @@ concepts:
     dimension: currency_per_energy
     temporal_nature: rate
     pricing_basis: energy
-    related: [forecast_energy_tariff]
+    relations:
+      related_to: [forecast_energy_tariff]
   forecast_energy_tariff:
     # Ожидаемая цена энергии. Не алиас договорного тарифа и не цена PPA.
     semantic_role: assumption
     dimension: currency_per_energy
     temporal_nature: rate
     pricing_basis: energy
-    related: [energy_tariff]
+    relations:
+      related_to: [energy_tariff]
   capacity_tariff:
     semantic_role: parameter
     dimension: currency_per_power_time

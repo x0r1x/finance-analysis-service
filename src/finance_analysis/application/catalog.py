@@ -81,7 +81,22 @@ def load_catalog(path: Path | None = None) -> GlossaryPackage:
             unknown.append(name)
     if unknown:
         raise GlossaryInvalid(unknown)
+    if path is None:
+        _match_composed_identities(package, load_identities())
     return package
+
+
+def _match_composed_identities(package: GlossaryPackage, identities: dict[str, list[str]]) -> None:
+    """Тождество lf.identity и composed_of называют одни и те же части. Иначе пакет не собирается."""
+
+    composed = {concept.id: list(concept.composed_of) for concept in package.concepts.values() if concept.composed_of}
+    bad = [
+        name
+        for name in sorted(set(composed) | set(identities))
+        if composed.get(name) != list(identities.get(name, ()))
+    ]
+    if bad:
+        raise GlossaryInvalid(bad)
 
 
 def load_identities(path: Path | None = None) -> dict[str, list[str]]:

@@ -84,8 +84,8 @@ def test_catalog_migrates_energy_payback_and_keeps_coarse_aliases():
         forecast.kind,
     ) == ("assumption", "currency_per_energy", "rate", "energy", "none", "parameter")
     assert forecast.aggregation is None
-    assert forecast.related == ("energy_tariff",)
-    assert tariff.related == ("forecast_energy_tariff",)
+    assert forecast.related_to == ("energy_tariff",)
+    assert tariff.related_to == ("forecast_energy_tariff",)
     assert forecast.id != tariff.id
     rate = package.concepts["discount_rate"]
     assert rate.semantic_role == "assumption"

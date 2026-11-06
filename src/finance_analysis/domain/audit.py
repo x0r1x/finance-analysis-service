@@ -127,8 +127,8 @@ class AuditInput:
     bindings: list[dict] = field(default_factory=list)
     # `row_semantics` закреплённого состояния: знак, природа строки (§5.4).
     semantics: list[dict] = field(default_factory=list)
-    # Состав понятий таксономии (`composition`, §5.1): debt_service → interest, principal.
-    composition: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Проекция composed_of (§5.1): debt_service → interest, principal. В сумму метрики не входит.
+    composed_of: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Размерности понятий и каталог степеней. Пустые словари выключают проверку размерности.
     concept_dimensions: dict[str, str] = field(default_factory=dict)
     dimension_exponents: dict[str, dict[str, int]] = field(default_factory=dict)
