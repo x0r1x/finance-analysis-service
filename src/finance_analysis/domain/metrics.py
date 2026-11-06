@@ -39,19 +39,32 @@ def quantize_ratio(value: Decimal) -> Decimal:
         return value.quantize(RATIO)
 
 
-def interest_choice(primaries: dict, order: tuple[str, ...] | list[str]) -> tuple[str | None, dict | None]:
-    """Первое имя порядка, у которого есть основная строка.
+def interest_choice(
+    primaries: dict,
+    order: tuple[str, ...] | list[str],
+    *,
+    row_fallbacks: dict | None = None,
+) -> tuple[str | None, dict | None]:
+    """Первое имя `interest_order`, у которого есть основная строка в primaries.
 
-    Предупреждение только когда взяты уплаченные проценты.
+    Lookup — по id из порядка (concept или row_fallback id). Поля
+    `binding_key` / `matching.rule` у fallback декларативны и сюда не входят.
+    Предупреждение, когда выбран id из row_fallbacks.
     """
 
+    fallbacks = row_fallbacks or {}
     for name in order:
         if name not in primaries:
             continue
-        if name == "interest_paid":
+        if name in fallbacks:
             return name, {
                 "code": "interest_basis_fallback",
-                "params": {"concept": name, "message": INTEREST_BASIS_FALLBACK},
+                "params": {
+                    "concept": name,
+                    "canonical": getattr(fallbacks[name], "canonical", None),
+                    "fallback": name,
+                    "message": INTEREST_BASIS_FALLBACK,
+                },
             }
         return name, None
     return None, None
@@ -69,6 +82,7 @@ def coverage_ratio(
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
     interest_order: dict | None = None,
+    row_fallbacks: dict | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -87,7 +101,7 @@ def coverage_ratio(
             needed = ("cfads", "debt_service")
             denominator_name = "debt_service"
         else:
-            chosen, warning = interest_choice(primaries, order["pf"])
+            chosen, warning = interest_choice(primaries, order["pf"], row_fallbacks=row_fallbacks)
             if "cfads" not in primaries:
                 needed = ("cfads",)
                 denominator_name = "debt_service"
@@ -104,7 +118,9 @@ def coverage_ratio(
                 if warning:
                     warnings.append(warning)
     elif metric == "icr":
-        chosen, warning = interest_choice(primaries, order.get("icr", ("interest",)))
+        chosen, warning = interest_choice(
+            primaries, order.get("icr", ("interest",)), row_fallbacks=row_fallbacks
+        )
         needed = (chosen or "interest",)
         denominator_name = chosen or "interest"
         if warning:

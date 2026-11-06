@@ -831,16 +831,24 @@ def test_blank_coverage_does_not_warn_again_when_zero_denominator_already_warned
 
 
 def test_interest_order_is_read_from_coverage_config():
-    order = _catalog().interest_order
+    catalog = _catalog()
+    order = catalog.interest_order
     assert order["icr"] == ("interest", "interest_paid")
     assert order["corporate_covenant"] == ("interest", "interest_paid")
     assert order["pf"] == ("interest_paid", "interest")
+    paid = catalog.row_fallbacks["interest_paid"]
+    assert paid.canonical == "interest"
+    assert paid.binding_key == "interest_paid"
+    assert paid.matching_rule == "interest_basis_paid"
+    assert "interest_paid" not in catalog.concepts
 
 
 def test_icr_uses_accrued_interest_before_paid_interest():
     from finance_analysis.domain.metrics import INTEREST_BASIS_FALLBACK, coverage_ratio
 
-    order = _catalog().interest_order
+    catalog = _catalog()
+    order = catalog.interest_order
+    fallbacks = catalog.row_fallbacks
     periods = [_year()]
     both = coverage_ratio(
         metric="icr",
@@ -850,6 +858,7 @@ def test_icr_uses_accrued_interest_before_paid_interest():
         period_phase={},
         explicit_phases=False,
         interest_order=order,
+        row_fallbacks=fallbacks,
     )
     assert both["rows"][0]["value"] == Decimal("4.0000000000")
     assert not any(item["code"] == "interest_basis_fallback" for item in both["warnings"])
@@ -861,9 +870,11 @@ def test_icr_uses_accrued_interest_before_paid_interest():
         period_phase={},
         explicit_phases=False,
         interest_order=order,
+        row_fallbacks=fallbacks,
     )
     assert paid["rows"][0]["value"] == Decimal("5.0000000000")
     assert paid["warnings"][-1]["params"]["message"] == INTEREST_BASIS_FALLBACK
+    assert paid["warnings"][-1]["params"]["canonical"] == "interest"
 
 
 def test_corporate_dscr_names_each_missing_input():
@@ -888,12 +899,13 @@ def test_corporate_dscr_names_each_missing_input():
 def test_pf_dscr_without_debt_service_names_the_missing_input():
     from finance_analysis.domain.metrics import coverage_ratio
 
-    order = _catalog().interest_order
+    catalog = _catalog()
     common = {
         "periods": [_year()],
         "period_phase": {},
         "explicit_phases": False,
-        "interest_order": order,
+        "interest_order": catalog.interest_order,
+        "row_fallbacks": catalog.row_fallbacks,
     }
     no_cfads = coverage_ratio(
         metric="dscr",
@@ -926,6 +938,7 @@ def test_pf_dscr_without_debt_service_names_the_missing_input():
 def test_interest_and_principal_of_opposite_signs_are_paid_apart():
     from finance_analysis.domain.metrics import coverage_ratio
 
+    catalog = _catalog()
     got = coverage_ratio(
         metric="dscr",
         facts=[_fact("c", "Y1", "40"), _fact("i", "Y1", "10"), _fact("p", "Y1", "-40")],
@@ -933,7 +946,8 @@ def test_interest_and_principal_of_opposite_signs_are_paid_apart():
         periods=[_year()],
         period_phase={},
         explicit_phases=False,
-        interest_order=_catalog().interest_order,
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
     )
     assert got["rows"][0]["status"] == "computed"
     assert got["rows"][0]["value"] == Decimal("0.8000000000")
@@ -942,6 +956,7 @@ def test_interest_and_principal_of_opposite_signs_are_paid_apart():
 def test_debt_service_still_beats_the_interest_fallback():
     from finance_analysis.domain.metrics import coverage_ratio
 
+    catalog = _catalog()
     got = coverage_ratio(
         metric="dscr",
         facts=[_fact("c", "Y1", "40"), _fact("s", "Y1", "-10"), _fact("i", "Y1", "-1"), _fact("p", "Y1", "-1")],
@@ -954,7 +969,8 @@ def test_debt_service_still_beats_the_interest_fallback():
         periods=[_year()],
         period_phase={},
         explicit_phases=False,
-        interest_order=_catalog().interest_order,
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
     )
     assert got["rows"][0]["value"] == Decimal("4.0000000000")
     assert "principal" not in got["rows"][0]["components"]
@@ -981,12 +997,14 @@ def test_corporate_dscr_falls_back_to_paid_interest():
         ],
         periods=[_year()],
         default=catalog.composed["dscr.corporate_covenant"],
-        concepts=_CONCEPTS | {"interest_paid"},
-        money=_MONEY | {"interest_paid"},
+        concepts=_CONCEPTS,
+        money=_MONEY,
         interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
     )
     assert got["rows"][0]["value"] == Decimal("1.7500000000")
     assert got["warnings"][-1]["params"]["message"] == INTEREST_BASIS_FALLBACK
+    assert got["warnings"][-1]["params"]["canonical"] == "interest"
 
 
 def _quarter(index: int, start: date, end: date) -> dict:

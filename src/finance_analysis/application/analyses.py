@@ -777,6 +777,7 @@ class Analyses:
                     concepts=svc.catalog.ids,
                     money=money,
                     interest_order=svc.model_types.interest_order,
+                    row_fallbacks=svc.model_types.row_fallbacks,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
