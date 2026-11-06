@@ -142,11 +142,13 @@
 
 **Не-цели фазы:** `LakePublisherPort`, внешние таблицы, Airflow-операторы внутри FAS, `_consumers` (снято в design).
 
+**Поставка:** [published-parquet-contract.md](published-parquet-contract.md); индекс `domain/contracts/published_parquet.json`; код `finance_analysis.domain.published_parquet`; тесты `tests/unit/test_published_parquet_contract.py`.
+
 **Критерии приёмки:**
 
-- [ ] Документ контракта сослан из meta-layer и design.  
-- [ ] Тесты маркеров и аддитивной эволюции зелёные.  
-- [ ] В коде нет зависимости на Iceberg/Hive writers.
+- [x] Документ контракта сослан из meta-layer и design.  
+- [x] Тесты маркеров и аддитивной эволюции зелёные.  
+- [x] В коде нет зависимости на Iceberg/Hive writers.
 
 ---
 
