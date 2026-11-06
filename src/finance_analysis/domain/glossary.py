@@ -224,6 +224,52 @@ def label_features(text: str) -> LabelFeatures:
     return LabelFeatures(peeled.unit, peeled.period)
 
 
+# Основа цены — свойство привязки, не отдельное понятие. Список замкнутый.
+_PRICE_TERM = {
+    "real": "real",
+    "real terms": "real",
+    "nominal": "nominal",
+    "nominal terms": "nominal",
+}
+_ANY_PAREN = re.compile(r"\(([^()]*)\)")
+# Общая метка кейса. Слово вне списка метку общей не делает.
+_CASE_WORD = frozenset(
+    {"mid", "low", "high", "base", "central", "upside", "downside", "applied", "case", "scenario"}
+)
+
+
+def stated_price_terms(text: str) -> str | None:
+    """Возвращает `real` или `nominal`, если скобки называют одну основу.
+
+    `text` — метка строки или заголовок раздела. Смотрятся только скобки.
+    `real`, `real terms`, `nominal` и `nominal terms` — закрытый список.
+    Две разные основы в одной подписи ничего не выбирают.
+    """
+
+    found: list[str] = []
+    for match in _ANY_PAREN.finditer(text or ""):
+        key = " ".join(label_scan(match.group(1)).split())
+        term = _PRICE_TERM.get(key)
+        if term and term not in found:
+            found.append(term)
+    if len(found) == 1:
+        return found[0]
+    return None
+
+
+def generic_case_label(text: str) -> bool:
+    """Сообщает, что метка — только слова кейса, без своего экономического имени.
+
+    `text` — подпись строки. Хвост в скобках, единица и период снимаются.
+    Остаток должен целиком состоять из `mid`, `low`, `high`, `base`, `central`,
+    `upside`, `downside`, `applied`, `case` или `scenario`. Пустая метка и
+    слово вроде «inflation» сюда не входят.
+    """
+
+    words = [label_scan(token) for token in _TOKEN.findall(_peel(text or "").body)]
+    return bool(words) and all(word in _CASE_WORD for word in words)
+
+
 @dataclass(frozen=True)
 class LabelHit:
     concept: str
