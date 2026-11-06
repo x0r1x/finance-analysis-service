@@ -10,6 +10,9 @@
 ``clear_dictionaries_cache`` — только для тестов и явного сброса. Релизы /
 canary / rollback глоссария несут свои ``dictionaries`` в документе релиза и
 не подменяют этот файл; сбрасывать кэш при activate не требуется.
+``FAS_PROJECTION_VERSION`` включает хеш этого файла: после рестарта правка
+токенов меняет ``build_key`` и пересобирает проекцию. Файл также в
+``CONFIG_SOURCES`` отпечатка свёртки.
 
 Alt-каталог: ``marker_class(marker)`` без ``markers=`` всегда читает
 ``dictionaries_file()`` (configs_root). ``load_catalog(custom_path)`` кладёт
@@ -63,7 +66,7 @@ def load_dictionaries(path: str | None = None) -> Mapping[str, Mapping[str, tupl
 def marker_token_sets(
     markers: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, frozenset[str]]:
-    """Классы маркеров → frozenset токенов в casefold. Битые списки — GlossaryInvalid."""
+    """Классы маркеров → frozenset токенов (strip + casefold). Битые словари — GlossaryInvalid."""
 
     raw = markers if markers is not None else load_dictionaries()["markers"]
     parsed = parse_dictionary_groups(raw, "markers")

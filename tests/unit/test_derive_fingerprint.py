@@ -72,6 +72,15 @@ def test_covered_file_changes_the_fingerprint(tmp_path: Path):
     assert derive_fingerprint(tmp_path) != again
 
 
+def test_dictionaries_yaml_change_changes_the_fingerprint(tmp_path: Path):
+    assert "configs/glossary/dictionaries.yaml" in CONFIG_SOURCES
+    _seed(tmp_path, newline=b"\n")
+    left = derive_fingerprint(tmp_path)
+    dictionaries = _checkout(tmp_path, "configs/glossary/dictionaries.yaml")
+    dictionaries.write_bytes(dictionaries.read_bytes() + b"\n# marker edit\n")
+    assert derive_fingerprint(tmp_path) != left
+
+
 def test_unrelated_file_does_not_change_the_fingerprint(tmp_path: Path):
     _seed(tmp_path, newline=b"\n")
     left = derive_fingerprint(tmp_path)

@@ -15,7 +15,7 @@ from finance_analysis.domain.glossary import (
 )
 from finance_analysis.domain.mapping import label_id
 
-_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}}
+_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"], "plan": ["план"], "estimate": ["e"]}}
 
 
 def _body() -> dict:

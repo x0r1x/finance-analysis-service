@@ -16,7 +16,7 @@ from tests.unit.rule_inputs import PERIODS, check, fact, link, row
 A = "S|5|S!r2"
 B = "S|6|S!r2"
 C = "S|7|S!r2"
-_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}}
+_DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"], "plan": ["план"], "estimate": ["e"]}}
 
 
 def _glossary(name: str = "cfads") -> dict:

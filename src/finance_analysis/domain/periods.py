@@ -29,7 +29,8 @@ def __getattr__(name: str):
     klass = _MARKER_ATTRS.get(name)
     if klass is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return marker_token_sets().get(klass, frozenset())
+    tables = marker_token_sets()
+    return tables[klass]
 
 
 def split_period_key(period_key: str) -> tuple[str, str | None]:
@@ -48,6 +49,7 @@ def marker_class(
 
     Без ``markers=`` — только default ``dictionaries_file()``. Alt-каталог:
     передайте ``markers=package.markers`` из ``load_catalog(custom_path)``.
+    Токены словаря и входной маркер сравниваются после strip + casefold.
     """
 
     if not marker:
@@ -55,7 +57,7 @@ def marker_class(
     token = marker.casefold().strip()
     tables = marker_token_sets(markers)
     for klass in ("actual", "plan", "estimate"):
-        if token in tables.get(klass, frozenset()):
+        if token in tables[klass]:
             return klass
     return "other"
 
