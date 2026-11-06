@@ -12,7 +12,7 @@
 |---|---|---|
 | taxonomy | `taxonomy.id` + `taxonomy.stamp` | `configs/concepts/` (`taxonomy` из `core.yaml` + отпечаток файлов) |
 | glossary | `glossary` | релиз `glossary_version` (`g-…` / `none`) |
-| metrics | `metrics` | отпечаток `configs/metrics/` |
+| metrics | `metrics.version` + `metrics.stamp` | версия Financial Model Catalog + отпечаток `configs/metrics/` (фаза 3) |
 | model_types | `model_types` | `ModelTypeCatalog.version` (уже sha канонического JSON) |
 | units / dimensions | `dimensions.id` + `dimensions.stamp` | `configs/dimensions.yaml` |
 | rules | `rules` | sha канонического `{code → version}` реестра аудита |
@@ -22,7 +22,7 @@
 components = canonical{
   taxonomy: {id, stamp},
   glossary,
-  metrics,
+  metrics: {version, stamp},
   model_types,
   dimensions: {id, stamp},
   rules,
@@ -50,7 +50,7 @@ SMV **не** включает журнал решений, модели эмбе
 Новый id появляется, когда меняется **любой** компонент §1:
 
 - релиз / активация / откат глоссария → новый `glossary`;  
-- правка `configs/concepts/`, `configs/metrics/`, `configs/model_types/`, `configs/dimensions.yaml` → новый stamp / `model_types`;  
+- правка `configs/concepts/`, `configs/metrics/`, `configs/model_types/`, `configs/dimensions.yaml` → новый stamp / `model_types` / `metrics.version`;  
 - смена версий правил аудита (`Rule.version`) → новый `rules`;  
 - MINOR/MAJOR `fas_schema_version` → новый `schema`.
 
@@ -96,7 +96,7 @@ SMV учитывает `Rule.version`. Изменение реализации �
 }
 ```
 
-Инвариант: `version == sha256(canonical_json(components))[:16]`. Все компоненты §1 обязательны и непусты (`validate_manifest`).
+Инвариант: `version == sha256(canonical_json(components))[:16]`. Все компоненты §1 обязательны и непусты; `taxonomy` / `dimensions` / `metrics` — объекты с полями id|version и stamp (`validate_manifest`).
 
 **Указатель** `semantic_models/_head.json`: `{ "active", "glossary", "glossary_seq", "seq", "updated_at_utc" }` — только CAS + guard по active/`glossary_seq`.
 
@@ -121,7 +121,7 @@ SMV учитывает `Rule.version`. Изменение реализации �
 |---|---|---|
 | Таксономия понятий (`configs/concepts/`) | да | да (через `taxonomy_version` + часть `fas_derive_version`) |
 | Релиз глоссария | да | да (`glossary_version`) |
-| Метрики (`configs/metrics/`) | да | нет (пока git-отпечаток в SMV; фаза 3 усилит каталог) |
+| Метрики / Financial Model Catalog (`configs/metrics/`) | да (`metrics.version` + `stamp`) | нет |
 | Типы моделей (`configs/model_types/`) | да | да (`model_types_version`) |
 | Единицы / размерности (`dimensions.yaml`) | да | нет (косвенно через код/конфиг свёртки) |
 | Правила аудита (`Rule.code`/`version`) | да | нет |

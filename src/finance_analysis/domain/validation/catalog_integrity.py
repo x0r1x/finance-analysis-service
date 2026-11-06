@@ -24,7 +24,9 @@ MATCHING_RULES = frozenset({"interest_basis_paid"})
 _COVERAGE_KEYS = frozenset({"row_fallbacks", "interest_order", "metrics", "tolerance"})
 _FALLBACK_KEYS = frozenset({"canonical", "binding_key", "matching"})
 _MATCHING_KEYS = frozenset({"rule"})
-_METRIC_KEYS = frozenset({"numerator", "denominator", "variants", "base", "rate", "window"})
+_METRIC_KEYS = frozenset(
+    {"numerator", "denominator", "variants", "base", "rate", "window", "definition", "status"}
+)
 _SIDE_KEYS = frozenset({"plus", "minus"})
 
 

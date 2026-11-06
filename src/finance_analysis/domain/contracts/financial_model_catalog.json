@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fas.local/contracts/financial_model_catalog.json",
+  "title": "FinancialModelCatalog",
+  "description": "Фаза 3 метаслоя: каталог финансовых показателей (G1).",
+  "type": "object",
+  "required": ["version", "stamp", "indicators"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "sha256(canonical indicators)[:16]; входит в SemanticModelVersion.components.metrics.version"
+    },
+    "stamp": {
+      "type": "string",
+      "minLength": 1,
+      "description": "отпечаток дерева configs/metrics (LF-нормализованный)"
+    },
+    "row_fallbacks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "id альтернатив строк; не concept_id и не входы формул"
+    },
+    "indicators": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/indicator" }
+    }
+  },
+  "$defs": {
+    "indicator": {
+      "type": "object",
+      "required": ["id", "inputs", "unit", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "definition": { "type": ["string", "null"] },
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "concept_id таксономии; row_fallbacks запрещены"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "размерность результата (ratio, money, …)"
+        },
+        "window": {
+          "type": ["string", "null"],
+          "enum": ["LTM", "period", null]
+        },
+        "variants": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/variant" }
+        },
+        "model_types": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["required", "optional", "not_applicable"]
+          }
+        },
+        "status": { "type": "string", "enum": ["active", "deprecated"] },
+        "base": { "type": ["string", "null"] }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "required": ["id", "inputs", "unit"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "definition": { "type": ["string", "null"] },
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "unit": { "type": "string", "minLength": 1 },
+        "window": {
+          "type": ["string", "null"],
+          "enum": ["LTM", "period", null]
+        }
+      }
+    }
+  }
+}

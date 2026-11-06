@@ -49,6 +49,7 @@ def _components(**overrides) -> dict:
         glossary_version="g-1",
         taxonomy_id="core-1",
         taxonomy_stamp="aaaaaaaaaaaaaaaa",
+        metrics_version="1111111111111111",
         metrics_stamp="bbbbbbbbbbbbbbbb",
         model_types_version="cccccccccccccccc",
         dimensions_id="dimensions-1",
@@ -61,11 +62,15 @@ def _components(**overrides) -> dict:
 
 
 def _service(store, *, glossary: str = "g-1", glossary_seq: int = 1) -> SimpleNamespace:
+    from finance_analysis.application.financial_catalog import load_financial_catalog
+
     rules = {code: rule.version for code, rule in load_rules().items()}
     gloss = _GlossaryPeek(glossary, glossary_seq)
+    model_types = load_model_types()
     service = SimpleNamespace(
         store=store,
-        model_types=load_model_types(),
+        model_types=model_types,
+        financial_catalog=load_financial_catalog(model_types=model_types),
         _rules_versions=rules,
         glossary=gloss,
     )
@@ -92,8 +97,22 @@ def test_glossary_change_bumps_smv_not_via_derive_inputs_alone():
 
 
 def test_metrics_stamp_change_bumps_smv():
-    left = semantic_model_version_for(_components(metrics="bbbbbbbbbbbbbbbb"))
-    right = semantic_model_version_for(_components(metrics="ffffffffffffffff"))
+    left = semantic_model_version_for(
+        _components(metrics={"version": "1111111111111111", "stamp": "bbbbbbbbbbbbbbbb"})
+    )
+    right = semantic_model_version_for(
+        _components(metrics={"version": "1111111111111111", "stamp": "ffffffffffffffff"})
+    )
+    assert left != right
+
+
+def test_metrics_catalog_version_change_bumps_smv():
+    left = semantic_model_version_for(
+        _components(metrics={"version": "1111111111111111", "stamp": "bbbbbbbbbbbbbbbb"})
+    )
+    right = semantic_model_version_for(
+        _components(metrics={"version": "2222222222222222", "stamp": "bbbbbbbbbbbbbbbb"})
+    )
     assert left != right
 
 
@@ -134,10 +153,16 @@ def test_state_seq_changes_derive_key_not_smv():
 
 def test_live_components_stable_and_include_schema():
     rules = {"missing_total_row": "1"}
-    first = live_components("none", model_types_version="mt", rules_versions=rules)
-    second = live_components("none", model_types_version="mt", rules_versions=rules)
+    first = live_components(
+        "none", model_types_version="mt", metrics_version="catalog1", rules_versions=rules
+    )
+    second = live_components(
+        "none", model_types_version="mt", metrics_version="catalog1", rules_versions=rules
+    )
     assert first == second
     assert first["schema"] == FAS_SCHEMA_VERSION
+    assert first["metrics"]["version"] == "catalog1"
+    assert first["metrics"]["stamp"]
     assert semantic_model_version_for(first) == semantic_model_version_for(second)
 
 
