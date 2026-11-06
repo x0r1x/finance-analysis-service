@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from finance_analysis.application.catalog import load_catalog
+from finance_analysis.application.catalog import load_catalog, load_git_document
+from finance_analysis.application.learning import label_is_known
 from finance_analysis.domain.glossary import GlossaryInvalid, build_package
-from finance_analysis.domain.mapping import assign_rows
+from finance_analysis.domain.glossary_release import apply_ops, label_diff, package_of
+from finance_analysis.domain.mapping import assign_rows, label_id
 
 _DICTS = {"flows": {"inflow": ["приток"]}, "markers": {"actual": ["факт"]}}
 _FORECAST = (
@@ -104,6 +106,138 @@ def test_ambiguous_label_keeps_both_candidates():
     }
     got = assign_rows([forecast], [], package)["fc"]
     assert got.status == "bound" and got.concept == "forecast_energy_tariff"
+
+
+def test_real_and_nominal_merchant_prices_keep_their_own_surface():
+    package = load_catalog()
+    rows = [
+        _fact("real", "Merchant price (real)"),
+        _fact("nominal", "Merchant price (nominal)"),
+    ]
+    assigned = assign_rows(rows, [], package)
+    for key, label in (("real", "Merchant price (real)"), ("nominal", "Merchant price (nominal)")):
+        item = assigned[key]
+        assert item.concept == "forecast_energy_tariff"
+        assert item.status == "ambiguous" and item.is_primary is False
+        assert item.matched_label == label
+        assert item.evidence["label"]["text"] == label
+        assert item.evidence["label"]["id"] == label_id("forecast_energy_tariff", "alt", label)
+    alone = assign_rows([rows[1]], [], package)["nominal"]
+    assert alone.status == "bound" and alone.matched_label == "Merchant price (nominal)"
+
+
+def test_ambiguous_label_stays_known_through_resolve_and_release():
+    document = _release_document()
+    package = package_of(document)
+    assert package.resolve("electricity price") is None
+    assert label_is_known(package, "electricity price")
+    assert not label_is_known(package, "нет такой цены")
+    added = apply_ops(
+        document,
+        [
+            {
+                "op": "add_label",
+                "concept": "forecast_energy_tariff",
+                "kind": "alt",
+                "lang": "en",
+                "text": "electricity price",
+            }
+        ],
+    )
+    assert label_diff(document, added) == []
+    alts = added["glossaries"]["forecast_energy_tariff"]["alt"]["en"]
+    assert {"text": "electricity price", "ambiguous": True} in alts
+    assert "electricity price" not in alts
+    removed = apply_ops(
+        document,
+        [
+            {
+                "op": "remove_label",
+                "concept": "forecast_energy_tariff",
+                "kind": "alt",
+                "lang": "en",
+                "text": "electricity price",
+            }
+        ],
+    )
+    gone = label_diff(document, removed)
+    assert gone == [
+        {
+            "concept": "forecast_energy_tariff",
+            "kind": "alt",
+            "lang": "en",
+            "text": "electricity price",
+            "change": "remove",
+        }
+    ]
+    assert package_of(removed).resolve("electricity price").concept == "energy_tariff"
+
+
+async def test_glossary_resolve_lists_ambiguous_candidates_and_skips_the_model(tmp_path):
+    from copy import deepcopy
+
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.glossary_store import GlossaryStore
+
+    gloss = GlossaryStore(LocalStore(tmp_path))
+    head = await gloss.ensure()
+    document = deepcopy(load_git_document())
+    phrase = "shared electricity price"
+    for concept in ("energy_tariff", "forecast_energy_tariff"):
+        document["glossaries"][concept]["alt"]["en"].append({"text": phrase, "ambiguous": True})
+    saved = await gloss.release([], f"h-{head['seq']}", document=document)
+    seen: list[str] = []
+
+    async def rank(row, package, version):
+        seen.append(row["label"])
+
+    result = await gloss.resolve({"label": phrase, "version": saved["version"]}, rank=rank)
+    body = result["results"][0]
+    assert seen == []
+    assert body["match"] is None
+    assert {item["concept"] for item in body["candidates"]} == {"energy_tariff", "forecast_energy_tariff"}
+    assert all(item["text"] == phrase for item in body["candidates"])
+    missed = await gloss.resolve({"label": "нет такой цены", "version": saved["version"]}, rank=rank)
+    assert seen == ["нет такой цены"]
+    assert missed["results"][0]["candidates"] == []
+
+
+def _fact(key: str, label: str) -> dict:
+    return {"kind": "fact", "label": label, "binding_key": key, "row_key": key, "unit": "EUR/MWh"}
+
+
+def _release_document() -> dict:
+    shared = {"text": "electricity price", "ambiguous": True}
+    return {
+        "taxonomy": "core-1",
+        "concepts": {
+            "energy_tariff": {
+                "semantic_role": "parameter",
+                "dimension": "currency_per_energy",
+                "temporal_nature": "rate",
+                "pricing_basis": "energy",
+            },
+            "forecast_energy_tariff": {
+                "semantic_role": "assumption",
+                "dimension": "currency_per_energy",
+                "temporal_nature": "rate",
+                "pricing_basis": "energy",
+            },
+        },
+        "glossaries": {
+            "energy_tariff": {
+                "concept": "energy_tariff",
+                "pref": {"en": "Contracted energy tariff", "ru": "Тариф по договору на энергию"},
+                "alt": {"en": ["PPA Power Price", shared]},
+            },
+            "forecast_energy_tariff": {
+                "concept": "forecast_energy_tariff",
+                "pref": {"en": "Forecast energy tariff", "ru": "Прогнозный тариф"},
+                "alt": {"en": ["Merchant price (nominal)", dict(shared)]},
+            },
+        },
+        "dictionaries": _DICTS,
+    }
 
 
 def _pair(*, ambiguous: bool):

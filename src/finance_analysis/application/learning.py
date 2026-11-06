@@ -163,7 +163,7 @@ class Learning:
                     }
                 )
                 texts.append("")
-            if kind in {"concept.confirmed", "concept.set"} and concept and package.resolve(label) is None and label.strip():
+            if kind in {"concept.confirmed", "concept.set"} and concept and not label_is_known(package, label):
                 # Метки нет в глоссарии → предложение synonym_of с готовой меткой, без LLM (§5.10.4 п. 7).
                 known = [package.concepts[concept].pref.get(lang, "") for lang in ("ru", "en")] if concept in package.concepts else []
                 from finance_analysis.domain.signals import lexical_relation
@@ -618,6 +618,15 @@ class Learning:
             "unmapped": await self.unmapped.merge(),
             "signals": await self.signals.merge(),
         }
+
+
+def label_is_known(package, label: str) -> bool:
+    """Метка есть в глоссарии. Общая метка нескольких понятий тоже известна: resolve её не отдаёт."""
+
+    text = label.strip()
+    if not text:
+        return False
+    return package.resolve(text) is not None or bool(package.ambiguous_hits(text))
 
 
 def _still_unmapped(row: dict, package) -> bool:
