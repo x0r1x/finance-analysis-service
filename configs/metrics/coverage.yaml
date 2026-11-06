@@ -1,9 +1,10 @@
 # DSCR и ICR. Частное считает Python Decimal, не SQL.
 # interest_paid — не понятие таксономии, а row_fallback (решение 40).
+# binding_key / matching.rule — декларативные метаданные; lookup по id в interest_order.
 row_fallbacks:
   interest_paid:
     canonical: interest
-    source_label: interest_paid
+    binding_key: interest_paid
     matching:
       rule: interest_basis_paid
 interest_order:
@@ -50,7 +51,7 @@ metrics:
     window: period
   npv:
     numerator: [project_fcf]
-    denominator: discount_rate
+    rate: discount_rate
   irr:
     numerator: [project_fcf]
 tolerance: "0.005"

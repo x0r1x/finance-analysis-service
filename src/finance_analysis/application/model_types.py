@@ -12,6 +12,7 @@ from finance_analysis.domain.book import canonical_json
 from finance_analysis.domain.ids import concept_id as check_concept_id
 from finance_analysis.domain.model_type import (
     Composed,
+    MetricExpression,
     MetricInputs,
     ModelTypeCatalog,
     RowFallback,
@@ -91,8 +92,48 @@ def _composed(body: dict, name: str) -> Composed | None:
     return Composed(_side(numerator), den, str(window))
 
 
+def _expression(body: dict, name: str) -> MetricExpression:
+    base = body.get("base")
+    if isinstance(base, str):
+        return MetricExpression(base=str(base), rate=str(body["rate"]) if isinstance(body.get("rate"), str) else None)
+    rate = str(body["rate"]) if isinstance(body.get("rate"), str) else None
+    numerator = body.get("numerator")
+    denominator = body.get("denominator")
+    one_of: set[str] = set()
+    num_plus: tuple[str, ...] = ()
+    num_minus: tuple[str, ...] = ()
+    den_plus: tuple[str, ...] = ()
+    den_minus: tuple[str, ...] = ()
+    if isinstance(numerator, dict):
+        num_plus = tuple(str(item) for item in numerator.get("plus") or [])
+        num_minus = tuple(str(item) for item in numerator.get("minus") or [])
+    elif isinstance(numerator, list):
+        if len(numerator) > 1:
+            one_of = {str(item) for item in numerator}
+        elif numerator:
+            num_plus = (str(numerator[0]),)
+    elif isinstance(numerator, str):
+        num_plus = (str(numerator),)
+    if isinstance(denominator, dict):
+        den_plus = tuple(str(item) for item in denominator.get("plus") or [])
+        den_minus = tuple(str(item) for item in denominator.get("minus") or [])
+    elif isinstance(denominator, list):
+        den_plus = tuple(str(item) for item in denominator)
+    elif isinstance(denominator, str):
+        den_plus = (str(denominator),)
+    return MetricExpression(
+        numerator_plus=num_plus,
+        numerator_minus=num_minus,
+        denominator_plus=den_plus,
+        denominator_minus=den_minus,
+        one_of=frozenset(one_of),
+        rate=rate,
+        base=None,
+    )
+
+
 def load_metric_inputs(path: Path | None = None) -> dict[str, MetricInputs]:
-    inputs, _variants, _composed_formulas, _bases, _rates = load_metric_catalog(path)
+    inputs, _variants, _composed_formulas, _bases, _rates, _expressions = load_metric_catalog(path)
     return inputs
 
 
@@ -104,6 +145,7 @@ def load_metric_catalog(
     dict[str, Composed],
     dict[str, str],
     dict[str, str],
+    dict[str, MetricExpression],
 ]:
     document = yaml.safe_load((path or metrics_file()).read_text(encoding="utf-8")) or {}
     raw = document.get("metrics") if isinstance(document, dict) else None
@@ -114,6 +156,7 @@ def load_metric_catalog(
     composed: dict[str, Composed] = {}
     bases: dict[str, str] = {}
     rates: dict[str, str] = {}
+    expressions: dict[str, MetricExpression] = {}
     for name, body in raw.items():
         if not isinstance(body, dict):
             raise ModelTypeInvalid(f"{name}: формула метрики не объект")
@@ -123,6 +166,7 @@ def load_metric_catalog(
         if isinstance(body.get("rate"), str):
             rates[metric] = str(body["rate"])
         inputs[metric] = _inputs(body, inputs, metric)
+        expressions[metric] = _expression(body, metric)
         own = _composed(body, metric)
         if own is not None:
             composed[metric] = own
@@ -135,6 +179,9 @@ def load_metric_catalog(
                 raise ModelTypeInvalid(f"{metric}.{variant}: вариант не объект")
             key = f"{metric}.{variant}"
             found[str(variant)] = _inputs(spec, inputs, key)
+            expressions[key] = _expression(spec, key)
+            if isinstance(spec.get("base"), str):
+                bases[key] = str(spec["base"])
             item = _composed(spec, key)
             if item is not None:
                 composed[key] = item
@@ -142,7 +189,7 @@ def load_metric_catalog(
                 rates[key] = str(spec["rate"])
         if found:
             variants[metric] = found
-    return inputs, variants, composed, bases, rates
+    return inputs, variants, composed, bases, rates, expressions
 
 
 def _signal(type_id: str, raw: dict) -> Signal:
@@ -166,7 +213,11 @@ def load_coverage_document(path: Path | None = None) -> dict:
 
 
 def load_row_fallbacks(path: Path | None = None) -> dict[str, RowFallback]:
-    """Альтернативные идентификаторы строк. Не входят в таксономию понятий."""
+    """Альтернативные идентификаторы строк. Не входят в таксономию понятий.
+
+    `binding_key` и `matching.rule` хранятся как декларативные метаданные.
+    Lookup — по id fallback в `interest_order` среди primaries.
+    """
 
     document = load_coverage_document(path)
     raw = document.get("row_fallbacks") or {}
@@ -181,18 +232,18 @@ def load_row_fallbacks(path: Path | None = None) -> dict[str, RowFallback]:
         if not isinstance(matching, dict):
             raise ModelTypeInvalid(f"row_fallbacks.{name}: matching должен быть объектом")
         canonical = body.get("canonical")
-        source_label = body.get("source_label")
+        binding_key = body.get("binding_key")
         rule = matching.get("rule")
         if not isinstance(canonical, str) or not canonical:
             raise ModelTypeInvalid(f"row_fallbacks.{name}: нужен canonical")
-        if not isinstance(source_label, str) or not source_label:
-            raise ModelTypeInvalid(f"row_fallbacks.{name}: нужен source_label")
+        if not isinstance(binding_key, str) or not binding_key:
+            raise ModelTypeInvalid(f"row_fallbacks.{name}: нужен binding_key")
         if not isinstance(rule, str) or not rule:
             raise ModelTypeInvalid(f"row_fallbacks.{name}: нужен matching.rule")
         found[name] = RowFallback(
             id=name,
             canonical=check_concept_id(canonical),
-            source_label=check_concept_id(source_label),
+            binding_key=check_concept_id(binding_key),
             matching_rule=str(rule),
         )
     return found
@@ -251,7 +302,7 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
 
         package = load_catalog()
         concepts = package.ids
-    metric_inputs, variant_inputs, composed, metric_bases, metric_rates = load_metric_catalog()
+    metric_inputs, variant_inputs, composed, metric_bases, metric_rates, expressions = load_metric_catalog()
     row_fallbacks = load_row_fallbacks()
     interest_order = load_interest_order(concepts=concepts, fallbacks=row_fallbacks)
     _check_signal_concepts(documents, concepts)
@@ -261,6 +312,7 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
         package = load_catalog()
     from finance_analysis.application.catalog import load_dimensions
 
+    coverage = load_coverage_document()
     try:
         validate_catalog_integrity(
             concepts=concepts,
@@ -269,12 +321,11 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
             model_documents=documents,
             metric_inputs=metric_inputs,
             variant_inputs=variant_inputs,
-            composed=composed,
+            metric_expressions=expressions,
             metric_bases=metric_bases,
-            metric_rates=metric_rates,
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
-            coverage_keys=frozenset(load_coverage_document()),
+            coverage_document=coverage,
         )
     except CatalogIntegrityError as exc:
         raise ModelTypeInvalid(str(exc)) from exc
@@ -300,6 +351,7 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
         row_fallbacks,
         metric_bases,
         metric_rates,
+        expressions,
     )
 
 

@@ -838,7 +838,7 @@ def test_interest_order_is_read_from_coverage_config():
     assert order["pf"] == ("interest_paid", "interest")
     paid = catalog.row_fallbacks["interest_paid"]
     assert paid.canonical == "interest"
-    assert paid.source_label == "interest_paid"
+    assert paid.binding_key == "interest_paid"
     assert paid.matching_rule == "interest_basis_paid"
     assert "interest_paid" not in catalog.concepts
 

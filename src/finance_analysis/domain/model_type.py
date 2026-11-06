@@ -51,16 +51,30 @@ class Composed:
 
 @dataclass(frozen=True)
 class RowFallback:
-    """Альтернативная идентификация строки метрики. Не concept_id таксономии.
+    """Альтернативный id строки метрики. Не concept_id таксономии.
 
-    `canonical` — понятие каталога. `source_label` — ключ основной строки в книге
-    (часто совпадает с id). `matching_rule` — правило выбора этой строки.
+    Lookup в рантайме идёт по id из `interest_order` среди primaries.
+    `binding_key` и `matching_rule` — декларативные метаданные каталога
+    (документация и контракт), на выбор строки не влияют.
     """
 
     id: str
     canonical: str
-    source_label: str
+    binding_key: str
     matching_rule: str
+
+
+@dataclass(frozen=True)
+class MetricExpression:
+    """Разбор формулы метрики из coverage.yaml для проверки единиц и зависимостей."""
+
+    numerator_plus: tuple[str, ...] = ()
+    numerator_minus: tuple[str, ...] = ()
+    denominator_plus: tuple[str, ...] = ()
+    denominator_minus: tuple[str, ...] = ()
+    one_of: frozenset[str] = field(default_factory=frozenset)
+    rate: str | None = None
+    base: str | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +92,7 @@ class ModelTypeCatalog:
     row_fallbacks: dict[str, RowFallback] = field(default_factory=dict)
     metric_bases: dict[str, str] = field(default_factory=dict)
     metric_rates: dict[str, str] = field(default_factory=dict)
+    metric_expressions: dict[str, MetricExpression] = field(default_factory=dict)
 
     @property
     def ids(self) -> frozenset[str]:

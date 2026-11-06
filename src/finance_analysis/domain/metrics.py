@@ -45,9 +45,11 @@ def interest_choice(
     *,
     row_fallbacks: dict | None = None,
 ) -> tuple[str | None, dict | None]:
-    """Первое имя порядка, у которого есть основная строка.
+    """Первое имя `interest_order`, у которого есть основная строка в primaries.
 
-    Предупреждение, когда выбрана строка из row_fallbacks (не concept_id).
+    Lookup — по id из порядка (concept или row_fallback id). Поля
+    `binding_key` / `matching.rule` у fallback декларативны и сюда не входят.
+    Предупреждение, когда выбран id из row_fallbacks.
     """
 
     fallbacks = row_fallbacks or {}
