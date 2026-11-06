@@ -623,45 +623,119 @@ def test_two_exact_labels_without_the_preferred_phrase_stay_ambiguous():
     assert all(Decimal(value) < 100 for value in _sheet(by_concept["cap_rate"]))
 
 
+def _escrow_column(grid, column: int, row_key: str) -> list[dict]:
+    """Факты столбца с конца листа. Порядок наблюдений задаёт period_index, не вставка."""
+
+    facts = []
+    for row in range(grid.max_row, 1, -1):
+        cell = grid.cell(row, column)
+        facts.append(
+            _fact(
+                row_key,
+                cell.value,
+                cell_id=f"Модель!{cell.coordinate}",
+                axis_id="Модель",
+                period_id=str(grid.cell(row, 1).value),
+                period_index=int(grid.cell(row, 1).value),
+            )
+        )
+    return facts
+
+
 def test_escrow_cites_inflow_disclosure_and_rate():
-    """Поступления, раскрытие и эффективная ставка читаются из столбцов книги и не пересчитываются."""
+    """Поступления G2:G37, раскрытие H2:H37 и ставка N2:N37 цитируются по ячейке.
+
+    H25 равно 48000, N26 равно 0,12. Первые два поступления — 2000 и 2000,
+    поступление месяца 25 (G26) — 0. У понятия одна основная строка. Капитальные
+    затраты, проценты, покрытие, остаток эскроу и остаток долга не цитируются.
+    M25:M37 пустые: это месяцы с нулевым знаменателем, не нули покрытия.
+    """
 
     book = "escrow/development_escrow_214.recalc_libreoffice.xlsx"
     package = load_catalog()
     headers = {
-        "escrow_inflow": 7,
-        "escrow_disclosure": 8,
-        "effective_rate": 14,
+        "escrow_inflow": (7, "Модель!G1"),
+        "escrow_disclosure": (8, "Модель!H1"),
+        "effective_rate": (14, "Модель!N1"),
     }
-    for concept, column in headers.items():
+    uncited = {
+        "escrow_balance": (9, "Модель!I1"),
+        "capex": (10, "Модель!J1"),
+        "escrow_coverage": (13, "Модель!M1"),
+        "interest": (15, "Модель!O1"),
+        "debt_outstanding": (17, "Модель!Q1"),
+    }
+    for concept, (column, _row_key) in {**headers, **uncited}.items():
         letter = openpyxl.utils.get_column_letter(column)
         assert package.resolve(_label(book, "Модель", f"{letter}1")).concept == concept
-    series = {
-        concept: _column_numbers(book, "Модель", column, 2)
-        for concept, column in headers.items()
-    }
+    cached = openpyxl.load_workbook(_ROOT / book, data_only=True)
+    formulas = openpyxl.load_workbook(_ROOT / book, data_only=False)
+    try:
+        grid = cached["Модель"]
+        assert grid["H25"].value == 48000
+        assert grid["N26"].value == 0.12
+        assert grid["G2"].value == 2000 and grid["G3"].value == 2000
+        assert grid["G26"].value == 0
+        for row in range(25, 38):
+            assert grid.cell(row, 13).value is None, row
+            assert formulas["Модель"].cell(row, 13).value == f'=IF(Q{row}<=0,"",I{row}/Q{row})'
+        series = {
+            concept: _escrow_column(grid, column, row_key)
+            for concept, (column, row_key) in headers.items()
+        }
+    finally:
+        cached.close()
+        formulas.close()
     got = cite_type_book_rows(
         source="inferred",
         primary="development_escrow",
-        bindings=[_binding(concept, f"Модель!{concept}") for concept in headers],
-        facts=[
-            _fact(f"Модель!{concept}", value)
-            for concept, values in series.items()
-            for value in values
+        bindings=[
+            *[_binding(concept, row_key) for concept, (_column, row_key) in headers.items()],
+            _binding("escrow_inflow", "Модель!G99", primary=False),
+            *[_binding(concept, row_key) for concept, (_column, row_key) in uncited.items()],
         ],
+        facts=[fact for values in series.values() for fact in values],
     )
     assert [row["concept"] for row in got] == list(CITED_BY_TYPE["development_escrow"])
-    assert [len(_sheet(row)) for row in got] == [36, 36, 36]
-    assert [Decimal(value) for value in _sheet(got[0])[:2]] == [
+    assert "escrow_coverage" not in CITED_BY_TYPE["development_escrow"]
+    assert {
+        "capex",
+        "interest",
+        "escrow_coverage",
+        "escrow_balance",
+        "debt_outstanding",
+    }.isdisjoint(row["concept"] for row in got)
+    assert [row["status"] for row in got] == ["cited", "cited", "cited"]
+    assert [row["row_key"] for row in got] == ["Модель!G1", "Модель!H1", "Модель!N1"]
+    expected_ids = {
+        "escrow_inflow": [f"Модель!G{row}" for row in range(2, 38)],
+        "escrow_disclosure": [f"Модель!H{row}" for row in range(2, 38)],
+        "effective_rate": [f"Модель!N{row}" for row in range(2, 38)],
+    }
+    for row in got:
+        observed = row["observations"]
+        assert [item["cell_id"] for item in observed] == expected_ids[row["concept"]]
+        assert [item["period_index"] for item in observed] == list(range(1, 37))
+        assert [item["period_id"] for item in observed] == [str(month) for month in range(1, 37)]
+        assert [item["axis_id"] for item in observed] == ["Модель"] * 36
+        assert [item["value_status"] for item in observed] == ["cached"] * 36
+    by_cell = {
+        item["cell_id"]: item["value"] for row in got for item in row["observations"]
+    }
+    assert [Decimal(by_cell["Модель!G2"]), Decimal(by_cell["Модель!G3"])] == [
         Decimal(2000),
         Decimal(2000),
     ]
+    assert Decimal(by_cell["Модель!G26"]) == Decimal(0)
+    assert Decimal(by_cell["Модель!H25"]) == Decimal(48000)
+    assert Decimal(by_cell["Модель!N26"]) == Decimal("0.12")
     assert Decimal(_sheet(got[1])[0]) == Decimal(0)
     assert [Decimal(value) for value in _sheet(got[2])[:2]] == [
         Decimal("0.12"),
         Decimal("0.06"),
     ]
-    assert "escrow_coverage" not in {row["concept"] for row in got}
+    quoted = {item["cell_id"] for row in got for item in row["observations"]}
+    assert quoted.isdisjoint(f"Модель!M{row}" for row in range(2, 38))
     assert all("needs_input" not in row for row in got)
 
 

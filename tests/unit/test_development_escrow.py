@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import openpyxl
 
 from finance_analysis.application.model_types import load_model_types
+from finance_analysis.domain.book_cite import CITED_BY_TYPE
+from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.model_type import infer
 from tests.workbook_labels import resolved_workbook
 
@@ -158,6 +161,149 @@ def _params_of_fixture() -> dict:
         return _params(book["Вводы"])
     finally:
         book.close()
+
+
+def _book_coverage_inputs():
+    """Остаток, долг и строка покрытия. Пустая M несёт normalized 0 и не является нулём."""
+
+    cached = openpyxl.load_workbook(_PATH, data_only=True)
+    try:
+        grid = cached["Модель"]
+        periods = []
+        facts = []
+        columns = {
+            "Модель!I1": 9,
+            "Модель!Q1": 17,
+            "Модель!M1": 13,
+        }
+        for row in range(2, 38):
+            month = int(grid.cell(row, 1).value)
+            periods.append(
+                {
+                    "axis_id": "Модель",
+                    "period_id": str(month),
+                    "period_index": month,
+                    "grain": "month",
+                    "timeline_id": "months",
+                }
+            )
+            for row_key, column in columns.items():
+                value = grid.cell(row, column).value
+                cell = f"Модель!{grid.cell(row, column).coordinate}"
+                if value is None:
+                    facts.append(
+                        {
+                            "row_key": row_key,
+                            "axis_id": "Модель",
+                            "period_id": str(month),
+                            "value_dec": None,
+                            "normalized_value": "0",
+                            "value_status": "empty",
+                            "cell_id": cell,
+                        }
+                    )
+                    continue
+                text = format(Decimal(str(value)), "f")
+                facts.append(
+                    {
+                        "row_key": row_key,
+                        "axis_id": "Модель",
+                        "period_id": str(month),
+                        "value_dec": text,
+                        "normalized_value": text,
+                        "value_status": "cached",
+                        "cell_id": cell,
+                    }
+                )
+        facts.append(
+            {
+                "row_key": "Модель!N1",
+                "axis_id": "Модель",
+                "period_id": "25",
+                "value_dec": "0.12",
+                "normalized_value": "0.12",
+                "value_status": "cached",
+                "cell_id": "Модель!N26",
+            }
+        )
+        return periods, facts
+    finally:
+        cached.close()
+
+
+def _cover(facts, periods):
+    catalog = load_model_types()
+    return select_ratio(
+        "escrow_coverage",
+        None,
+        {
+            "facts": facts,
+            "bindings": [
+                {
+                    "effective_concept": "escrow_balance",
+                    "row_key": "Модель!I1",
+                    "is_primary": True,
+                    "status": "bound",
+                    "source": "inferred",
+                },
+                {
+                    "effective_concept": "debt_outstanding",
+                    "row_key": "Модель!Q1",
+                    "is_primary": True,
+                    "status": "bound",
+                    "source": "inferred",
+                },
+                {
+                    "effective_concept": "escrow_coverage",
+                    "row_key": "Модель!M1",
+                    "is_primary": True,
+                    "status": "bound",
+                    "source": "inferred",
+                },
+                {
+                    "effective_concept": "effective_rate",
+                    "row_key": "Модель!N1",
+                    "is_primary": True,
+                    "status": "bound",
+                    "source": "inferred",
+                },
+            ],
+            "periods": periods,
+            "sign_convention": "outflow_negative",
+            "marker_class": None,
+            "absent": frozenset(),
+        },
+        profile=None,
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.ids,
+        money=frozenset({"escrow_balance", "debt_outstanding"}),
+    )
+
+
+def test_book_coverage_matches_and_blank_months_are_not_zero():
+    assert "escrow_coverage" not in CITED_BY_TYPE["development_escrow"]
+    periods, facts = _book_coverage_inputs()
+    got = _cover(facts, periods)
+    assert [row["inputs"] for row in got["rows"]] == [["escrow_balance", "debt_outstanding"]] * 36
+    tail = [row for row in got["rows"] if int(row["period_id"]) >= 24]
+    assert [row["period_id"] for row in tail] == [str(month) for month in range(24, 37)]
+    assert [row["reason"] for row in tail] == ["zero_denominator"] * 13
+    assert got["warnings"] == []
+    bumped = []
+    for fact in facts:
+        if fact["cell_id"] == "Модель!M2":
+            number = Decimal(fact["value_dec"]) + Decimal("0.006")
+            text = format(number, "f")
+            bumped.append({**fact, "value_dec": text, "normalized_value": text})
+        else:
+            bumped.append(fact)
+    warned = _cover(bumped, periods)
+    assert [item["code"] for item in warned["warnings"]] == ["escrow_coverage_book_mismatch"]
+    assert warned["warnings"][0]["params"]["period_id"] == "1"
+    assert {item["params"]["period_id"] for item in warned["warnings"]}.isdisjoint(
+        str(month) for month in range(24, 37)
+    )
 
 
 def test_escrow_only_book_still_scores_one():

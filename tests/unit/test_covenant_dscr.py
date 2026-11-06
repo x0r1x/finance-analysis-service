@@ -671,6 +671,118 @@ def test_escrow_coverage_is_balance_over_outstanding():
     )
     assert got["rows"][0]["value"] == Decimal("2.0000000000")
     assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+
+
+def _coverage(facts, bindings=None):
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    return composed_ratio(
+        "escrow_coverage",
+        catalog.composed["escrow_coverage"],
+        facts=facts,
+        bindings=bindings
+        or [_bind("escrow_balance", "s"), _bind("debt_outstanding", "d"), _bind("escrow_coverage", "m")],
+        periods=[_year()],
+    )
+
+
+def _coverage_fact(value, *, status="cached", normalized=None):
+    item = {
+        "row_key": "m",
+        "axis_id": "a",
+        "period_id": "Y1",
+        "value_status": status,
+        "cell_id": "Модель!M2",
+    }
+    if value is not None:
+        item["value_dec"] = value
+    else:
+        item["value_dec"] = None
+    if normalized is not None:
+        item["normalized_value"] = normalized
+    return item
+
+
+def test_escrow_coverage_warns_when_the_book_row_is_outside_tolerance():
+    agreed = _coverage(
+        [_fact("s", "Y1", "200"), _fact("d", "Y1", "100"), _coverage_fact("2.005")]
+    )
+    assert agreed["warnings"] == []
+    got = _coverage(
+        [_fact("s", "Y1", "200"), _fact("d", "Y1", "100"), _coverage_fact("2.006")]
+    )
+    assert [item["code"] for item in got["warnings"]] == ["escrow_coverage_book_mismatch"]
+    assert got["warnings"][0]["params"]["period_id"] == "Y1"
+    assert got["warnings"][0]["params"]["fas"] == "2.0000000000"
+    assert got["warnings"][0]["params"]["model"] == "2.006"
+    assert got["rows"][0]["inputs"] == ["escrow_balance", "debt_outstanding"]
+
+
+def test_blank_escrow_coverage_matches_zero_denominator_and_is_not_zero():
+    blank = _coverage(
+        [
+            _fact("s", "Y1", "0"),
+            _fact("d", "Y1", "0"),
+            _coverage_fact(None, status="empty", normalized="0"),
+            _fact("rate", "Y1", "0.99"),
+        ],
+        [
+            _bind("escrow_balance", "s"),
+            _bind("debt_outstanding", "d"),
+            _bind("escrow_coverage", "m"),
+            _bind("effective_rate", "rate"),
+        ],
+    )
+    assert blank["rows"][0]["reason"] == "zero_denominator"
+    assert blank["warnings"] == []
+    assert "effective_rate" not in blank["rows"][0]["inputs"]
+    explicit = _coverage(
+        [_fact("s", "Y1", "0"), _fact("d", "Y1", "0"), _coverage_fact("0")]
+    )
+    assert [item["code"] for item in explicit["warnings"]] == ["escrow_coverage_book_mismatch"]
+    assert explicit["warnings"][0]["params"]["model"] == "0"
+    assert explicit["warnings"][0]["params"]["fas"] is None
+    number_against_blank = _coverage(
+        [
+            _fact("s", "Y1", "200"),
+            _fact("d", "Y1", "100"),
+            _coverage_fact(None, status="cached", normalized="0"),
+        ]
+    )
+    assert number_against_blank["rows"][0]["value"] == Decimal("2.0000000000")
+    assert [item["code"] for item in number_against_blank["warnings"]] == [
+        "escrow_coverage_book_mismatch"
+    ]
+    assert number_against_blank["warnings"][0]["params"]["model"] is None
+    assert number_against_blank["warnings"][0]["params"]["fas"] == "2.0000000000"
+
+
+def test_blank_coverage_does_not_warn_again_when_zero_denominator_already_warned():
+    from finance_analysis.domain.covenant import _escrow_coverage_book
+
+    row = {
+        "axis_id": "a",
+        "period_id": "Y1",
+        "value": None,
+        "reason": "zero_denominator",
+        "status": "missing_input",
+    }
+    warnings = [
+        {
+            "code": "zero_denominator",
+            "params": {"period_id": "Y1", "reason": "zero_denominator"},
+        }
+    ]
+    extra = _escrow_coverage_book(
+        [row],
+        [_coverage_fact(None, status="empty", normalized="0")],
+        [_bind("escrow_coverage", "m")],
+        frozenset(),
+        warnings,
+    )
+    assert extra == []
 
 
 def test_interest_order_is_read_from_coverage_config():

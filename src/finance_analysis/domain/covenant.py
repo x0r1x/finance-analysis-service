@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from finance_analysis.domain.cover_metrics import (
     _missing,
@@ -275,6 +275,8 @@ def composed_ratio(
                     "ebitda": _component_cells(facts, primaries["ebitda"], used or [period]),
                 }
             rows.append(line)
+    if metric == "escrow_coverage":
+        warnings.extend(_escrow_coverage_book(rows, facts, bindings, absent, warnings))
     status = "succeeded"
     message = None
     absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
@@ -562,3 +564,94 @@ def _mismatch(rows, facts, bindings, periods, absent) -> list[dict]:
             }
         ]
     return []
+
+
+# Пустое и ошибочное значение ячейки не является числом покрытия и не читается как ноль.
+_NOT_A_NUMBER = frozenset({"empty", "not_applicable", "error", "missing"})
+
+
+def _escrow_coverage_book(rows, facts, bindings, absent, warnings) -> list[dict]:
+    """Сверяет покрытие эскроу со строкой книги. Допуск — 0,005.
+
+    Пустая ячейка совпадает с нулевым знаменателем и вторым предупреждением
+    не становится. Число 0 в книге — уже расхождение. Ставка из покрытия
+    этого месяца не считается: сравнивается только строка покрытия.
+    """
+
+    book = _primaries(bindings, absent).get("escrow_coverage")
+    if book is None:
+        return []
+    cells = {
+        (fact.get("axis_id"), fact.get("period_id")): fact
+        for fact in facts
+        if fact.get("row_key") == book.get("row_key")
+    }
+    noted = _zero_denominator_periods(warnings)
+    extra = []
+    for row in rows:
+        period = row.get("period_id")
+        state, number = _coverage_state(cells.get((row.get("axis_id"), period)))
+        if state == "blank" and (row.get("reason") == "zero_denominator" or period in noted):
+            continue
+        if state != "number":
+            if state == "blank" and row.get("value") is not None:
+                extra.append(_coverage_warning(row, row.get("value"), None))
+            continue
+        fas = row.get("value")
+        if fas is None:
+            extra.append(_coverage_warning(row, None, number))
+            continue
+        if abs(Decimal(fas) - number) <= _MISMATCH:
+            continue
+        extra.append(_coverage_warning(row, fas, number))
+    return extra
+
+
+def _zero_denominator_periods(warnings) -> set:
+    found = set()
+    for item in warnings:
+        params = item.get("params") if isinstance(item.get("params"), dict) else {}
+        if item.get("code") != "zero_denominator" and params.get("reason") != "zero_denominator":
+            continue
+        period = params.get("period_id", item.get("period_id"))
+        if period is not None:
+            found.add(period)
+    return found
+
+
+def _coverage_state(fact) -> tuple[str, Decimal | None]:
+    """`blank` — пустая ячейка, в том числе если рядом лежит нормализованный ноль."""
+
+    if not isinstance(fact, dict):
+        return "absent", None
+    if fact.get("value_status") in _NOT_A_NUMBER:
+        return "blank", None
+    if "value_dec" in fact:
+        number = _as_decimal(fact.get("value_dec"))
+        return ("blank", None) if number is None else ("number", number)
+    number = _as_decimal(fact.get("normalized_value"))
+    return ("blank", None) if number is None else ("number", number)
+
+
+def _as_decimal(value) -> Decimal | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _coverage_warning(row, fas, model) -> dict:
+    return {
+        "code": "escrow_coverage_book_mismatch",
+        "params": {
+            "metric": "escrow_coverage",
+            "period_id": row.get("period_id"),
+            "fas": None if fas is None else format(Decimal(fas), "f"),
+            "model": None if model is None else format(Decimal(model), "f"),
+            "message": "Покрытие эскроу расходится со строкой книги.",
+        },
+    }
