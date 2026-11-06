@@ -17,6 +17,14 @@ AGGREGATIONS = frozenset({"sum", "last", "average", "none"})
 PRICING_BASES = frozenset({"energy", "capacity"})
 BILLING_PERIODS = frozenset({"year", "quarter", "month", "day"})
 OBJECT_AGGREGATIONS = frozenset({"weighted_average"})
+# Вес — экстенсивная величина, согласованная с тем, что усредняют.
+# Ставка взвешивается остатком, объёмом или числом. Тариф энергии — только энергией,
+# тариф мощности — только мощностью. Совпадение показателей само по себе пару не разрешает.
+_WEIGHT_DIMENSIONS = {
+    "ratio": frozenset({"money", "energy", "power", "count", "area", "duration"}),
+    "currency_per_energy": frozenset({"energy"}),
+    "currency_per_power_time": frozenset({"power"}),
+}
 _AGGREGATION = {"flow": "sum", "stock": "last", "rate": "none", "point_in_time": "last"}
 _KIND_ROLE = {"measure": "measure", "parameter": "parameter", "assumption": "assumption", "ratio": "measure"}
 _UNIT_DIMENSION = {"money": "money", "ratio": "ratio", "percent": "ratio", "count": "count"}
@@ -137,6 +145,13 @@ def _unit_facts(raw: object, name: str) -> list[tuple[str, str | None, str | Non
             raise ValueError(name)
         found.append((unit, currency, period))
     return found
+
+
+def weight_fits(concept_dimension: str, weight_dimension: str) -> bool:
+    """Вес подходит усредняемому понятию. Одинаковые физические показатели этого не доказывают."""
+
+    allowed = _WEIGHT_DIMENSIONS.get(concept_dimension)
+    return allowed is not None and weight_dimension in allowed
 
 
 def coarse_kind(role: str, dimension: str) -> str:

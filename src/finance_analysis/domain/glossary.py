@@ -13,6 +13,7 @@ from finance_analysis.domain.dimensions import (
     coarse_unit,
     default_aggregation,
     resolve_axes,
+    weight_fits,
 )
 from finance_analysis.domain.ids import concept_id as check_concept_id
 
@@ -380,9 +381,18 @@ def build_package(document: dict, glossaries: Mapping[str, dict], dictionaries: 
         if not isinstance(glossary, dict):
             raise GlossaryInvalid([name])
         concepts[name] = _concept(name, body if isinstance(body, dict) else {}, glossary, owned)
-    missing_weight = [concept.weight for concept in concepts.values() if concept.weight and concept.weight not in concepts]
-    if missing_weight:
-        raise GlossaryInvalid([item for item in missing_weight if item])
+    bad_weight = [
+        concept.id
+        for concept in concepts.values()
+        if concept.object_aggregation == "weighted_average"
+        and (
+            concept.weight not in concepts
+            or concept.weight == concept.id
+            or not weight_fits(concept.dimension, concepts[concept.weight].dimension)
+        )
+    ]
+    if bad_weight:
+        raise GlossaryInvalid(bad_weight)
     return GlossaryPackage(
         taxonomy=taxonomy,
         concepts=MappingProxyType(concepts),

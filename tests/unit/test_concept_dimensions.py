@@ -88,6 +88,8 @@ def test_catalog_migrates_energy_payback_and_keeps_coarse_aliases():
     assert catalog.units["years"] == "duration"
     assert catalog.units["RUB/MWh"] == "currency_per_energy"
     assert catalog.same("currency_per_energy", "currency_per_power_time")
+    assert len(package.concepts) == 70
+    assert all(item.object_aggregation is None and item.weight is None for item in package.concepts.values())
 
 
 def test_old_kind_and_unit_map_to_axes_and_conflicts_fail():
@@ -364,6 +366,26 @@ def test_tariff_basis_is_not_the_physical_dimension():
     assert check("pricing_basis_mismatch", bridged) == []
 
 
+def _weighted(concept_dimension: str, weight_dimension: str, *, weight_id: str = "weight_concept"):
+    rate = {
+        "semantic_role": "measure",
+        "dimension": concept_dimension,
+        "temporal_nature": "rate",
+        "object_aggregation": "weighted_average",
+        "weight": weight_id,
+    }
+    concepts = {"portfolio_rate": rate}
+    glossaries = {"portfolio_rate": {"concept": "portfolio_rate", "pref": {"ru": "Ставка", "en": "Rate"}}}
+    if weight_id != "portfolio_rate":
+        concepts[weight_id] = {
+            "semantic_role": "measure",
+            "dimension": weight_dimension,
+            "temporal_nature": "stock",
+        }
+        glossaries[weight_id] = {"concept": weight_id, "pref": {"ru": "Вес", "en": "Weight"}}
+    return build_package({"taxonomy": "core-1", "concepts": concepts}, glossaries, _DICTS).concepts["portfolio_rate"]
+
+
 def test_role_is_written_and_rates_are_not_averaged():
     kept = _package(
         {"semantic_role": "parameter", "dimension": "ratio", "temporal_nature": "rate", "input": True}
@@ -410,6 +432,20 @@ def test_role_is_written_and_rates_are_not_averaged():
     assert weighted.object_aggregation == "weighted_average"
     assert weighted.weight == "debt_outstanding"
     assert weighted.effective_aggregation == "none"
+    with pytest.raises(GlossaryInvalid):
+        _weighted("ratio", "ratio")
+    with pytest.raises(GlossaryInvalid):
+        _weighted("ratio", "ratio", weight_id="portfolio_rate")
+    with pytest.raises(GlossaryInvalid):
+        _weighted("currency_per_energy", "money")
+    with pytest.raises(GlossaryInvalid):
+        _weighted("currency_per_power_time", "energy")
+    with pytest.raises(GlossaryInvalid):
+        _weighted("money", "count")
+    by_energy = _weighted("currency_per_energy", "energy")
+    assert by_energy.weight == "weight_concept"
+    by_power = _weighted("currency_per_power_time", "power")
+    assert by_power.weight == "weight_concept"
 
 
 def test_concrete_unit_and_scale_follow_the_same_source_walk():
