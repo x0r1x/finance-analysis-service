@@ -602,7 +602,7 @@ fas storage sync file:///data s3://fas-bucket/fas --verify    # копия + с�
 
 ### 4.11 Почему свой manifest + `_head.json`, а не Delta/Iceberg; правила схем Parquet
 
-Внешнее потребление файлов FAS сторонними движками и оркестраторами **вне рамок сервиса** (решение пользователя 22.10). Файлы — обычный Parquet в собственной раскладке, поэтому такое потребление можно добавить позже, не меняя FAS. Ниже — только внутренние правила.
+Внешнее потребление файлов FAS сторонними движками и оркестраторами **вне рамок сервиса** (решение пользователя 22.10). Файлы — обычный Parquet в собственной раскладке, поэтому такое потребление можно добавить позже, не меняя FAS. Ниже — только внутренние правила. Публичные обещания читателю озера (DataMesh) без Iceberg/Hive writers — [published-parquet-contract.md](published-parquet-contract.md) (метаслой, фаза 5).
 
 Почему свой manifest + `_head.json`, а не Delta/Iceberg:
 - delta-rs на MinIO обеспечивает безопасные конкурентные коммиты тем же примитивом — условной записью (`aws_conditional_put: etag`) ([delta-rs: R2 & MinIO](https://delta-io.github.io/delta-rs/latest/integrations/object-storage/s3-like/)). Табличный формат не даёт более сильной гарантии, чем CAS на `_head.json`;

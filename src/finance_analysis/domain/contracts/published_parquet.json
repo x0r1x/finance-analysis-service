@@ -1,0 +1,160 @@
+{
+  "contract_version": "1.0",
+  "title": "Published Parquet contract (DataMesh)",
+  "description": "Фаза 5 метаслоя (G5): обещания внешнему читателю озера без Iceberg/Hive writers. Совместимо с design §4.11–4.12.",
+  "aligns_with": {
+    "design_sections": ["4.11", "4.12"],
+    "fas_schema_version_field": "fas_schema_version",
+    "schemas_glob": "adapters/storage/schemas/*.json",
+    "docs": ["docs/published-parquet-contract.md", "docs/design-v0.23.md"]
+  },
+  "markers": {
+    "manifest": {
+      "filename": "manifest.json",
+      "files_field": "files",
+      "role": "build_commit"
+    },
+    "derived_done": {
+      "filename": "_done.json",
+      "files_field": "files",
+      "role": "derived_commit"
+    },
+    "result": {
+      "filename": "result.json",
+      "files_field": "files",
+      "role": "analysis_commit"
+    },
+    "glossary": {
+      "filename": "glossary.json",
+      "files_field": "files",
+      "role": "glossary_release_commit"
+    }
+  },
+  "datasets": [
+    {
+      "name": "dim_row",
+      "group": "projection",
+      "schema": "adapters/storage/schemas/dim_row.json",
+      "required_keys": ["model_id", "build_key", "row_key", "binding_key"],
+      "marker": "manifest"
+    },
+    {
+      "name": "dim_period",
+      "group": "projection",
+      "schema": "adapters/storage/schemas/dim_period.json",
+      "required_keys": ["model_id", "build_key", "axis_id", "period_id"],
+      "marker": "manifest"
+    },
+    {
+      "name": "fact_observation",
+      "group": "projection",
+      "schema": "adapters/storage/schemas/fact_observation.json",
+      "required_keys": ["model_id", "build_key", "row_key", "axis_id", "period_id", "cell_id"],
+      "marker": "manifest"
+    },
+    {
+      "name": "graph_links",
+      "group": "projection",
+      "schema": "adapters/storage/schemas/graph_links.json",
+      "required_keys": ["model_id", "build_key"],
+      "marker": "manifest"
+    },
+    {
+      "name": "bindings",
+      "group": "derived",
+      "schema": "adapters/storage/schemas/bindings.json",
+      "required_keys": ["model_id", "build_key", "binding_key", "state_seq", "derive_key"],
+      "marker": "derived_done"
+    },
+    {
+      "name": "row_semantics",
+      "group": "derived",
+      "schema": "adapters/storage/schemas/row_semantics.json",
+      "required_keys": ["model_id", "build_key", "state_seq", "derive_key"],
+      "marker": "derived_done"
+    },
+    {
+      "name": "period_semantics",
+      "group": "derived",
+      "schema": "adapters/storage/schemas/period_semantics.json",
+      "required_keys": ["model_id", "build_key", "state_seq", "derive_key"],
+      "marker": "derived_done"
+    },
+    {
+      "name": "coverage",
+      "group": "derived",
+      "schema": "adapters/storage/schemas/coverage.json",
+      "required_keys": ["model_id", "build_key", "state_seq", "derive_key"],
+      "marker": "derived_done"
+    },
+    {
+      "name": "run",
+      "group": "results",
+      "schema": "adapters/storage/schemas/run.json",
+      "required_keys": ["model_id", "build_key", "analysis_id", "state_seq"],
+      "marker": "result"
+    },
+    {
+      "name": "ratios",
+      "group": "results",
+      "schema": "adapters/storage/schemas/ratios.json",
+      "required_keys": ["model_id", "build_key", "analysis_id", "state_seq"],
+      "marker": "result"
+    },
+    {
+      "name": "findings",
+      "group": "results",
+      "schema": "adapters/storage/schemas/findings.json",
+      "required_keys": ["model_id", "build_key", "analysis_id", "state_seq"],
+      "marker": "result"
+    },
+    {
+      "name": "candidates",
+      "group": "other",
+      "schema": "adapters/storage/schemas/candidates.json",
+      "required_keys": ["label_norm", "concept"],
+      "marker": "none"
+    },
+    {
+      "name": "signals",
+      "group": "other",
+      "schema": "adapters/storage/schemas/signals.json",
+      "required_keys": ["signal_id", "job_id", "binding_key"],
+      "marker": "none"
+    },
+    {
+      "name": "unmapped",
+      "group": "other",
+      "schema": "adapters/storage/schemas/unmapped.json",
+      "required_keys": ["unmapped_id", "job_id", "binding_key"],
+      "marker": "none"
+    },
+    {
+      "name": "examples",
+      "group": "other",
+      "schema": "adapters/storage/schemas/examples.json",
+      "required_keys": ["example_id", "job_id", "concept"],
+      "marker": "none"
+    }
+  ],
+  "non_guarantees": [
+    "list_before_marker",
+    "cross_bucket_transactions",
+    "iceberg_writers",
+    "hive_writers",
+    "delta_writers",
+    "lake_publisher_port",
+    "airflow_operators_in_fas",
+    "consumers_lease",
+    "orchestrator_sla",
+    "hive_style_partition_paths"
+  ],
+  "forbidden_writers": [
+    "pyiceberg",
+    "delta-rs",
+    "deltalake",
+    "lakepublisherport",
+    "hive_metastore",
+    "hivecatalog"
+  ]
+}
