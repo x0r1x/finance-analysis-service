@@ -720,6 +720,50 @@ def test_escrow_coverage_warns_when_the_book_row_is_outside_tolerance():
     assert got["rows"][0]["inputs"] == ["escrow_balance", "debt_outstanding"]
 
 
+def test_coverage_on_the_other_axis_of_the_same_period_warns():
+    """Остаток на Model и долг на Debt — один период шкалы. Покрытие 9 лежит на Model."""
+
+    from finance_analysis.domain.covenant import composed_ratio
+
+    catalog = _catalog()
+    common = {
+        "axis_id": None,
+        "period_index": 1,
+        "timeline_id": "t",
+        "grain": "month",
+    }
+    got = composed_ratio(
+        "escrow_coverage",
+        catalog.composed["escrow_coverage"],
+        facts=[
+            {**_fact("s", "2024-01", "200"), "axis_id": "Model"},
+            {**_fact("d", "M1", "100"), "axis_id": "Debt"},
+            {
+                "row_key": "m",
+                "axis_id": "Model",
+                "period_id": "2024-01",
+                "value_dec": "9",
+                "normalized_value": "9",
+                "value_status": "cached",
+            },
+        ],
+        bindings=[
+            _bind("escrow_balance", "s"),
+            _bind("debt_outstanding", "d"),
+            _bind("escrow_coverage", "m"),
+        ],
+        periods=[
+            {**common, "axis_id": "Model", "period_id": "2024-01"},
+            {**common, "axis_id": "Debt", "period_id": "M1"},
+        ],
+    )
+    assert got["rows"][0]["axis_id"] == "Debt"
+    assert got["rows"][0]["value"] == Decimal("2.0000000000")
+    assert [item["code"] for item in got["warnings"]] == ["escrow_coverage_book_mismatch"]
+    assert got["warnings"][0]["params"]["fas"] == "2.0000000000"
+    assert got["warnings"][0]["params"]["model"] == "9"
+
+
 def test_blank_escrow_coverage_matches_zero_denominator_and_is_not_zero():
     blank = _coverage(
         [
@@ -779,6 +823,7 @@ def test_blank_coverage_does_not_warn_again_when_zero_denominator_already_warned
         [row],
         [_coverage_fact(None, status="empty", normalized="0")],
         [_bind("escrow_coverage", "m")],
+        [],
         frozenset(),
         warnings,
     )

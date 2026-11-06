@@ -276,7 +276,7 @@ def composed_ratio(
                 }
             rows.append(line)
     if metric == "escrow_coverage":
-        warnings.extend(_escrow_coverage_book(rows, facts, bindings, absent, warnings))
+        warnings.extend(_escrow_coverage_book(rows, facts, bindings, periods, absent, warnings))
     status = "succeeded"
     message = None
     absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
@@ -570,27 +570,34 @@ def _mismatch(rows, facts, bindings, periods, absent) -> list[dict]:
 _NOT_A_NUMBER = frozenset({"empty", "not_applicable", "error", "missing"})
 
 
-def _escrow_coverage_book(rows, facts, bindings, absent, warnings) -> list[dict]:
+def _escrow_coverage_book(rows, facts, bindings, periods, absent, warnings) -> list[dict]:
     """Сверяет покрытие эскроу со строкой книги. Допуск — 0,005.
 
-    Пустая ячейка совпадает с нулевым знаменателем и вторым предупреждением
-    не становится. Число 0 в книге — уже расхождение. Ставка из покрытия
-    этого месяца не считается: сравнивается только строка покрытия.
+    Ячейка ищется по ключу шкалы суммы: `timeline_id` и `period_index`.
+    Строка книги не суммируется, пустая ячейка с нормализованным нулём остаётся
+    пустой. На одном ключе берётся ячейка оси результата; если её нет и чужая
+    ячейка ровно одна, берётся она. Пустая ячейка совпадает с нулевым
+    знаменателем и вторым предупреждением не становится. Число 0 в книге — уже
+    расхождение. Ставка из покрытия этого месяца не считается.
     """
 
     book = _primaries(bindings, absent).get("escrow_coverage")
     if book is None:
         return []
-    cells = {
-        (fact.get("axis_id"), fact.get("period_id")): fact
-        for fact in facts
-        if fact.get("row_key") == book.get("row_key")
-    }
+    aligned = aligned_keys(periods)
+    grouped: dict[tuple, list[dict]] = {}
+    for fact in facts:
+        if fact.get("row_key") != book.get("row_key"):
+            continue
+        own = (fact.get("axis_id"), fact.get("period_id"))
+        grouped.setdefault(aligned.get(own, own), []).append(fact)
     noted = _zero_denominator_periods(warnings)
     extra = []
     for row in rows:
         period = row.get("period_id")
-        state, number = _coverage_state(cells.get((row.get("axis_id"), period)))
+        own = (row.get("axis_id"), period)
+        chosen = _aligned_coverage(grouped.get(aligned.get(own, own), []), row.get("axis_id"))
+        state, number = _coverage_state(chosen)
         if state == "blank" and (row.get("reason") == "zero_denominator" or period in noted):
             continue
         if state != "number":
@@ -605,6 +612,17 @@ def _escrow_coverage_book(rows, facts, bindings, absent, warnings) -> list[dict]
             continue
         extra.append(_coverage_warning(row, fas, number))
     return extra
+
+
+def _aligned_coverage(facts: list[dict], axis) -> dict | None:
+    """Ячейка оси результата. Нет её — ровно одна чужая ячейка того же ключа."""
+
+    home = [fact for fact in facts if fact.get("axis_id") == axis]
+    if len(home) == 1:
+        return home[0]
+    if home or len(facts) != 1:
+        return None
+    return facts[0]
 
 
 def _zero_denominator_periods(warnings) -> set:
