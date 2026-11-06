@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+from itertools import combinations
 from pathlib import Path
 
 import openpyxl
+import yaml
 
+from finance_analysis.application.analyses import RATIO_METRICS
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.domain.book_cite import CITED_BY_TYPE
-from finance_analysis.domain.model_type import infer
+from finance_analysis.domain.model_type import applicability, infer, open_concepts
+from finance_analysis.domain.model_type_eval import Expectation, build_report
 from tests.workbook_labels import resolved_workbook
 
 _BOOKS = Path(__file__).resolve().parents[1] / "fixtures" / "model_books"
@@ -71,6 +76,39 @@ _SOLAR_FREE = (
     ("Model", "P16", "Post PPA Term"),
     ("Model", "G206", "Post PPA Rate"),
 )
+# Пять подписей lease_portfolio. Interest — точный pref, четыре остальные — точный alt.
+# Слова портфеля, ставки резерва и шапки графика остаются свободными.
+_LEASE_HITS = (
+    ("Schedule", "F1", "Interest", "interest", "pref"),
+    ("Schedule", "G1", "Principal", "principal", "alt"),
+    ("Summary", "A2", "Interest income", "lease_interest_income", "alt"),
+    ("Summary", "A5", "NPL share", "npl_share", "alt"),
+    ("Summary", "A8", "Provision coverage", "provision_coverage", "alt"),
+)
+_LEASE_FREE = (
+    ("Schedule", "A1", "Contract"),
+    ("Schedule", "B1", "Year"),
+    ("Schedule", "C1", "Opening"),
+    ("Schedule", "D1", "Rate"),
+    ("Schedule", "E1", "DPD"),
+    ("Schedule", "H1", "Payment"),
+    ("Schedule", "I1", "Closing"),
+    ("Schedule", "J1", "NPL"),
+    ("Schedule", "A2", "A"),
+    ("Schedule", "A3", "A"),
+    ("Schedule", "A4", "B"),
+    ("Schedule", "A5", "B"),
+    ("Schedule", "A6", "C"),
+    ("Schedule", "A7", "C"),
+    ("Summary", "A1", "Lessor portfolio"),
+    ("Summary", "A3", "Gross portfolio"),
+    ("Summary", "A4", "NPL balance"),
+    ("Summary", "A6", "Provision rate"),
+    ("Summary", "A7", "Provisions"),
+)
+_LEASE_CONCEPTS = ("lease_interest_income", "npl_share", "provision_coverage")
+_LEASE_SHEETS = frozenset({"Schedule", "Summary"})
+_LEASE_BOOK = "leasing/lease_portfolio.recalc_libreoffice.xlsx"
 
 
 def _catalog():
@@ -317,6 +355,156 @@ def test_solar_dogu_stays_confident_renewables_dpm_at_full_score():
         "energy_tariff",
     )
     assert "installed_capacity" not in CITED_BY_TYPE["renewables_dpm"]
+
+
+def test_lease_portfolio_stays_confident_bank_leasing_at_full_score():
+    """Книга lease_portfolio связывает пять понятий и остаётся уверенным bank_leasing со score 1.0.
+
+    Близкие подписи не привязываются. Сигнал остаётся concepts_bound_all веса 1 по
+    трём понятиям лизинга. Цитата типа — lease_interest_income, npl_share и
+    provision_coverage. Interest и principal в неё не входят.
+    """
+
+    package = load_catalog()
+    grid = openpyxl.load_workbook(_BOOKS / _LEASE_BOOK, data_only=False)
+    hits: list[tuple[str, str, str, str]] = []
+    try:
+        for sheet, coord, text, concept, kind in _LEASE_HITS:
+            assert grid[sheet][coord].value == text
+            found = package.resolve_match(text)
+            assert found is not None, text
+            hit, strength = found
+            assert hit.concept == concept and hit.kind == kind and strength == "exact"
+        for sheet, coord, text in _LEASE_FREE:
+            assert grid[sheet][coord].value == text
+            assert package.resolve(text) is None, text
+        for sheet in grid.worksheets:
+            for row in sheet.iter_rows():
+                for cell in row:
+                    label = cell.value
+                    if (
+                        not isinstance(label, str)
+                        or not label.strip()
+                        or label.startswith("=")
+                    ):
+                        continue
+                    found = package.resolve(label)
+                    if found is not None:
+                        hits.append((sheet.title, cell.coordinate, label, found.concept))
+    finally:
+        grid.close()
+    assert hits == [
+        (sheet, coord, text, concept) for sheet, coord, text, concept, _kind in _LEASE_HITS
+    ]
+    bound, sheets = resolved_workbook(_LEASE_BOOK)
+    assert sheets == _LEASE_SHEETS
+    assert bound == frozenset({"interest", "principal", *_LEASE_CONCEPTS})
+    catalog = _catalog()
+    signal = catalog.types["bank_leasing"].signals
+    assert tuple(item.kind for item in signal) == ("concepts_bound_all",)
+    assert signal[0].weight == 1.0
+    assert signal[0].concepts == _LEASE_CONCEPTS
+    got = infer(catalog, bound=bound, sheets=sheets, accept=0.6, gap=0.15)
+    assert got.confident is True
+    assert got.primary == "bank_leasing"
+    assert got.labels == ("bank_leasing",)
+    assert got.scores["bank_leasing"] == 1.0
+    others = {name: score for name, score in got.scores.items() if name != "bank_leasing"}
+    assert others and set(others.values()) == {0.0}
+    assert CITED_BY_TYPE["bank_leasing"] == _LEASE_CONCEPTS
+
+
+def test_lease_portfolio_and_signal_scores_only_the_full_set():
+    """Один concepts_bound_all веса 1. Собственное подмножество трёх понятий даёт 0.0.
+
+    Причина unknown, метки пустые. Проценты с основным долгом сами тип не дают.
+    Пять понятий держат score 1.0 только у bank_leasing. Вариантов нет.
+    Одиннадцать метрик каталога неприменимы, открытых вопросов нет.
+    При нулевом score лидер остаётся bank_leasing: равенство режется по id.
+    """
+
+    catalog = _catalog()
+    signal = catalog.types["bank_leasing"].signals
+    assert len(signal) == 1
+    item = signal[0]
+    assert item.kind == "concepts_bound_all"
+    assert item.weight == 1.0
+    assert item.concepts == _LEASE_CONCEPTS
+    assert item.absent == ()
+    assert item.groups == ()
+    assert catalog.types["bank_leasing"].variants == {}
+    metrics = catalog.types["bank_leasing"].metrics
+    assert len(RATIO_METRICS) == 11
+    assert set(metrics) == set(RATIO_METRICS)
+    assert set(metrics.values()) == {"not_applicable"}
+    for metric in RATIO_METRICS:
+        assert applicability(catalog, ("bank_leasing",), metric) == "not_applicable", metric
+    bound, _sheets = resolved_workbook(_LEASE_BOOK)
+    assert open_concepts(catalog, ("bank_leasing",), bound=bound, absent=frozenset()) == ()
+    assert open_concepts(
+        catalog, ("bank_leasing",), bound=frozenset(), absent=frozenset()
+    ) == ()
+    for size in range(len(_LEASE_CONCEPTS)):
+        for subset in combinations(_LEASE_CONCEPTS, size):
+            got = _infer(bound=frozenset(subset), sheets=_LEASE_SHEETS)
+            assert got.scores["bank_leasing"] == 0.0, subset
+            assert set(got.scores.values()) == {0.0}, subset
+            assert got.confident is False and got.reason == "unknown" and got.labels == ()
+            assert got.primary == "bank_leasing"
+    debt = _infer(bound=frozenset({"interest", "principal"}), sheets=_LEASE_SHEETS)
+    assert debt.scores["bank_leasing"] == 0.0
+    assert set(debt.scores.values()) == {0.0}
+    assert debt.confident is False and debt.reason == "unknown" and debt.labels == ()
+    assert debt.primary == "bank_leasing"
+    five = _infer(
+        bound=frozenset({"interest", "principal", *_LEASE_CONCEPTS}),
+        sheets=_LEASE_SHEETS,
+    )
+    assert five.confident is True
+    assert five.primary == "bank_leasing"
+    assert five.labels == ("bank_leasing",)
+    assert five.scores["bank_leasing"] == 1.0
+    others = {name: score for name, score in five.scores.items() if name != "bank_leasing"}
+    assert others and set(others.values()) == {0.0}
+
+
+def test_lease_portfolio_eval_row_still_matches_the_snapshot():
+    """Строка снимка lease_portfolio не переписывается: bank_leasing 1, corporate 0, разрыв 1."""
+
+    root = Path(__file__).resolve().parents[2]
+    snapshot = json.loads((root / "eval" / "model_type" / "report.json").read_text(encoding="utf-8"))
+    assert (snapshot["accept"], snapshot["gap"]) == (0.6, 0.15)
+    stored = next(row for row in snapshot["cases"] if row["id"] == "lease_portfolio")
+    spec = yaml.safe_load(
+        (root / "tests" / "fixtures" / "model_type_eval" / "cases.yaml").read_text(encoding="utf-8")
+    )
+    case = next(item for item in spec["cases"] if item["id"] == "lease_portfolio")
+    assert case["source"] == "workbook"
+    assert case["book"] == _LEASE_BOOK
+    expect = case["expect"]
+    assert expect == {"kind": "type", "primary": "bank_leasing", "labels": ["bank_leasing"]}
+    bound, sheets = resolved_workbook(case["book"])
+    catalog = _catalog()
+    got = infer(catalog, bound=bound, sheets=sheets, accept=0.6, gap=0.15)
+    report = build_report(
+        [
+            (
+                "lease_portfolio",
+                Expectation("type", expect["primary"], tuple(expect["labels"])),
+                got,
+            )
+        ],
+        accept=0.6,
+        gap=0.15,
+        type_ids=tuple(sorted(catalog.ids)),
+    )
+    assert stored["primary"] == "bank_leasing"
+    assert stored["scores"]["bank_leasing"] == 1.0
+    assert stored["top2"] == "corporate"
+    assert stored["top2_score"] == 0.0
+    assert stored["gap"] == 1.0
+    assert stored["false_positives"] == []
+    assert report["cases"][0] == stored
 
 
 def test_fixture_workbooks_classify_from_their_own_labels():
