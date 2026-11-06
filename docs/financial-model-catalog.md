@@ -2,7 +2,7 @@
 
 Фаза 3 дорожной карты метаслоя ([meta-layer-roadmap.md](meta-layer-roadmap.md)). Целевая модель — [meta-layer.md](meta-layer.md) (G1). Версия каталога входит в публичный [`SemanticModelVersion`](semantic-model-version.md).
 
-Каталог делает **показатель** (indicator / metric) явной сущностью: не только YAML для кода расчёта, а запись с идентификатором, определением, входами-понятиями, единицами, окном, вариантами по `model_types` и статусом.
+Каталог делает **показатель** (indicator / metric) явной сущностью: не только YAML для кода расчёта, а запись с идентификатором, определением, структурой формулы, входами-понятиями, единицами, окном, вариантами по `model_types` и статусом.
 
 Код: `finance_analysis.domain.financial_catalog`, загрузка `finance_analysis.application.financial_catalog`. Схема: `src/finance_analysis/domain/contracts/financial_model_catalog.json`. Чтение API: `GET /v1/metrics`, `GET /v1/metrics/{id}`.
 
@@ -12,26 +12,78 @@
 |---|---|---|
 | `id` | Публичный metric id (`dscr`, `icr`, …) | да |
 | `definition` | Текстовое определение (из YAML или `null`) | нет |
-| `inputs` | Входы-понятия (`concept_id` таксономии) | да |
+| `inputs` | `{all_of, one_of}` — concept_id таксономии | да |
+| `input_concepts` | Плоский список concept_id для поиска (`all_of ∪ one_of`) | да |
+| `formula` | Декларативная структура формулы (числитель/знаменатель/ставка/base) | да |
 | `unit` | Размерность **результата** (`ratio`, `money`, …) | да |
 | `window` | `LTM` \| `period` \| `null` | нет |
 | `variants` | Карта вариантов формулы (`pf`, `corporate_covenant`, …) | да (может быть `{}`) |
-| `model_types` | Применимость по типу: `required` / `optional` / `not_applicable` | да |
+| `model_types` | Применимость по типу: `{use, variant?}` | да |
 | `status` | `active` \| `deprecated` | да (по умолчанию `active`) |
 | `base` | Ссылка на базовый metric id, если формула наследует | нет |
 
-Вариант повторяет подмножество полей: `id`, `definition`, `inputs`, `unit`, `window`.
+Вариант повторяет: `id`, `definition`, `inputs`, `input_concepts`, `formula`, `unit`, `window`.
+
+### `inputs`
+
+```json
+{ "all_of": ["cfads", "debt_service"], "one_of": ["ebitda", "ebit"] }
+```
+
+- `all_of` — все понятия необходимы;  
+- `one_of` — достаточно одного из перечисленных;  
+- `input_concepts` — удобный плоский список, **не** заменяет семантику `all_of`/`one_of`.
+
+`row_fallbacks` (например `interest_paid`) **не** входят во входы формулы; они живут только в `interest_order` (решение 40).
+
+### `formula`
+
+Декларативное описание экономического смысла, не исполняемый код:
+
+```json
+{
+  "numerator": { "plus": ["ebitda"], "minus": ["cash_taxes", "capex"] },
+  "denominator": { "plus": ["interest", "principal"], "minus": [] },
+  "one_of": [],
+  "rate": null,
+  "base": null
+}
+```
+
+| Поле | Смысл |
+|---|---|
+| `numerator.plus` / `minus` | Слагаемые числителя |
+| `denominator.plus` / `minus` | Слагаемые знаменателя |
+| `one_of` | Альтернативные числители (как у ICR: `ebitda` \| `ebit`) |
+| `rate` | Ставка дисконтирования / параметр (`discount_rate` у NPV/LLCR/PLCR) |
+| `base` | Наследование формулы другого показателя (`adscr` → `dscr`) |
+
+Пустые стороны и отсутствующие поля опускаются в JSON; `base`-only запись может содержать только `{"base": "dscr"}`.
+
+### `model_types`
+
+Сохраняет связь тип модели → применимость **и** выбранный вариант формулы из `configs/model_types/*.yaml`:
+
+```json
+{
+  "corporate": { "use": "optional", "variant": "corporate_covenant" },
+  "project_finance": { "use": "required", "variant": "pf" },
+  "investment_project": { "use": "not_applicable" }
+}
+```
+
+`variant` присутствует только если он задан у типа для этого показателя.
 
 ### Источники
 
 | Поле | Откуда |
 |---|---|
 | формула / входы / окно / base / rate | `configs/metrics/coverage.yaml` → `metrics` |
-| `definition`, `status` | те же записи YAML (опциональные ключи) |
+| `definition`, `status` | те же записи YAML (опциональные ключи; неверный тип → ошибка загрузки) |
 | размерности входов | таксономия `configs/concepts/` + `configs/dimensions.yaml` |
 | `unit` результата | вывод из формулы (частное → `ratio`; NPV-подобные → размерность числителя) |
-| `model_types` | `configs/model_types/*.yaml` → `metrics` / `default_use` |
-| `row_fallbacks` | тот же YAML; **не** входы формул и **не** concept_id (решение 40) |
+| `model_types` + `variant` | `configs/model_types/*.yaml` → `metrics` / `default_use` |
+| `row_fallbacks` | тот же YAML; **не** входы формул и **не** concept_id |
 
 Связи таксономии (`composed_of` и др.) **не** считают и **не** подставляют формулу показателя.
 
@@ -48,7 +100,7 @@
 }
 ```
 
-Инвариант: `version == sha256(canonical_json(indicators))[:16]`. Machine-readable схема — JSON Schema по пути выше.
+Инвариант: `version == sha256(canonical_json(indicators))[:16]`. Machine-readable схема — JSON Schema Draft 2020-12 по пути выше; контрактные тесты валидируют фактический `as_dict()` через схему.
 
 ## 3. Версия в `SemanticModelVersion`
 
@@ -70,7 +122,8 @@
 1. Входы метрик и вариантов ⊆ понятия таксономии.  
 2. `row_fallbacks` **нельзя** указать как вход формулы (только в `interest_order`).  
 3. Единицы слагаемых совместимы; частное безразмерно (кроме явных rate-метрик).  
-4. Нет циклов `base`; ключи coverage/fallback известны.
+4. Нет циклов `base`; ключи coverage/fallback известны.  
+5. Некорректные типы `definition` / `status` / `window` в YAML — явная ошибка загрузки, без тихого default.
 
 Тихий drift «concept vs metric input» запрещён: сервис с расхождением не стартует.
 

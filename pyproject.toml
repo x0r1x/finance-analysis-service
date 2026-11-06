@@ -36,6 +36,7 @@ dev = [
   "import-linter>=2.1",
   "ruff==0.17.2",
   "openpyxl>=3.1",
+  "jsonschema>=4.23",
 ]
 
 [project.scripts]
@@ -52,7 +53,10 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-finance_analysis = ["adapters/storage/schemas/*.json"]
+finance_analysis = [
+  "adapters/storage/schemas/*.json",
+  "domain/contracts/*.json",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

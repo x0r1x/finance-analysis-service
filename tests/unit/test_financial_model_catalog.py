@@ -6,10 +6,12 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
+from jsonschema import Draft202012Validator
 
 from finance_analysis.application.analyses import RATIO_METRICS
 from finance_analysis.application.financial_catalog import load_financial_catalog
-from finance_analysis.application.model_types import load_model_types
+from finance_analysis.application.model_types import load_model_types, metrics_file
 from finance_analysis.domain.financial_catalog import (
     catalog_version_for,
     validate_indicator_records,
@@ -21,6 +23,16 @@ from finance_analysis.domain.semantic_model import (
 from finance_analysis.domain.validation.catalog_integrity import (
     validate_catalog_integrity,
 )
+from finance_analysis.domain.validation.model_types import ModelTypeInvalid
+
+_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "src/finance_analysis/domain/contracts/financial_model_catalog.json"
+)
+
+
+def _schema() -> dict:
+    return json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
 def test_repo_catalog_covers_public_metrics_with_inputs_and_units():
@@ -34,12 +46,11 @@ def test_repo_catalog_covers_public_metrics_with_inputs_and_units():
         assert item.id == metric_id
         assert item.unit
         assert item.status == "active"
-        assert isinstance(item.inputs, frozenset)
-        # base-only метрики наследуют входы базы; у всех публичных есть входы или base.
-        assert item.inputs or item.base, metric_id
+        assert item.inputs.concepts or item.base, metric_id
+        assert item.formula.as_dict() or item.base, metric_id
         assert item.model_types
         for use in item.model_types.values():
-            assert use in {"required", "optional", "not_applicable"}
+            assert use.use in {"required", "optional", "not_applicable"}
 
 
 def test_catalog_version_stable_and_in_smv_metrics_component():
@@ -58,8 +69,6 @@ def test_catalog_version_stable_and_in_smv_metrics_component():
 
 
 def test_metric_inputs_subset_of_taxonomy_concepts():
-    import yaml
-
     from finance_analysis.application.catalog import load_catalog, load_dimensions
     from finance_analysis.application.model_types import (
         load_coverage_document,
@@ -93,33 +102,82 @@ def test_metric_inputs_subset_of_taxonomy_concepts():
     )
     catalog = load_financial_catalog()
     for item in catalog.indicators.values():
-        assert item.inputs <= package.ids
-        assert not (item.inputs & catalog.row_fallback_ids)
+        assert item.inputs.concepts <= package.ids
+        assert not (item.inputs.concepts & catalog.row_fallback_ids)
         for variant in item.variants.values():
-            assert variant.inputs <= package.ids
+            assert variant.inputs.concepts <= package.ids
 
 
-def test_contract_schema_file_exists_and_matches_snapshot_shape():
-    root = Path(__file__).resolve().parents[2]
-    schema_path = root / "src/finance_analysis/domain/contracts/financial_model_catalog.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    assert schema["required"] == ["version", "stamp", "indicators"]
+def test_catalog_as_dict_validates_against_json_schema():
     body = load_financial_catalog().as_dict()
-    validate_indicator_records(list(body["indicators"].values()))
-    assert set(body) >= {"version", "stamp", "indicators", "row_fallbacks"}
+    Draft202012Validator.check_schema(_schema())
+    Draft202012Validator(_schema()).validate(body)
 
 
-def test_dscr_variants_and_npv_unit():
+def test_dscr_preserves_model_type_variant_and_formula():
     catalog = load_financial_catalog()
     dscr = catalog.indicators["dscr"]
     assert "pf" in dscr.variants
     assert "corporate_covenant" in dscr.variants
     assert dscr.unit == "ratio"
     assert dscr.variants["corporate_covenant"].window == "LTM"
+    corporate = dscr.model_types["corporate"]
+    assert corporate.use == "optional"
+    assert corporate.variant == "corporate_covenant"
+    pf = dscr.model_types["project_finance"]
+    assert pf.use == "required"
+    assert pf.variant == "pf"
+    formula = dscr.variants["corporate_covenant"].formula.as_dict()
+    assert formula["numerator"] == {"plus": ["ebitda"], "minus": ["cash_taxes", "capex"]}
+    assert formula["denominator"] == {"plus": ["interest", "principal"], "minus": []}
+    base_formula = dscr.formula.as_dict()
+    assert base_formula["numerator"]["plus"] == ["cfads"]
+    assert base_formula["denominator"]["plus"] == ["debt_service"]
     assert catalog.indicators["npv"].unit == "money"
+    assert catalog.indicators["npv"].formula.rate == "discount_rate"
     assert "interest_paid" in catalog.row_fallback_ids
 
 
-def test_validate_indicator_records_rejects_fallback_shaped_gap():
-    with pytest.raises(ValueError, match="inputs"):
-        validate_indicator_records([{"id": "x", "unit": "ratio", "status": "active", "inputs": "ebitda"}])
+def test_inputs_preserve_all_of_and_one_of():
+    catalog = load_financial_catalog()
+    icr = catalog.indicators["icr"]
+    assert icr.inputs.one_of == frozenset({"ebitda", "ebit"})
+    assert "interest" in icr.inputs.all_of
+    assert set(icr.as_dict()["input_concepts"]) == set(icr.inputs.concepts)
+    assert icr.formula.one_of == frozenset({"ebitda", "ebit"})
+    assert icr.formula.denominator is not None
+    assert icr.formula.denominator.plus == ("interest",)
+
+
+def test_meta_rejects_non_string_status(tmp_path: Path):
+    body = yaml.safe_load(metrics_file().read_text(encoding="utf-8"))
+    body["metrics"]["dscr"]["status"] = 123
+    path = tmp_path / "coverage.yaml"
+    path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+    with pytest.raises(ModelTypeInvalid, match="status"):
+        load_financial_catalog(path)
+
+
+def test_meta_rejects_invalid_window_type(tmp_path: Path):
+    body = yaml.safe_load(metrics_file().read_text(encoding="utf-8"))
+    body["metrics"]["net_debt_ebitda"]["window"] = ["LTM"]
+    path = tmp_path / "coverage.yaml"
+    path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+    with pytest.raises(ModelTypeInvalid, match="window"):
+        load_financial_catalog(path)
+
+
+def test_meta_rejects_non_string_definition(tmp_path: Path):
+    body = yaml.safe_load(metrics_file().read_text(encoding="utf-8"))
+    body["metrics"]["dscr"]["definition"] = 42
+    path = tmp_path / "coverage.yaml"
+    path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+    with pytest.raises(ModelTypeInvalid, match="definition"):
+        load_financial_catalog(path)
+
+
+def test_validate_indicator_records_rejects_flat_inputs():
+    with pytest.raises(TypeError, match="inputs"):
+        validate_indicator_records(
+            [{"id": "x", "unit": "ratio", "status": "active", "inputs": ["ebitda"]}]
+        )

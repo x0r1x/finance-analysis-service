@@ -28,17 +28,74 @@
     }
   },
   "$defs": {
+    "inputs": {
+      "type": "object",
+      "required": ["all_of", "one_of"],
+      "additionalProperties": false,
+      "properties": {
+        "all_of": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "one_of": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "formulaSide": {
+      "type": "object",
+      "required": ["plus", "minus"],
+      "additionalProperties": false,
+      "properties": {
+        "plus": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "minus": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "formula": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base": { "type": "string", "minLength": 1 },
+        "numerator": { "$ref": "#/$defs/formulaSide" },
+        "denominator": { "$ref": "#/$defs/formulaSide" },
+        "one_of": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "rate": { "type": "string", "minLength": 1 }
+      }
+    },
+    "modelTypeUse": {
+      "type": "object",
+      "required": ["use"],
+      "additionalProperties": false,
+      "properties": {
+        "use": {
+          "type": "string",
+          "enum": ["required", "optional", "not_applicable"]
+        },
+        "variant": { "type": "string", "minLength": 1 }
+      }
+    },
     "indicator": {
       "type": "object",
-      "required": ["id", "inputs", "unit", "status"],
+      "required": ["id", "inputs", "input_concepts", "unit", "formula", "status", "model_types"],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "definition": { "type": ["string", "null"] },
-        "inputs": {
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "input_concepts": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
-          "description": "concept_id таксономии; row_fallbacks запрещены"
+          "description": "плоский список concept_id для поиска; не заменяет inputs"
         },
         "unit": {
           "type": "string",
@@ -49,16 +106,14 @@
           "type": ["string", "null"],
           "enum": ["LTM", "period", null]
         },
+        "formula": { "$ref": "#/$defs/formula" },
         "variants": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/variant" }
         },
         "model_types": {
           "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "enum": ["required", "optional", "not_applicable"]
-          }
+          "additionalProperties": { "$ref": "#/$defs/modelTypeUse" }
         },
         "status": { "type": "string", "enum": ["active", "deprecated"] },
         "base": { "type": ["string", "null"] }
@@ -66,12 +121,13 @@
     },
     "variant": {
       "type": "object",
-      "required": ["id", "inputs", "unit"],
+      "required": ["id", "inputs", "input_concepts", "unit", "formula"],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "definition": { "type": ["string", "null"] },
-        "inputs": {
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "input_concepts": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
@@ -79,7 +135,8 @@
         "window": {
           "type": ["string", "null"],
           "enum": ["LTM", "period", null]
-        }
+        },
+        "formula": { "$ref": "#/$defs/formula" }
       }
     }
   }

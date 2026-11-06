@@ -21,6 +21,73 @@ from finance_analysis.domain.model_type import (
 
 INDICATOR_STATUSES = frozenset({"active", "deprecated"})
 WINDOWS = frozenset({"LTM", "period"})
+USES = frozenset({"required", "optional", "not_applicable"})
+
+
+@dataclass(frozen=True)
+class FormulaSide:
+    plus: tuple[str, ...] = ()
+    minus: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict:
+        return {"plus": list(self.plus), "minus": list(self.minus)}
+
+    def empty(self) -> bool:
+        return not self.plus and not self.minus
+
+
+@dataclass(frozen=True)
+class IndicatorFormula:
+    """Декларативная структура формулы показателя (не исполняемый код)."""
+
+    numerator: FormulaSide | None = None
+    denominator: FormulaSide | None = None
+    one_of: frozenset[str] = field(default_factory=frozenset)
+    rate: str | None = None
+    base: str | None = None
+
+    def as_dict(self) -> dict:
+        body: dict = {}
+        if self.base is not None:
+            body["base"] = self.base
+        if self.numerator is not None and not self.numerator.empty():
+            body["numerator"] = self.numerator.as_dict()
+        if self.denominator is not None and not self.denominator.empty():
+            body["denominator"] = self.denominator.as_dict()
+        if self.one_of:
+            body["one_of"] = sorted(self.one_of)
+        if self.rate is not None:
+            body["rate"] = self.rate
+        return body
+
+
+@dataclass(frozen=True)
+class IndicatorInputs:
+    """Входы показателя с сохранением all_of / one_of."""
+
+    all_of: frozenset[str] = field(default_factory=frozenset)
+    one_of: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def concepts(self) -> frozenset[str]:
+        return self.all_of | self.one_of
+
+    def as_dict(self) -> dict:
+        return {"all_of": sorted(self.all_of), "one_of": sorted(self.one_of)}
+
+
+@dataclass(frozen=True)
+class ModelTypeUse:
+    """Применимость показателя к типу модели + выбранный вариант формулы."""
+
+    use: str
+    variant: str | None = None
+
+    def as_dict(self) -> dict:
+        body = {"use": self.use}
+        if self.variant is not None:
+            body["variant"] = self.variant
+        return body
 
 
 @dataclass(frozen=True)
@@ -28,53 +95,59 @@ class IndicatorVariant:
     """Вариант показателя (например dscr.pf / dscr.corporate_covenant)."""
 
     id: str
-    inputs: frozenset[str]
+    inputs: IndicatorInputs
     unit: str
+    formula: IndicatorFormula
     window: str | None = None
     definition: str | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "definition": self.definition,
+            "inputs": self.inputs.as_dict(),
+            "input_concepts": sorted(self.inputs.concepts),
+            "unit": self.unit,
+            "window": self.window,
+            "formula": self.formula.as_dict(),
+        }
 
 
 @dataclass(frozen=True)
 class Indicator:
-    """Публичная запись показателя финансового модели.
+    """Публичная запись показателя финансовой модели.
 
-    `inputs` — только concept_id таксономии (row_fallbacks сюда не входят).
-    `model_types` — применимость по типу: required / optional / not_applicable.
+    `inputs` — all_of / one_of concept_id таксономии (row_fallbacks сюда не входят).
+    `formula` — декларативная структура числителя/знаменателя/ставки/base.
+    `model_types` — применимость и выбранный variant по типу модели.
     `status` — active | deprecated.
     """
 
     id: str
-    inputs: frozenset[str]
+    inputs: IndicatorInputs
     unit: str
+    formula: IndicatorFormula
     definition: str | None = None
     window: str | None = None
     variants: dict[str, IndicatorVariant] = field(default_factory=dict)
-    model_types: dict[str, str] = field(default_factory=dict)
+    model_types: dict[str, ModelTypeUse] = field(default_factory=dict)
     status: str = "active"
     base: str | None = None
 
     def as_dict(self) -> dict:
-        body = {
+        return {
             "id": self.id,
             "definition": self.definition,
-            "inputs": sorted(self.inputs),
+            "inputs": self.inputs.as_dict(),
+            "input_concepts": sorted(self.inputs.concepts),
             "unit": self.unit,
             "window": self.window,
-            "variants": {
-                name: {
-                    "id": item.id,
-                    "definition": item.definition,
-                    "inputs": sorted(item.inputs),
-                    "unit": item.unit,
-                    "window": item.window,
-                }
-                for name, item in sorted(self.variants.items())
-            },
-            "model_types": dict(sorted(self.model_types.items())),
+            "formula": self.formula.as_dict(),
+            "variants": {name: item.as_dict() for name, item in sorted(self.variants.items())},
+            "model_types": {name: item.as_dict() for name, item in sorted(self.model_types.items())},
             "status": self.status,
             "base": self.base,
         }
-        return body
 
 
 @dataclass(frozen=True)
@@ -131,8 +204,11 @@ def build_financial_catalog(
             variant_expr = model_types.metric_expressions.get(key) or MetricExpression()
             variants[variant_id] = IndicatorVariant(
                 id=variant_id,
-                inputs=_concept_inputs(variant_inputs),
-                unit=result_unit(key, variant_expr, model_types.metric_expressions, concept_dimensions, dimensions),
+                inputs=_structured_inputs(variant_inputs),
+                unit=result_unit(
+                    key, variant_expr, model_types.metric_expressions, concept_dimensions, dimensions
+                ),
+                formula=formula_from_expression(variant_expr),
                 window=windows.get(key),
                 definition=definitions.get(key),
             )
@@ -142,16 +218,18 @@ def build_financial_catalog(
         window = windows.get(metric_id)
         if window is not None and window not in WINDOWS:
             raise ValueError(f"{metric_id}: окно LTM или period")
+        base = model_types.metric_bases.get(metric_id)
         indicators[metric_id] = Indicator(
             id=metric_id,
             definition=definitions.get(metric_id),
-            inputs=_concept_inputs(inputs),
+            inputs=_structured_inputs(inputs),
             unit=unit,
+            formula=formula_from_expression(expr),
             window=window,
             variants=variants,
             model_types=_applicability(model_types, metric_id),
             status=status,
-            base=model_types.metric_bases.get(metric_id),
+            base=base,
         )
     version = catalog_version_for(indicators)
     return FinancialModelCatalog(
@@ -159,6 +237,22 @@ def build_financial_catalog(
         version=version,
         stamp=stamp,
         row_fallback_ids=frozenset(model_types.row_fallbacks),
+    )
+
+
+def formula_from_expression(expr: MetricExpression) -> IndicatorFormula:
+    """Переносит декларативную структуру MetricExpression в публичную формулу."""
+
+    if expr.base and not _own_terms(expr):
+        return IndicatorFormula(base=expr.base, rate=expr.rate)
+    numerator = FormulaSide(expr.numerator_plus, expr.numerator_minus)
+    denominator = FormulaSide(expr.denominator_plus, expr.denominator_minus)
+    return IndicatorFormula(
+        numerator=None if numerator.empty() else numerator,
+        denominator=None if denominator.empty() else denominator,
+        one_of=frozenset(expr.one_of),
+        rate=expr.rate,
+        base=expr.base,
     )
 
 
@@ -171,6 +265,7 @@ def result_unit(
 ) -> str:
     """Единица/размерность результата показателя (не входов)."""
 
+    del dimensions  # размерности результата выводятся из структуры формулы
     resolved = _resolve(name, expr, expressions)
     num = [*resolved.numerator_plus, *resolved.numerator_minus]
     den = [*resolved.denominator_plus, *resolved.denominator_minus]
@@ -211,12 +306,19 @@ def _own_terms(expr: MetricExpression) -> bool:
     )
 
 
-def _concept_inputs(spec: MetricInputs) -> frozenset[str]:
-    return frozenset(spec.all_of | spec.one_of)
+def _structured_inputs(spec: MetricInputs) -> IndicatorInputs:
+    return IndicatorInputs(all_of=frozenset(spec.all_of), one_of=frozenset(spec.one_of))
 
 
-def _applicability(catalog: ModelTypeCatalog, metric_id: str) -> dict[str, str]:
-    return {type_id: catalog.use(type_id, metric_id) for type_id in sorted(catalog.types)}
+def _applicability(catalog: ModelTypeCatalog, metric_id: str) -> dict[str, ModelTypeUse]:
+    found: dict[str, ModelTypeUse] = {}
+    for type_id in sorted(catalog.types):
+        use = catalog.use(type_id, metric_id)
+        if use not in USES:
+            raise ValueError(f"{metric_id}: неизвестный use у {type_id}: {use}")
+        variant = catalog.types[type_id].variants.get(metric_id)
+        found[type_id] = ModelTypeUse(use=use, variant=variant)
+    return found
 
 
 def _dim(owner: str, name: str, concept_dimensions: Mapping[str, str]) -> str:
@@ -239,9 +341,7 @@ def validate_indicator_records(records: Sequence[Mapping]) -> None:
         if metric_id in seen:
             raise ValueError(f"дубликат показателя: {metric_id}")
         seen.add(metric_id)
-        inputs = raw.get("inputs")
-        if not isinstance(inputs, list) or any(not isinstance(item, str) or not item for item in inputs):
-            raise ValueError(f"{metric_id}: inputs — список concept_id")
+        _validate_inputs(metric_id, raw.get("inputs"))
         unit = raw.get("unit")
         if not isinstance(unit, str) or not unit:
             raise ValueError(f"{metric_id}: нужен unit")
@@ -251,9 +351,36 @@ def validate_indicator_records(records: Sequence[Mapping]) -> None:
         window = raw.get("window")
         if window is not None and window not in WINDOWS:
             raise ValueError(f"{metric_id}: окно LTM или period")
+        formula = raw.get("formula")
+        if formula is not None and not isinstance(formula, Mapping):
+            raise TypeError(f"{metric_id}: formula — объект")
         variants = raw.get("variants") or {}
         if not isinstance(variants, Mapping):
             raise TypeError(f"{metric_id}: variants — объект")
+        for variant_id, variant in variants.items():
+            if not isinstance(variant, Mapping):
+                raise TypeError(f"{metric_id}.{variant_id}: вариант — объект")
+            _validate_inputs(f"{metric_id}.{variant_id}", variant.get("inputs"))
+            if "formula" in variant and not isinstance(variant.get("formula"), Mapping):
+                raise TypeError(f"{metric_id}.{variant_id}: formula — объект")
         model_types = raw.get("model_types") or {}
         if not isinstance(model_types, Mapping):
             raise TypeError(f"{metric_id}: model_types — объект")
+        for type_id, body in model_types.items():
+            if not isinstance(body, Mapping):
+                raise TypeError(f"{metric_id}.model_types.{type_id}: объект")
+            use = body.get("use")
+            if use not in USES:
+                raise ValueError(f"{metric_id}.model_types.{type_id}: use required|optional|not_applicable")
+            variant = body.get("variant")
+            if variant is not None and (not isinstance(variant, str) or not variant):
+                raise ValueError(f"{metric_id}.model_types.{type_id}: variant — непустая строка")
+
+
+def _validate_inputs(owner: str, inputs: object) -> None:
+    if not isinstance(inputs, Mapping):
+        raise TypeError(f"{owner}: inputs — объект all_of/one_of")
+    for key in ("all_of", "one_of"):
+        values = inputs.get(key, [])
+        if not isinstance(values, list) or any(not isinstance(item, str) or not item for item in values):
+            raise ValueError(f"{owner}: inputs.{key} — список concept_id")

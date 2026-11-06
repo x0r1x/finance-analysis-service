@@ -794,6 +794,7 @@ dependencies = [
 dev = [
     { name = "boto3" },
     { name = "import-linter" },
+    { name = "jsonschema" },
     { name = "moto", extra = ["server"] },
     { name = "openpyxl" },
     { name = "pytest" },
@@ -810,6 +811,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1" },
+    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23" },
     { name = "moto", extras = ["server"], marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "opendal", specifier = ">=0.45,<0.48" },
