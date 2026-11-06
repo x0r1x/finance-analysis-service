@@ -41,7 +41,7 @@
 
 ## Оси понятия
 
-Запись в `configs/concepts/core.yaml` разделяет роль (`semantic_role`: measure, assumption, parameter), размерность (`dimension`, каталог `configs/dimensions.yaml`), временную природу (`temporal_nature`: stock, flow, rate, point_in_time) и знак (`expected_sign`: только inflow или outflow). Свёртка следует из временной природы, если у понятия нет явного `aggregation`. Конкретная валюта, МВт·ч и масштаб в понятие не входят: они остаются у строки и факта книги.
+Запись в `configs/concepts/core.yaml` разделяет роль (`semantic_role`: measure, assumption, parameter), размерность (`dimension`, каталог `configs/dimensions.yaml`), временную природу (`temporal_nature`: stock, flow, rate, point_in_time) и знак (`expected_sign`: только inflow или outflow). Роль написана у понятия. То, что ячейка — ввод, её не выбирает. `energy_tariff` — договорный parameter с основой `energy`. Прогнозный тариф был бы assumption и другим понятием. `capacity_tariff` — плата за мощность с расчётным периодом `billing_period`, это не период отчёта и не цена энергии. Свёртка по времени следует из временной природы, если нет явного `aggregation`: ставка не усредняется. Свёртка по объектам — только явный `weighted_average` с понятием-весом. Конкретная валюта, МВт·ч и масштаб в понятие не входят: они остаются у строки и факта книги.
 
 Прежние `kind` и `unit` по-прежнему читаются. `kind: ratio` — мера безразмерной размерности. `expected_sign: stock` — запас без знака. Загрузчик отдаёт старые `kind` и `unit` как алиасы, поэтому уже записанные привязки и типы моделей их понимают.
 

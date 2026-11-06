@@ -59,7 +59,7 @@ def load_dimensions(path: str | None = None) -> DimensionCatalog:
     file = Path(path) if path else dimensions_file()
     try:
         return parse_catalog(yaml.safe_load(file.read_text(encoding="utf-8")) or {})
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise GlossaryInvalid([str(exc)]) from None
 
 
@@ -70,8 +70,15 @@ def load_catalog(path: Path | None = None) -> GlossaryPackage:
         document["glossaries"],
         document["dictionaries"],
     )
-    known = load_dimensions().exponents
-    unknown = [name for name, concept in package.concepts.items() if concept.dimension not in known]
+    catalog = load_dimensions()
+    unknown = []
+    for name, concept in package.concepts.items():
+        if concept.dimension not in catalog.exponents:
+            unknown.append(name)
+            continue
+        declared = catalog.pricing_basis.get(concept.dimension)
+        if declared and concept.pricing_basis != declared:
+            unknown.append(name)
     if unknown:
         raise GlossaryInvalid(unknown)
     return package

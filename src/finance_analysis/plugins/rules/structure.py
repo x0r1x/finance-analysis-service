@@ -41,6 +41,8 @@ _ADDITIVE_FUNCTIONS = frozenset({"SUM"})
 _RATE_UNITS = frozenset({"rate", "%", "percent", "ratio", "x"})
 _MONEY_UNITS = frozenset({"money", "price"})
 _GENERIC_LABELS = frozenset({"total", "итого", "всего", "sum", "сумма", "check", "проверка", "balance", "остаток"})
+_PRICE_LOAD = frozenset({"energy_generation", "installed_capacity", "capacity_factor"})
+_PRICE_BRIDGE = frozenset({"energy", "power", "duration"})
 TOLERANCE = Decimal("0.005")
 CELLS_SHOWN = 10
 
@@ -411,10 +413,11 @@ def _powers(data: AuditInput, op: str, left: str, right: str) -> dict[str, int] 
 
 @dataclass(frozen=True)
 class DimensionMismatch(Rule):
-    """Сумма разных размерностей или частное, которое не сходится с размерностью результата.
+    """Сумма разных физических размерностей или частное, которое с ними не сходится.
 
-    Без каталога правило молчит. Непривязанная строка участвует, только если у неё
-    конкретная единица каталога или единица, унаследованная у источника формулы.
+    Одинаковые показатели — одна физическая размерность, даже если имена разные.
+    Тариф энергии и тариф мощности здесь не различаются: это соседнее правило.
+    Без каталога правило молчит.
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
@@ -479,6 +482,142 @@ class DimensionMismatch(Rule):
                 "result": result,
                 "ref_row": sides[1][1],
             }
+        return [
+            self.finding(data, locations=[data.placed(cell)], row_key=_row_of_cell(data, cell)["row_key"], params=params)
+            for cell, params in sorted(found.items())
+            if _row_of_cell(data, cell) is not None
+        ]
+
+
+def _bound_concepts(data: AuditInput) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for binding in data.bindings:
+        if binding.get("status") not in {"bound", "bound_with_warning"}:
+            continue
+        key = binding.get("row_key")
+        concept = str(binding.get("effective_concept") or binding.get("concept") or "")
+        if key and concept:
+            found.setdefault(str(key), concept)
+    return found
+
+
+def _price_of(
+    data: AuditInput, row_key: str, cache: dict[str, str | None], concepts: dict[str, str]
+) -> tuple[str | None, str | None, str | None]:
+    """Основа тарифа, расчётный период мощности и валюта конкретной единицы."""
+
+    dimension = _row_dimension(data, row_key, cache)
+    concept = concepts.get(row_key)
+    basis = data.concept_pricing.get(concept or "")
+    if basis is None and dimension:
+        basis = data.dimension_pricing.get(dimension)
+    billing = data.concept_billing.get(concept or "")
+    unit = concrete_unit(data.rows_by_key.get(row_key) or {}, data.unit_dimensions)
+    currency = data.unit_currency.get(unit) if unit else None
+    if not billing and unit:
+        billing = data.unit_billing.get(unit)
+    return basis or None, billing or None, currency
+
+
+def _has_bridge(data: AuditInput, refs: list[str], cache: dict[str, str | None], concepts: dict[str, str]) -> bool:
+    """В формуле есть объём, мощность или период. Без них тарифы разной основы не переводятся."""
+
+    for ref in refs:
+        other = _row_of_cell(data, ref)
+        if other is None:
+            continue
+        key = other["row_key"]
+        if concepts.get(key) in _PRICE_LOAD:
+            return True
+        if _row_dimension(data, key, cache) in _PRICE_BRIDGE:
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class PricingBasisMismatch(Rule):
+    """Тариф энергии и тариф мощности не складываются и не переводятся друг в друга сами.
+
+    Физические показатели у них могут совпасть. Расчётный период мощности — не период
+    отчёта книги. Разная валюта цены требует курса, а не сложения. Без каталога основы
+    правило молчит.
+    """
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        if not data.dimension_exponents:
+            return []
+        if not any((data.concept_pricing, data.dimension_pricing, data.unit_currency, data.concept_billing, data.unit_billing)):
+            return []
+        cache: dict[str, str | None] = {}
+        concepts = _bound_concepts(data)
+        found: dict[str, dict] = {}
+        for cell, link in data.link_cells.items():
+            own = _row_of_cell(data, cell)
+            if own is None:
+                continue
+            refs = [ref for ref in dict.fromkeys(link.refs) if ref]
+            operation = _binary(link.formula, link.refs)
+            additive = operation is None and _additive(link.formula) and len(refs) >= 2
+            copy = operation is None and not _additive(link.formula) and len(set(refs)) == 1
+            if not additive and operation is None and not copy:
+                continue
+            sides = []
+            for ref in refs:
+                other = _row_of_cell(data, ref)
+                if other is None or other["row_key"] == own["row_key"]:
+                    continue
+                basis, billing, currency = _price_of(data, other["row_key"], cache, concepts)
+                if basis is None and billing is None and currency is None:
+                    continue
+                sides.append((basis, billing, currency, other["row_key"]))
+            if not sides:
+                continue
+            if additive:
+                signatures = set()
+                for ref in refs:
+                    other = _row_of_cell(data, ref)
+                    if other is None or other["row_key"] == own["row_key"]:
+                        continue
+                    sign = _signature(data, _row_dimension(data, other["row_key"], cache))
+                    if sign is not None:
+                        signatures.add(sign)
+                if len(signatures) >= 2:
+                    continue
+                priced = [item for item in sides if item[0]]
+                if len(priced) < 2:
+                    result = _price_of(data, own["row_key"], cache, concepts)
+                    if result[0] and priced and result[0] != priced[0][0]:
+                        found[cell] = {"reason": "pricing_basis", "basis": result[0], "ref_basis": priced[0][0], "ref_row": priced[0][3]}
+                    continue
+                bases = {item[0] for item in priced}
+                if len(bases) > 1:
+                    other = next(item for item in priced if item[0] != priced[0][0])
+                    found[cell] = {"reason": "pricing_basis", "basis": other[0], "ref_basis": priced[0][0], "ref_row": other[3]}
+                    continue
+                result = _price_of(data, own["row_key"], cache, concepts)
+                if result[0] and result[0] not in bases:
+                    found[cell] = {"reason": "pricing_basis", "basis": result[0], "ref_basis": priced[0][0], "ref_row": priced[0][3]}
+                    continue
+                periods = {item[1] for item in priced if item[1]}
+                if len(periods) > 1:
+                    other = next(item for item in priced if item[1] and item[1] != priced[0][1])
+                    found[cell] = {
+                        "reason": "billing_period",
+                        "billing_period": other[1],
+                        "ref_billing_period": priced[0][1],
+                        "ref_row": other[3],
+                    }
+                    continue
+                currencies = {item[2] for item in priced if item[2]}
+                if len(currencies) > 1:
+                    other = next(item for item in priced if item[2] and item[2] != priced[0][2])
+                    found[cell] = {"reason": "currency", "currency": other[2], "ref_currency": priced[0][2], "ref_row": other[3]}
+                continue
+            result = _price_of(data, own["row_key"], cache, concepts)
+            operand = next((item for item in sides if item[0] and item[0] != result[0]), None)
+            if result[0] is None or operand is None or _has_bridge(data, refs, cache, concepts):
+                continue
+            found[cell] = {"reason": "conversion", "basis": result[0], "ref_basis": operand[0], "ref_row": operand[3]}
         return [
             self.finding(data, locations=[data.placed(cell)], row_key=_row_of_cell(data, cell)["row_key"], params=params)
             for cell, params in sorted(found.items())
@@ -772,6 +911,16 @@ DIMENSION_MISMATCH = DimensionMismatch(
     "high",
     ("ICAEW «clear units»",),
     "Размерности в формуле не сходятся",
+    ROWS_LINKS,
+    2,
+)
+PRICING_BASIS_MISMATCH = PricingBasisMismatch(
+    "pricing_basis_mismatch",
+    "1",
+    "logic",
+    "medium",
+    ("ICAEW «clear units»",),
+    "Тарифная основа или валюта цены не сходятся",
     ROWS_LINKS,
     2,
 )

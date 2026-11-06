@@ -238,6 +238,10 @@ class Concept:
     expand: Mapping[str, str]
     broader: str | None
     aggregation: str | None = None
+    pricing_basis: str | None = None
+    billing_period: str | None = None
+    object_aggregation: str | None = None
+    weight: str | None = None
 
     @property
     def kind(self) -> str:
@@ -259,6 +263,8 @@ class Concept:
 
     @property
     def effective_aggregation(self) -> str:
+        """Свёртка по времени. Среднее только если оно написано. По объектам этот метод не ходит."""
+
         return self.aggregation or default_aggregation(self.temporal_nature)
 
     def sign_conflict(self, row_sign: str | None) -> bool:
@@ -374,6 +380,9 @@ def build_package(document: dict, glossaries: Mapping[str, dict], dictionaries: 
         if not isinstance(glossary, dict):
             raise GlossaryInvalid([name])
         concepts[name] = _concept(name, body if isinstance(body, dict) else {}, glossary, owned)
+    missing_weight = [concept.weight for concept in concepts.values() if concept.weight and concept.weight not in concepts]
+    if missing_weight:
+        raise GlossaryInvalid([item for item in missing_weight if item])
     return GlossaryPackage(
         taxonomy=taxonomy,
         concepts=MappingProxyType(concepts),
@@ -411,6 +420,10 @@ def _concept(name: str, body: dict, glossary: dict, owned: dict[str, LabelHit]) 
         temporal_nature=str(axes["temporal_nature"]),
         expected_sign=axes["expected_sign"] if isinstance(axes["expected_sign"], str) else None,
         aggregation=axes["aggregation"] if isinstance(axes["aggregation"], str) else None,
+        pricing_basis=axes["pricing_basis"] if isinstance(axes["pricing_basis"], str) else None,
+        billing_period=axes["billing_period"] if isinstance(axes["billing_period"], str) else None,
+        object_aggregation=axes["object_aggregation"] if isinstance(axes["object_aggregation"], str) else None,
+        weight=axes["weight"] if isinstance(axes["weight"], str) else None,
         expects_formula=bool(body.get("expects_formula", False)),
         prefer=_optional_str(body.get("prefer"), name),
         composition=_names(body.get("composition"), name),

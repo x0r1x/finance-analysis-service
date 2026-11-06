@@ -40,6 +40,7 @@ PHASE2 = {
     "missing_unit",
     "hardcoded_value_in_formula_row",
     "dimension_mismatch",
+    "pricing_basis_mismatch",
     "scale_mismatch",
     "unit_mismatch",
     "period_gap",

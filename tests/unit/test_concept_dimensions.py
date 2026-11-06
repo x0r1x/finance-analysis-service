@@ -46,12 +46,33 @@ def test_catalog_migrates_energy_payback_and_keeps_coarse_aliases():
     )
     assert payback.effective_aggregation == "last"
     tariff = package.concepts["energy_tariff"]
-    assert (tariff.semantic_role, tariff.dimension, tariff.kind, tariff.unit) == (
+    assert (tariff.semantic_role, tariff.dimension, tariff.kind, tariff.unit, tariff.pricing_basis) == (
         "parameter",
         "currency_per_energy",
         "parameter",
         "currency_per_energy",
+        "energy",
     )
+    assert tariff.billing_period is None
+    assert tariff.object_aggregation is None
+    capacity_tariff = package.concepts["capacity_tariff"]
+    assert (capacity_tariff.semantic_role, capacity_tariff.dimension, capacity_tariff.pricing_basis, capacity_tariff.billing_period) == (
+        "parameter",
+        "currency_per_power_time",
+        "capacity",
+        "year",
+    )
+    for name in ("discount_rate", "wacc", "cap_rate", "vacancy", "capacity_factor", "degradation"):
+        assert package.concepts[name].semantic_role == "assumption", name
+        assert package.concepts[name].effective_aggregation == "none"
+    for name in ("dscr_lockup", "dscr_default", "target_dscr"):
+        assert package.concepts[name].semantic_role == "parameter", name
+    catalog = load_dimensions()
+    assert catalog.pricing_basis["currency_per_energy"] == "energy"
+    assert catalog.pricing_basis["currency_per_power_time"] == "capacity"
+    assert catalog.unit_currency["RUB/MWh"] == "RUB"
+    assert catalog.unit_billing_period["RUB/MW/year"] == "year"
+    assert catalog.unit_billing_period["RUB/MW/month"] == "month"
     assert tariff.effective_aggregation == "none"
     rate = package.concepts["discount_rate"]
     assert rate.semantic_role == "assumption"
@@ -63,7 +84,6 @@ def test_catalog_migrates_energy_payback_and_keeps_coarse_aliases():
     assert package.concepts["debt_outstanding"].expected_sign is None
     assert package.concepts["debt_outstanding"].temporal_nature == "stock"
     assert package.concepts["vacancy"].validation_range == ("0", "1")
-    catalog = load_dimensions()
     assert catalog.units["MWh"] == "energy"
     assert catalog.units["years"] == "duration"
     assert catalog.units["RUB/MWh"] == "currency_per_energy"
@@ -219,8 +239,177 @@ def test_rule_flags_mismatched_sum_and_accepts_dscr_ratio():
             "currency_per_power_time": {"money": 1, "power": -1, "duration": -1},
         },
         unit_dimensions={**units, "RUB/MW/year": "currency_per_power_time"},
+        dimension_pricing={"currency_per_energy": "energy", "currency_per_power_time": "capacity"},
+        concept_pricing={"energy_tariff": "energy", "capacity_payment": "capacity"},
+        unit_currency={"RUB/MWh": "RUB", "RUB/MW/year": "RUB"},
+        unit_billing={"RUB/MW/year": "year"},
     )
     assert check("dimension_mismatch", same) == []
+    assert [item.params["reason"] for item in check("pricing_basis_mismatch", same)] == ["pricing_basis"]
+
+
+def _priced(rows, formula_refs, bindings, concepts, **extra) -> AuditInput:
+    exponents = _exponents()
+    exponents["currency_per_power_time"] = {"money": 1, "power": -1, "duration": -1}
+    return AuditInput(
+        rows=rows,
+        periods=PERIODS,
+        facts=[fact(A, "S!C5", "2024", "1"), fact(B, "S!C6", "2024", "2"), fact(C, "S!C7", "2024", "3")],
+        links=link("S!C7", formula_refs[0], C, "2024", formula_refs[1]),
+        bindings=bindings,
+        concept_dimensions=concepts,
+        dimension_exponents=exponents,
+        unit_dimensions={
+            "RUB/MWh": "currency_per_energy",
+            "USD/MWh": "currency_per_energy",
+            "RUB/MW/year": "currency_per_power_time",
+            "RUB/MW/month": "currency_per_power_time",
+            "MWh": "energy",
+            "MW": "power",
+            "years": "duration",
+            "%": "ratio",
+        },
+        concept_pricing=extra.get("concept_pricing", {}),
+        concept_billing=extra.get("concept_billing", {}),
+        dimension_pricing={"currency_per_energy": "energy", "currency_per_power_time": "capacity"},
+        unit_currency={"RUB/MWh": "RUB", "USD/MWh": "USD", "RUB/MW/year": "RUB", "RUB/MW/month": "RUB"},
+        unit_billing={"RUB/MW/year": "year", "RUB/MW/month": "month"},
+    )
+
+
+def test_tariff_basis_is_not_the_physical_dimension():
+    concepts = {
+        "energy_tariff": "currency_per_energy",
+        "capacity_tariff": "currency_per_power_time",
+        "capacity_month": "currency_per_power_time",
+        "energy_generation": "energy",
+        "installed_capacity": "power",
+        "capacity_factor": "ratio",
+    }
+    pricing = {
+        "energy_tariff": "energy",
+        "capacity_tariff": "capacity",
+        "capacity_month": "capacity",
+        "capacity_factor": None,
+    }
+    pricing = {key: value for key, value in pricing.items() if value}
+    billing = {"capacity_tariff": "year", "capacity_month": "month"}
+    energy = [row(A, unit="RUB/MWh"), row(B, unit="RUB/MWh"), row(C, unit="RUB/MWh")]
+    same_energy = _priced(
+        energy,
+        ("=C5+C6", ("S!C5", "S!C6")),
+        [_bound(A, "energy_tariff"), _bound(B, "energy_tariff"), _bound(C, "energy_tariff")],
+        concepts,
+        concept_pricing=pricing,
+    )
+    assert check("dimension_mismatch", same_energy) == []
+    assert check("pricing_basis_mismatch", same_energy) == []
+    capacity = [row(A, unit="RUB/MW/year"), row(B, unit="RUB/MW/year"), row(C, unit="RUB/MW/year")]
+    same_capacity = _priced(
+        capacity,
+        ("=C5+C6", ("S!C5", "S!C6")),
+        [_bound(A, "capacity_tariff"), _bound(B, "capacity_tariff"), _bound(C, "capacity_tariff")],
+        concepts,
+        concept_pricing=pricing,
+        concept_billing=billing,
+    )
+    assert check("dimension_mismatch", same_capacity) == []
+    assert check("pricing_basis_mismatch", same_capacity) == []
+    mixed = _priced(
+        [row(A, unit="RUB/MWh"), row(B, unit="RUB/MW/year"), row(C, unit="RUB/MWh")],
+        ("=C5+C6", ("S!C5", "S!C6")),
+        [_bound(A, "energy_tariff"), _bound(B, "capacity_tariff"), _bound(C, "energy_tariff")],
+        concepts,
+        concept_pricing=pricing,
+        concept_billing=billing,
+    )
+    assert check("dimension_mismatch", mixed) == []
+    assert [item.params["reason"] for item in check("pricing_basis_mismatch", mixed)] == ["pricing_basis"]
+    months = _priced(
+        [row(A, unit="RUB/MW/year"), row(B, unit="RUB/MW/month"), row(C, unit="RUB/MW/year")],
+        ("=C5+C6", ("S!C5", "S!C6")),
+        [_bound(A, "capacity_tariff"), _bound(B, "capacity_month"), _bound(C, "capacity_tariff")],
+        concepts,
+        concept_pricing=pricing,
+        concept_billing=billing,
+    )
+    assert [item.params["reason"] for item in check("pricing_basis_mismatch", months)] == ["billing_period"]
+    currencies = _priced(
+        [row(A, unit="RUB/MWh"), row(B, unit="USD/MWh"), row(C, unit="RUB/MWh")],
+        ("=C5+C6", ("S!C5", "S!C6")),
+        [_bound(A, "energy_tariff"), _bound(B, "energy_tariff"), _bound(C, "energy_tariff")],
+        concepts,
+        concept_pricing=pricing,
+    )
+    assert check("dimension_mismatch", currencies) == []
+    assert [item.params["reason"] for item in check("pricing_basis_mismatch", currencies)] == ["currency"]
+    copied = _priced(
+        [row(A, unit="RUB/MW/year"), row(B, unit="years"), row(C, unit="RUB/MWh")],
+        ("=C5", ("S!C5",)),
+        [_bound(A, "capacity_tariff"), _bound(C, "energy_tariff")],
+        concepts,
+        concept_pricing=pricing,
+        concept_billing=billing,
+    )
+    assert [item.params["reason"] for item in check("pricing_basis_mismatch", copied)] == ["conversion"]
+    bridged = _priced(
+        [row(A, unit="RUB/MW/year"), row(B, unit="%"), row(C, unit="RUB/MWh")],
+        ("=C5*C6", ("S!C5", "S!C6")),
+        [_bound(A, "capacity_tariff"), _bound(B, "capacity_factor"), _bound(C, "energy_tariff")],
+        concepts,
+        concept_pricing=pricing,
+        concept_billing=billing,
+    )
+    assert check("dimension_mismatch", bridged) == []
+    assert check("pricing_basis_mismatch", bridged) == []
+
+
+def test_role_is_written_and_rates_are_not_averaged():
+    kept = _package(
+        {"semantic_role": "parameter", "dimension": "ratio", "temporal_nature": "rate", "input": True}
+    ).concepts["cfads"]
+    assert kept.semantic_role == "parameter"
+    assert kept.effective_aggregation == "none"
+    assert kept.object_aggregation is None
+    explicit = _package(
+        {"semantic_role": "assumption", "dimension": "ratio", "temporal_nature": "rate", "aggregation": "average"}
+    ).concepts["cfads"]
+    assert explicit.effective_aggregation == "average"
+    with pytest.raises(GlossaryInvalid):
+        _package({"semantic_role": "assumption", "dimension": "ratio", "object_aggregation": "weighted_average"})
+    with pytest.raises(GlossaryInvalid):
+        _package(
+            {
+                "semantic_role": "assumption",
+                "dimension": "ratio",
+                "temporal_nature": "rate",
+                "object_aggregation": "weighted_average",
+                "weight": "debt_outstanding",
+            }
+        )
+    weighted = build_package(
+        {
+            "taxonomy": "core-1",
+            "concepts": {
+                "portfolio_rate": {
+                    "semantic_role": "measure",
+                    "dimension": "ratio",
+                    "temporal_nature": "rate",
+                    "object_aggregation": "weighted_average",
+                    "weight": "debt_outstanding",
+                },
+                "debt_outstanding": {"semantic_role": "measure", "dimension": "money", "temporal_nature": "stock"},
+            },
+        },
+        {
+            "portfolio_rate": {"concept": "portfolio_rate", "pref": {"ru": "Ставка", "en": "Rate"}},
+            "debt_outstanding": {"concept": "debt_outstanding", "pref": {"ru": "Долг", "en": "Debt"}},
+        },
+        _DICTS,
+    ).concepts["portfolio_rate"]
+    assert weighted.object_aggregation == "weighted_average"
+    assert weighted.weight == "debt_outstanding"
+    assert weighted.effective_aggregation == "none"
 
 
 def test_concrete_unit_and_scale_follow_the_same_source_walk():

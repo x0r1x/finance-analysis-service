@@ -1,0 +1,10 @@
+concept: capacity_tariff
+pref:
+  en: "Capacity tariff"
+  ru: "Тариф за мощность"
+alt:
+  en: ["capacity payment"]
+  ru: ["плата за мощность", "плата за установленную мощность"]
+definition:
+  en: "Contracted payment per unit of capacity for a billing period. Not an energy price, and not converted into one without load, volume and that period."
+  ru: "Договорная плата за единицу мощности на расчётный период. Это не цена энергии и само в неё не переводится."

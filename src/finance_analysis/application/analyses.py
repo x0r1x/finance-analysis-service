@@ -528,6 +528,7 @@ class Analyses:
         from finance_analysis.application.catalog import load_dimensions
 
         catalog = load_dimensions()
+        pricing, billing = await self.service.glossary.concept_price_facts(target.head.versions.get("glossary"))
         return AuditInput(
             rows=dim_rows,
             periods=periods,
@@ -540,6 +541,11 @@ class Analyses:
             concept_dimensions=await self.service.glossary.concept_dimensions(target.head.versions.get("glossary")),
             dimension_exponents={name: dict(powers) for name, powers in catalog.exponents.items()},
             unit_dimensions=dict(catalog.units),
+            concept_pricing=pricing,
+            concept_billing=billing,
+            dimension_pricing=dict(catalog.pricing_basis),
+            unit_currency=dict(catalog.unit_currency),
+            unit_billing=dict(catalog.unit_billing_period),
             profile=await self._profile(target.head),
             absent=await self._absent(job_id, target),
             applicable_metrics=live,

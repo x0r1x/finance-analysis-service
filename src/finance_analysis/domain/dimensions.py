@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 ROLES = frozenset({"measure", "assumption", "parameter"})
 TEMPORAL = frozenset({"stock", "flow", "rate", "point_in_time"})
 SIGNS = frozenset({"inflow", "outflow"})
 AGGREGATIONS = frozenset({"sum", "last", "average", "none"})
+PRICING_BASES = frozenset({"energy", "capacity"})
+BILLING_PERIODS = frozenset({"year", "quarter", "month", "day"})
+OBJECT_AGGREGATIONS = frozenset({"weighted_average"})
 _AGGREGATION = {"flow": "sum", "stock": "last", "rate": "none", "point_in_time": "last"}
 _KIND_ROLE = {"measure": "measure", "parameter": "parameter", "assumption": "assumption", "ratio": "measure"}
 _UNIT_DIMENSION = {"money": "money", "ratio": "ratio", "percent": "ratio", "count": "count"}
@@ -27,6 +30,9 @@ class DimensionCatalog:
 
     exponents: Mapping[str, Mapping[str, int]]
     units: Mapping[str, str]
+    pricing_basis: Mapping[str, str] = field(default_factory=dict)
+    unit_currency: Mapping[str, str] = field(default_factory=dict)
+    unit_billing_period: Mapping[str, str] = field(default_factory=dict)
 
     def same(self, left: str, right: str) -> bool:
         one, other = self.exponents.get(left), self.exponents.get(right)
@@ -59,18 +65,27 @@ def parse_catalog(document: dict) -> DimensionCatalog:
         raise ValueError("dimensions")
     exponents: dict[str, dict[str, int]] = {}
     units: dict[str, str] = {}
+    pricing: dict[str, str] = {}
+    currencies: dict[str, str] = {}
+    billing: dict[str, str] = {}
     compounds: list[tuple[str, dict]] = []
     for key, body in raw.items():
         name = str(key)
         if not _NAME.fullmatch(name) or not isinstance(body, dict):
             raise ValueError(name)
-        listed = body.get("units") or []
-        if not isinstance(listed, list) or not all(isinstance(item, str) and item for item in listed):
+        basis = body.get("pricing_basis")
+        if basis is not None and (not isinstance(basis, str) or basis not in PRICING_BASES):
             raise ValueError(name)
-        for unit in listed:
+        if isinstance(basis, str):
+            pricing[name] = basis
+        for unit, currency, period in _unit_facts(body.get("units"), name):
             if unit in units:
                 raise ValueError(unit)
             units[unit] = name
+            if currency is not None:
+                currencies[unit] = currency
+            if period is not None:
+                billing[unit] = period
         if body.get("dimensionless") is True or name == "ratio":
             exponents[name] = {}
             continue
@@ -90,13 +105,38 @@ def parse_catalog(document: dict) -> DimensionCatalog:
                 raise ValueError(name)
             cleaned[str(base)] = power
         exponents[name] = cleaned
-    return DimensionCatalog(exponents, units)
+    return DimensionCatalog(exponents, units, pricing, currencies, billing)
 
 
 def default_aggregation(temporal: str) -> str:
-    """Поток суммируется, запас берётся последним, ставка сама не сворачивается."""
+    """Свёртка по времени. Ставка и коэффициент не усредняются, пока это не написано явно."""
 
     return _AGGREGATION[temporal]
+
+
+def _unit_facts(raw: object, name: str) -> list[tuple[str, str | None, str | None]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TypeError(name)
+    found: list[tuple[str, str | None, str | None]] = []
+    for item in raw:
+        if isinstance(item, str) and item:
+            found.append((item, None, None))
+            continue
+        if not isinstance(item, dict):
+            raise TypeError(name)
+        unit = item.get("unit")
+        currency = item.get("currency")
+        period = item.get("billing_period")
+        if not isinstance(unit, str) or not unit:
+            raise ValueError(name)
+        if currency is not None and not isinstance(currency, str):
+            raise ValueError(name)
+        if period is not None and (not isinstance(period, str) or period not in BILLING_PERIODS):
+            raise ValueError(name)
+        found.append((unit, currency, period))
+    return found
 
 
 def coarse_kind(role: str, dimension: str) -> str:
@@ -118,8 +158,9 @@ def coarse_unit(dimension: str) -> str:
 def resolve_axes(body: dict) -> dict[str, str | None]:
     """Новые оси или устаревшие `kind`/`unit`. Пустая строка в значении — ошибка вызывающего.
 
-    Возвращает semantic_role, dimension, temporal_nature, expected_sign, aggregation.
-    `aggregation` is None, когда в записи его нет: действует правило по временной природе.
+    Роль берётся только из записи понятия. То, что ячейка — ввод, роль не задаёт.
+    `aggregation` — свёртка по времени. Её нет в записи: действует правило по временной природе,
+    и это никогда не среднее. `object_aggregation` по времени не выводится.
     """
 
     if not isinstance(body, dict):
@@ -165,10 +206,31 @@ def resolve_axes(body: dict) -> dict[str, str | None]:
         raise ValueError("expected_sign")
     if aggregation is not None and (not isinstance(aggregation, str) or aggregation not in AGGREGATIONS):
         raise ValueError("aggregation")
+    pricing = body.get("pricing_basis")
+    billing = body.get("billing_period")
+    across = body.get("object_aggregation")
+    weight = body.get("weight")
+    if pricing is not None and (not isinstance(pricing, str) or pricing not in PRICING_BASES):
+        raise ValueError("pricing_basis")
+    if pricing == "capacity" and (not isinstance(billing, str) or billing not in BILLING_PERIODS):
+        raise ValueError("billing_period")
+    if billing is not None and pricing != "capacity":
+        raise ValueError("billing_period")
+    if across is not None and (not isinstance(across, str) or across not in OBJECT_AGGREGATIONS):
+        raise ValueError("object_aggregation")
+    if across == "weighted_average":
+        if not isinstance(weight, str) or not _NAME.fullmatch(weight):
+            raise ValueError("weight")
+    elif weight is not None:
+        raise ValueError("weight")
     return {
         "semantic_role": role,
         "dimension": dimension,
         "temporal_nature": temporal,
         "expected_sign": sign,
         "aggregation": aggregation,
+        "pricing_basis": pricing if isinstance(pricing, str) else None,
+        "billing_period": billing if isinstance(billing, str) else None,
+        "object_aggregation": across if isinstance(across, str) else None,
+        "weight": weight if isinstance(weight, str) else None,
     }
