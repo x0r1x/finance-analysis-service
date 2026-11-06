@@ -2741,9 +2741,17 @@ class FasService:
         wait_sec: float,
         variant: str | None = None,
     ) -> dict | Accepted:
-        """Read-only трассировка показателя по трём графам (фаза 4, G2)."""
+        """Read-only трассировка входа показателя (фаза 4, G2).
 
-        from finance_analysis.domain.graphs import check_metric_physical_trace
+        Отсутствие обязательных `dim_row` / `fact_observation` — ошибка доступности
+        трассировки, а не `missing_trace=no_cell`. `graph_links` опционален:
+        отсутствие помечает `physical_lineage_complete=false`.
+        """
+
+        from finance_analysis.domain.graphs import (
+            assemble_metric_trace_response,
+            check_metric_physical_trace,
+        )
 
         head = await self._head_ready(job_id, actor, wait_sec)
         if isinstance(head, Accepted):
@@ -2753,16 +2761,22 @@ class FasService:
             return bindings
         try:
             rows = await self._dataset_rows(job_id, head, "dim_row")
-        except (NotFound, StopIteration):
-            rows = []
+        except (NotFound, StopIteration) as exc:
+            raise PreconditionFailed(
+                "трассировка недоступна: нет dim_row в сборке"
+            ) from exc
         try:
             facts = await self._dataset_rows(job_id, head, "fact_observation")
-        except (NotFound, StopIteration):
-            facts = []
+        except (NotFound, StopIteration) as exc:
+            raise PreconditionFailed(
+                "трассировка недоступна: нет fact_observation в сборке"
+            ) from exc
         try:
             links = await self._dataset_rows(job_id, head, "graph_links")
+            graph_links_available = True
         except (NotFound, StopIteration):
             links = []
+            graph_links_available = False
 
         indicator = self.financial_catalog.get(metric_id)
         inputs = None
@@ -2775,7 +2789,7 @@ class FasService:
                 inputs = spec.inputs.as_dict()
             else:
                 inputs = indicator.inputs.as_dict()
-        trace, findings = check_metric_physical_trace(
+        trace, _findings = check_metric_physical_trace(
             metric_id,
             inputs=inputs,
             bindings=bindings,
@@ -2783,12 +2797,13 @@ class FasService:
             facts=facts,
             graph_links=links,
             variant=resolved_variant,
+            catalog_version=self.financial_catalog.version,
+            model_id=job_id,
+            build_key=head.build_key,
+            graph_links_available=graph_links_available,
         )
-        body = trace.as_dict()
-        body["catalog_version"] = self.financial_catalog.version
-        body["build_key"] = head.build_key
-        body["integrity"] = [item.as_dict() for item in findings]
-        return body
+        # catalog_version / build_key уже в trace; ответ валидируется схемой.
+        return assemble_metric_trace_response(trace)
 
     def capabilities(self) -> dict:
         storage = {

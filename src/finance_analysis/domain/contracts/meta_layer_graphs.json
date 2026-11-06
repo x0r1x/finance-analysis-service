@@ -23,7 +23,7 @@
     "semRelEdgeId": {
       "type": "string",
       "pattern": "^sem:rel:(composed_of|broader_than|related_to):.+->.+$",
-      "description": "Ребро таксономии; не вход метрики и не строка graph_links"
+      "description": "Id-пространство таксономии; не входит в ответ MetricTrace (см. docs)"
     },
     "metricInEdgeId": {
       "type": "string",
@@ -32,8 +32,16 @@
     },
     "missingTrace": {
       "type": ["string", "null"],
-      "enum": ["metric_unknown", "no_primary_binding", "no_cell", null],
-      "description": "Явная причина отсутствия физического следа; null если cell_ids непусты"
+      "enum": [
+        "metric_unknown",
+        "no_primary_binding",
+        "no_cell",
+        "stale_binding",
+        "fact_dataset_unavailable",
+        "dim_row_unavailable",
+        null
+      ],
+      "description": "Явная причина отсутствия следа; null если cell_ids непусты (на шаге) или трассировка полна (на корне)"
     },
     "excelLink": {
       "type": "object",
@@ -45,6 +53,25 @@
         "ref_cell": { "type": ["string", "null"] },
         "formula_class": { "type": ["string", "null"] },
         "truncated": { "type": "boolean" }
+      }
+    },
+    "traceIntegrityFinding": {
+      "type": "object",
+      "required": ["metric_id", "concept", "binding_key", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "metric_id": { "type": "string", "minLength": 1 },
+        "concept": { "type": "string", "minLength": 1 },
+        "binding_key": { "type": "string", "minLength": 1 },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "primary_binding_without_trace_or_reason",
+            "cell_ids_with_missing_trace",
+            "ambiguous_primary_binding",
+            "foreign_build_key"
+          ]
+        }
       }
     },
     "traceStep": {
@@ -83,9 +110,18 @@
     },
     "metricTrace": {
       "type": "object",
-      "required": ["metric_id", "variant", "build_key", "model_id", "steps", "missing_trace"],
+      "required": [
+        "metric_id",
+        "variant",
+        "build_key",
+        "model_id",
+        "steps",
+        "missing_trace",
+        "integrity",
+        "physical_lineage_complete"
+      ],
       "additionalProperties": false,
-      "description": "Read-only трассировка metric → concept → binding_key → cell_id",
+      "description": "Read-only трассировка входа метрики: metric → concept → binding_key → cell_id. Таксономия (sem:rel) сюда не входит.",
       "properties": {
         "metric_id": { "type": "string", "minLength": 1 },
         "variant": { "type": ["string", "null"] },
@@ -96,6 +132,14 @@
         "steps": {
           "type": "array",
           "items": { "$ref": "#/$defs/traceStep" }
+        },
+        "integrity": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/traceIntegrityFinding" }
+        },
+        "physical_lineage_complete": {
+          "type": "boolean",
+          "description": "false, если graph_links отсутствует в сборке (связи формул Excel не проверялись)"
         }
       }
     },

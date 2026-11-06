@@ -2,6 +2,9 @@
 
 Контракт: docs/meta-layer-graphs.md. Не пишет датасеты и не схлопывает графы
 в одну таблицу рёбер. graph_links — только физический Excel-граф.
+
+MetricTrace — трассировка **входа метрики** (binding + cells). Таксономические
+рёбра ``sem:rel`` живут в отдельном id-пространстве и в этот ответ не входят.
 """
 
 from __future__ import annotations
@@ -21,9 +24,19 @@ _BOUND = frozenset({"bound", "bound_with_warning"})
 MISSING_METRIC_UNKNOWN = "metric_unknown"
 MISSING_NO_PRIMARY = "no_primary_binding"
 MISSING_NO_CELL = "no_cell"
-MISSING_CODES = frozenset({MISSING_METRIC_UNKNOWN, MISSING_NO_PRIMARY, MISSING_NO_CELL})
-
-
+MISSING_STALE = "stale_binding"
+MISSING_FACT_UNAVAILABLE = "fact_dataset_unavailable"
+MISSING_DIM_UNAVAILABLE = "dim_row_unavailable"
+MISSING_CODES = frozenset(
+    {
+        MISSING_METRIC_UNKNOWN,
+        MISSING_NO_PRIMARY,
+        MISSING_NO_CELL,
+        MISSING_STALE,
+        MISSING_FACT_UNAVAILABLE,
+        MISSING_DIM_UNAVAILABLE,
+    }
+)
 class GraphTraceError(ValueError):
     """Нарушение инварианта трассировки или контракта рёбер."""
 
@@ -60,6 +73,19 @@ class TraceStep:
 
 
 @dataclass(frozen=True)
+class TraceIntegrityFinding:
+    """Проблема целостности следа или неоднозначность исходных данных."""
+
+    metric_id: str
+    concept: str
+    binding_key: str
+    reason: str
+
+    def as_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class MetricTrace:
     metric_id: str
     variant: str | None
@@ -68,6 +94,8 @@ class MetricTrace:
     steps: tuple[TraceStep, ...] = ()
     missing_trace: str | None = None
     catalog_version: str | None = None
+    integrity: tuple[TraceIntegrityFinding, ...] = ()
+    physical_lineage_complete: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -78,20 +106,9 @@ class MetricTrace:
             "catalog_version": self.catalog_version,
             "missing_trace": self.missing_trace,
             "steps": [step.as_dict() for step in self.steps],
+            "integrity": [item.as_dict() for item in self.integrity],
+            "physical_lineage_complete": self.physical_lineage_complete,
         }
-
-
-@dataclass(frozen=True)
-class TraceIntegrityFinding:
-    """Вход метрики с основной привязкой без физического следа и без явной причины."""
-
-    metric_id: str
-    concept: str
-    binding_key: str
-    reason: str
-
-    def as_dict(self) -> dict[str, str]:
-        return asdict(self)
 
 
 def edge_digest(*parts: str) -> str:
@@ -108,6 +125,8 @@ def semantic_binding_edge_id(model_id: str, build_key: str, binding_key: str) ->
 
 
 def semantic_relation_edge_id(rel_type: str, source: str, target: str) -> str:
+    """Стабильный id таксономического ребра (не входит в MetricTrace)."""
+
     return f"sem:rel:{rel_type}:{source}->{target}"
 
 
@@ -147,57 +166,104 @@ def trace_metric(
     catalog_version: str | None = None,
     model_id: str | None = None,
     build_key: str | None = None,
+    facts_available: bool = True,
+    rows_available: bool = True,
+    graph_links_available: bool = True,
 ) -> MetricTrace:
-    """Собрать read-only трассировку metric → concept → binding_key → cell_id.
+    """Собрать read-only трассировку входа метрики → concept → binding → cell.
 
-    ``inputs`` — ``{"all_of": [...], "one_of": [...]}`` из каталога. Если ``None``,
-    показатель считается неизвестным → ``missing_trace=metric_unknown``.
+    ``facts_available=False`` / ``rows_available=False`` — датасет отсутствует в
+    манифесте (не пустой список). Пустой ``facts`` при ``facts_available=True``
+    значит датасет есть, но ячеек по строке нет → ``no_cell``.
     """
 
     resolved_model, resolved_build = _book_keys(bindings, rows, facts, model_id, build_key)
+    base = {
+        "metric_id": metric_id,
+        "variant": variant,
+        "build_key": resolved_build,
+        "model_id": resolved_model,
+        "catalog_version": catalog_version,
+        "physical_lineage_complete": bool(graph_links_available),
+    }
     if inputs is None:
-        return MetricTrace(
-            metric_id=metric_id,
-            variant=variant,
-            build_key=resolved_build,
-            model_id=resolved_model,
-            steps=(),
-            missing_trace=MISSING_METRIC_UNKNOWN,
-            catalog_version=catalog_version,
-        )
+        return MetricTrace(**base, steps=(), missing_trace=MISSING_METRIC_UNKNOWN, integrity=())
+    if not rows_available:
+        return MetricTrace(**base, steps=(), missing_trace=MISSING_DIM_UNAVAILABLE, integrity=())
+    if not facts_available:
+        return MetricTrace(**base, steps=(), missing_trace=MISSING_FACT_UNAVAILABLE, integrity=())
 
-    row_by_binding = _row_keys(rows, bindings)
-    cells_by_row = _cells_by_row(facts)
-    steps: list[TraceStep] = []
+    scoped_bindings = _same_build(bindings, resolved_build)
+    scoped_rows = _same_build(rows, resolved_build)
+    row_by_binding = _row_keys(scoped_rows, scoped_bindings)
+
+    # Сначала привязки → row_key, затем факты/ссылки только по нужным строкам.
+    needed_rows: set[str] = set()
+    planned: list[tuple[str, str]] = []
     for role in ("all_of", "one_of"):
         for concept in inputs.get(role) or ():
-            steps.append(
-                _step_for_concept(
-                    metric_id=metric_id,
-                    variant=variant,
-                    concept=str(concept),
-                    role=role,
-                    bindings=bindings,
-                    row_by_binding=row_by_binding,
-                    cells_by_row=cells_by_row,
-                    graph_links=graph_links,
-                    model_id=resolved_model or "",
-                    build_key=resolved_build or "",
-                )
+            planned.append((role, str(concept)))
+            primary, _, _ = _select_primary(scoped_bindings, str(concept))
+            if primary is None:
+                continue
+            row_key = str(primary.get("row_key") or row_by_binding.get(str(primary["binding_key"])) or "")
+            if row_key:
+                needed_rows.add(row_key)
+
+    scoped_facts = [
+        row
+        for row in _same_build(facts, resolved_build)
+        if not needed_rows or str(row.get("row_key") or "") in needed_rows
+    ]
+    cells_by_row = _cells_by_row(scoped_facts)
+    needed_cells = {cell for cells in cells_by_row.values() for cell in cells}
+    scoped_links = [
+        link
+        for link in _same_build(graph_links, resolved_build)
+        if not needed_cells
+        or str(link.get("cell") or "") in needed_cells
+        or str(link.get("ref_cell") or "") in needed_cells
+    ]
+
+    steps: list[TraceStep] = []
+    source_findings: list[TraceIntegrityFinding] = []
+    for role, concept in planned:
+        step, findings = _step_for_concept(
+            metric_id=metric_id,
+            variant=variant,
+            concept=concept,
+            role=role,
+            bindings=scoped_bindings,
+            row_by_binding=row_by_binding,
+            cells_by_row=cells_by_row,
+            graph_links=scoped_links,
+            model_id=resolved_model or "",
+            build_key=resolved_build or "",
+        )
+        steps.append(step)
+        source_findings.extend(findings)
+
+    dto_findings = validate_metric_traces(
+        [
+            MetricTrace(
+                **base,
+                steps=tuple(steps),
+                missing_trace=None,
+                integrity=(),
             )
+        ]
+    )
+    integrity = _merge_findings(source_findings, dto_findings)
     return MetricTrace(
-        metric_id=metric_id,
-        variant=variant,
-        build_key=resolved_build,
-        model_id=resolved_model,
+        **base,
         steps=tuple(steps),
         missing_trace=None,
-        catalog_version=catalog_version,
+        integrity=integrity,
     )
 
 
 def validate_metric_traces(traces: Sequence[MetricTrace]) -> list[TraceIntegrityFinding]:
-    """Целостность: вход с основной привязкой имеет cell_ids либо явный missing_trace."""
+    """Инвариант DTO: primary binding → cell_ids или явный missing_trace."""
 
     findings: list[TraceIntegrityFinding] = []
     for trace in traces:
@@ -237,8 +303,14 @@ def check_metric_physical_trace(
     facts: Sequence[Mapping[str, Any]] = (),
     graph_links: Sequence[Mapping[str, Any]] = (),
     variant: str | None = None,
+    catalog_version: str | None = None,
+    model_id: str | None = None,
+    build_key: str | None = None,
+    facts_available: bool = True,
+    rows_available: bool = True,
+    graph_links_available: bool = True,
 ) -> tuple[MetricTrace, list[TraceIntegrityFinding]]:
-    """Трассировка + проверка целостности физического следа для одного показателя."""
+    """Трассировка + findings (исходные данные и инвариант DTO)."""
 
     trace = trace_metric(
         metric_id,
@@ -248,8 +320,22 @@ def check_metric_physical_trace(
         facts=facts,
         graph_links=graph_links,
         variant=variant,
+        catalog_version=catalog_version,
+        model_id=model_id,
+        build_key=build_key,
+        facts_available=facts_available,
+        rows_available=rows_available,
+        graph_links_available=graph_links_available,
     )
-    return trace, validate_metric_traces([trace])
+    return trace, list(trace.integrity)
+
+
+def assemble_metric_trace_response(trace: MetricTrace) -> dict[str, Any]:
+    """Полный ответ API; валидируется JSON Schema перед возвратом."""
+
+    body = trace.as_dict()
+    validate_metric_trace_document(body)
+    return body
 
 
 def assert_graphs_not_collapsed(dataset_names: Sequence[str]) -> None:
@@ -268,7 +354,6 @@ def _trace_validator() -> Draft202012Validator:
     import json
 
     schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
-    # Валидируем тело MetricTrace через $defs.metricTrace.
     root = {
         "$schema": schema["$schema"],
         "$defs": schema["$defs"],
@@ -295,50 +380,87 @@ def _step_for_concept(
     graph_links: Sequence[Mapping[str, Any]],
     model_id: str,
     build_key: str,
-) -> TraceStep:
+) -> tuple[TraceStep, list[TraceIntegrityFinding]]:
     metric_edge = metric_input_edge_id(metric_id, role, concept, variant=variant)
-    primary = _primary_binding(bindings, concept)
+    findings: list[TraceIntegrityFinding] = []
+    primary, missing, ambiguous = _select_primary(bindings, concept)
     if primary is None:
-        return TraceStep(
+        return (
+            TraceStep(
+                concept=concept,
+                role=role,
+                metric_edge_id=metric_edge,
+                binding_key=None,
+                binding_edge_id=None,
+                row_key=None,
+                cell_ids=(),
+                missing_trace=missing or MISSING_NO_PRIMARY,
+                excel_links=(),
+            ),
+            findings,
+        )
+    binding_key = str(primary["binding_key"])
+    if ambiguous:
+        findings.append(
+            TraceIntegrityFinding(
+                metric_id=metric_id,
+                concept=concept,
+                binding_key=binding_key,
+                reason="ambiguous_primary_binding",
+            )
+        )
+    row_key = str(primary.get("row_key") or row_by_binding.get(binding_key) or "") or None
+    cell_ids = cells_by_row.get(row_key or "", ())
+    missing_cell = None if cell_ids else MISSING_NO_CELL
+    links = _excel_links_for_cells(graph_links, cell_ids, model_id=model_id, build_key=build_key)
+    return (
+        TraceStep(
             concept=concept,
             role=role,
             metric_edge_id=metric_edge,
-            binding_key=None,
-            binding_edge_id=None,
-            row_key=None,
-            cell_ids=(),
-            missing_trace=MISSING_NO_PRIMARY,
-            excel_links=(),
-        )
-    binding_key = str(primary["binding_key"])
-    row_key = str(primary.get("row_key") or row_by_binding.get(binding_key) or "") or None
-    cell_ids = cells_by_row.get(row_key or "", ())
-    missing = None if cell_ids else MISSING_NO_CELL
-    links = _excel_links_for_cells(graph_links, cell_ids, model_id=model_id, build_key=build_key)
-    return TraceStep(
-        concept=concept,
-        role=role,
-        metric_edge_id=metric_edge,
-        binding_key=binding_key,
-        binding_edge_id=semantic_binding_edge_id(model_id, build_key, binding_key),
-        row_key=row_key,
-        cell_ids=cell_ids,
-        missing_trace=missing,
-        excel_links=links,
+            binding_key=binding_key,
+            binding_edge_id=semantic_binding_edge_id(model_id, build_key, binding_key),
+            row_key=row_key,
+            cell_ids=cell_ids,
+            missing_trace=missing_cell,
+            excel_links=links,
+        ),
+        findings,
     )
 
 
-def _primary_binding(
+def _select_primary(
     bindings: Sequence[Mapping[str, Any]], concept: str
-) -> Mapping[str, Any] | None:
-    matched = [
+) -> tuple[Mapping[str, Any] | None, str | None, bool]:
+    """Вернуть (primary, missing_code, ambiguous).
+
+    Учитываются только не-stale основные bound-привязки. При нескольких —
+    детерминированно выбирается минимальный ``binding_key``.
+    """
+
+    fresh = [
         row
         for row in bindings
         if row.get("is_primary")
         and row.get("status") in _BOUND
+        and not row.get("stale")
         and str(row.get("effective_concept") or row.get("concept") or "") == concept
     ]
-    return matched[0] if matched else None
+    if fresh:
+        ordered = sorted(fresh, key=lambda row: str(row.get("binding_key") or ""))
+        return ordered[0], None, len(ordered) > 1
+
+    stale = [
+        row
+        for row in bindings
+        if row.get("is_primary")
+        and row.get("status") in _BOUND
+        and row.get("stale")
+        and str(row.get("effective_concept") or row.get("concept") or "") == concept
+    ]
+    if stale:
+        return None, MISSING_STALE, False
+    return None, MISSING_NO_PRIMARY, False
 
 
 def _row_keys(
@@ -401,6 +523,29 @@ def _excel_links_for_cells(
                 truncated=bool(link.get("truncated")),
             )
         )
+    return tuple(out)
+
+
+def _same_build(
+    rows: Sequence[Mapping[str, Any]], build_key: str | None
+) -> list[Mapping[str, Any]]:
+    if not build_key:
+        return list(rows)
+    return [row for row in rows if row.get("build_key") in (None, build_key)]
+
+
+def _merge_findings(
+    *groups: Sequence[TraceIntegrityFinding],
+) -> tuple[TraceIntegrityFinding, ...]:
+    seen: set[tuple[str, str, str, str]] = set()
+    out: list[TraceIntegrityFinding] = []
+    for group in groups:
+        for item in group:
+            key = (item.metric_id, item.concept, item.binding_key, item.reason)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
     return tuple(out)
 
 
