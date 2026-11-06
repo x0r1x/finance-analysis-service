@@ -116,6 +116,8 @@ class GlossaryStore:
         self._lock = asyncio.Lock()
         # Shadow-гейт (§5.11.3): async (version) -> отчёт с passed. Ставит composition root.
         self.gate = None
+        # Публикация SemanticModelVersion при релизе/активации глоссария (фаза 2).
+        self.on_publish: Callable[[str], Awaitable[str]] | None = None
         self.canary_share = 10
 
     async def peek(self) -> dict | None:
@@ -1005,6 +1007,8 @@ class GlossaryStore:
             return
 
     async def _notify(self, version: str) -> None:
+        if self.on_publish is not None:
+            await self.on_publish(version)
         if self.support is None:
             return
         await self.support.publish("fas:glossary:changed", version)

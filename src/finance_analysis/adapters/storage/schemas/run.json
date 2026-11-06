@@ -1,6 +1,6 @@
 {
   "dataset": "run",
-  "version": "1.0",
+  "version": "1.1",
   "title": "Прогон анализа",
   "columns": [
     {
@@ -114,6 +114,14 @@
       "unit": "",
       "description": "Ключ производного состояния",
       "since": "1.0"
+    },
+    {
+      "name": "semantic_model_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Публичный SemanticModelVersion (рядом с derive_key)",
+      "since": "1.1"
     },
     {
       "name": "fas_version",

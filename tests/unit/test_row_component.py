@@ -296,7 +296,7 @@ def test_confirmed_component_keeps_primary_and_warns():
     assert got["senior"].evidence["warnings"] == ["component_over_total"]
     assert got["total"].is_primary is False
     assert got["bond"].is_primary is False
-    assert FAS_SCHEMA_VERSION == "1.0"
+    assert FAS_SCHEMA_VERSION == "1.1"
     assert FAS_VERSION == "0.23.0"
 
 

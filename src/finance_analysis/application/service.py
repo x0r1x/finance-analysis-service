@@ -46,6 +46,7 @@ from finance_analysis.application.project import (
     prepare_rows,
     project,
 )
+from finance_analysis.application.rule_engine import load_rules
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.application.sheet_roles import sheet_roles_version
 from finance_analysis.application.tools import build_tools
@@ -110,6 +111,13 @@ from finance_analysis.domain.operational_year import resolve_operational_year
 from finance_analysis.domain.periods import marker_class, split_period_key
 from finance_analysis.domain.phases import phase_target, split_phase_target
 from finance_analysis.domain.questions import concept_questions, question_id_problem
+from finance_analysis.domain.semantic_model import (
+    dumps_manifest,
+    head_body,
+    live_components,
+    manifest_body,
+    semantic_model_version_for,
+)
 from finance_analysis.domain.signals import lf_accuracy
 from finance_analysis.domain.state import fold
 from finance_analysis.settings import Settings
@@ -327,6 +335,8 @@ class FasService:
         self.glossary = GlossaryStore(store, support, lock_ttl_ms=settings.lock_ttl_ms)
         self.fold_runs = 0
         self._fold_locks: dict[str, asyncio.Lock] = {}
+        self._rules_versions = {code: rule.version for code, rule in load_rules().items()}
+        self.glossary.on_publish = self.ensure_semantic_model
         self._tasks: set[asyncio.Task] = set()
         self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
@@ -495,6 +505,30 @@ class FasService:
             sheet_roles=self.sheet_roles_version,
         )
 
+    async def ensure_semantic_model(self, glossary_version: str | None = None) -> str:
+        """Считает SMV, пишет манифест и указатель; возвращает 16-hex id."""
+
+        glossary = glossary_version or "none"
+        components = live_components(
+            glossary,
+            model_types_version=self.model_types.version,
+            rules_versions=self._rules_versions,
+        )
+        version = semantic_model_version_for(components)
+        created = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body = manifest_body(version, components, created_at_utc=created)
+        try:
+            await self.store.put_if_absent(keys.semantic_model_manifest(version), dumps_manifest(body))
+        except AlreadyExists:
+            pass
+        await self.store.put(keys.semantic_model_head(), dumps_manifest(head_body(version, updated_at_utc=created)))
+        return version
+
+    async def _versions_dict(self, versions: Versions) -> dict:
+        payload = versions.as_dict()
+        payload["semantic_model"] = await self.ensure_semantic_model(versions.glossary)
+        return payload
+
     async def _write_attempt(self, job_id: str, build: str, attempt: str, tables: dict[str, list[dict]]) -> dict:
         files = {}
         for dataset, rows in tables.items():
@@ -525,6 +559,7 @@ class FasService:
         versions_dict["model_types"] = versions_dict.get("model_types") or self.model_types.version
         versions_dict["model_type_seq"] = _model_type_seq(events)
         versions_dict["sheet_roles"] = versions_dict.get("sheet_roles") or self.sheet_roles_version
+        versions_dict["semantic_model"] = await self.ensure_semantic_model(glossary_version)
         derive = Versions(
             glossary=glossary_version,
             taxonomy=versions_dict.get("taxonomy", "core-1"),
@@ -875,12 +910,13 @@ class FasService:
             await self.store.put_if_absent(keys.build_index_key(job_id, build), _dumps(index))
         except AlreadyExists:
             pass
+        versions_dict = await self._versions_dict(versions)
         derived = await self._derive(
             job_id,
             tables,
             state_seq=state_seq,
             derive=derive,
-            versions=versions.as_dict(),
+            versions=versions_dict,
             events=events,
             facts=tables.get("fact_observation"),
             links=tables.get("graph_links"),
@@ -905,7 +941,7 @@ class FasService:
             "build_key": build,
             "state_seq": state_seq,
             "derive_key": derive,
-            "versions": versions.as_dict(),
+            "versions": versions_dict,
             "mdl_version": "1",
             "fence": fence,
         }
@@ -1050,6 +1086,7 @@ class FasService:
                     "build_key": None,
                     "state_seq": None,
                     "derive_key": None,
+                    "semantic_model_version": None,
                     "profile": None,
                     "coverage_summary": {"status": "unknown"},
                     "build_count": 0,
@@ -1065,6 +1102,9 @@ class FasService:
         builds = [item.key async for item in self.store.list(f"books/{job_id}/_builds")]
         manifest = await self._manifest(job_id, head.build_key)
         warnings.extend(_builder_warnings(manifest))
+        versions = dict(head.versions)
+        if not versions.get("semantic_model"):
+            versions["semantic_model"] = await self.ensure_semantic_model(versions.get("glossary"))
         body = {
             "job_id": job_id,
             "loaded": True,
@@ -1072,11 +1112,12 @@ class FasService:
             "build_key": head.build_key,
             "state_seq": head.state_seq,
             "derive_key": head.derive_key,
+            "semantic_model_version": versions.get("semantic_model"),
             "profile": {"id": head.versions.get("profile", "p-0"), "version": head.versions.get("profile", "p-0")},
             "coverage_summary": {"status": "unknown"},
             "build_count": len([item for item in builds if item.endswith(".json")]),
             "active_operations": [],
-            "versions": head.versions,
+            "versions": versions,
             "is_latest": None if fresh else True,
             "warnings": warnings,
             "mdl_version": head.mdl_version,
@@ -1124,6 +1165,7 @@ class FasService:
                 **head.versions,
                 "state_seq": head.state_seq,
                 "derive_key": head.derive_key,
+                "semantic_model": head.versions.get("semantic_model"),
                 "fas": FAS_VERSION,
                 "latest_glossary": head.versions.get("glossary"),
             },
@@ -1495,12 +1537,13 @@ class FasService:
         except (NotFound, StopIteration):
             links = []
         projected = attach_graph_links(projected, links)
+        versions_dict = await self._versions_dict(versions)
         derived = await self._derive(
             job_id,
             projected,
             state_seq=state_seq,
             derive=derive,
-            versions=versions.as_dict(),
+            versions=versions_dict,
             events=events,
             facts=facts,
             links=links,
@@ -1520,7 +1563,7 @@ class FasService:
             await self.store.put_if_absent(keys.derived_done(job_id, head.build_key, derive), _dumps(done))
         except AlreadyExists:
             pass
-        body = {**head.as_dict(), "derive_key": derive, "state_seq": state_seq, "versions": versions.as_dict()}
+        body = {**head.as_dict(), "derive_key": derive, "state_seq": state_seq, "versions": versions_dict}
         await self._publish_head(job_id, body, token, fence)
         await self.glossary.note_bindings(job_id, derived["bindings"])
         self.fold_runs += 1

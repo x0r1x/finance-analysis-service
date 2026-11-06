@@ -95,6 +95,8 @@ FAS остаётся **одним приложением** с ясными до�
 
 `derive_key` остаётся внутренним ключом свёртки книги (входы включают журнал и модели эмбеддинга). `SemanticModelVersion` — контракт «какая семантика действовала», рядом с `derive_key`, без подмены одного другим. Публикация — документ/манифест в object store + поле в ответах API и в `run`.
 
+Спецификация фазы 2: [semantic-model-version.md](semantic-model-version.md).
+
 ### G5. Внешний контракт для DataMesh
 
 FAS **публикует обычный Parquet** в своей раскладке. FAS **не** создаёт таблицы Iceberg/Hive и не обещает SLA оркестраторам (design §4.11).
@@ -167,7 +169,7 @@ FAS **публикует обычный Parquet** в своей раскладк
 | `derive_key` | Bindings / Analytical | Внутренняя папка свёртки inferred⊕журнал |
 | `glossary_version` / `taxonomy_version` | Semantic Catalog | Релизы определений |
 | `fas_schema_version` | Versioned Metadata Contract | Версия схем Parquet |
-| `SemanticModelVersion` *(цель)* | Versioned Metadata Contract | Публичный согласованный набор семантики |
+| `SemanticModelVersion` | Versioned Metadata Contract | Публичный согласованный набор семантики ([спека](semantic-model-version.md)) |
 | `binding_key` | Bindings | Стабильная привязка строки через пересборки |
 | `concept` | Semantic Catalog | Идентификатор понятия |
 

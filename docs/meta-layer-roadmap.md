@@ -74,11 +74,13 @@
 
 **Не-цели фазы:** OSI/Ossie export; объединение `derive_key` и SMV в один хеш; перенос метрик в object store, если достаточно git-отпечатка в составе SMV.
 
+**Поставка:** [semantic-model-version.md](semantic-model-version.md); код `finance_analysis.domain.semantic_model`; манифест `semantic_models/{version}.json`; поля в `_head.versions` / API / `run`.
+
 **Критерии приёмки:**
 
-- [ ] Манифест `SemanticModelVersion` воспроизводим (одинаковые входы → одинаковый id).  
-- [ ] Ответ с данными книги и `run.parquet` содержат id рядом с `derive_key`.  
-- [ ] Документирована матрица: какой артефакт входит в SMV vs только в `derive_key` (журнал, embed-модели и т.д.).
+- [x] Манифест `SemanticModelVersion` воспроизводим (одинаковые входы → одинаковый id).  
+- [x] Ответ с данными книги и `run.parquet` содержат id рядом с `derive_key`.  
+- [x] Документирована матрица: какой артефакт входит в SMV vs только в `derive_key` (журнал, embed-модели и т.д.).
 
 *Пользователь может поставить фазу 2 перед фазой 1; критерии от этого не меняются.*
 
