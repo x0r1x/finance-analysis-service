@@ -35,7 +35,23 @@ def metrics_file() -> Path:
     return catalog_file().parent.parent / "metrics" / "coverage.yaml"
 
 
+_BASE_EXCLUSIVE = frozenset({"numerator", "denominator", "rate"})
+
+
+def _assert_base_standalone(body: dict, name: str) -> None:
+    """base — полный режим наследования; numerator/denominator/rate рядом запрещены."""
+
+    if "base" not in body:
+        return
+    clash = sorted(key for key in _BASE_EXCLUSIVE if key in body)
+    if clash:
+        raise ModelTypeInvalid(
+            f"{name}: base — самостоятельное наследование, нельзя вместе с {', '.join(clash)}"
+        )
+
+
 def _inputs(body: dict, refs: dict[str, MetricInputs], name: str) -> MetricInputs:
+    _assert_base_standalone(body, name)
     base = body.get("base")
     if "base" in body:
         if not isinstance(base, str) or not base:
@@ -65,7 +81,10 @@ def _term_names(value: object, owner: str, field: str) -> tuple[set[str], set[st
     """Разбор numerator/denominator → (all_of, one_of)."""
 
     if isinstance(value, dict):
-        return _names(value, f"{owner}.{field}"), set()
+        names = _names(value, f"{owner}.{field}")
+        if not names:
+            raise ModelTypeInvalid(f"{owner}: {field} пустой (нужен хотя бы один plus/minus)")
+        return names, set()
     if isinstance(value, str):
         if not value:
             raise ModelTypeInvalid(f"{owner}: {field} пустая строка")
@@ -83,12 +102,18 @@ def _term_names(value: object, owner: str, field: str) -> tuple[set[str], set[st
 def _names(side: dict, name: str) -> set[str]:
     if set(side) - {"plus", "minus"}:
         raise ModelTypeInvalid(f"{name}: у слагаемых только plus и minus")
-    plus = side.get("plus") or []
-    minus = side.get("minus") or []
-    if not isinstance(plus, list) or any(not isinstance(item, str) or not item for item in plus):
+    plus = side.get("plus") if "plus" in side else []
+    minus = side.get("minus") if "minus" in side else []
+    if "plus" in side and (not isinstance(plus, list) or any(not isinstance(item, str) or not item for item in plus)):
         raise ModelTypeInvalid(f"{name}.plus: список строк")
-    if not isinstance(minus, list) or any(not isinstance(item, str) or not item for item in minus):
+    if "minus" in side and (
+        not isinstance(minus, list) or any(not isinstance(item, str) or not item for item in minus)
+    ):
         raise ModelTypeInvalid(f"{name}.minus: список строк")
+    if not isinstance(plus, list):
+        plus = []
+    if not isinstance(minus, list):
+        minus = []
     return {str(item) for item in plus} | {str(item) for item in minus}
 
 
@@ -113,17 +138,12 @@ def _composed(body: dict, name: str) -> Composed | None:
 
 
 def _expression(body: dict, name: str) -> MetricExpression:
+    _assert_base_standalone(body, name)
     if "base" in body:
         base = body.get("base")
         if not isinstance(base, str) or not base:
             raise ModelTypeInvalid(f"{name}: base — непустая строка")
-        rate = None
-        if "rate" in body:
-            raw_rate = body.get("rate")
-            if not isinstance(raw_rate, str) or not raw_rate:
-                raise ModelTypeInvalid(f"{name}: rate — непустая строка")
-            rate = raw_rate
-        return MetricExpression(base=base, rate=rate)
+        return MetricExpression(base=base)
     rate = None
     if "rate" in body:
         raw_rate = body.get("rate")
@@ -157,12 +177,12 @@ def _expression_side(
     value: object, owner: str, field: str
 ) -> tuple[tuple[str, ...], tuple[str, ...], set[str]]:
     if isinstance(value, dict):
-        _names(value, f"{owner}.{field}")
-        return (
-            tuple(str(item) for item in value.get("plus") or []),
-            tuple(str(item) for item in value.get("minus") or []),
-            set(),
-        )
+        names = _names(value, f"{owner}.{field}")
+        if not names:
+            raise ModelTypeInvalid(f"{owner}: {field} пустой (нужен хотя бы один plus/minus)")
+        plus = tuple(str(item) for item in (value.get("plus") or []))
+        minus = tuple(str(item) for item in (value.get("minus") or []))
+        return plus, minus, set()
     if isinstance(value, str):
         if not value:
             raise ModelTypeInvalid(f"{owner}: {field} пустая строка")

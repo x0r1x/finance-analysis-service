@@ -282,9 +282,10 @@ def test_integrity_rejects_mismatched_id_and_missing_variant_ref():
         status=dscr.status,
         base=dscr.base,
     )
+    indicators = {**catalog.indicators, "dscr": broken}
     bad = FinancialModelCatalog(
-        indicators={**catalog.indicators, "dscr": broken},
-        version=catalog.version,
+        indicators=indicators,
+        version=catalog_version_for(indicators),
         stamp=catalog.stamp,
         row_fallback_ids=catalog.row_fallback_ids,
     )
@@ -303,9 +304,10 @@ def test_integrity_rejects_mismatched_id_and_missing_variant_ref():
         },
         status=dscr.status,
     )
+    indicators2 = {**catalog.indicators, "dscr": ghost}
     bad2 = FinancialModelCatalog(
-        indicators={**catalog.indicators, "dscr": ghost},
-        version=catalog.version,
+        indicators=indicators2,
+        version=catalog_version_for(indicators2),
         stamp=catalog.stamp,
         row_fallback_ids=catalog.row_fallback_ids,
     )
@@ -334,11 +336,80 @@ def test_integrity_rejects_unknown_base():
         status=adscr.status,
         base="no_such_metric",
     )
+    indicators = {**catalog.indicators, "adscr": broken}
     bad = FinancialModelCatalog(
-        indicators={**catalog.indicators, "adscr": broken},
-        version=catalog.version,
+        indicators=indicators,
+        version=catalog_version_for(indicators),
         stamp=catalog.stamp,
         row_fallback_ids=catalog.row_fallback_ids,
     )
     with pytest.raises(ValueError, match="base"):
         validate_financial_catalog_integrity(bad)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"numerator": ["project_fcf"], "denominator": "debt_outstanding"},
+        {"numerator": ["project_fcf"]},
+        {"denominator": "debt_outstanding"},
+        {"rate": "discount_rate"},
+    ],
+)
+def test_base_rejects_formula_overrides(tmp_path: Path, extra: dict):
+    body = yaml.safe_load(metrics_file().read_text(encoding="utf-8"))
+    body["metrics"] = {
+        "dscr": {
+            "numerator": ["cfads"],
+            "denominator": "debt_service",
+        },
+        "broken": {"base": "dscr", **extra},
+    }
+    with pytest.raises((ModelTypeInvalid, CatalogIntegrityError), match="base"):
+        load_metric_catalog(_write_coverage(tmp_path, body))
+
+
+@pytest.mark.parametrize(
+    "numerator",
+    [
+        {},
+        {"plus": []},
+        {"minus": []},
+        {"plus": [], "minus": []},
+    ],
+)
+def test_empty_plus_minus_sides_rejected(tmp_path: Path, numerator: dict):
+    body = yaml.safe_load(metrics_file().read_text(encoding="utf-8"))
+    body["metrics"] = {
+        "broken": {
+            "numerator": numerator,
+            "denominator": "debt_service",
+        }
+    }
+    with pytest.raises((ModelTypeInvalid, CatalogIntegrityError), match="пуст"):
+        load_metric_catalog(_write_coverage(tmp_path, body))
+
+
+def test_integrity_rejects_stale_version_after_indicator_mutation():
+    catalog = load_financial_catalog()
+    # Mutable dict of indicators: content changed, version left stale.
+    mutated = dict(catalog.indicators)
+    dscr = mutated["dscr"]
+    mutated["dscr"] = Indicator(
+        id="dscr",
+        inputs=dscr.inputs,
+        unit="money",
+        formula=dscr.formula,
+        variants=dscr.variants,
+        model_types=dscr.model_types,
+        status=dscr.status,
+        definition="mutated",
+    )
+    stale = FinancialModelCatalog(
+        indicators=mutated,
+        version=catalog.version,
+        stamp=catalog.stamp,
+        row_fallback_ids=catalog.row_fallback_ids,
+    )
+    with pytest.raises(ValueError, match="не соответствует содержимому"):
+        validate_financial_catalog_integrity(stale)

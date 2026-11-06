@@ -97,19 +97,27 @@ def _coverage_shape(document: Mapping[str, object]) -> None:
         _metric_body_keys(str(name), body)
 
 
+_BASE_EXCLUSIVE = frozenset({"numerator", "denominator", "rate"})
+
+
 def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -> None:
     if not isinstance(body, dict):
         raise CatalogIntegrityError(f"{name}: формула метрики не объект")
     bad = sorted(set(body) - _METRIC_KEYS)
     if bad:
         raise CatalogIntegrityError(f"{name}: неизвестные ключи: {', '.join(bad)}")
-    for side_name in ("numerator", "denominator"):
-        if side_name in body:
-            _formula_term(name, side_name, body.get(side_name))
     if "base" in body:
         base = body.get("base")
         if not isinstance(base, str) or not base:
             raise CatalogIntegrityError(f"{name}: base — непустая строка")
+        clash = sorted(key for key in _BASE_EXCLUSIVE if key in body)
+        if clash:
+            raise CatalogIntegrityError(
+                f"{name}: base — самостоятельное наследование, нельзя вместе с {', '.join(clash)}"
+            )
+    for side_name in ("numerator", "denominator"):
+        if side_name in body:
+            _formula_term(name, side_name, body.get(side_name))
     if "rate" in body:
         rate = body.get("rate")
         if not isinstance(rate, str) or not rate:
@@ -125,7 +133,7 @@ def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -
 
 
 def _formula_term(owner: str, field: str, value: object) -> None:
-    """numerator/denominator: строка, список строк или объект plus/minus."""
+    """numerator/denominator: строка, список строк или непустой объект plus/minus."""
 
     if isinstance(value, str):
         if not value:
@@ -139,12 +147,16 @@ def _formula_term(owner: str, field: str, value: object) -> None:
         bad = sorted(set(value) - _SIDE_KEYS)
         if bad:
             raise CatalogIntegrityError(f"{owner}.{field}: неизвестные ключи: {', '.join(bad)}")
+        total = 0
         for side in ("plus", "minus"):
             if side not in value:
                 continue
             items = value.get(side)
             if not isinstance(items, list) or any(not isinstance(item, str) or not item for item in items):
                 raise CatalogIntegrityError(f"{owner}.{field}.{side}: список строк")
+            total += len(items)
+        if total == 0:
+            raise CatalogIntegrityError(f"{owner}: {field} пустой (нужен хотя бы один plus/minus)")
         return
     raise CatalogIntegrityError(f"{owner}: {field} — строка, список строк или объект plus/minus")
 

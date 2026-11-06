@@ -410,6 +410,11 @@ def validate_catalog_schema(payload: Mapping) -> None:
 def validate_financial_catalog_integrity(catalog: FinancialModelCatalog) -> None:
     """Схема + межполевые/ссылочные инварианты публичного каталога."""
 
+    expected = catalog_version_for(catalog.indicators)
+    if catalog.version != expected:
+        raise ValueError(
+            f"version каталога {catalog.version} не соответствует содержимому indicators {expected}"
+        )
     payload = catalog.as_dict()
     validate_catalog_schema(payload)
     if payload.get("version") != catalog.version:
