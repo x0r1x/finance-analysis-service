@@ -415,7 +415,7 @@ def test_duplicate_missing_and_cyclic_relations_fail():
                 "b": _measure(relations={"broader_than": ["a"]}),
             }
         )
-    assert "cycle:broader_than" in hierarchy.value.labels
+    assert "cycle:broader" in hierarchy.value.labels
 
 
 def test_published_broader_stays_and_must_agree_with_broader_than():
@@ -455,6 +455,29 @@ def test_published_broader_stays_and_must_agree_with_broader_than():
             {"a": _gloss("a", broader="b"), "b": _gloss("b", broader="a")},
         )
     assert "cycle:broader" in cycle.value.labels
+
+
+def test_mixed_broader_stores_share_one_parent_to_child_graph():
+    with pytest.raises(GlossaryInvalid) as around:
+        _concepts(
+            {
+                "a": _measure(relations={"broader_than": ["c"]}),
+                "b": _measure(),
+                "c": _measure(relations={"broader_than": ["b"]}),
+            },
+            {
+                "a": _gloss("a", broader="b"),
+                "b": _gloss("b"),
+                "c": _gloss("c"),
+            },
+        )
+    assert "cycle:broader" in around.value.labels
+    with pytest.raises(GlossaryInvalid) as direct:
+        _concepts(
+            {"a": _measure(relations={"broader_than": ["b"]}), "b": _measure()},
+            {"a": _gloss("a", broader="b"), "b": _gloss("b")},
+        )
+    assert "cycle:broader" in direct.value.labels
 
 
 def test_catch_glossary_remaps_a_newer_version_once():

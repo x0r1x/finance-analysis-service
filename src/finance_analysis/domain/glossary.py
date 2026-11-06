@@ -598,38 +598,48 @@ def _relations(body: dict, name: str, known: set[str]) -> tuple[ConceptRelation,
 
 
 def _check_relations(concepts: Mapping[str, Concept]) -> None:
-    """Цель есть в пакете. Циклов нет у composed_of, broader_than и поля публикации broader."""
+    """Цель есть в пакете. composed_of проверяется отдельно.
+
+    Иерархия — один граф в направлении broader_than: цель связи — ребёнок,
+    опубликованный broader — ребро от родителя к ребёнку. Обход цикла один.
+    """
 
     bad: list[str] = []
     composed: dict[str, tuple[str, ...]] = {}
-    hierarchy: dict[str, tuple[str, ...]] = {}
+    children: dict[str, set[str]] = {}
     parents: dict[str, set[str]] = {}
-    published: dict[str, tuple[str, ...]] = {}
+
+    def link(parent: str, child: str) -> None:
+        children.setdefault(parent, set()).add(child)
+
     for concept in concepts.values():
         for relation in concept.relations:
             if relation.target not in concepts:
                 bad.append(f"missing:{relation.target}")
         if concept.composed_of:
             composed[concept.id] = concept.composed_of
-        if concept.broader_than:
-            hierarchy[concept.id] = concept.broader_than
-            for target in concept.broader_than:
-                parents.setdefault(target, set()).add(concept.id)
+        for target in concept.broader_than:
+            link(concept.id, target)
+            parents.setdefault(target, set()).add(concept.id)
         parent = concept.broader
         if parent is None:
             continue
         if parent == concept.id or parent not in concepts:
             bad.append(concept.id)
             continue
-        published[concept.id] = (parent,)
+        link(parent, concept.id)
         declared = parents.get(concept.id)
         if declared is not None and declared != {parent}:
             bad.append(concept.id)
-    for kind, edges in (("composed_of", composed), ("broader_than", hierarchy), ("broader", published)):
-        member = _cycle_member(edges)
-        if member:
-            bad.append(f"cycle:{kind}")
-            bad.append(member)
+    member = _cycle_member(composed)
+    if member:
+        bad.append("cycle:composed_of")
+        bad.append(member)
+    hierarchy = {node: tuple(sorted(kids)) for node, kids in children.items()}
+    member = _cycle_member(hierarchy)
+    if member:
+        bad.append("cycle:broader")
+        bad.append(member)
     if bad:
         raise GlossaryInvalid(_unique(bad))
 

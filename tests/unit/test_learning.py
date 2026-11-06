@@ -73,6 +73,40 @@ def test_identity_needs_human_components_and_rollforward():
     assert rollforward(cash) == []
 
 
+def test_identity_follows_composed_of_when_the_identity_file_is_longer():
+    from dataclasses import replace
+
+    from finance_analysis.domain.glossary import ConceptRelation
+
+    concepts = dict(CATALOG.concepts)
+    concepts["debt_service"] = replace(
+        concepts["debt_service"],
+        relations=(ConceptRelation("composed_of", "interest"),),
+    )
+    values = {
+        "int": [10, 10, 10, 10, 10],
+        "prn": [5, 5, 5, 5, 5],
+        "only": [10, 10, 10, 10, 10],
+        "both": [15, 15, 15, 15, 15],
+    }
+    data = LabelingInput(
+        rows=[{"binding_key": key, "row_key": key, "label": key} for key in values],
+        values={key: dict(zip(P, map(Decimal, series), strict=True)) for key, series in values.items()},
+        precedents={"only": {"int"}, "both": {"int", "prn"}},
+        bindings={
+            item["binding_key"]: item
+            for item in (
+                _binding("int", "interest", "confirmed"),
+                _binding("prn", "principal", "confirmed"),
+            )
+        },
+        concepts=concepts,
+        identities={"debt_service": ["interest", "principal"]},
+        order={period: index for index, period in enumerate(P)},
+    )
+    assert [(vote.binding_key, vote.concept) for vote in identity(data)] == [("only", "debt_service")]
+
+
 def test_unit_sign_votes_against():
     rows = [{"binding_key": "r", "row_key": "r", "label": "x", "unit": "%"}]
     votes = unit_sign(_input({"r": [1, 1, 1, 1, 1]}, {}, [_binding("r", "cfads")], rows=rows))
