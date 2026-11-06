@@ -44,6 +44,20 @@ def register(app, settings, *, svc, book_get, read, op_headers) -> None:
             lambda checked, who: svc().coverage_view(checked, who, wait_sec=settings.load_sync_sec),
         )
 
+    @app.get("/v1/books/{job_id}/metrics/{metric_id}/trace")
+    async def book_metric_trace(job_id: str, metric_id: str, request: Request, variant: str | None = None):
+        return await book_get(
+            job_id,
+            request,
+            lambda checked, who: svc().metric_trace_view(
+                checked,
+                metric_id,
+                who,
+                wait_sec=settings.load_sync_sec,
+                variant=variant,
+            ),
+        )
+
     @app.get("/v1/books/{job_id}/decisions")
     async def book_decisions(
         job_id: str,

@@ -2732,6 +2732,79 @@ class FasService:
         body["catalog_version"] = self.financial_catalog.version
         return body
 
+    async def metric_trace_view(
+        self,
+        job_id: str,
+        metric_id: str,
+        actor: Actor,
+        *,
+        wait_sec: float,
+        variant: str | None = None,
+    ) -> dict | Accepted:
+        """Read-only трассировка входа показателя (фаза 4, G2).
+
+        Отсутствие обязательных `dim_row` / `fact_observation` — ошибка доступности
+        трассировки, а не `missing_trace=no_cell`. `graph_links` опционален:
+        отсутствие помечает `physical_lineage_complete=false`.
+        """
+
+        from finance_analysis.domain.graphs import (
+            assemble_metric_trace_response,
+            check_metric_physical_trace,
+        )
+
+        head = await self._head_ready(job_id, actor, wait_sec)
+        if isinstance(head, Accepted):
+            return head
+        bindings = await self._rows_or_accepted(job_id, head, "bindings", actor, "metric_trace")
+        if isinstance(bindings, Accepted):
+            return bindings
+        try:
+            rows = await self._dataset_rows(job_id, head, "dim_row")
+        except (NotFound, StopIteration) as exc:
+            raise PreconditionFailed(
+                "трассировка недоступна: нет dim_row в сборке"
+            ) from exc
+        try:
+            facts = await self._dataset_rows(job_id, head, "fact_observation")
+        except (NotFound, StopIteration) as exc:
+            raise PreconditionFailed(
+                "трассировка недоступна: нет fact_observation в сборке"
+            ) from exc
+        try:
+            links = await self._dataset_rows(job_id, head, "graph_links")
+            graph_links_available = True
+        except (NotFound, StopIteration):
+            links = []
+            graph_links_available = False
+
+        indicator = self.financial_catalog.get(metric_id)
+        inputs = None
+        resolved_variant = variant
+        if indicator is not None:
+            if variant:
+                spec = indicator.variants.get(variant)
+                if spec is None:
+                    raise NotFound("вариант показателя не найден")
+                inputs = spec.inputs.as_dict()
+            else:
+                inputs = indicator.inputs.as_dict()
+        trace, _findings = check_metric_physical_trace(
+            metric_id,
+            inputs=inputs,
+            bindings=bindings,
+            rows=rows,
+            facts=facts,
+            graph_links=links,
+            variant=resolved_variant,
+            catalog_version=self.financial_catalog.version,
+            model_id=job_id,
+            build_key=head.build_key,
+            graph_links_available=graph_links_available,
+        )
+        # catalog_version / build_key уже в trace; ответ валидируется схемой.
+        return assemble_metric_trace_response(trace)
+
     def capabilities(self) -> dict:
         storage = {
             "backend": self.store.backend,
