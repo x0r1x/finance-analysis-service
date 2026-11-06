@@ -628,6 +628,8 @@ def _still_unmapped(row: dict, package) -> bool:
     if not label:
         label = str(row.get("label_norm") or "")
     probe = {"label": label, "unit": row.get("unit") or ""}
+    if len(package.ambiguous_hits(label)) >= 2:
+        return False
     return lexical_hit(probe, package) is None
 
 

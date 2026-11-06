@@ -1,0 +1,16 @@
+concept: forecast_energy_tariff
+pref:
+  en: "Forecast energy tariff"
+  ru: "Прогнозный тариф"
+alt:
+  en:
+    - "Merchant price forecast"
+    - "Electricity price forecast"
+    - "Merchant price (real)"
+    - "Merchant price (nominal)"
+  ru:
+    - "ожидаемая цена реализации"
+    - "прогнозная цена электроэнергии"
+definition:
+  en: "Assumed future price of energy. Not the contracted tariff and not a PPA price."
+  ru: "Ожидаемая цена энергии. Это не договорный тариф и не цена PPA."

@@ -181,6 +181,9 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         return Assignment(concept, "bound", "confirmed", True, None, "normal")
     if row.get("excluded"):
         return Assignment(None, "not_applicable", "inferred", False, None, "normal")
+    shared = _ambiguous_label(row, glossary)
+    if shared is not None:
+        return shared
     found = lexical_hit(row, glossary)
     if found is None:
         return Assignment(None, "unknown", "inferred", False, None, "peripheral")
@@ -193,6 +196,37 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         "match_strength": strength,
     }
     return Assignment(hit.concept, status, "inferred", True, hit.text, "normal", None, evidence)
+
+
+def _ambiguous_label(row: dict, glossary: GlossaryPackage) -> Assignment | None:
+    """Метка нескольких понятий не выбирает одно. Кандидаты остаются в evidence."""
+
+    label = str(row.get("label") or "")
+    hits = glossary.ambiguous_hits(label)
+    if len(hits) < 2:
+        return None
+    candidates = []
+    for hit in hits:
+        concept = glossary.concepts.get(hit.concept)
+        if concept is None:
+            continue
+        candidates.append(
+            {
+                "concept": hit.concept,
+                "reasons": ["ambiguous_label"],
+                "structure_pass": structure_pass(row, concept, label=label),
+                "lexical": True,
+                "match_strength": "exact",
+                "text": hit.text,
+                "kind": hit.kind,
+            }
+        )
+    if len(candidates) < 2:
+        return None
+    evidence = {"candidates": candidates, "match_strength": "ambiguous"}
+    if not any(item["structure_pass"] for item in candidates):
+        return Assignment(None, "unknown", "inferred", False, None, "peripheral", None, {**evidence, "nil": "structure_filtered"})
+    return Assignment(None, "ambiguous", "inferred", False, None, "normal", None, evidence)
 
 
 def lexical_hit(row: dict, glossary: GlossaryPackage):

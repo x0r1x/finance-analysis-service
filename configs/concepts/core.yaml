@@ -206,12 +206,20 @@ concepts:
     validation:
       range: ["0", "1"]
   energy_tariff:
-    # Договорная цена. Прогнозный тариф — assumption и отдельное понятие.
+    # Договорная цена. Прогноз — другое понятие, та же размерность его не подменяет.
     # Роль написана здесь и не выводится из того, что ячейка — ввод.
     semantic_role: parameter
     dimension: currency_per_energy
     temporal_nature: rate
     pricing_basis: energy
+    related: [forecast_energy_tariff]
+  forecast_energy_tariff:
+    # Ожидаемая цена энергии. Не алиас договорного тарифа и не цена PPA.
+    semantic_role: assumption
+    dimension: currency_per_energy
+    temporal_nature: rate
+    pricing_basis: energy
+    related: [energy_tariff]
   capacity_tariff:
     semantic_role: parameter
     dimension: currency_per_power_time

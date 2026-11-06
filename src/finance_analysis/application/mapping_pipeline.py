@@ -108,6 +108,7 @@ class MappingPipeline:
             and not row.get("excluded")
             and row["binding_key"] not in skip
             and lexical_hit(row, package) is None
+            and len(package.ambiguous_hits(str(row.get("label") or ""))) < 2
         ]
         if not targets or not self.enabled:
             return result

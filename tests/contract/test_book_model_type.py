@@ -21,9 +21,12 @@ PACKT = job_id("packt")
 RVI = job_id("rvi")
 # Счётчики fact-строк: связанные, неоднозначные, неизвестные и неприменимые.
 # У Packt роль reference снимает ничьи interest и principal, поэтому связанных строк 9, а неоднозначных 2.
+# У RVI «Merchant price (real)» и «Merchant price (nominal)» — два точных совпадения
+# forecast_energy_tariff. Каскад не выбирает одну основную, обе строки ambiguous.
+# Было 5/6/218. Договорная цена PPA к прогнозу не привязана.
 _COUNTS = {
     "packt": {"bound": 9, "ambiguous": 2, "unknown": 82, "not_applicable": 4},
-    "rvi": {"bound": 5, "ambiguous": 6, "unknown": 218, "not_applicable": 9},
+    "rvi": {"bound": 5, "ambiguous": 8, "unknown": 216, "not_applicable": 9},
 }
 # Неизвестные и неоднозначные строки минус входы метрик, которые тип модели не спрашивает.
 _OPEN = {"packt": 84, "rvi": 221}
