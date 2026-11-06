@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from finance_analysis.domain.audit import (
     ROWS,
@@ -14,6 +14,11 @@ from finance_analysis.domain.audit import (
     Location,
     Rule,
     project_finance_dscr,
+)
+from finance_analysis.domain.measure import (
+    dependency_measure,
+    metadata_factor,
+    stamp_facts,
 )
 from finance_analysis.domain.metrics import coverage_ratio
 from finance_analysis.domain.model_type import sheet_name_key
@@ -296,23 +301,11 @@ def _scaled_facts(data: AuditInput) -> list[dict]:
 
     В факте масштаба нет: он лежит в строке. Без него нормализованная EBITDA
     делится на проценты в единицах листа, и справочный ICR расходится в тысячу раз.
+    Конкретная единица строки копируется на факт тем же шагом. Обход формулы
+    остаётся у правила размерности и у масштаба формы, а не у каждого факта.
     """
 
-    scale_of = {
-        str(row.get("row_key")): row.get("scale_factor")
-        for row in data.rows
-        if row.get("row_key") and row.get("scale_factor") not in (None, "")
-    }
-    if not scale_of:
-        return data.facts
-    stamped = []
-    for fact in data.facts:
-        if fact.get("scale_factor") not in (None, ""):
-            stamped.append(fact)
-            continue
-        scale = scale_of.get(str(fact.get("row_key")))
-        stamped.append(fact if scale is None else {**fact, "scale_factor": scale})
-    return stamped
+    return stamp_facts(data.facts, data.rows, data.unit_dimensions)
 
 
 def _row_axes(data: AuditInput, row_key: str) -> set[str]:
@@ -1501,13 +1494,7 @@ def _row_factor(data: AuditInput, row_key: str) -> Decimal | None:
 
 
 def _metadata_factor(row: dict) -> Decimal | None:
-    scale = row.get("scale_factor")
-    if scale in (None, ""):
-        return None
-    try:
-        return Decimal(str(scale))
-    except InvalidOperation:
-        return None
+    return metadata_factor(row)
 
 
 def _dependency_scale(data: AuditInput, row_key: str) -> Decimal | None:
@@ -1515,31 +1502,10 @@ def _dependency_scale(data: AuditInput, row_key: str) -> Decimal | None:
 
     Множитель лежит в строке-источнике. Пустой scale_factor факта его не отменяет,
     и формульная строка с известным масштабом дальше не разворачивается.
+    Конкретная единица снимается тем же обходом (`dependency_measure`).
     """
 
-    factors: list[Decimal] = []
-    seen: set[str] = set()
-    stack = [fact.get("cell_id") for fact in data.facts if fact.get("row_key") == row_key and fact.get("cell_id")]
-    while stack:
-        cell = stack.pop()
-        if not cell or cell in seen:
-            continue
-        seen.add(cell)
-        for ref in _refs_of(data, cell):
-            fact = data.facts_by_cell.get(ref)
-            if fact is None:
-                continue
-            scale = _metadata_factor(fact)
-            if scale is None and fact.get("row_key"):
-                scale = _metadata_factor(data.rows_by_key.get(fact["row_key"]) or {})
-            if scale is not None:
-                factors.append(scale)
-                continue
-            if fact.get("cell_id"):
-                stack.append(fact["cell_id"])
-    if len(set(factors)) != 1:
-        return None
-    return factors[0]
+    return dependency_measure(data, row_key, data.unit_dimensions)[0]
 
 
 def _refs_of(data: AuditInput, cell: str) -> list[str]:

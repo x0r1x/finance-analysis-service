@@ -274,6 +274,28 @@ class GlossaryStore:
         concepts = package_of(document).concepts
         return {name: concept.composition for name, concept in concepts.items() if concept.composition}
 
+    async def concept_dimensions(self, version: str | None) -> dict[str, str]:
+        """Размерность каждого понятия релиза, с которым построено состояние книги."""
+
+        try:
+            document = await self._document(version) if version else await self._active_document()
+        except NotFound:
+            document = await self._active_document()
+        concepts = package_of(document).concepts
+        return {name: concept.dimension for name, concept in concepts.items()}
+
+    async def concept_price_facts(self, version: str | None) -> tuple[dict[str, str], dict[str, str]]:
+        """Основа тарифа и расчётный период мощности. Пусто, если у понятия их нет."""
+
+        try:
+            document = await self._document(version) if version else await self._active_document()
+        except NotFound:
+            document = await self._active_document()
+        concepts = package_of(document).concepts
+        pricing = {name: concept.pricing_basis for name, concept in concepts.items() if concept.pricing_basis}
+        billing = {name: concept.billing_period for name, concept in concepts.items() if concept.billing_period}
+        return pricing, billing
+
     async def list_profiles(self) -> dict:
         found = []
         async for item in self.store.list("profiles/"):

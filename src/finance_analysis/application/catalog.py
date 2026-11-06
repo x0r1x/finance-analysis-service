@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
 
+from finance_analysis.domain.dimensions import DimensionCatalog, parse_catalog
 from finance_analysis.domain.glossary import (
     GlossaryInvalid,
     GlossaryPackage,
@@ -48,13 +50,38 @@ def load_git_document(path: Path | None = None) -> dict:
     }
 
 
+def dimensions_file() -> Path:
+    return catalog_file().parent.parent / "dimensions.yaml"
+
+
+@lru_cache(maxsize=1)
+def load_dimensions(path: str | None = None) -> DimensionCatalog:
+    file = Path(path) if path else dimensions_file()
+    try:
+        return parse_catalog(yaml.safe_load(file.read_text(encoding="utf-8")) or {})
+    except (TypeError, ValueError) as exc:
+        raise GlossaryInvalid([str(exc)]) from None
+
+
 def load_catalog(path: Path | None = None) -> GlossaryPackage:
     document = load_git_document(path)
-    return build_package(
+    package = build_package(
         {"taxonomy": document["taxonomy"], "concepts": document["concepts"]},
         document["glossaries"],
         document["dictionaries"],
     )
+    catalog = load_dimensions()
+    unknown = []
+    for name, concept in package.concepts.items():
+        if concept.dimension not in catalog.exponents:
+            unknown.append(name)
+            continue
+        declared = catalog.pricing_basis.get(concept.dimension)
+        if declared and concept.pricing_basis != declared:
+            unknown.append(name)
+    if unknown:
+        raise GlossaryInvalid(unknown)
+    return package
 
 
 def load_identities(path: Path | None = None) -> dict[str, list[str]]:

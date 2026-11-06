@@ -28,6 +28,7 @@ from finance_analysis.domain.audit import (
 )
 from finance_analysis.domain.book import norm
 from finance_analysis.domain.formulas import analyze
+from finance_analysis.domain.measure import concrete_unit, dependency_measure
 from finance_analysis.domain.metrics import aligned_keys
 
 _VALUED = frozenset({"cached", "zero_explicit"})
@@ -40,6 +41,8 @@ _ADDITIVE_FUNCTIONS = frozenset({"SUM"})
 _RATE_UNITS = frozenset({"rate", "%", "percent", "ratio", "x"})
 _MONEY_UNITS = frozenset({"money", "price"})
 _GENERIC_LABELS = frozenset({"total", "итого", "всего", "sum", "сумма", "check", "проверка", "balance", "остаток"})
+_PRICE_LOAD = frozenset({"energy_generation", "installed_capacity", "capacity_factor"})
+_PRICE_BRIDGE = frozenset({"energy", "power", "duration"})
 TOLERANCE = Decimal("0.005")
 CELLS_SHOWN = 10
 
@@ -334,6 +337,319 @@ class UnitMismatch(UnitRule):
         return None
 
 
+def _bound_dimension(data: AuditInput, row_key: str) -> str | None:
+    for binding in data.bindings:
+        if binding.get("row_key") != row_key or binding.get("status") not in {"bound", "bound_with_warning"}:
+            continue
+        concept = str(binding.get("effective_concept") or binding.get("concept") or "")
+        dimension = data.concept_dimensions.get(concept)
+        if dimension in data.dimension_exponents:
+            return dimension
+    return None
+
+
+def _binary_result_rows(data: AuditInput) -> frozenset[str]:
+    """Строки, чья формула — одно частное или одно произведение. Их единица не наследуется."""
+
+    return frozenset(
+        str(link.row_key)
+        for link in data.link_cells.values()
+        if link.row_key and _binary(link.formula, link.refs)
+    )
+
+
+def _row_dimension(
+    data: AuditInput, row_key: str, cache: dict[str, str | None], binary_rows: frozenset[str]
+) -> str | None:
+    """Размерность привязки или собственной единицы строки.
+
+    Сумма без единицы берёт единицу источника. Частное и произведение — нет:
+    рубли, делённые на рубли, не становятся деньгами.
+    """
+
+    if row_key in cache:
+        return cache[row_key]
+    found = _bound_dimension(data, row_key)
+    row = data.rows_by_key.get(row_key) or {}
+    if found is None:
+        unit = concrete_unit(row, data.unit_dimensions)
+        if unit is not None:
+            found = data.unit_dimensions.get(unit)
+        elif not row.get("unit") and row_key not in binary_rows:
+            _scale, inherited = dependency_measure(data, row_key, data.unit_dimensions)
+            if inherited is not None:
+                found = data.unit_dimensions.get(inherited)
+    cache[row_key] = found
+    return found
+
+
+def _binary(formula: str | None, refs: tuple[str, ...]) -> str | None:
+    """Одно частное или одно произведение двух ссылок. Сумму сюда не относим."""
+
+    if len(set(refs)) != 2:
+        return None
+    text = _operators_text(formula)
+    if not text or analyze(formula).functions:
+        return None
+    if text.count("/") == 1 and not re.search(r"[+*^]", text):
+        return "ratio"
+    if text.count("*") == 1 and not re.search(r"[+/^]", text):
+        return "product"
+    return None
+
+
+def _signature(data: AuditInput, name: str | None) -> tuple[tuple[str, int], ...] | None:
+    """Показатели размерности. Совпадающие показатели — одна размерность, даже если имена разные."""
+
+    if name is None:
+        return None
+    powers = data.dimension_exponents.get(name)
+    if powers is None:
+        return None
+    return tuple(sorted(powers.items()))
+
+
+def _powers(data: AuditInput, op: str, left: str, right: str) -> dict[str, int] | None:
+    one, other = data.dimension_exponents.get(left), data.dimension_exponents.get(right)
+    if one is None or other is None:
+        return None
+    if op == "product":
+        sign = 1
+    elif op == "ratio":
+        sign = -1
+    else:
+        return None
+    found: dict[str, int] = {}
+    for key in set(one) | set(other):
+        power = one.get(key, 0) + sign * other.get(key, 0)
+        if power:
+            found[key] = power
+    return found
+
+
+@dataclass(frozen=True)
+class DimensionMismatch(Rule):
+    """Сумма разных физических размерностей или частное, которое с ними не сходится.
+
+    Одинаковые показатели — одна физическая размерность, даже если имена разные.
+    Тариф энергии и тариф мощности здесь не различаются: это соседнее правило.
+    Без каталога правило молчит.
+    """
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        if not data.dimension_exponents or not data.concept_dimensions:
+            return []
+        cache: dict[str, str | None] = {}
+        binary_rows = _binary_result_rows(data)
+        found: dict[str, dict] = {}
+        for cell, link in data.link_cells.items():
+            own = _row_of_cell(data, cell)
+            if own is None:
+                continue
+            refs = [ref for ref in dict.fromkeys(link.refs) if ref]
+            operation = _binary(link.formula, link.refs)
+            if operation is None and not _additive(link.formula):
+                continue
+            if operation is None and len(refs) < 2:
+                continue
+            sides = []
+            for ref in refs:
+                other = _row_of_cell(data, ref)
+                if other is None or other["row_key"] == own["row_key"]:
+                    continue
+                dimension = _row_dimension(data, other["row_key"], cache, binary_rows)
+                if dimension is not None:
+                    sides.append((dimension, other["row_key"]))
+            if operation is None:
+                signatures = {sign for item in sides if (sign := _signature(data, item[0])) is not None}
+                if len(signatures) < 2:
+                    result = _row_dimension(data, own["row_key"], cache, binary_rows)
+                    result_sign = _signature(data, result)
+                    if result_sign is None or not signatures or result_sign in signatures:
+                        continue
+                    dimension, ref_row = sides[0]
+                else:
+                    first = _signature(data, sides[0][0])
+                    dimension, ref_row = next(item for item in sides if _signature(data, item[0]) != first)
+                found[cell] = {
+                    "op": "add",
+                    "dimension": dimension,
+                    "ref_dimension": sides[0][0] if dimension != sides[0][0] else result,
+                    "ref_row": ref_row,
+                }
+                continue
+            if len(sides) != 2:
+                continue
+            result = _row_dimension(data, own["row_key"], cache, binary_rows)
+            if result is None:
+                continue
+            target = data.dimension_exponents.get(result)
+            # Ссылки идут в порядке формулы. У частного числитель — ссылка до «/».
+            left, right = sides[0][0], sides[1][0]
+            powers = _powers(data, operation, left, right)
+            if powers is not None and target == powers:
+                continue
+            found[cell] = {
+                "op": operation,
+                "dimension": left,
+                "ref_dimension": right,
+                "result": result,
+                "ref_row": sides[1][1],
+            }
+        return [
+            self.finding(data, locations=[data.placed(cell)], row_key=_row_of_cell(data, cell)["row_key"], params=params)
+            for cell, params in sorted(found.items())
+            if _row_of_cell(data, cell) is not None
+        ]
+
+
+def _bound_concepts(data: AuditInput) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for binding in data.bindings:
+        if binding.get("status") not in {"bound", "bound_with_warning"}:
+            continue
+        key = binding.get("row_key")
+        concept = str(binding.get("effective_concept") or binding.get("concept") or "")
+        if key and concept:
+            found.setdefault(str(key), concept)
+    return found
+
+
+def _price_of(
+    data: AuditInput,
+    row_key: str,
+    cache: dict[str, str | None],
+    concepts: dict[str, str],
+    binary_rows: frozenset[str],
+) -> tuple[str | None, str | None, str | None]:
+    """Основа тарифа, расчётный период мощности и валюта конкретной единицы."""
+
+    dimension = _row_dimension(data, row_key, cache, binary_rows)
+    concept = concepts.get(row_key)
+    basis = data.concept_pricing.get(concept or "")
+    if basis is None and dimension:
+        basis = data.dimension_pricing.get(dimension)
+    billing = data.concept_billing.get(concept or "")
+    unit = concrete_unit(data.rows_by_key.get(row_key) or {}, data.unit_dimensions)
+    currency = data.unit_currency.get(unit) if unit else None
+    if not billing and unit:
+        billing = data.unit_billing.get(unit)
+    return basis or None, billing or None, currency
+
+
+def _has_bridge(
+    data: AuditInput,
+    refs: list[str],
+    cache: dict[str, str | None],
+    concepts: dict[str, str],
+    binary_rows: frozenset[str],
+) -> bool:
+    """В формуле есть объём, мощность или период. Без них тарифы разной основы не переводятся."""
+
+    for ref in refs:
+        other = _row_of_cell(data, ref)
+        if other is None:
+            continue
+        key = other["row_key"]
+        if concepts.get(key) in _PRICE_LOAD:
+            return True
+        if _row_dimension(data, key, cache, binary_rows) in _PRICE_BRIDGE:
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class PricingBasisMismatch(Rule):
+    """Тариф энергии и тариф мощности не складываются и не переводятся друг в друга сами.
+
+    Физические показатели у них могут совпасть. Расчётный период мощности — не период
+    отчёта книги. Разная валюта цены требует курса, а не сложения. Без каталога основы
+    правило молчит.
+    """
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        if not data.dimension_exponents:
+            return []
+        if not any((data.concept_pricing, data.dimension_pricing, data.unit_currency, data.concept_billing, data.unit_billing)):
+            return []
+        cache: dict[str, str | None] = {}
+        binary_rows = _binary_result_rows(data)
+        concepts = _bound_concepts(data)
+        found: dict[str, dict] = {}
+        for cell, link in data.link_cells.items():
+            own = _row_of_cell(data, cell)
+            if own is None:
+                continue
+            refs = [ref for ref in dict.fromkeys(link.refs) if ref]
+            operation = _binary(link.formula, link.refs)
+            additive = operation is None and _additive(link.formula) and len(refs) >= 2
+            copy = operation is None and not _additive(link.formula) and len(set(refs)) == 1
+            if not additive and operation is None and not copy:
+                continue
+            sides = []
+            for ref in refs:
+                other = _row_of_cell(data, ref)
+                if other is None or other["row_key"] == own["row_key"]:
+                    continue
+                basis, billing, currency = _price_of(data, other["row_key"], cache, concepts, binary_rows)
+                if basis is None and billing is None and currency is None:
+                    continue
+                sides.append((basis, billing, currency, other["row_key"]))
+            if not sides:
+                continue
+            if additive:
+                signatures = set()
+                for ref in refs:
+                    other = _row_of_cell(data, ref)
+                    if other is None or other["row_key"] == own["row_key"]:
+                        continue
+                    sign = _signature(data, _row_dimension(data, other["row_key"], cache, binary_rows))
+                    if sign is not None:
+                        signatures.add(sign)
+                if len(signatures) >= 2:
+                    continue
+                priced = [item for item in sides if item[0]]
+                if len(priced) < 2:
+                    result = _price_of(data, own["row_key"], cache, concepts, binary_rows)
+                    if result[0] and priced and result[0] != priced[0][0]:
+                        found[cell] = {"reason": "pricing_basis", "basis": result[0], "ref_basis": priced[0][0], "ref_row": priced[0][3]}
+                    continue
+                bases = {item[0] for item in priced}
+                if len(bases) > 1:
+                    other = next(item for item in priced if item[0] != priced[0][0])
+                    found[cell] = {"reason": "pricing_basis", "basis": other[0], "ref_basis": priced[0][0], "ref_row": other[3]}
+                    continue
+                result = _price_of(data, own["row_key"], cache, concepts, binary_rows)
+                if result[0] and result[0] not in bases:
+                    found[cell] = {"reason": "pricing_basis", "basis": result[0], "ref_basis": priced[0][0], "ref_row": priced[0][3]}
+                    continue
+                periods = {item[1] for item in priced if item[1]}
+                if len(periods) > 1:
+                    other = next(item for item in priced if item[1] and item[1] != priced[0][1])
+                    found[cell] = {
+                        "reason": "billing_period",
+                        "billing_period": other[1],
+                        "ref_billing_period": priced[0][1],
+                        "ref_row": other[3],
+                    }
+                    continue
+                currencies = {item[2] for item in priced if item[2]}
+                if len(currencies) > 1:
+                    other = next(item for item in priced if item[2] and item[2] != priced[0][2])
+                    found[cell] = {"reason": "currency", "currency": other[2], "ref_currency": priced[0][2], "ref_row": other[3]}
+                continue
+            result = _price_of(data, own["row_key"], cache, concepts, binary_rows)
+            operand = next((item for item in sides if item[0] and item[0] != result[0]), None)
+            if result[0] is None or operand is None or _has_bridge(data, refs, cache, concepts, binary_rows):
+                continue
+            found[cell] = {"reason": "conversion", "basis": result[0], "ref_basis": operand[0], "ref_row": operand[3]}
+        return [
+            self.finding(data, locations=[data.placed(cell)], row_key=_row_of_cell(data, cell)["row_key"], params=params)
+            for cell, params in sorted(found.items())
+            if _row_of_cell(data, cell) is not None
+        ]
+
+
 @dataclass(frozen=True)
 class PeriodGap(Rule):
     """Соседние периоды оси с датами: дыра или нахлёст между концом и началом."""
@@ -612,6 +928,26 @@ SCALE_MISMATCH = ScaleMismatch(
 )
 UNIT_MISMATCH = UnitMismatch(
     "unit_mismatch", "1", "logic", "high", ("ICAEW «clear units»",), "Сложение строк разной единицы", ROWS_LINKS, 2,
+)
+DIMENSION_MISMATCH = DimensionMismatch(
+    "dimension_mismatch",
+    "1",
+    "logic",
+    "high",
+    ("ICAEW «clear units»",),
+    "Размерности в формуле не сходятся",
+    ROWS_LINKS,
+    2,
+)
+PRICING_BASIS_MISMATCH = PricingBasisMismatch(
+    "pricing_basis_mismatch",
+    "1",
+    "logic",
+    "medium",
+    ("ICAEW «clear units»",),
+    "Тарифная основа или валюта цены не сходятся",
+    ROWS_LINKS,
+    2,
 )
 PERIOD_GAP = PeriodGap("period_gap", "1", "logic", "medium", ("ICAEW",), "Дыра или нахлёст периодов", ROWS, 2)
 ROLLFORWARD_BREAK = RollforwardBreak(

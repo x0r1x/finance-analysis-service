@@ -129,6 +129,16 @@ class AuditInput:
     semantics: list[dict] = field(default_factory=list)
     # Состав понятий таксономии (`composition`, §5.1): debt_service → interest, principal.
     composition: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Размерности понятий и каталог степеней. Пустые словари выключают проверку размерности.
+    concept_dimensions: dict[str, str] = field(default_factory=dict)
+    dimension_exponents: dict[str, dict[str, int]] = field(default_factory=dict)
+    unit_dimensions: dict[str, str] = field(default_factory=dict)
+    # Тарифная основа отдельно от показателей. Пустые словари выключают проверку основы.
+    concept_pricing: dict[str, str] = field(default_factory=dict)
+    concept_billing: dict[str, str] = field(default_factory=dict)
+    dimension_pricing: dict[str, str] = field(default_factory=dict)
+    unit_currency: dict[str, str] = field(default_factory=dict)
+    unit_billing: dict[str, str] = field(default_factory=dict)
     # Параметры профиля, которые меняют только вариант расчёта (§5.7).
     profile: dict = field(default_factory=dict)
     # Понятия с записью `concept.absent` в журнале книги (§5.10.5).
