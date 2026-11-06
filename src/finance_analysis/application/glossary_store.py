@@ -274,6 +274,16 @@ class GlossaryStore:
         concepts = package_of(document).concepts
         return {name: concept.composition for name, concept in concepts.items() if concept.composition}
 
+    async def concept_dimensions(self, version: str | None) -> dict[str, str]:
+        """Размерность каждого понятия релиза, с которым построено состояние книги."""
+
+        try:
+            document = await self._document(version) if version else await self._active_document()
+        except NotFound:
+            document = await self._active_document()
+        concepts = package_of(document).concepts
+        return {name: concept.dimension for name, concept in concepts.items()}
+
     async def list_profiles(self) -> dict:
         found = []
         async for item in self.store.list("profiles/"):

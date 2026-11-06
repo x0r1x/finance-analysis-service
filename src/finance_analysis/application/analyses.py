@@ -525,6 +525,9 @@ class Analyses:
                 period["phase"] = phase
         verdict = await self.service.resolve_model_type(job_id, target.head)
         live = applicable_metrics(self.service.model_types, decision_labels(verdict), RATIO_METRICS)
+        from finance_analysis.application.catalog import load_dimensions
+
+        catalog = load_dimensions()
         return AuditInput(
             rows=dim_rows,
             periods=periods,
@@ -534,6 +537,9 @@ class Analyses:
             bindings=bindings,
             semantics=row_semantics,
             composition=await self.service.glossary.composition(target.head.versions.get("glossary")),
+            concept_dimensions=await self.service.glossary.concept_dimensions(target.head.versions.get("glossary")),
+            dimension_exponents={name: dict(powers) for name, powers in catalog.exponents.items()},
+            unit_dimensions=dict(catalog.units),
             profile=await self._profile(target.head),
             absent=await self._absent(job_id, target),
             applicable_metrics=live,
@@ -1551,23 +1557,16 @@ async def _dim_rows(svc, job_id: str, pinned) -> list[dict]:
 
 
 def _with_row_scale(facts: list[dict], rows: list[dict]) -> list[dict]:
-    """Масштаб строки нужен коэффициенту: в факте его нет, он лежит в `dim_row`."""
+    """Масштаб строки нужен коэффициенту: в факте его нет, он лежит в `dim_row`.
 
-    scale_of = {
-        str(row.get("row_key")): row.get("scale_factor")
-        for row in rows
-        if row.get("row_key") and row.get("scale_factor") not in (None, "")
-    }
-    if not scale_of:
-        return facts
-    stamped = []
-    for fact in facts:
-        if fact.get("scale_factor") not in (None, ""):
-            stamped.append(fact)
-            continue
-        scale = scale_of.get(str(fact.get("row_key")))
-        stamped.append(fact if scale is None else {**fact, "scale_factor": scale})
-    return stamped
+    Конкретная единица каталога копируется на факт тем же шагом. Масштаб из
+    формулы здесь не подставляется: его наследует обход источников.
+    """
+
+    from finance_analysis.application.catalog import load_dimensions
+    from finance_analysis.domain.measure import stamp_facts
+
+    return stamp_facts(facts, rows, load_dimensions().units)
 
 
 def _ratio_rows(got: dict) -> tuple[list[dict], list[dict]]:

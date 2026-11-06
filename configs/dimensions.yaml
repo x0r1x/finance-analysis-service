@@ -1,0 +1,32 @@
+# Размерности понятий. Конкретная единица и масштаб — свойства книги, не понятия.
+# energy = power × duration, поэтому валюта за энергию и валюта за мощность-время
+# имеют одни и те же показатели. Разница часа и года — масштаб книги.
+taxonomy: dimensions-1
+dimensions:
+  money:
+    base: true
+    units: [RUB, USD, EUR, GBP, руб]
+  power:
+    base: true
+    units: [MW, kW, GW, МВт]
+  duration:
+    base: true
+    units: [year, years, quarter, month, day, год, лет]
+  count:
+    base: true
+    units: [шт]
+  area:
+    base: true
+    units: [m2, ha, м2, га]
+  ratio:
+    dimensionless: true
+    units: ["1", "%", x]
+  energy:
+    exponents: {power: 1, duration: 1}
+    units: [MWh, kWh, GWh, "МВт·ч"]
+  currency_per_energy:
+    exponents: {money: 1, power: -1, duration: -1}
+    units: [RUB/MWh, USD/MWh, EUR/MWh, "руб/МВт·ч"]
+  currency_per_power_time:
+    exponents: {money: 1, power: -1, duration: -1}
+    units: [RUB/MW/year, USD/MW/year]

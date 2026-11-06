@@ -8,6 +8,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from finance_analysis.domain.dimensions import (
+    coarse_kind,
+    coarse_unit,
+    default_aggregation,
+    resolve_axes,
+)
 from finance_analysis.domain.ids import concept_id as check_concept_id
 
 
@@ -215,8 +221,9 @@ class LabelHit:
 @dataclass(frozen=True)
 class Concept:
     id: str
-    kind: str
-    unit: str
+    semantic_role: str
+    dimension: str
+    temporal_nature: str
     expected_sign: str | None
     expects_formula: bool
     prefer: str | None
@@ -230,6 +237,38 @@ class Concept:
     definition: Mapping[str, str]
     expand: Mapping[str, str]
     broader: str | None
+    aggregation: str | None = None
+
+    @property
+    def kind(self) -> str:
+        """Устаревшая ось. `assumption` читается как parameter, безразмерная мера — как ratio."""
+
+        return coarse_kind(self.semantic_role, self.dimension)
+
+    @property
+    def unit(self) -> str:
+        """Устаревшая грубая единица. Новая размерность не притворяется money, ratio или count."""
+
+        return coarse_unit(self.dimension)
+
+    @property
+    def form(self) -> str:
+        """Математическая форма: безразмерная размерность — ratio, остальное — amount."""
+
+        return "ratio" if self.dimension == "ratio" else "amount"
+
+    @property
+    def effective_aggregation(self) -> str:
+        return self.aggregation or default_aggregation(self.temporal_nature)
+
+    def sign_conflict(self, row_sign: str | None) -> bool:
+        """Приток и отток сверяются со знаком. Запас не носит знак, но поток на запасе — конфликт."""
+
+        if not row_sign:
+            return False
+        if self.expected_sign:
+            return row_sign != self.expected_sign
+        return self.temporal_nature == "stock" and row_sign in {"inflow", "outflow"}
 
 
 @dataclass(frozen=True)
@@ -348,10 +387,10 @@ def _concept(name: str, body: dict, glossary: dict, owned: dict[str, LabelHit]) 
     declared = glossary.get("concept")
     if declared != name:
         raise GlossaryInvalid([str(declared), name])
-    kind = body.get("kind")
-    unit = body.get("unit")
-    if not isinstance(kind, str) or not isinstance(unit, str):
-        raise GlossaryInvalid([name])
+    try:
+        axes = resolve_axes(body)
+    except (TypeError, ValueError):
+        raise GlossaryInvalid([name]) from None
     pref = _pref(glossary.get("pref"), name)
     if "ru" not in pref or "en" not in pref:
         raise GlossaryInvalid([name])
@@ -367,9 +406,11 @@ def _concept(name: str, body: dict, glossary: dict, owned: dict[str, LabelHit]) 
         raise GlossaryInvalid([name])
     return Concept(
         id=name,
-        kind=kind,
-        unit=unit,
-        expected_sign=_optional_str(body.get("expected_sign"), name),
+        semantic_role=str(axes["semantic_role"]),
+        dimension=str(axes["dimension"]),
+        temporal_nature=str(axes["temporal_nature"]),
+        expected_sign=axes["expected_sign"] if isinstance(axes["expected_sign"], str) else None,
+        aggregation=axes["aggregation"] if isinstance(axes["aggregation"], str) else None,
         expects_formula=bool(body.get("expects_formula", False)),
         prefer=_optional_str(body.get("prefer"), name),
         composition=_names(body.get("composition"), name),

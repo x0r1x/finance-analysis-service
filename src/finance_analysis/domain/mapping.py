@@ -157,7 +157,7 @@ def decide(
         return Assignment(top.concept, "ambiguous", "inferred", False, None, "normal", top_p, evidence)
     concept = glossary.concepts[top.concept]
     warnings = []
-    if concept.expected_sign and row.get("sign") and row.get("sign") != concept.expected_sign:
+    if concept.sign_conflict(row.get("sign")):
         warnings.append("sign")
     if gap < thresholds.weak_gap:
         warnings.append("weak_gap")
@@ -186,7 +186,7 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         return Assignment(None, "unknown", "inferred", False, None, "peripheral")
     hit, strength = found
     concept = glossary.concepts[hit.concept]
-    warning = concept.expected_sign and row.get("sign") and row.get("sign") != concept.expected_sign
+    warning = concept.sign_conflict(row.get("sign"))
     status = "bound_with_warning" if warning else "bound"
     evidence = {
         "label": {"id": label_id(hit.concept, hit.kind, hit.text), "kind": hit.kind, "text": hit.text},

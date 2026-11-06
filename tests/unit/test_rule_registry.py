@@ -39,6 +39,7 @@ PHASE2 = {
     "duplicate_label",
     "missing_unit",
     "hardcoded_value_in_formula_row",
+    "dimension_mismatch",
     "scale_mismatch",
     "unit_mismatch",
     "period_gap",

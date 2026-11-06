@@ -28,6 +28,7 @@ from finance_analysis.domain.audit import (
 )
 from finance_analysis.domain.book import norm
 from finance_analysis.domain.formulas import analyze
+from finance_analysis.domain.measure import concrete_unit, dependency_measure
 from finance_analysis.domain.metrics import aligned_keys
 
 _VALUED = frozenset({"cached", "zero_explicit"})
@@ -334,6 +335,157 @@ class UnitMismatch(UnitRule):
         return None
 
 
+def _bound_dimension(data: AuditInput, row_key: str) -> str | None:
+    for binding in data.bindings:
+        if binding.get("row_key") != row_key or binding.get("status") not in {"bound", "bound_with_warning"}:
+            continue
+        concept = str(binding.get("effective_concept") or binding.get("concept") or "")
+        dimension = data.concept_dimensions.get(concept)
+        if dimension in data.dimension_exponents:
+            return dimension
+    return None
+
+
+def _row_dimension(data: AuditInput, row_key: str, cache: dict[str, str | None]) -> str | None:
+    """Размерность привязанного понятия, иначе конкретная единица строки или её источника."""
+
+    if row_key in cache:
+        return cache[row_key]
+    found = _bound_dimension(data, row_key)
+    row = data.rows_by_key.get(row_key) or {}
+    if found is None:
+        unit = concrete_unit(row, data.unit_dimensions)
+        if unit is not None:
+            found = data.unit_dimensions.get(unit)
+        elif not row.get("unit"):
+            _scale, inherited = dependency_measure(data, row_key, data.unit_dimensions)
+            if inherited is not None:
+                found = data.unit_dimensions.get(inherited)
+    cache[row_key] = found
+    return found
+
+
+def _binary(formula: str | None, refs: tuple[str, ...]) -> str | None:
+    """Одно частное или одно произведение двух ссылок. Сумму сюда не относим."""
+
+    if len(set(refs)) != 2:
+        return None
+    text = _operators_text(formula)
+    if not text or analyze(formula).functions:
+        return None
+    if text.count("/") == 1 and not re.search(r"[+*^]", text):
+        return "ratio"
+    if text.count("*") == 1 and not re.search(r"[+/^]", text):
+        return "product"
+    return None
+
+
+def _signature(data: AuditInput, name: str | None) -> tuple[tuple[str, int], ...] | None:
+    """Показатели размерности. Совпадающие показатели — одна размерность, даже если имена разные."""
+
+    if name is None:
+        return None
+    powers = data.dimension_exponents.get(name)
+    if powers is None:
+        return None
+    return tuple(sorted(powers.items()))
+
+
+def _powers(data: AuditInput, op: str, left: str, right: str) -> dict[str, int] | None:
+    one, other = data.dimension_exponents.get(left), data.dimension_exponents.get(right)
+    if one is None or other is None:
+        return None
+    if op == "product":
+        sign = 1
+    elif op == "ratio":
+        sign = -1
+    else:
+        return None
+    found: dict[str, int] = {}
+    for key in set(one) | set(other):
+        power = one.get(key, 0) + sign * other.get(key, 0)
+        if power:
+            found[key] = power
+    return found
+
+
+@dataclass(frozen=True)
+class DimensionMismatch(Rule):
+    """Сумма разных размерностей или частное, которое не сходится с размерностью результата.
+
+    Без каталога правило молчит. Непривязанная строка участвует, только если у неё
+    конкретная единица каталога или единица, унаследованная у источника формулы.
+    """
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        if not data.dimension_exponents or not data.concept_dimensions:
+            return []
+        cache: dict[str, str | None] = {}
+        found: dict[str, dict] = {}
+        for cell, link in data.link_cells.items():
+            own = _row_of_cell(data, cell)
+            if own is None:
+                continue
+            refs = [ref for ref in dict.fromkeys(link.refs) if ref]
+            operation = _binary(link.formula, link.refs)
+            if operation is None and not _additive(link.formula):
+                continue
+            if operation is None and len(refs) < 2:
+                continue
+            sides = []
+            for ref in refs:
+                other = _row_of_cell(data, ref)
+                if other is None or other["row_key"] == own["row_key"]:
+                    continue
+                dimension = _row_dimension(data, other["row_key"], cache)
+                if dimension is not None:
+                    sides.append((dimension, other["row_key"]))
+            if operation is None:
+                signatures = {sign for item in sides if (sign := _signature(data, item[0])) is not None}
+                if len(signatures) < 2:
+                    result = _row_dimension(data, own["row_key"], cache)
+                    result_sign = _signature(data, result)
+                    if result_sign is None or not signatures or result_sign in signatures:
+                        continue
+                    dimension, ref_row = sides[0]
+                else:
+                    first = _signature(data, sides[0][0])
+                    dimension, ref_row = next(item for item in sides if _signature(data, item[0]) != first)
+                found[cell] = {
+                    "op": "add",
+                    "dimension": dimension,
+                    "ref_dimension": sides[0][0] if dimension != sides[0][0] else result,
+                    "ref_row": ref_row,
+                }
+                continue
+            if len(sides) != 2:
+                continue
+            result = _row_dimension(data, own["row_key"], cache)
+            if result is None:
+                continue
+            target = data.dimension_exponents.get(result)
+            left, right = sides[0][0], sides[1][0]
+            powers = _powers(data, operation, left, right)
+            if operation == "ratio":
+                flipped = _powers(data, operation, right, left)
+                if target == powers or target == flipped:
+                    continue
+            elif powers is not None and target == powers:
+                continue
+            found[cell] = {
+                "op": operation,
+                "dimension": left,
+                "ref_dimension": right,
+                "result": result,
+                "ref_row": sides[1][1],
+            }
+        return [
+            self.finding(data, locations=[data.placed(cell)], row_key=_row_of_cell(data, cell)["row_key"], params=params)
+            for cell, params in sorted(found.items())
+            if _row_of_cell(data, cell) is not None
+        ]
+
+
 @dataclass(frozen=True)
 class PeriodGap(Rule):
     """Соседние периоды оси с датами: дыра или нахлёст между концом и началом."""
@@ -612,6 +764,16 @@ SCALE_MISMATCH = ScaleMismatch(
 )
 UNIT_MISMATCH = UnitMismatch(
     "unit_mismatch", "1", "logic", "high", ("ICAEW «clear units»",), "Сложение строк разной единицы", ROWS_LINKS, 2,
+)
+DIMENSION_MISMATCH = DimensionMismatch(
+    "dimension_mismatch",
+    "1",
+    "logic",
+    "high",
+    ("ICAEW «clear units»",),
+    "Размерности в формуле не сходятся",
+    ROWS_LINKS,
+    2,
 )
 PERIOD_GAP = PeriodGap("period_gap", "1", "logic", "medium", ("ICAEW",), "Дыра или нахлёст периодов", ROWS, 2)
 ROLLFORWARD_BREAK = RollforwardBreak(

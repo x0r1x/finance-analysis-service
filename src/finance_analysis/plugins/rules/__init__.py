@@ -37,6 +37,7 @@ from finance_analysis.plugins.rules.refs import (
 from finance_analysis.plugins.rules.structure import (
     CROSS_SHEET_INCONSISTENCY,
     DAISY_CHAIN,
+    DIMENSION_MISMATCH,
     DUPLICATE_LABEL,
     FORMULA_CLASS_MISMATCH,
     HARDCODED_VALUE_IN_FORMULA_ROW,
@@ -77,6 +78,7 @@ RULES = (
     DUPLICATE_LABEL,
     MISSING_UNIT,
     HARDCODED_VALUE_IN_FORMULA_ROW,
+    DIMENSION_MISMATCH,
     SCALE_MISMATCH,
     UNIT_MISMATCH,
     PERIOD_GAP,
