@@ -11,7 +11,11 @@ from finance_analysis.application.analyses import RATIO_METRICS, _attach_book_ro
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.domain.book import FAS_SCHEMA_VERSION
-from finance_analysis.domain.book_cite import CITED_BY_TYPE, cite_type_book_rows
+from finance_analysis.domain.book_cite import (
+    CITED_BY_TYPE,
+    PREFERRED_LABEL,
+    cite_type_book_rows,
+)
 from finance_analysis.domain.glossary import normalize_label
 from finance_analysis.domain.model_type import applicability, open_concepts
 from finance_analysis.domain.questions import concept_questions
@@ -129,7 +133,13 @@ def _column_numbers(relative: str, sheet: str, column: int, start: int) -> list:
 
 
 def test_lease_portfolio_cites_the_three_scalars():
-    """Процентный доход 260, доля NPL 0,125, покрытие резервом 0,5."""
+    """Процентный доход Summary!B2 — кэш 260 формулы SUM(Schedule!F2:F7).
+
+    Доля NPL Summary!B5 равна 0,125, покрытие Summary!B8 равно 0,5. У каждого
+    понятия одно наблюдение со статусом cached, row_key остаётся подписью столбца A.
+    Ряд Schedule!F2:F7 сидит на interest и в наблюдения процентного дохода не входит.
+    Summary!B6 тоже 0,5: это ставка резерва, не покрытие. Предпочтительной подписи нет.
+    """
 
     book = "leasing/lease_portfolio.recalc_libreoffice.xlsx"
     package = load_catalog()
@@ -141,11 +151,28 @@ def test_lease_portfolio_cites_the_three_scalars():
     assert (
         package.resolve(_label(book, "Summary", "A8")).concept == "provision_coverage"
     )
+    assert package.resolve(_label(book, "Schedule", "F1")).concept == "interest"
+    assert _label(book, "Summary", "B2") == "=SUM(Schedule!F2:F7)"
+    assert _label(book, "Summary", "A6") == "Provision rate"
     income, share, cover = (
         _cached(book, "Summary", "B2"),
         _cached(book, "Summary", "B5"),
         _cached(book, "Summary", "B8"),
     )
+    provision_rate = _cached(book, "Summary", "B6")
+    assert income == 260 and share == 0.125 and cover == 0.5 and provision_rate == 0.5
+    schedule_interest = [
+        (f"Schedule!F{row}", _cached(book, "Schedule", f"F{row}")) for row in range(2, 8)
+    ]
+    assert [cell_id for cell_id, _value in schedule_interest] == [
+        "Schedule!F2",
+        "Schedule!F3",
+        "Schedule!F4",
+        "Schedule!F5",
+        "Schedule!F6",
+        "Schedule!F7",
+    ]
+    assert "bank_leasing" not in PREFERRED_LABEL
     got = cite_type_book_rows(
         source="inferred",
         primary="bank_leasing",
@@ -153,19 +180,49 @@ def test_lease_portfolio_cites_the_three_scalars():
             _binding("lease_interest_income", "Summary!A2"),
             _binding("npl_share", "Summary!A5"),
             _binding("provision_coverage", "Summary!A8"),
+            _binding("interest", "Schedule!F1"),
+            _binding("principal", "Schedule!G1"),
         ],
         facts=[
-            _fact("Summary!A2", income),
-            _fact("Summary!A5", share),
-            _fact("Summary!A8", cover),
+            _fact("Summary!A2", income, cell_id="Summary!B2"),
+            _fact("Summary!A5", share, cell_id="Summary!B5"),
+            _fact("Summary!A8", cover, cell_id="Summary!B8"),
+            _fact("Summary!A6", provision_rate, cell_id="Summary!B6"),
+            *[
+                _fact("Schedule!F1", value, cell_id=cell_id)
+                for cell_id, value in schedule_interest
+            ],
         ],
     )
     assert [row["concept"] for row in got] == list(CITED_BY_TYPE["bank_leasing"])
+    assert CITED_BY_TYPE["bank_leasing"] == (
+        "lease_interest_income",
+        "npl_share",
+        "provision_coverage",
+    )
+    assert [row["row_key"] for row in got] == ["Summary!A2", "Summary!A5", "Summary!A8"]
+    assert [len(row["observations"]) for row in got] == [1, 1, 1]
+    observed = [row["observations"][0] for row in got]
+    assert [item["cell_id"] for item in observed] == [
+        "Summary!B2",
+        "Summary!B5",
+        "Summary!B8",
+    ]
+    assert [item["value_status"] for item in observed] == ["cached", "cached", "cached"]
+    assert [Decimal(item["value"]) for item in observed] == [
+        Decimal(str(income)),
+        Decimal(str(share)),
+        Decimal(str(cover)),
+    ]
     assert [Decimal(_sheet(row)[0]) for row in got] == [
         Decimal(260),
         Decimal("0.125"),
         Decimal("0.5"),
     ]
+    quoted = {item["cell_id"] for row in got for item in row["observations"]}
+    assert quoted.isdisjoint(cell_id for cell_id, _value in schedule_interest)
+    assert "Summary!B6" not in quoted
+    assert {row["concept"] for row in got}.isdisjoint({"interest", "principal"})
     assert all(row["status"] == "cited" and "needs_input" not in row for row in got)
 
 
