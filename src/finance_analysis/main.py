@@ -103,7 +103,7 @@ def main() -> None:
             # Идемпотентно восстановить SMV _head после сбоя on_publish.
             try:
                 await service.recover_semantic_model()
-            except Exception:  # noqa: BLE001 — старт API не блокируем отсутствием SMV
+            except Exception:
                 LOG.exception("recover_semantic_model на старте не удался")
             await service.refresh_owner_lease()
             service.hold_owner()
