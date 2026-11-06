@@ -120,11 +120,13 @@
 
 **Не-цели фазы:** замена networkx-эвристик привязки; полный lineage UI; запись третьего графа как копии YAML в Parquet без нужды.
 
+**Поставка:** [meta-layer-graphs.md](meta-layer-graphs.md); схема `domain/contracts/meta_layer_graphs.json`; код `finance_analysis.domain.graphs`; чтение `GET /v1/books/{job_id}/metrics/{metric_id}/trace`.
+
 **Критерии приёмки:**
 
-- [ ] Документ трёх графов + примеры на одной книге.  
-- [ ] Тест трассировки: выбранный metric → concept → binding_key → cell_id (или явный `missing_trace`).  
-- [ ] Нет миграции, смешивающей три графа в одну таблицу рёбер с общей семантикой.
+- [x] Документ трёх графов + примеры на одной книге.  
+- [x] Тест трассировки: выбранный metric → concept → binding_key → cell_id (или явный `missing_trace`).  
+- [x] Нет миграции, смешивающей три графа в одну таблицу рёбер с общей семантикой.
 
 ---
 
