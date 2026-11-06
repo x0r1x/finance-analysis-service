@@ -37,39 +37,59 @@ def metrics_file() -> Path:
 
 def _inputs(body: dict, refs: dict[str, MetricInputs], name: str) -> MetricInputs:
     base = body.get("base")
-    if isinstance(base, str):
+    if "base" in body:
+        if not isinstance(base, str) or not base:
+            raise ModelTypeInvalid(f"{name}: base — непустая строка")
         if base not in refs:
             raise ModelTypeInvalid(f"{name}: base {base} не объявлен раньше")
         return refs[base]
     all_of: set[str] = set()
     one_of: set[str] = set()
-    numerator = body.get("numerator") or []
-    if isinstance(numerator, dict):
-        all_of.update(_names(numerator, name))
-    else:
-        if isinstance(numerator, str):
-            numerator = [numerator]
-        if not isinstance(numerator, list):
-            raise ModelTypeInvalid(f"{name}: numerator должен быть списком понятий")
-        if len(numerator) > 1:
-            one_of.update(str(item) for item in numerator)
-        else:
-            all_of.update(str(item) for item in numerator)
-    denominator = body.get("denominator")
-    if isinstance(denominator, dict):
-        all_of.update(_names(denominator, name))
-    elif isinstance(denominator, str):
-        all_of.add(denominator)
-    rate = body.get("rate")
-    if isinstance(rate, str):
+    if "numerator" in body:
+        num_all, num_one = _term_names(body.get("numerator"), name, "numerator")
+        all_of.update(num_all)
+        one_of.update(num_one)
+    if "denominator" in body:
+        den_all, den_one = _term_names(body.get("denominator"), name, "denominator")
+        all_of.update(den_all)
+        all_of.update(den_one)
+    if "rate" in body:
+        rate = body.get("rate")
+        if not isinstance(rate, str) or not rate:
+            raise ModelTypeInvalid(f"{name}: rate — непустая строка")
         all_of.add(rate)
     return MetricInputs(frozenset(all_of), frozenset(one_of))
+
+
+def _term_names(value: object, owner: str, field: str) -> tuple[set[str], set[str]]:
+    """Разбор numerator/denominator → (all_of, one_of)."""
+
+    if isinstance(value, dict):
+        return _names(value, f"{owner}.{field}"), set()
+    if isinstance(value, str):
+        if not value:
+            raise ModelTypeInvalid(f"{owner}: {field} пустая строка")
+        return {value}, set()
+    if isinstance(value, list):
+        if not value or any(not isinstance(item, str) or not item for item in value):
+            raise ModelTypeInvalid(f"{owner}: {field} — непустой список строк")
+        names = [str(item) for item in value]
+        if len(names) > 1 and field == "numerator":
+            return set(), set(names)
+        return set(names), set()
+    raise ModelTypeInvalid(f"{owner}: {field} — строка, список строк или объект plus/minus")
 
 
 def _names(side: dict, name: str) -> set[str]:
     if set(side) - {"plus", "minus"}:
         raise ModelTypeInvalid(f"{name}: у слагаемых только plus и minus")
-    return {str(item) for item in (side.get("plus") or [])} | {str(item) for item in (side.get("minus") or [])}
+    plus = side.get("plus") or []
+    minus = side.get("minus") or []
+    if not isinstance(plus, list) or any(not isinstance(item, str) or not item for item in plus):
+        raise ModelTypeInvalid(f"{name}.plus: список строк")
+    if not isinstance(minus, list) or any(not isinstance(item, str) or not item for item in minus):
+        raise ModelTypeInvalid(f"{name}.minus: список строк")
+    return {str(item) for item in plus} | {str(item) for item in minus}
 
 
 def _side(raw: dict) -> Side:
@@ -93,34 +113,35 @@ def _composed(body: dict, name: str) -> Composed | None:
 
 
 def _expression(body: dict, name: str) -> MetricExpression:
-    base = body.get("base")
-    if isinstance(base, str):
-        return MetricExpression(base=str(base), rate=str(body["rate"]) if isinstance(body.get("rate"), str) else None)
-    rate = str(body["rate"]) if isinstance(body.get("rate"), str) else None
-    numerator = body.get("numerator")
-    denominator = body.get("denominator")
+    if "base" in body:
+        base = body.get("base")
+        if not isinstance(base, str) or not base:
+            raise ModelTypeInvalid(f"{name}: base — непустая строка")
+        rate = None
+        if "rate" in body:
+            raw_rate = body.get("rate")
+            if not isinstance(raw_rate, str) or not raw_rate:
+                raise ModelTypeInvalid(f"{name}: rate — непустая строка")
+            rate = raw_rate
+        return MetricExpression(base=base, rate=rate)
+    rate = None
+    if "rate" in body:
+        raw_rate = body.get("rate")
+        if not isinstance(raw_rate, str) or not raw_rate:
+            raise ModelTypeInvalid(f"{name}: rate — непустая строка")
+        rate = raw_rate
     one_of: set[str] = set()
     num_plus: tuple[str, ...] = ()
     num_minus: tuple[str, ...] = ()
     den_plus: tuple[str, ...] = ()
     den_minus: tuple[str, ...] = ()
-    if isinstance(numerator, dict):
-        num_plus = tuple(str(item) for item in numerator.get("plus") or [])
-        num_minus = tuple(str(item) for item in numerator.get("minus") or [])
-    elif isinstance(numerator, list):
-        if len(numerator) > 1:
-            one_of = {str(item) for item in numerator}
-        elif numerator:
-            num_plus = (str(numerator[0]),)
-    elif isinstance(numerator, str):
-        num_plus = (str(numerator),)
-    if isinstance(denominator, dict):
-        den_plus = tuple(str(item) for item in denominator.get("plus") or [])
-        den_minus = tuple(str(item) for item in denominator.get("minus") or [])
-    elif isinstance(denominator, list):
-        den_plus = tuple(str(item) for item in denominator)
-    elif isinstance(denominator, str):
-        den_plus = (str(denominator),)
+    if "numerator" in body:
+        num_plus, num_minus, one_of = _expression_side(body.get("numerator"), name, "numerator")
+    if "denominator" in body:
+        den_plus, den_minus, den_one = _expression_side(body.get("denominator"), name, "denominator")
+        if den_one:
+            # Альтернативы допустимы только у числителя (ICR); знаменатель — all_of.
+            den_plus = tuple(sorted(den_one))
     return MetricExpression(
         numerator_plus=num_plus,
         numerator_minus=num_minus,
@@ -130,6 +151,30 @@ def _expression(body: dict, name: str) -> MetricExpression:
         rate=rate,
         base=None,
     )
+
+
+def _expression_side(
+    value: object, owner: str, field: str
+) -> tuple[tuple[str, ...], tuple[str, ...], set[str]]:
+    if isinstance(value, dict):
+        _names(value, f"{owner}.{field}")
+        return (
+            tuple(str(item) for item in value.get("plus") or []),
+            tuple(str(item) for item in value.get("minus") or []),
+            set(),
+        )
+    if isinstance(value, str):
+        if not value:
+            raise ModelTypeInvalid(f"{owner}: {field} пустая строка")
+        return (value,), (), set()
+    if isinstance(value, list):
+        if not value or any(not isinstance(item, str) or not item for item in value):
+            raise ModelTypeInvalid(f"{owner}: {field} — непустой список строк")
+        names = [str(item) for item in value]
+        if len(names) > 1 and field == "numerator":
+            return (), (), set(names)
+        return tuple(names), (), set()
+    raise ModelTypeInvalid(f"{owner}: {field} — строка, список строк или объект plus/minus")
 
 
 def load_metric_inputs(path: Path | None = None) -> dict[str, MetricInputs]:
@@ -161,15 +206,23 @@ def load_metric_catalog(
         if not isinstance(body, dict):
             raise ModelTypeInvalid(f"{name}: формула метрики не объект")
         metric = str(name)
-        if isinstance(body.get("base"), str):
-            bases[metric] = str(body["base"])
-        if isinstance(body.get("rate"), str):
-            rates[metric] = str(body["rate"])
+        if "base" in body:
+            base = body.get("base")
+            if not isinstance(base, str) or not base:
+                raise ModelTypeInvalid(f"{metric}: base — непустая строка")
+            bases[metric] = base
+        if "rate" in body:
+            rate = body.get("rate")
+            if not isinstance(rate, str) or not rate:
+                raise ModelTypeInvalid(f"{metric}: rate — непустая строка")
+            rates[metric] = rate
         inputs[metric] = _inputs(body, inputs, metric)
         expressions[metric] = _expression(body, metric)
         own = _composed(body, metric)
         if own is not None:
             composed[metric] = own
+        if "variants" in body and not isinstance(body.get("variants"), dict):
+            raise ModelTypeInvalid(f"{metric}: variants должен быть объектом")
         raw_variants = body.get("variants") or {}
         if not isinstance(raw_variants, dict):
             raise ModelTypeInvalid(f"{metric}: variants должен быть объектом")
@@ -177,16 +230,24 @@ def load_metric_catalog(
         for variant, spec in raw_variants.items():
             if not isinstance(spec, dict):
                 raise ModelTypeInvalid(f"{metric}.{variant}: вариант не объект")
+            if "variants" in spec:
+                raise ModelTypeInvalid(f"{metric}.{variant}: вложенные variants не поддерживаются")
             key = f"{metric}.{variant}"
             found[str(variant)] = _inputs(spec, inputs, key)
             expressions[key] = _expression(spec, key)
-            if isinstance(spec.get("base"), str):
-                bases[key] = str(spec["base"])
+            if "base" in spec:
+                base = spec.get("base")
+                if not isinstance(base, str) or not base:
+                    raise ModelTypeInvalid(f"{key}: base — непустая строка")
+                bases[key] = base
             item = _composed(spec, key)
             if item is not None:
                 composed[key] = item
-            if isinstance(spec.get("rate"), str):
-                rates[key] = str(spec["rate"])
+            if "rate" in spec:
+                rate = spec.get("rate")
+                if not isinstance(rate, str) or not rate:
+                    raise ModelTypeInvalid(f"{key}: rate — непустая строка")
+                rates[key] = rate
         if found:
             variants[metric] = found
     return inputs, variants, composed, bases, rates, expressions

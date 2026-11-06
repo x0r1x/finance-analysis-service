@@ -100,7 +100,9 @@
 }
 ```
 
-Инвариант: `version == sha256(canonical_json(indicators))[:16]`. Machine-readable схема — JSON Schema Draft 2020-12 по пути выше; контрактные тесты валидируют фактический `as_dict()` через схему.
+Инвариант: `version == sha256(canonical_json(indicators))[:16]`. Machine-readable схема — JSON Schema Draft 2020-12 по пути выше.
+
+`build_financial_catalog` / `load_financial_catalog` **в production-пути** вызывают `validate_financial_catalog_integrity`: JSON Schema Draft 2020-12 по `as_dict()` плюс ссылочные инварианты (`id` = ключ, `input_concepts` = `all_of ∪ one_of`, `model_types.*.variant` ∈ `variants`, `base`/`formula.base` ∈ каталог). Ошибка блокирует старт сервиса и `fas check-config`, а не отдаётся клиенту как «почти корректный» ответ.
 
 ## 3. Версия в `SemanticModelVersion`
 
@@ -123,9 +125,11 @@
 2. `row_fallbacks` **нельзя** указать как вход формулы (только в `interest_order`).  
 3. Единицы слагаемых совместимы; частное безразмерно (кроме явных rate-метрик).  
 4. Нет циклов `base`; ключи coverage/fallback известны.  
-5. Некорректные типы `definition` / `status` / `window` в YAML — явная ошибка загрузки, без тихого default.
+5. Некорректные типы `definition` / `status` / `window` в YAML — явная ошибка загрузки, без тихого default.  
+6. `numerator` / `denominator` — только строка, список строк или `plus`/`minus`; `base`/`rate` — непустые строки; вложенные `variants` запрещены.  
+7. Публичный снимок проходит JSON Schema и межполевые инварианты до публикации.
 
-Тихий drift «concept vs metric input» запрещён: сервис с расхождением не стартует.
+Тихий drift «concept vs metric input» и «формально валидная, но урезанная формула» запрещены: сервис с расхождением не стартует.
 
 ## 5. API чтения (опционально в фазе 3)
 

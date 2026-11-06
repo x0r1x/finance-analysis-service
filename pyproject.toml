@@ -21,6 +21,7 @@ dependencies = [
   "wrenai==0.16.0",
   "orjson>=3.10",
   "pyyaml>=6.0",
+  "jsonschema>=4.23",
   "taskiq>=0.13,<0.14",
   "taskiq-redis==1.2.4",
   "scikit-learn>=1.5",
@@ -36,7 +37,6 @@ dev = [
   "import-linter>=2.1",
   "ruff==0.17.2",
   "openpyxl>=3.1",
-  "jsonschema>=4.23",
 ]
 
 [project.scripts]

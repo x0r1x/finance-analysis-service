@@ -97,24 +97,56 @@ def _coverage_shape(document: Mapping[str, object]) -> None:
         _metric_body_keys(str(name), body)
 
 
-def _metric_body_keys(name: str, body: object) -> None:
+def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -> None:
     if not isinstance(body, dict):
         raise CatalogIntegrityError(f"{name}: формула метрики не объект")
     bad = sorted(set(body) - _METRIC_KEYS)
     if bad:
         raise CatalogIntegrityError(f"{name}: неизвестные ключи: {', '.join(bad)}")
     for side_name in ("numerator", "denominator"):
-        side = body.get(side_name)
-        if isinstance(side, dict):
-            bad = sorted(set(side) - _SIDE_KEYS)
-            if bad:
-                raise CatalogIntegrityError(f"{name}.{side_name}: неизвестные ключи: {', '.join(bad)}")
-    variants = body.get("variants") or {}
-    if variants and not isinstance(variants, dict):
-        raise CatalogIntegrityError(f"{name}.variants: объект")
-    if isinstance(variants, dict):
+        if side_name in body:
+            _formula_term(name, side_name, body.get(side_name))
+    if "base" in body:
+        base = body.get("base")
+        if not isinstance(base, str) or not base:
+            raise CatalogIntegrityError(f"{name}: base — непустая строка")
+    if "rate" in body:
+        rate = body.get("rate")
+        if not isinstance(rate, str) or not rate:
+            raise CatalogIntegrityError(f"{name}: rate — непустая строка")
+    if "variants" in body:
+        if not allow_variants:
+            raise CatalogIntegrityError(f"{name}: вложенные variants не поддерживаются")
+        variants = body.get("variants")
+        if not isinstance(variants, dict):
+            raise CatalogIntegrityError(f"{name}.variants: объект")
         for variant, spec in variants.items():
-            _metric_body_keys(f"{name}.{variant}", spec)
+            _metric_body_keys(f"{name}.{variant}", spec, allow_variants=False)
+
+
+def _formula_term(owner: str, field: str, value: object) -> None:
+    """numerator/denominator: строка, список строк или объект plus/minus."""
+
+    if isinstance(value, str):
+        if not value:
+            raise CatalogIntegrityError(f"{owner}: {field} пустая строка")
+        return
+    if isinstance(value, list):
+        if not value or any(not isinstance(item, str) or not item for item in value):
+            raise CatalogIntegrityError(f"{owner}: {field} — непустой список строк")
+        return
+    if isinstance(value, dict):
+        bad = sorted(set(value) - _SIDE_KEYS)
+        if bad:
+            raise CatalogIntegrityError(f"{owner}.{field}: неизвестные ключи: {', '.join(bad)}")
+        for side in ("plus", "minus"):
+            if side not in value:
+                continue
+            items = value.get(side)
+            if not isinstance(items, list) or any(not isinstance(item, str) or not item for item in items):
+                raise CatalogIntegrityError(f"{owner}.{field}.{side}: список строк")
+        return
+    raise CatalogIntegrityError(f"{owner}: {field} — строка, список строк или объект plus/minus")
 
 
 def _row_fallbacks(fallbacks: Mapping[str, RowFallback], concepts: frozenset[str]) -> None:

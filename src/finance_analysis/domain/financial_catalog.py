@@ -8,8 +8,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+
+from jsonschema import Draft202012Validator
 
 from finance_analysis.domain.book import canonical_json
 from finance_analysis.domain.dimensions import DimensionCatalog
@@ -18,6 +23,8 @@ from finance_analysis.domain.model_type import (
     MetricInputs,
     ModelTypeCatalog,
 )
+
+_SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "financial_model_catalog.json"
 
 INDICATOR_STATUSES = frozenset({"active", "deprecated"})
 WINDOWS = frozenset({"LTM", "period"})
@@ -232,12 +239,14 @@ def build_financial_catalog(
             base=base,
         )
     version = catalog_version_for(indicators)
-    return FinancialModelCatalog(
+    catalog = FinancialModelCatalog(
         indicators=indicators,
         version=version,
         stamp=stamp,
         row_fallback_ids=frozenset(model_types.row_fallbacks),
     )
+    validate_financial_catalog_integrity(catalog)
+    return catalog
 
 
 def formula_from_expression(expr: MetricExpression) -> IndicatorFormula:
@@ -384,3 +393,59 @@ def _validate_inputs(owner: str, inputs: object) -> None:
         values = inputs.get(key, [])
         if not isinstance(values, list) or any(not isinstance(item, str) or not item for item in values):
             raise ValueError(f"{owner}: inputs.{key} — список concept_id")
+
+
+@lru_cache(maxsize=1)
+def catalog_json_schema() -> dict:
+    return json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def validate_catalog_schema(payload: Mapping) -> None:
+    """Проверяет снимок каталога по JSON Schema Draft 2020-12. Блокирует публикацию."""
+
+    Draft202012Validator.check_schema(catalog_json_schema())
+    Draft202012Validator(catalog_json_schema()).validate(dict(payload))
+
+
+def validate_financial_catalog_integrity(catalog: FinancialModelCatalog) -> None:
+    """Схема + межполевые/ссылочные инварианты публичного каталога."""
+
+    payload = catalog.as_dict()
+    validate_catalog_schema(payload)
+    if payload.get("version") != catalog.version:
+        raise ValueError("version снимка каталога не совпадает с FinancialModelCatalog.version")
+    if payload.get("stamp") != catalog.stamp:
+        raise ValueError("stamp снимка каталога не совпадает с FinancialModelCatalog.stamp")
+    known = frozenset(catalog.indicators)
+    for metric_id, item in catalog.indicators.items():
+        if item.id != metric_id:
+            raise ValueError(f"indicators[{metric_id}].id != ключ ({item.id})")
+        _assert_input_concepts(metric_id, item.inputs, item.as_dict().get("input_concepts"))
+        if item.base is not None and item.base not in known:
+            raise ValueError(f"{metric_id}: base {item.base} вне каталога")
+        if item.formula.base is not None and item.formula.base not in known:
+            raise ValueError(f"{metric_id}: formula.base {item.formula.base} вне каталога")
+        for type_id, use in item.model_types.items():
+            if use.variant is not None and use.variant not in item.variants:
+                raise ValueError(
+                    f"{metric_id}.model_types.{type_id}: variant {use.variant} нет в variants"
+                )
+        for variant_id, variant in item.variants.items():
+            if variant.id != variant_id:
+                raise ValueError(f"{metric_id}.variants[{variant_id}].id != ключ ({variant.id})")
+            _assert_input_concepts(
+                f"{metric_id}.{variant_id}",
+                variant.inputs,
+                variant.as_dict().get("input_concepts"),
+            )
+            if variant.formula.base is not None and variant.formula.base not in known:
+                raise ValueError(
+                    f"{metric_id}.{variant_id}: formula.base {variant.formula.base} вне каталога"
+                )
+
+
+def _assert_input_concepts(owner: str, inputs: IndicatorInputs, flat: object) -> None:
+    if not isinstance(flat, list):
+        raise TypeError(f"{owner}: input_concepts — список")
+    if frozenset(flat) != inputs.concepts:
+        raise ValueError(f"{owner}: input_concepts != inputs.all_of ∪ inputs.one_of")
