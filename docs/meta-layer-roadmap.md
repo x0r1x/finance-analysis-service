@@ -52,11 +52,13 @@
 
 **Не-цели фазы:** новый датасет с дублированием `value*`/`concept`; UI; Iceberg; изменение конвейера привязки.
 
+**Поставка:** [financial-fact-provenance.md](financial-fact-provenance.md); код `finance_analysis.domain.provenance`; тесты `tests/unit/test_financial_fact_provenance.py`.
+
 **Критерии приёмки:**
 
-- [ ] Документ контракта в `docs/` (или § design) с полями и правилом «без дубля факта».  
-- [ ] Тест: для строки golden-фикстуры собирается полный провенанс (concept, period, cell, binding source/version, build_key, derive_key / SMV stub).  
-- [ ] Явно перечислено, какие поля берутся из какого датасета §4.4.
+- [x] Документ контракта в `docs/` (или § design) с полями и правилом «без дубля факта».  
+- [x] Тест: для строки golden-фикстуры собирается полный провенанс (concept, period, cell, binding source/version, build_key, derive_key / SMV stub).  
+- [x] Явно перечислено, какие поля берутся из какого датасета §4.4.
 
 ---
 

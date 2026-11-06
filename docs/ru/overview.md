@@ -20,4 +20,4 @@ FAS не парсит Excel, не пересчитывает формулы и �
 
 То, что эта страница не расписывает, лежит в [design-v0.23.md](../design-v0.23.md), §0 и §1. Если спека и код расходятся, сервис делает то, что в коде.
 
-Целевая модель метаслоя и фазы поставки — [meta-layer.md](../meta-layer.md), [meta-layer-roadmap.md](../meta-layer-roadmap.md).
+Целевая модель метаслоя и фазы поставки — [meta-layer.md](../meta-layer.md), [meta-layer-roadmap.md](../meta-layer-roadmap.md). Контракт провенанса финансового факта (фаза 1) — [financial-fact-provenance.md](../financial-fact-provenance.md).
