@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from finance_analysis.domain.dimensions import (
@@ -201,6 +201,18 @@ def label_surface(text: str) -> str:
     return unicodedata.normalize("NFC", text).strip().casefold()
 
 
+def label_phrase(item: object) -> str | None:
+    """Текст метки. Строка остаётся собой. Объект `{text, ambiguous}` отдаёт фразу."""
+
+    if isinstance(item, str) and item:
+        return item
+    if isinstance(item, dict):
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            return text
+    return None
+
+
 def label_scan(text: str) -> str:
     """Сырой текст для negative: NFC, casefold, ё→е. Хвост не срезается."""
 
@@ -312,6 +324,11 @@ class GlossaryPackage:
     flows: Mapping[str, tuple[str, ...]]
     markers: Mapping[str, tuple[str, ...]]
     _by_norm: Mapping[str, LabelHit]
+    # Одна нормализованная метка на два понятия только с пометкой ambiguous у обеих.
+    # Уверенного победителя у такой метки нет: кандидаты читает ambiguous_hits.
+    _ambiguous: Mapping[str, tuple[LabelHit, ...]] = field(default_factory=dict)
+    # Несколько исходных текстов одного ключа. Хвост в скобках ключ не меняет.
+    _surfaces: Mapping[str, tuple[LabelHit, ...]] = field(default_factory=dict)
 
     @property
     def ids(self) -> frozenset[str]:
@@ -326,21 +343,24 @@ class GlossaryPackage:
 
         Два ключа на разные понятия не привязываются. Тело, совпавшее вместе со
         своей аббревиатурой, остаётся exact. Голова подписи до пояснения в скобках
-        тоже exact, если она совпала с меткой глоссария.
+        тоже exact, если она совпала с меткой глоссария. Метка, помеченная
+        ambiguous у нескольких понятий, сюда не попадает.
         """
 
         peeled = _peel(text)
         body = _fold(peeled.body)
+        if body and body in self._ambiguous:
+            return None
         found: list[tuple[LabelHit, str]] = []
         if body:
-            hit = self._by_norm.get(body)
+            hit = self._select(body, text)
             if hit is not None:
                 found.append((hit, "exact"))
         for abbrev in peeled.abbrevs:
             key = _fold(abbrev)
             if not key or key == body:
                 continue
-            hit = self._by_norm.get(key)
+            hit = self._select(key, text)
             if hit is None or any(item.concept == hit.concept for item, _strength in found):
                 continue
             found.append((hit, "abbrev"))
@@ -348,13 +368,61 @@ class GlossaryPackage:
             key = _fold(code)
             if not key or key == body:
                 continue
-            hit = self._by_norm.get(key)
+            hit = self._select(key, text)
             if hit is None or any(item.concept == hit.concept for item, _strength in found):
                 continue
             found.append((hit, "exact"))
         if len({hit.concept for hit, _strength in found}) != 1:
             return None
         return found[0]
+
+    def _select(self, key: str, text: str) -> LabelHit | None:
+        """Поверхность ключа, чей текст совпал со строкой. Иначе первая."""
+
+        pool = self._surfaces.get(key)
+        if not pool:
+            return self._by_norm.get(key)
+        wanted = label_surface(text)
+        for hit in pool:
+            if label_surface(hit.text) == wanted:
+                return hit
+        return pool[0]
+
+    def ambiguous_hits(self, text: str) -> tuple[LabelHit, ...]:
+        """Кандидаты метки, которую делят несколько понятий. Уверенного совпадения нет.
+
+        Тело, уже занятое одним понятием, этот список не открывает: аббревиатура
+        в скобке не спорит с точной меткой.
+        """
+
+        peeled = _peel(text)
+        body = _fold(peeled.body)
+        if body and body in self._by_norm:
+            return ()
+        keys: list[str] = []
+        if body:
+            keys.append(body)
+        for abbrev in peeled.abbrevs:
+            key = _fold(abbrev)
+            if key and key not in keys:
+                keys.append(key)
+        for code in peeled.codes:
+            key = _fold(code)
+            if key and key not in keys:
+                keys.append(key)
+        found: list[LabelHit] = []
+        seen: set[str] = set()
+        wanted = label_surface(text)
+        for key in keys:
+            by_concept: dict[str, list[LabelHit]] = {}
+            for hit in self._ambiguous.get(key, ()):
+                by_concept.setdefault(hit.concept, []).append(hit)
+            for concept, hits in by_concept.items():
+                if concept in seen:
+                    continue
+                seen.add(concept)
+                found.append(next((item for item in hits if label_surface(item.text) == wanted), hits[0]))
+        return tuple(found)
 
     def display_label(self, concept: str, lang: str) -> str | None:
         return self.concepts[concept].pref.get(lang)
@@ -366,6 +434,7 @@ def with_profile(package: GlossaryPackage, document: dict, profile_id: str | Non
     if not profile_id:
         return package
     overlay = dict(package._by_norm)
+    surfaces = dict(package._surfaces)
     for concept, glossary in (document.get("glossaries") or {}).items():
         scoped = (glossary.get("scoped") or {}).get(profile_id) if isinstance(glossary, dict) else None
         if not isinstance(scoped, dict):
@@ -380,16 +449,21 @@ def with_profile(package: GlossaryPackage, document: dict, profile_id: str | Non
                     if not isinstance(text, str) or not text:
                         continue
                     for norm in label_keys(text):
+                        if norm in package._ambiguous:
+                            continue
                         previous = overlay.get(norm)
                         if previous is not None and previous.concept != str(concept):
                             continue
                         overlay[norm] = LabelHit(str(concept), kind, text)
+                        surfaces.pop(norm, None)
     return GlossaryPackage(
         taxonomy=package.taxonomy,
         concepts=package.concepts,
         flows=package.flows,
         markers=package.markers,
         _by_norm=MappingProxyType(overlay),
+        _ambiguous=package._ambiguous,
+        _surfaces=MappingProxyType(surfaces),
     )
 
 
@@ -401,14 +475,15 @@ def build_package(document: dict, glossaries: Mapping[str, dict], dictionaries: 
     if not isinstance(taxonomy, str) or not taxonomy:
         raise GlossaryInvalid(["taxonomy"])
     concepts: dict[str, Concept] = {}
-    owned: dict[str, LabelHit] = {}
+    slots: dict[str, list[tuple[LabelHit, bool]]] = {}
     known = {check_concept_id(str(key)) for key in raw}
     for key, body in raw.items():
         name = check_concept_id(str(key))
         glossary = glossaries.get(name)
         if not isinstance(glossary, dict):
             raise GlossaryInvalid([name])
-        concepts[name] = _concept(name, body if isinstance(body, dict) else {}, glossary, owned, known)
+        concepts[name] = _concept(name, body if isinstance(body, dict) else {}, glossary, slots, known)
+    owned, ambiguous, surfaces = _publish(slots)
     bad_weight = [
         concept.id
         for concept in concepts.values()
@@ -428,10 +503,18 @@ def build_package(document: dict, glossaries: Mapping[str, dict], dictionaries: 
         flows=MappingProxyType(_groups(dictionaries.get("flows"), "flows")),
         markers=MappingProxyType(_groups(dictionaries.get("markers"), "markers")),
         _by_norm=MappingProxyType(owned),
+        _ambiguous=MappingProxyType(ambiguous),
+        _surfaces=MappingProxyType(surfaces),
     )
 
 
-def _concept(name: str, body: dict, glossary: dict, owned: dict[str, LabelHit], known: set[str]) -> Concept:
+def _concept(
+    name: str,
+    body: dict,
+    glossary: dict,
+    slots: dict[str, list[tuple[LabelHit, bool]]],
+    known: set[str],
+) -> Concept:
     declared = glossary.get("concept")
     if declared != name:
         raise GlossaryInvalid([str(declared), name])
@@ -442,13 +525,13 @@ def _concept(name: str, body: dict, glossary: dict, owned: dict[str, LabelHit], 
     pref = _pref(glossary.get("pref"), name)
     if "ru" not in pref or "en" not in pref:
         raise GlossaryInvalid([name])
-    _take(owned, name, "pref", {lang: [text] for lang, text in pref.items()})
+    _take(slots, name, "pref", {lang: [(text, False)] for lang, text in pref.items()})
     alt = _bucket(glossary.get("alt"), name)
     for lang, texts in alt.items():
         if lang not in pref:
-            raise GlossaryInvalid(texts)
-    _take(owned, name, "alt", alt)
-    _take(owned, name, "hidden", _bucket(glossary.get("hidden"), name))
+            raise GlossaryInvalid([text for text, _flag in texts])
+    _take(slots, name, "alt", alt)
+    _take(slots, name, "hidden", _bucket(glossary.get("hidden"), name))
     validation = body.get("validation") or {}
     if not isinstance(validation, dict):
         raise GlossaryInvalid([name])
@@ -492,35 +575,112 @@ def _pref(raw, name: str) -> dict[str, str]:
     return out
 
 
-def _bucket(raw, name: str) -> dict[str, list[str]]:
+def _bucket(raw, name: str) -> dict[str, list[tuple[str, bool]]]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         raise GlossaryInvalid([name])
-    out: dict[str, list[str]] = {}
+    out: dict[str, list[tuple[str, bool]]] = {}
     for lang, value in raw.items():
         if not isinstance(lang, str):
             raise GlossaryInvalid([name])
-        out[lang] = _strings(value, name)
+        out[lang] = _labels(value, name)
     return out
 
 
-def _take(owned: dict[str, LabelHit], name: str, kind: str, groups: Mapping[str, list[str]]) -> None:
+def _labels(raw, name: str) -> list[tuple[str, bool]]:
+    """Строка — обычная метка. Объект `{text, ambiguous: true}` делится между понятиями."""
+
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        raise GlossaryInvalid([name])
+    out: list[tuple[str, bool]] = []
+    for item in raw:
+        if isinstance(item, str) and item:
+            out.append((item, False))
+            continue
+        if not isinstance(item, dict) or set(item) != {"text", "ambiguous"}:
+            raise GlossaryInvalid([name])
+        text = item.get("text")
+        if not isinstance(text, str) or not text or item.get("ambiguous") is not True:
+            raise GlossaryInvalid([name, str(text)])
+        out.append((text, True))
+    return out
+
+
+def _take(
+    slots: dict[str, list[tuple[LabelHit, bool]]],
+    name: str,
+    kind: str,
+    groups: Mapping[str, list[tuple[str, bool]]],
+) -> None:
     seen: set[tuple[str, str]] = set()
     for lang, texts in groups.items():
-        for text in texts:
+        for text, ambiguous in texts:
             if (lang, text) in seen:
                 raise GlossaryInvalid([text])
             seen.add((lang, text))
             keys = label_keys(text)
             if not keys:
                 raise GlossaryInvalid([text])
+            hit = LabelHit(name, kind, text)
+            surface = label_surface(text)
             for norm in keys:
-                previous = owned.get(norm)
-                if previous is not None and (previous.concept != name or previous.kind != kind):
-                    raise GlossaryInvalid([previous.text, text])
-                if previous is None:
-                    owned[norm] = LabelHit(name, kind, text)
+                group = slots.setdefault(norm, [])
+                exact = next(
+                    (
+                        item
+                        for item in group
+                        if item[0].concept == name and item[0].kind == kind and label_surface(item[0].text) == surface
+                    ),
+                    None,
+                )
+                if exact is not None:
+                    if not ambiguous and exact[1]:
+                        group[group.index(exact)] = (exact[0], False)
+                    continue
+                others = [item for item in group if item[0].concept != name or item[0].kind != kind]
+                if others and (not ambiguous or any(not flag for _hit, flag in others)):
+                    raise GlossaryInvalid([others[0][0].text, text])
+                group.append((hit, ambiguous))
+
+
+def _publish(
+    slots: dict[str, list[tuple[LabelHit, bool]]],
+) -> tuple[dict[str, LabelHit], dict[str, tuple[LabelHit, ...]], dict[str, tuple[LabelHit, ...]]]:
+    single: dict[str, LabelHit] = {}
+    ambiguous: dict[str, tuple[LabelHit, ...]] = {}
+    surfaces: dict[str, tuple[LabelHit, ...]] = {}
+    for norm, group in slots.items():
+        concepts = []
+        for hit, _flag in group:
+            if hit.concept not in concepts:
+                concepts.append(hit.concept)
+        kept = _unique_hits(group)
+        if len(concepts) == 1:
+            single[norm] = kept[0]
+            if len(kept) > 1:
+                surfaces[norm] = tuple(kept)
+            continue
+        if any(not flag for _hit, flag in group):
+            raise GlossaryInvalid([hit.text for hit, _flag in group])
+        ambiguous[norm] = tuple(kept)
+    return single, ambiguous, surfaces
+
+
+def _unique_hits(group: list[tuple[LabelHit, bool]]) -> list[LabelHit]:
+    kept: list[LabelHit] = []
+    seen: set[tuple[str, str, str]] = set()
+    for hit, _flag in group:
+        marker = (hit.concept, hit.kind, label_surface(hit.text))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        kept.append(hit)
+    return kept
 
 
 def _strings(raw, name: str) -> list[str]:

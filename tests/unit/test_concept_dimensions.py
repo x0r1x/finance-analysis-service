@@ -74,6 +74,19 @@ def test_catalog_migrates_energy_payback_and_keeps_coarse_aliases():
     assert catalog.unit_billing_period["RUB/MW/year"] == "year"
     assert catalog.unit_billing_period["RUB/MW/month"] == "month"
     assert tariff.effective_aggregation == "none"
+    forecast = package.concepts["forecast_energy_tariff"]
+    assert (
+        forecast.semantic_role,
+        forecast.dimension,
+        forecast.temporal_nature,
+        forecast.pricing_basis,
+        forecast.effective_aggregation,
+        forecast.kind,
+    ) == ("assumption", "currency_per_energy", "rate", "energy", "none", "parameter")
+    assert forecast.aggregation is None
+    assert forecast.related_to == ("energy_tariff",)
+    assert tariff.related_to == ("forecast_energy_tariff",)
+    assert forecast.id != tariff.id
     rate = package.concepts["discount_rate"]
     assert rate.semantic_role == "assumption"
     assert rate.kind == "parameter"
@@ -88,7 +101,7 @@ def test_catalog_migrates_energy_payback_and_keeps_coarse_aliases():
     assert catalog.units["years"] == "duration"
     assert catalog.units["RUB/MWh"] == "currency_per_energy"
     assert catalog.same("currency_per_energy", "currency_per_power_time")
-    assert len(package.concepts) == 70
+    assert len(package.concepts) == 71
     assert all(item.object_aggregation is None and item.weight is None for item in package.concepts.values())
 
 

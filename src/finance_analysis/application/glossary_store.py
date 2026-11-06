@@ -25,6 +25,7 @@ from finance_analysis.domain.errors import (
     StaleParent,
 )
 from finance_analysis.domain.glossary import (
+    label_phrase,
     label_surface,
     normalize_label,
     with_profile,
@@ -352,6 +353,7 @@ class GlossaryStore:
             "kind": "fact",
         }
         hit = package.resolve(label)
+        shared = () if hit is not None else package.ambiguous_hits(label)
         stages = ["lexical"]
         match = None
         candidates: list[dict] = []
@@ -365,7 +367,15 @@ class GlossaryStore:
                 candidates = [dict(match)]
             else:
                 candidates = [rejected]
-        if hit is None and rank is not None:
+        elif len(shared) >= 2:
+            stages.append("structure")
+            for item in shared:
+                concept = package.concepts.get(item.concept)
+                passed = concept is not None and structure_pass(row, concept, label=label)
+                candidates.append(
+                    {"concept": item.concept, "kind": item.kind, "text": item.text, "structure_pass": passed}
+                )
+        if hit is None and not shared and rank is not None:
             ranked = await rank(row, package, release_id)
             if ranked is not None:
                 chosen, evidence = ranked
@@ -403,11 +413,19 @@ class GlossaryStore:
                 for lang, value in bucket.items():
                     texts = [value] if isinstance(value, str) else list(value or [])
                     for text in texts:
-                        if needle and needle not in label_surface(str(text)):
+                        phrase = label_phrase(text)
+                        if phrase is None or (needle and needle not in label_surface(phrase)):
                             continue
-                        ident = label_id(concept, kind, str(text))
+                        ident = label_id(concept, kind, phrase)
                         found.append(
-                            {"concept": concept, "kind": kind, "lang": lang, "text": text, "id": ident, "provenance": provenance.get(ident)}
+                            {
+                                "concept": concept,
+                                "kind": kind,
+                                "lang": lang,
+                                "text": phrase,
+                                "id": ident,
+                                "provenance": provenance.get(ident),
+                            }
                         )
         return {"labels": found}
 

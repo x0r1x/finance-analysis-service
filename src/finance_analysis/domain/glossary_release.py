@@ -8,7 +8,11 @@ from datetime import datetime
 
 from finance_analysis.domain.book import canonical_json
 from finance_analysis.domain.errors import InvalidArgument
-from finance_analysis.domain.glossary import GlossaryInvalid, build_package
+from finance_analysis.domain.glossary import (
+    GlossaryInvalid,
+    build_package,
+    label_phrase,
+)
 
 
 def version_for(seq: int, document: dict) -> str:
@@ -46,15 +50,21 @@ def apply_ops(document: dict, ops: list[dict]) -> dict:
             values = bucket.setdefault(lang, [])
             if isinstance(values, str):
                 raise InvalidArgument("pref меняется через set_pref")
-            if text not in values:
+            if not any(label_phrase(item) == text for item in values):
                 values.append(text)
         elif kind == "remove_label":
             lang, text = _lang_text(op)
             bucket = _label_bucket(glossary, op.get("kind"), op.get("scope"))
             values = bucket.get(lang)
-            if isinstance(values, list) and text in values:
-                values.remove(text)
-            elif values == text:
+            if isinstance(values, list):
+                kept = [item for item in values if label_phrase(item) != text]
+                if len(kept) == len(values):
+                    raise InvalidArgument(f"метки нет: {text}")
+                if kept:
+                    bucket[lang] = kept
+                else:
+                    bucket.pop(lang, None)
+            elif label_phrase(values) == text:
                 bucket.pop(lang, None)
             else:
                 raise InvalidArgument(f"метки нет: {text}")
@@ -97,7 +107,10 @@ def _flat(document: dict) -> set[tuple[str, str, str, str, str]]:
     found: set[tuple[str, str, str, str, str]] = set()
 
     def add(concept, kind, lang, text, scope: str = "") -> None:
-        found.add((str(concept), kind, str(lang), str(text), scope))
+        phrase = label_phrase(text)
+        if phrase is None:
+            return
+        found.add((str(concept), kind, str(lang), phrase, scope))
 
     for concept, glossary in (document.get("glossaries") or {}).items():
         if not isinstance(glossary, dict):

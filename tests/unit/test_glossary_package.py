@@ -61,6 +61,7 @@ _IDS = frozenset(
         "capacity_factor",
         "degradation",
         "energy_tariff",
+        "forecast_energy_tariff",
         "capacity_tariff",
         "purchase_price_allocation",
         "lease_interest_income",
