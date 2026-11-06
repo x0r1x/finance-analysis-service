@@ -250,6 +250,52 @@ def test_rule_flags_mismatched_sum_and_accepts_dscr_ratio():
     assert [item.params["reason"] for item in check("pricing_basis_mismatch", same)] == ["pricing_basis"]
 
 
+def test_unbound_quotient_does_not_inherit_the_source_unit():
+    data = AuditInput(
+        rows=[
+            row(A, unit="RUB", scale_factor=1000),
+            row(B, unit="RUB", scale_factor=1000),
+            row(C),
+        ],
+        periods=PERIODS,
+        facts=[fact(A, "S!C5", "2024", "1000"), fact(B, "S!C6", "2024", "10"), fact(C, "S!C7", "2024", "100")],
+        links=link("S!C7", "=C5/C6", C, "2024", ("S!C5", "S!C6")),
+        concept_dimensions={"revenue": "money"},
+        dimension_exponents=_exponents(),
+        unit_dimensions={"RUB": "money"},
+    )
+    assert check("dimension_mismatch", data) == []
+
+
+def test_capacity_over_generation_is_not_a_duration():
+    exponents = _exponents()
+    concepts = {"energy_generation": "energy", "installed_capacity": "power", "payback": "duration"}
+    units = {"MWh": "energy", "MW": "power", "years": "duration"}
+    facts = [fact(A, "S!C5", "2024", "1"), fact(B, "S!C6", "2024", "2"), fact(C, "S!C7", "2024", "3")]
+    shared = {
+        "periods": PERIODS,
+        "facts": facts,
+        "links": link("S!C7", "=C5/C6", C, "2024", ("S!C5", "S!C6")),
+        "concept_dimensions": concepts,
+        "dimension_exponents": exponents,
+        "unit_dimensions": units,
+    }
+    correct = AuditInput(
+        rows=[row(A, unit="MWh"), row(B, unit="MW"), row(C, unit="years")],
+        bindings=[_bound(A, "energy_generation"), _bound(B, "installed_capacity"), _bound(C, "payback")],
+        **shared,
+    )
+    assert check("dimension_mismatch", correct) == []
+    inverted = AuditInput(
+        rows=[row(A, unit="MW"), row(B, unit="MWh"), row(C, unit="years")],
+        bindings=[_bound(A, "installed_capacity"), _bound(B, "energy_generation"), _bound(C, "payback")],
+        **shared,
+    )
+    found = check("dimension_mismatch", inverted)
+    assert [item.params["op"] for item in found] == ["ratio"]
+    assert found[0].params["result"] == "duration"
+
+
 def _priced(rows, formula_refs, bindings, concepts, **extra) -> AuditInput:
     exponents = _exponents()
     exponents["currency_per_power_time"] = {"money": 1, "power": -1, "duration": -1}

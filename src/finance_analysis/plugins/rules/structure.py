@@ -348,8 +348,24 @@ def _bound_dimension(data: AuditInput, row_key: str) -> str | None:
     return None
 
 
-def _row_dimension(data: AuditInput, row_key: str, cache: dict[str, str | None]) -> str | None:
-    """Размерность привязанного понятия, иначе конкретная единица строки или её источника."""
+def _binary_result_rows(data: AuditInput) -> frozenset[str]:
+    """Строки, чья формула — одно частное или одно произведение. Их единица не наследуется."""
+
+    return frozenset(
+        str(link.row_key)
+        for link in data.link_cells.values()
+        if link.row_key and _binary(link.formula, link.refs)
+    )
+
+
+def _row_dimension(
+    data: AuditInput, row_key: str, cache: dict[str, str | None], binary_rows: frozenset[str]
+) -> str | None:
+    """Размерность привязки или собственной единицы строки.
+
+    Сумма без единицы берёт единицу источника. Частное и произведение — нет:
+    рубли, делённые на рубли, не становятся деньгами.
+    """
 
     if row_key in cache:
         return cache[row_key]
@@ -359,7 +375,7 @@ def _row_dimension(data: AuditInput, row_key: str, cache: dict[str, str | None])
         unit = concrete_unit(row, data.unit_dimensions)
         if unit is not None:
             found = data.unit_dimensions.get(unit)
-        elif not row.get("unit"):
+        elif not row.get("unit") and row_key not in binary_rows:
             _scale, inherited = dependency_measure(data, row_key, data.unit_dimensions)
             if inherited is not None:
                 found = data.unit_dimensions.get(inherited)
@@ -424,6 +440,7 @@ class DimensionMismatch(Rule):
         if not data.dimension_exponents or not data.concept_dimensions:
             return []
         cache: dict[str, str | None] = {}
+        binary_rows = _binary_result_rows(data)
         found: dict[str, dict] = {}
         for cell, link in data.link_cells.items():
             own = _row_of_cell(data, cell)
@@ -440,13 +457,13 @@ class DimensionMismatch(Rule):
                 other = _row_of_cell(data, ref)
                 if other is None or other["row_key"] == own["row_key"]:
                     continue
-                dimension = _row_dimension(data, other["row_key"], cache)
+                dimension = _row_dimension(data, other["row_key"], cache, binary_rows)
                 if dimension is not None:
                     sides.append((dimension, other["row_key"]))
             if operation is None:
                 signatures = {sign for item in sides if (sign := _signature(data, item[0])) is not None}
                 if len(signatures) < 2:
-                    result = _row_dimension(data, own["row_key"], cache)
+                    result = _row_dimension(data, own["row_key"], cache, binary_rows)
                     result_sign = _signature(data, result)
                     if result_sign is None or not signatures or result_sign in signatures:
                         continue
@@ -463,17 +480,14 @@ class DimensionMismatch(Rule):
                 continue
             if len(sides) != 2:
                 continue
-            result = _row_dimension(data, own["row_key"], cache)
+            result = _row_dimension(data, own["row_key"], cache, binary_rows)
             if result is None:
                 continue
             target = data.dimension_exponents.get(result)
+            # Ссылки идут в порядке формулы. У частного числитель — ссылка до «/».
             left, right = sides[0][0], sides[1][0]
             powers = _powers(data, operation, left, right)
-            if operation == "ratio":
-                flipped = _powers(data, operation, right, left)
-                if target == powers or target == flipped:
-                    continue
-            elif powers is not None and target == powers:
+            if powers is not None and target == powers:
                 continue
             found[cell] = {
                 "op": operation,
@@ -502,11 +516,15 @@ def _bound_concepts(data: AuditInput) -> dict[str, str]:
 
 
 def _price_of(
-    data: AuditInput, row_key: str, cache: dict[str, str | None], concepts: dict[str, str]
+    data: AuditInput,
+    row_key: str,
+    cache: dict[str, str | None],
+    concepts: dict[str, str],
+    binary_rows: frozenset[str],
 ) -> tuple[str | None, str | None, str | None]:
     """Основа тарифа, расчётный период мощности и валюта конкретной единицы."""
 
-    dimension = _row_dimension(data, row_key, cache)
+    dimension = _row_dimension(data, row_key, cache, binary_rows)
     concept = concepts.get(row_key)
     basis = data.concept_pricing.get(concept or "")
     if basis is None and dimension:
@@ -519,7 +537,13 @@ def _price_of(
     return basis or None, billing or None, currency
 
 
-def _has_bridge(data: AuditInput, refs: list[str], cache: dict[str, str | None], concepts: dict[str, str]) -> bool:
+def _has_bridge(
+    data: AuditInput,
+    refs: list[str],
+    cache: dict[str, str | None],
+    concepts: dict[str, str],
+    binary_rows: frozenset[str],
+) -> bool:
     """В формуле есть объём, мощность или период. Без них тарифы разной основы не переводятся."""
 
     for ref in refs:
@@ -529,7 +553,7 @@ def _has_bridge(data: AuditInput, refs: list[str], cache: dict[str, str | None],
         key = other["row_key"]
         if concepts.get(key) in _PRICE_LOAD:
             return True
-        if _row_dimension(data, key, cache) in _PRICE_BRIDGE:
+        if _row_dimension(data, key, cache, binary_rows) in _PRICE_BRIDGE:
             return True
     return False
 
@@ -549,6 +573,7 @@ class PricingBasisMismatch(Rule):
         if not any((data.concept_pricing, data.dimension_pricing, data.unit_currency, data.concept_billing, data.unit_billing)):
             return []
         cache: dict[str, str | None] = {}
+        binary_rows = _binary_result_rows(data)
         concepts = _bound_concepts(data)
         found: dict[str, dict] = {}
         for cell, link in data.link_cells.items():
@@ -566,7 +591,7 @@ class PricingBasisMismatch(Rule):
                 other = _row_of_cell(data, ref)
                 if other is None or other["row_key"] == own["row_key"]:
                     continue
-                basis, billing, currency = _price_of(data, other["row_key"], cache, concepts)
+                basis, billing, currency = _price_of(data, other["row_key"], cache, concepts, binary_rows)
                 if basis is None and billing is None and currency is None:
                     continue
                 sides.append((basis, billing, currency, other["row_key"]))
@@ -578,14 +603,14 @@ class PricingBasisMismatch(Rule):
                     other = _row_of_cell(data, ref)
                     if other is None or other["row_key"] == own["row_key"]:
                         continue
-                    sign = _signature(data, _row_dimension(data, other["row_key"], cache))
+                    sign = _signature(data, _row_dimension(data, other["row_key"], cache, binary_rows))
                     if sign is not None:
                         signatures.add(sign)
                 if len(signatures) >= 2:
                     continue
                 priced = [item for item in sides if item[0]]
                 if len(priced) < 2:
-                    result = _price_of(data, own["row_key"], cache, concepts)
+                    result = _price_of(data, own["row_key"], cache, concepts, binary_rows)
                     if result[0] and priced and result[0] != priced[0][0]:
                         found[cell] = {"reason": "pricing_basis", "basis": result[0], "ref_basis": priced[0][0], "ref_row": priced[0][3]}
                     continue
@@ -594,7 +619,7 @@ class PricingBasisMismatch(Rule):
                     other = next(item for item in priced if item[0] != priced[0][0])
                     found[cell] = {"reason": "pricing_basis", "basis": other[0], "ref_basis": priced[0][0], "ref_row": other[3]}
                     continue
-                result = _price_of(data, own["row_key"], cache, concepts)
+                result = _price_of(data, own["row_key"], cache, concepts, binary_rows)
                 if result[0] and result[0] not in bases:
                     found[cell] = {"reason": "pricing_basis", "basis": result[0], "ref_basis": priced[0][0], "ref_row": priced[0][3]}
                     continue
@@ -613,9 +638,9 @@ class PricingBasisMismatch(Rule):
                     other = next(item for item in priced if item[2] and item[2] != priced[0][2])
                     found[cell] = {"reason": "currency", "currency": other[2], "ref_currency": priced[0][2], "ref_row": other[3]}
                 continue
-            result = _price_of(data, own["row_key"], cache, concepts)
+            result = _price_of(data, own["row_key"], cache, concepts, binary_rows)
             operand = next((item for item in sides if item[0] and item[0] != result[0]), None)
-            if result[0] is None or operand is None or _has_bridge(data, refs, cache, concepts):
+            if result[0] is None or operand is None or _has_bridge(data, refs, cache, concepts, binary_rows):
                 continue
             found[cell] = {"reason": "conversion", "basis": result[0], "ref_basis": operand[0], "ref_row": operand[3]}
         return [
