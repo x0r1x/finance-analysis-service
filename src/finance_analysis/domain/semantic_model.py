@@ -1,8 +1,9 @@
-"""Публичный SemanticModelVersion (фаза 2 метаслоя, G4).
+"""Публичный SemanticModelVersion (фаза 2–3 метаслоя, G4).
 
-Агрегат согласованных определений: taxonomy, glossary, metrics, model_types,
-units/dimensions, rules, schema. Не включает входы derive_key вроде state_seq,
-профиля, калибратора и embed-моделей. derive_key не удаляется и не сливается.
+Агрегат согласованных определений: taxonomy, glossary, metrics (каталог
+показателей: version + stamp), model_types, units/dimensions, rules, schema.
+Не включает входы derive_key вроде state_seq, профиля, калибратора и
+embed-моделей. derive_key не удаляется и не сливается.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ def semantic_model_components(
     glossary_version: str,
     taxonomy_id: str,
     taxonomy_stamp: str,
+    metrics_version: str,
     metrics_stamp: str,
     model_types_version: str,
     dimensions_id: str,
@@ -73,7 +75,7 @@ def semantic_model_components(
     return {
         "taxonomy": {"id": taxonomy_id, "stamp": taxonomy_stamp},
         "glossary": glossary_version or "none",
-        "metrics": metrics_stamp,
+        "metrics": {"version": metrics_version, "stamp": metrics_stamp},
         "model_types": model_types_version,
         "dimensions": {"id": dimensions_id, "stamp": dimensions_stamp},
         "rules": rules_stamp_value,
@@ -151,11 +153,14 @@ def validate_manifest(body: Mapping) -> dict:
         raise ValueError(f"в манифесте SMV нет компонентов: {', '.join(missing)}")
     taxonomy = components.get("taxonomy")
     dimensions = components.get("dimensions")
+    metrics = components.get("metrics")
     if not isinstance(taxonomy, Mapping) or not taxonomy.get("id") or not taxonomy.get("stamp"):
         raise ValueError("taxonomy манифеста SMV: нужны id и stamp")
     if not isinstance(dimensions, Mapping) or not dimensions.get("id") or not dimensions.get("stamp"):
         raise ValueError("dimensions манифеста SMV: нужны id и stamp")
-    for name in ("glossary", "metrics", "model_types", "rules", "schema"):
+    if not isinstance(metrics, Mapping) or not metrics.get("version") or not metrics.get("stamp"):
+        raise ValueError("metrics манифеста SMV: нужны version и stamp каталога")
+    for name in ("glossary", "model_types", "rules", "schema"):
         value = components.get(name)
         if value in (None, ""):
             raise ValueError(f"компонент SMV {name} пуст")
@@ -169,6 +174,7 @@ def live_components(
     glossary_version: str,
     *,
     model_types_version: str,
+    metrics_version: str,
     rules_versions: Mapping[str, str],
     schema_version: str = FAS_SCHEMA_VERSION,
     root: Path | None = None,
@@ -181,6 +187,7 @@ def live_components(
         glossary_version=glossary_version or "none",
         taxonomy_id=taxonomy_id,
         taxonomy_stamp=stamp_path(configs, "configs/concepts")[:16],
+        metrics_version=metrics_version,
         metrics_stamp=stamp_path(configs, "configs/metrics")[:16],
         model_types_version=model_types_version,
         dimensions_id=dimensions_id,

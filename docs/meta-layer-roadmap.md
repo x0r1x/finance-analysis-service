@@ -98,11 +98,13 @@
 
 **Не-цели фазы:** переписывание всех правил аудита; автоматический вывод формул из `composed_of`; отдельный сервис метрик.
 
+**Поставка:** [financial-model-catalog.md](financial-model-catalog.md); схема `domain/contracts/financial_model_catalog.json`; код `finance_analysis.domain.financial_catalog` / `application.financial_catalog`; чтение `GET /v1/metrics`.
+
 **Критерии приёмки:**
 
-- [ ] Каждый публичный metric id имеет запись каталога с входами-понятиями и единицами.  
-- [ ] CI/тест: входы метрик ⊆ понятия таксономии (с явному исключением вроде `row_fallbacks`, решение 40).  
-- [ ] Версия каталога входит в `SemanticModelVersion`.
+- [x] Каждый публичный metric id имеет запись каталога с входами-понятиями и единицами.  
+- [x] CI/тест: входы метрик ⊆ понятия таксономии (с явному исключением вроде `row_fallbacks`, решение 40).  
+- [x] Версия каталога входит в `SemanticModelVersion`.
 
 ---
 

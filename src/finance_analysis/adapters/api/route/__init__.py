@@ -25,6 +25,7 @@ from finance_analysis.adapters.api.route import (
     book_views,
     books,
     glossary,
+    metrics_catalog,
     operations,
     profiles,
 )
@@ -170,4 +171,5 @@ def register(app, settings, *, actor, limited, svc, support) -> None:
     operations.register(app, settings, actor=actor, limited=limited, svc=svc, support=support)
     glossary.register(app, settings, svc=svc, write=write, read=read)
     profiles.register(app, svc=svc, write=write, read=read)
+    metrics_catalog.register(app, svc=svc, read=read)
     book_views.register(app, settings, svc=svc, book_get=book_get, read=read, op_headers=op_headers)

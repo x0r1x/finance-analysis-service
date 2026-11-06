@@ -27,6 +27,7 @@ from finance_analysis.application.catalog import load_catalog, load_identities
 from finance_analysis.application.compare import Comparisons
 from finance_analysis.application.evaluation import Evaluator
 from finance_analysis.application.examples import ExampleStore
+from finance_analysis.application.financial_catalog import load_financial_catalog
 from finance_analysis.application.gc import gc_incomplete
 from finance_analysis.application.glossary_store import GlossaryStore, state_of
 from finance_analysis.application.learning import Learning
@@ -327,6 +328,10 @@ class FasService:
         self.support = support
         self.catalog = load_catalog()
         self.model_types = load_model_types(concepts=self.catalog.ids)
+        self.financial_catalog = load_financial_catalog(
+            concepts=self.catalog.ids,
+            model_types=self.model_types,
+        )
         self.sheet_roles_version = sheet_roles_version()
         self.guard = SemanticWriteGuard(
             store,
@@ -515,6 +520,7 @@ class FasService:
         components = live_components(
             glossary,
             model_types_version=self.model_types.version,
+            metrics_version=self.financial_catalog.version,
             rules_versions=self._rules_versions,
         )
         version = semantic_model_version_for(components)
@@ -2713,6 +2719,19 @@ class FasService:
         chosen = decide(row, evidence, package, await self.calibrators.active())
         return chosen, evidence
 
+    def financial_model_catalog(self) -> dict:
+        """Снимок Financial Model Catalog (фаза 3): показатели + версия."""
+
+        return self.financial_catalog.as_dict()
+
+    def financial_model_indicator(self, metric_id: str) -> dict | None:
+        item = self.financial_catalog.get(metric_id)
+        if item is None:
+            return None
+        body = item.as_dict()
+        body["catalog_version"] = self.financial_catalog.version
+        return body
+
     def capabilities(self) -> dict:
         storage = {
             "backend": self.store.backend,
@@ -2726,6 +2745,7 @@ class FasService:
             "storage": storage,
             "rules": self.analyses.capabilities(),
             "metrics": list(RATIO_METRICS),
+            "financial_catalog_version": self.financial_catalog.version,
             "concepts": sorted(self.catalog.ids),
             "renderers": ["json", "md"],
             "problems": PROBLEM_CATALOG,

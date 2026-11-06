@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fas.local/contracts/financial_model_catalog.json",
+  "title": "FinancialModelCatalog",
+  "description": "Фаза 3 метаслоя: каталог финансовых показателей (G1).",
+  "type": "object",
+  "required": ["version", "stamp", "indicators"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "sha256(canonical indicators)[:16]; входит в SemanticModelVersion.components.metrics.version"
+    },
+    "stamp": {
+      "type": "string",
+      "minLength": 1,
+      "description": "отпечаток дерева configs/metrics (LF-нормализованный)"
+    },
+    "row_fallbacks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "id альтернатив строк; не concept_id и не входы формул"
+    },
+    "indicators": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/indicator" }
+    }
+  },
+  "$defs": {
+    "inputs": {
+      "type": "object",
+      "required": ["all_of", "one_of"],
+      "additionalProperties": false,
+      "properties": {
+        "all_of": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "one_of": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "formulaSide": {
+      "type": "object",
+      "required": ["plus", "minus"],
+      "additionalProperties": false,
+      "properties": {
+        "plus": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "minus": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "formula": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base": { "type": "string", "minLength": 1 },
+        "numerator": { "$ref": "#/$defs/formulaSide" },
+        "denominator": { "$ref": "#/$defs/formulaSide" },
+        "one_of": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "rate": { "type": "string", "minLength": 1 }
+      }
+    },
+    "modelTypeUse": {
+      "type": "object",
+      "required": ["use"],
+      "additionalProperties": false,
+      "properties": {
+        "use": {
+          "type": "string",
+          "enum": ["required", "optional", "not_applicable"]
+        },
+        "variant": { "type": "string", "minLength": 1 }
+      }
+    },
+    "indicator": {
+      "type": "object",
+      "required": ["id", "inputs", "input_concepts", "unit", "formula", "status", "model_types"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "definition": { "type": ["string", "null"] },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "input_concepts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "плоский список concept_id для поиска; не заменяет inputs"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "размерность результата (ratio, money, …)"
+        },
+        "window": {
+          "type": ["string", "null"],
+          "enum": ["LTM", "period", null]
+        },
+        "formula": { "$ref": "#/$defs/formula" },
+        "variants": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/variant" }
+        },
+        "model_types": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/modelTypeUse" }
+        },
+        "status": { "type": "string", "enum": ["active", "deprecated"] },
+        "base": { "type": ["string", "null"] }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "required": ["id", "inputs", "input_concepts", "unit", "formula"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "definition": { "type": ["string", "null"] },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "input_concepts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "unit": { "type": "string", "minLength": 1 },
+        "window": {
+          "type": ["string", "null"],
+          "enum": ["LTM", "period", null]
+        },
+        "formula": { "$ref": "#/$defs/formula" }
+      }
+    }
+  }
+}
