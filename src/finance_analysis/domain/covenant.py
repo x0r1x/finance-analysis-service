@@ -139,12 +139,16 @@ def covenant_dscr(
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
     interest_order: dict | None = None,
+    row_fallbacks: dict | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
         profile, profile_ref, default, concepts=concepts, money=money
     )
     definition, fallback = _swap_interest(
-        definition, _primaries(bindings, absent), (interest_order or {}).get("corporate_covenant", ())
+        definition,
+        _primaries(bindings, absent),
+        (interest_order or {}).get("corporate_covenant", ()),
+        row_fallbacks=row_fallbacks,
     )
     if fallback:
         notes = [*notes, fallback]
@@ -322,6 +326,7 @@ def select_ratio(
     concepts: frozenset[str],
     money: frozenset[str],
     interest_order: dict | None = None,
+    row_fallbacks: dict | None = None,
 ) -> dict:
     """Вариант `corporate_covenant` считает определение из профиля или из каталога."""
 
@@ -347,6 +352,7 @@ def select_ratio(
             concepts=concepts,
             money=money,
             interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
         )
     formula = composed.get(metric)
     if formula is not None:
@@ -360,10 +366,18 @@ def select_ratio(
             marker_class=common["marker_class"],
             absent=common["absent"],
         )
-    return coverage_ratio(metric=metric, interest_order=interest_order, **common)
+    return coverage_ratio(
+        metric=metric, interest_order=interest_order, row_fallbacks=row_fallbacks, **common
+    )
 
 
-def _swap_interest(formula: Composed, primaries: dict, order: tuple[str, ...] | list[str]) -> tuple[Composed, dict | None]:
+def _swap_interest(
+    formula: Composed,
+    primaries: dict,
+    order: tuple[str, ...] | list[str],
+    *,
+    row_fallbacks: dict | None = None,
+) -> tuple[Composed, dict | None]:
     """Подменяет начисленные проценты следующим именем порядка, если основной строки нет."""
 
     names = (
@@ -374,7 +388,7 @@ def _swap_interest(formula: Composed, primaries: dict, order: tuple[str, ...] | 
     )
     if "interest" not in names or not order:
         return formula, None
-    chosen, warning = interest_choice(primaries, order)
+    chosen, warning = interest_choice(primaries, order, row_fallbacks=row_fallbacks)
     if chosen is None or chosen == "interest":
         return formula, None
 

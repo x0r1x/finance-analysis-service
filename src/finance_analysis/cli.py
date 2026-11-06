@@ -133,14 +133,17 @@ async def _learn(command: str) -> None:
 
 def _check_config() -> None:
     from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.validation.catalog_integrity import (
+        CatalogIntegrityError,
+    )
     from finance_analysis.domain.validation.model_types import ModelTypeInvalid
 
     try:
         catalog = load_model_types()
-    except ModelTypeInvalid as exc:
+    except (ModelTypeInvalid, CatalogIntegrityError) as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
-    print(f"ok {catalog.version}")
+    print(f"ok {catalog.version} fallbacks={len(catalog.row_fallbacks)}")
 
 
 def main(argv: list[str] | None = None) -> None:

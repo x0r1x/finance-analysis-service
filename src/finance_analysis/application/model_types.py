@@ -14,14 +14,16 @@ from finance_analysis.domain.model_type import (
     Composed,
     MetricInputs,
     ModelTypeCatalog,
+    RowFallback,
     Side,
     Signal,
     TypeSpec,
 )
-from finance_analysis.domain.validation.model_types import (
-    ModelTypeInvalid,
-    validate_model_types,
+from finance_analysis.domain.validation.catalog_integrity import (
+    CatalogIntegrityError,
+    validate_catalog_integrity,
 )
+from finance_analysis.domain.validation.model_types import ModelTypeInvalid
 
 
 def model_types_dir() -> Path:
@@ -90,13 +92,19 @@ def _composed(body: dict, name: str) -> Composed | None:
 
 
 def load_metric_inputs(path: Path | None = None) -> dict[str, MetricInputs]:
-    inputs, _variants, _composed_formulas = load_metric_catalog(path)
+    inputs, _variants, _composed_formulas, _bases, _rates = load_metric_catalog(path)
     return inputs
 
 
 def load_metric_catalog(
     path: Path | None = None,
-) -> tuple[dict[str, MetricInputs], dict[str, dict[str, MetricInputs]], dict[str, Composed]]:
+) -> tuple[
+    dict[str, MetricInputs],
+    dict[str, dict[str, MetricInputs]],
+    dict[str, Composed],
+    dict[str, str],
+    dict[str, str],
+]:
     document = yaml.safe_load((path or metrics_file()).read_text(encoding="utf-8")) or {}
     raw = document.get("metrics") if isinstance(document, dict) else None
     if not isinstance(raw, dict) or not raw:
@@ -104,10 +112,16 @@ def load_metric_catalog(
     inputs: dict[str, MetricInputs] = {}
     variants: dict[str, dict[str, MetricInputs]] = {}
     composed: dict[str, Composed] = {}
+    bases: dict[str, str] = {}
+    rates: dict[str, str] = {}
     for name, body in raw.items():
         if not isinstance(body, dict):
             raise ModelTypeInvalid(f"{name}: формула метрики не объект")
         metric = str(name)
+        if isinstance(body.get("base"), str):
+            bases[metric] = str(body["base"])
+        if isinstance(body.get("rate"), str):
+            rates[metric] = str(body["rate"])
         inputs[metric] = _inputs(body, inputs, metric)
         own = _composed(body, metric)
         if own is not None:
@@ -124,9 +138,11 @@ def load_metric_catalog(
             item = _composed(spec, key)
             if item is not None:
                 composed[key] = item
+            if isinstance(spec.get("rate"), str):
+                rates[key] = str(spec["rate"])
         if found:
             variants[metric] = found
-    return inputs, variants, composed
+    return inputs, variants, composed, bases, rates
 
 
 def _signal(type_id: str, raw: dict) -> Signal:
@@ -140,6 +156,77 @@ def _use(body) -> str:
     if isinstance(body, str):
         return body
     return str(body["use"])
+
+
+def load_coverage_document(path: Path | None = None) -> dict:
+    document = yaml.safe_load((path or metrics_file()).read_text(encoding="utf-8")) or {}
+    if not isinstance(document, dict):
+        raise ModelTypeInvalid("configs/metrics: документ должен быть объектом")
+    return document
+
+
+def load_row_fallbacks(path: Path | None = None) -> dict[str, RowFallback]:
+    """Альтернативные идентификаторы строк. Не входят в таксономию понятий."""
+
+    document = load_coverage_document(path)
+    raw = document.get("row_fallbacks") or {}
+    if not isinstance(raw, dict):
+        raise ModelTypeInvalid("configs/metrics: row_fallbacks должен быть объектом")
+    found: dict[str, RowFallback] = {}
+    for key, body in raw.items():
+        name = check_concept_id(str(key))
+        if not isinstance(body, dict):
+            raise ModelTypeInvalid(f"row_fallbacks.{name}: объект")
+        matching = body.get("matching") or {}
+        if not isinstance(matching, dict):
+            raise ModelTypeInvalid(f"row_fallbacks.{name}: matching должен быть объектом")
+        canonical = body.get("canonical")
+        source_label = body.get("source_label")
+        rule = matching.get("rule")
+        if not isinstance(canonical, str) or not canonical:
+            raise ModelTypeInvalid(f"row_fallbacks.{name}: нужен canonical")
+        if not isinstance(source_label, str) or not source_label:
+            raise ModelTypeInvalid(f"row_fallbacks.{name}: нужен source_label")
+        if not isinstance(rule, str) or not rule:
+            raise ModelTypeInvalid(f"row_fallbacks.{name}: нужен matching.rule")
+        found[name] = RowFallback(
+            id=name,
+            canonical=check_concept_id(canonical),
+            source_label=check_concept_id(source_label),
+            matching_rule=str(rule),
+        )
+    return found
+
+
+def load_interest_order(
+    path: Path | None = None,
+    *,
+    concepts: frozenset[str] | None = None,
+    fallbacks: dict[str, RowFallback] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Порядок процентов из coverage.yaml. Имена — concept_id или row_fallback."""
+
+    document = load_coverage_document(path)
+    raw = document.get("interest_order") if isinstance(document, dict) else None
+    if not isinstance(raw, dict) or not raw:
+        raise ModelTypeInvalid("configs/metrics: нет interest_order")
+    allowed = None
+    if concepts is not None:
+        names = set(concepts) | set(fallbacks or ())
+        allowed = names
+    order: dict[str, tuple[str, ...]] = {}
+    for key, names_raw in raw.items():
+        if not isinstance(names_raw, list) or not names_raw or any(not isinstance(item, str) for item in names_raw):
+            raise ModelTypeInvalid(f"interest_order.{key}: список имён")
+        cleaned = tuple(str(item) for item in names_raw)
+        if allowed is not None:
+            unknown = [item for item in cleaned if item not in allowed]
+            if unknown:
+                raise ModelTypeInvalid(
+                    f"interest_order.{key}: неизвестные id: {', '.join(unknown)}"
+                )
+        order[str(key)] = cleaned
+    return order
 
 
 def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | None = None) -> ModelTypeCatalog:
@@ -158,20 +245,39 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
         if not isinstance(body, dict) or body.get("id") != file.stem:
             raise ModelTypeInvalid(f"{file.name}: id должен совпадать с именем файла")
         documents[file.stem] = body
+    package = None
     if concepts is None:
         from finance_analysis.application.catalog import load_catalog
 
-        concepts = load_catalog().ids
-    metric_inputs, variant_inputs, composed = load_metric_catalog()
-    interest_order = load_interest_order()
-    _check_formula_concepts(metric_inputs, variant_inputs, concepts)
+        package = load_catalog()
+        concepts = package.ids
+    metric_inputs, variant_inputs, composed, metric_bases, metric_rates = load_metric_catalog()
+    row_fallbacks = load_row_fallbacks()
+    interest_order = load_interest_order(concepts=concepts, fallbacks=row_fallbacks)
     _check_signal_concepts(documents, concepts)
-    validate_model_types(
-        documents,
-        concepts=concepts,
-        metric_inputs=metric_inputs,
-        variant_inputs=variant_inputs,
-    )
+    if package is None:
+        from finance_analysis.application.catalog import load_catalog
+
+        package = load_catalog()
+    from finance_analysis.application.catalog import load_dimensions
+
+    try:
+        validate_catalog_integrity(
+            concepts=concepts,
+            concept_dimensions={name: item.dimension for name, item in package.concepts.items()},
+            dimensions=load_dimensions(),
+            model_documents=documents,
+            metric_inputs=metric_inputs,
+            variant_inputs=variant_inputs,
+            composed=composed,
+            metric_bases=metric_bases,
+            metric_rates=metric_rates,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            coverage_keys=frozenset(load_coverage_document()),
+        )
+    except CatalogIntegrityError as exc:
+        raise ModelTypeInvalid(str(exc)) from exc
     default = common.get("default_use")
     if default not in {"required", "optional", "not_applicable"}:
         raise ModelTypeInvalid("default_use: required, optional или not_applicable")
@@ -191,42 +297,10 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
         composed,
         variant_inputs,
         interest_order,
+        row_fallbacks,
+        metric_bases,
+        metric_rates,
     )
-
-
-_INTEREST_NAMES = frozenset({"interest", "interest_paid"})
-
-
-def load_interest_order(path: Path | None = None) -> dict[str, tuple[str, ...]]:
-    """Порядок процентов из coverage.yaml. `interest_paid` в таксономию не входит."""
-
-    document = yaml.safe_load((path or metrics_file()).read_text(encoding="utf-8")) or {}
-    raw = document.get("interest_order") if isinstance(document, dict) else None
-    if not isinstance(raw, dict) or not raw:
-        raise ModelTypeInvalid("configs/metrics: нет interest_order")
-    order: dict[str, tuple[str, ...]] = {}
-    for key, names in raw.items():
-        if not isinstance(names, list) or not names or any(not isinstance(item, str) for item in names):
-            raise ModelTypeInvalid(f"interest_order.{key}: список имён")
-        if any(item not in _INTEREST_NAMES for item in names):
-            raise ModelTypeInvalid(f"interest_order.{key}: только interest и interest_paid")
-        order[str(key)] = tuple(str(item) for item in names)
-    return order
-
-
-def _check_formula_concepts(
-    inputs: dict[str, MetricInputs],
-    variants: dict[str, dict[str, MetricInputs]],
-    concepts: frozenset[str],
-) -> None:
-    named = dict(inputs)
-    for metric, specs in variants.items():
-        for variant, spec in specs.items():
-            named[f"{metric}.{variant}"] = spec
-    for name, spec in named.items():
-        unknown = sorted(check_concept_id(item) for item in spec.all_of | spec.one_of if item not in concepts)
-        if unknown:
-            raise ModelTypeInvalid(f"{name}: понятие вне каталога: {', '.join(unknown)}")
 
 
 def _check_signal_concepts(documents: dict[str, dict], concepts: frozenset[str]) -> None:

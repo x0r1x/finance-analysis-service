@@ -1,5 +1,11 @@
 # DSCR и ICR. Частное считает Python Decimal, не SQL.
-# interest_paid в таксономии нет: имя живёт только в этом порядке.
+# interest_paid — не понятие таксономии, а row_fallback (решение 40).
+row_fallbacks:
+  interest_paid:
+    canonical: interest
+    source_label: interest_paid
+    matching:
+      rule: interest_basis_paid
 interest_order:
   icr: [interest, interest_paid]
   corporate_covenant: [interest, interest_paid]

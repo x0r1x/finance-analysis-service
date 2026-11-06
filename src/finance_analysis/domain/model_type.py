@@ -50,6 +50,20 @@ class Composed:
 
 
 @dataclass(frozen=True)
+class RowFallback:
+    """Альтернативная идентификация строки метрики. Не concept_id таксономии.
+
+    `canonical` — понятие каталога. `source_label` — ключ основной строки в книге
+    (часто совпадает с id). `matching_rule` — правило выбора этой строки.
+    """
+
+    id: str
+    canonical: str
+    source_label: str
+    matching_rule: str
+
+
+@dataclass(frozen=True)
 class ModelTypeCatalog:
     types: dict[str, TypeSpec]
     default_use: str
@@ -61,6 +75,9 @@ class ModelTypeCatalog:
     composed: dict[str, Composed]
     variant_inputs: dict[str, dict[str, MetricInputs]]
     interest_order: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    row_fallbacks: dict[str, RowFallback] = field(default_factory=dict)
+    metric_bases: dict[str, str] = field(default_factory=dict)
+    metric_rates: dict[str, str] = field(default_factory=dict)
 
     @property
     def ids(self) -> frozenset[str]:

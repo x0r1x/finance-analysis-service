@@ -986,9 +986,11 @@ def test_ltm_cfads_adds_interest_and_principal_across_the_same_window():
         + _series("i", quarters, ["-10", "-10", "-10", "-10"])
         + _series("p", quarters, ["-40", "-40", "-40", "-40"])
     )
+    catalog = load_model_types()
     got = coverage_ratio(
         metric="dscr",
-        interest_order=load_model_types().interest_order,
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
         **_common(
             quarters,
             facts,
