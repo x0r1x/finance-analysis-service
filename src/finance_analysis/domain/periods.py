@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import calendar
 import re
+from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
 
-# Те же токены, что configs/glossary/dictionaries.yaml. Домен не читает файл.
-MARKER_ACTUAL = frozenset({"факт", "actual", "a", "act", "ф"})
-MARKER_PLAN = frozenset({"план", "plan", "budget", "b", "бюджет"})
-MARKER_ESTIMATE = frozenset({"e", "ожид", "expected", "estimate", "est", "прогноз", "forecast"})
+from finance_analysis.domain.dictionaries import marker_token_sets
+
+_MARKER_ATTRS = {
+    "MARKER_ACTUAL": "actual",
+    "MARKER_PLAN": "plan",
+    "MARKER_ESTIMATE": "estimate",
+}
 
 _YEAR = re.compile(r"^(\d{4})$")
 _QUARTER = re.compile(r"^(\d{4})Q([1-4])$")
@@ -17,6 +21,15 @@ _HALF = re.compile(r"^(\d{4})H([12])$")
 _MONTH = re.compile(r"^(\d{4})-(\d{2})$")
 _DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _ANCHOR = re.compile(r"^([YQMP])(\d+)$", re.IGNORECASE)
+
+
+def __getattr__(name: str):
+    """MARKER_* — тонкие обёртки над dictionaries.yaml (через catalog loader)."""
+
+    klass = _MARKER_ATTRS.get(name)
+    if klass is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return marker_token_sets().get(klass, frozenset())
 
 
 def split_period_key(period_key: str) -> tuple[str, str | None]:
@@ -27,16 +40,19 @@ def split_period_key(period_key: str) -> tuple[str, str | None]:
     return base, marker or None
 
 
-def marker_class(marker: str | None) -> str | None:
+def marker_class(
+    marker: str | None,
+    markers: Mapping[str, Sequence[str]] | None = None,
+) -> str | None:
+    """Класс маркера по словарю markers из glossary catalog / dictionaries.yaml."""
+
     if not marker:
         return None
     token = marker.casefold().strip()
-    if token in MARKER_ACTUAL:
-        return "actual"
-    if token in MARKER_PLAN:
-        return "plan"
-    if token in MARKER_ESTIMATE:
-        return "estimate"
+    tables = marker_token_sets(markers)
+    for klass in ("actual", "plan", "estimate"):
+        if token in tables.get(klass, frozenset()):
+            return klass
     return "other"
 
 
