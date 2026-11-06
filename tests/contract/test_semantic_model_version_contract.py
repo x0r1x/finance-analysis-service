@@ -31,10 +31,17 @@ async def test_book_and_run_expose_smv_beside_derive_key(local_service):
 
     manifest = json.loads(await local_service.store.get(semantic_model_key(body["semantic_model_version"])))
     assert manifest["version"] == body["semantic_model_version"]
-    # Глобальный _head обновляется публикацией глоссария, не материализацией книги.
-    await local_service.publish_semantic_model(head.versions.get("glossary"))
+    # Глобальный _head — только после публикации активного глоссария (не от load книги).
+    gloss = await local_service.glossary.ensure()
     pointer = json.loads(await local_service.store.get(HEAD_KEY))
-    assert pointer["active"] == body["semantic_model_version"]
+    assert pointer["glossary"] == gloss["active"]
+    assert pointer["glossary_seq"] == gloss["seq"]
+    assert pointer["active"]
+    # Повторный publish идемпотентен; исторический glossary книги head не откатывает.
+    await local_service.publish_semantic_model(head.versions.get("glossary"))
+    again = json.loads(await local_service.store.get(HEAD_KEY))
+    assert again["active"] == pointer["active"]
+    assert again["glossary_seq"] == pointer["glossary_seq"]
 
     result = await local_service.analyses.run(
         JOB, {"type": "ratios", "metrics": ["dscr"]}, actor, wait_sec=120
