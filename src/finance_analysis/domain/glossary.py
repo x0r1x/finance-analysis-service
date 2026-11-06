@@ -858,15 +858,21 @@ def _range(raw, name: str) -> tuple[str, str] | None:
     raise GlossaryInvalid([name])
 
 
-def _groups(raw, name: str) -> dict[str, tuple[str, ...]]:
-    # shortcut: словарь потоков — стартовые слова, пополнять когда строка книги остаётся без знака
-    if not isinstance(raw, dict):
+def parse_dictionary_groups(raw, name: str) -> dict[str, tuple[str, ...]]:
+    """Строгая проверка flows/markers: только непустые строки, без тихого отбрасывания."""
+
+    if not isinstance(raw, Mapping):
         raise GlossaryInvalid([name])
     out: dict[str, tuple[str, ...]] = {}
     for key, value in raw.items():
-        if not isinstance(key, str) or not isinstance(value, list):
+        if not isinstance(key, str) or not isinstance(value, (list, tuple)):
             raise GlossaryInvalid([name])
         if not all(isinstance(item, str) and item for item in value):
             raise GlossaryInvalid([name, key])
         out[key] = tuple(value)
     return out
+
+
+def _groups(raw, name: str) -> dict[str, tuple[str, ...]]:
+    # shortcut: словарь потоков — стартовые слова, пополнять когда строка книги остаётся без знака
+    return parse_dictionary_groups(raw, name)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from finance_analysis.domain.dictionaries import load_dictionaries
+from finance_analysis.domain.dictionaries import load_dictionaries, plain_dictionaries
 from finance_analysis.domain.dimensions import DimensionCatalog, parse_catalog
 from finance_analysis.domain.glossary import (
     GlossaryInvalid,
@@ -47,7 +47,7 @@ def load_git_document(path: Path | None = None) -> dict:
         "taxonomy": document.get("taxonomy"),
         "concepts": raw,
         "glossaries": glossaries,
-        "dictionaries": dict(load_dictionaries(str(dictionaries))),
+        "dictionaries": plain_dictionaries(load_dictionaries(str(dictionaries))),
     }
 
 

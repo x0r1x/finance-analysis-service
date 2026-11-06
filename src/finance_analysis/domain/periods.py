@@ -44,7 +44,11 @@ def marker_class(
     marker: str | None,
     markers: Mapping[str, Sequence[str]] | None = None,
 ) -> str | None:
-    """Класс маркера по словарю markers из glossary catalog / dictionaries.yaml."""
+    """Класс маркера по словарю markers из glossary catalog / dictionaries.yaml.
+
+    Без ``markers=`` — только default ``dictionaries_file()``. Alt-каталог:
+    передайте ``markers=package.markers`` из ``load_catalog(custom_path)``.
+    """
 
     if not marker:
         return None
