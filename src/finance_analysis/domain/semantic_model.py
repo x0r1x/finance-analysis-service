@@ -96,8 +96,43 @@ def manifest_body(version: str, components: Mapping, *, created_at_utc: str) -> 
     }
 
 
-def head_body(version: str, *, updated_at_utc: str, seq: int = 1) -> dict:
-    return {"active": version, "updated_at_utc": updated_at_utc, "seq": int(seq)}
+def head_body(
+    version: str,
+    *,
+    updated_at_utc: str,
+    seq: int = 1,
+    glossary: str = "none",
+    glossary_seq: int = 0,
+) -> dict:
+    """Указатель актуального SMV.
+
+    ``glossary_seq`` — монотонный seq головы глоссария на момент публикации.
+    Более старый publish с меньшим seq не должен перезаписывать указатель.
+    """
+
+    return {
+        "active": version,
+        "updated_at_utc": updated_at_utc,
+        "seq": int(seq),
+        "glossary": glossary or "none",
+        "glossary_seq": int(glossary_seq),
+    }
+
+
+def should_advance_head(current: Mapping | None, *, glossary: str, glossary_seq: int, version: str) -> bool:
+    """Можно ли сменить указатель на эту публикацию (не откат к более старому глоссарию)."""
+
+    if current is None:
+        return True
+    current_seq = int(current.get("glossary_seq") or 0)
+    if glossary_seq < current_seq:
+        return False
+    if glossary_seq > current_seq:
+        return True
+    # Тот же activation seq: idempotent или обновление пакета при том же глоссарии.
+    if current.get("active") == version:
+        return False
+    return (current.get("glossary") or "none") == (glossary or "none")
 
 
 def validate_manifest(body: Mapping) -> dict:

@@ -27,6 +27,7 @@ async def test_book_and_run_expose_smv_beside_derive_key(local_service):
     assert body["derive_key"] == head.derive_key
     assert body["semantic_model_version"] == head.versions["semantic_model"]
     assert body["versions"]["semantic_model"] == body["semantic_model_version"]
+    assert body["semantic_model_source"] == "stored"
 
     manifest = json.loads(await local_service.store.get(semantic_model_key(body["semantic_model_version"])))
     assert manifest["version"] == body["semantic_model_version"]

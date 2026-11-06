@@ -24,10 +24,24 @@ from finance_analysis.domain.semantic_model import (
     semantic_model_components,
     semantic_model_key,
     semantic_model_version_for,
+    should_advance_head,
     stamp_path,
     validate_manifest,
 )
 from finance_analysis.plugins.rules import RULES
+
+
+class _GlossaryPeek:
+    def __init__(self, active: str = "g-1", seq: int = 1) -> None:
+        self.active = active
+        self.seq = seq
+
+    async def peek(self):
+        return {"active": self.active, "seq": self.seq}
+
+    def activate(self, version: str) -> None:
+        self.seq += 1
+        self.active = version
 
 
 def _components(**overrides) -> dict:
@@ -46,14 +60,21 @@ def _components(**overrides) -> dict:
     return base
 
 
-def _service(store) -> SimpleNamespace:
+def _service(store, *, glossary: str = "g-1", glossary_seq: int = 1) -> SimpleNamespace:
     rules = {code: rule.version for code, rule in load_rules().items()}
-    service = SimpleNamespace(store=store, model_types=load_model_types(), _rules_versions=rules)
+    gloss = _GlossaryPeek(glossary, glossary_seq)
+    service = SimpleNamespace(
+        store=store,
+        model_types=load_model_types(),
+        _rules_versions=rules,
+        glossary=gloss,
+    )
     service.ensure_semantic_model = FasService.ensure_semantic_model.__get__(service, SimpleNamespace)
     service.publish_semantic_model_head = FasService.publish_semantic_model_head.__get__(
         service, SimpleNamespace
     )
     service.publish_semantic_model = FasService.publish_semantic_model.__get__(service, SimpleNamespace)
+    service.recover_semantic_model = FasService.recover_semantic_model.__get__(service, SimpleNamespace)
     return service
 
 
@@ -135,6 +156,13 @@ def test_rules_stamp_order_independent():
     assert rules_stamp({"a": "1"}) != rules_stamp({"a": "2"})
 
 
+def test_should_advance_head_rejects_older_glossary_seq():
+    current = {"active": "bbbbbbbbbbbbbbbb", "glossary": "g-2", "glossary_seq": 5, "seq": 2}
+    assert should_advance_head(current, glossary="g-1", glossary_seq=4, version="aaaaaaaaaaaaaaaa") is False
+    assert should_advance_head(current, glossary="g-2", glossary_seq=5, version="bbbbbbbbbbbbbbbb") is False
+    assert should_advance_head(current, glossary="g-3", glossary_seq=6, version="cccccccccccccccc") is True
+
+
 def test_validate_manifest_requires_hash_match_and_components():
     components = _components()
     version = semantic_model_version_for(components)
@@ -176,49 +204,136 @@ async def test_ensure_does_not_write_global_head(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_historical_ensure_does_not_roll_back_head(tmp_path: Path):
     store = LocalStore(tmp_path / "store")
-    service = _service(store)
+    service = _service(store, glossary="g-2", glossary_seq=2)
     current = await FasService.publish_semantic_model(service, "g-2")
     pointer = json.loads(await store.get(HEAD_KEY))
     assert pointer["active"] == current
+    assert pointer["glossary"] == "g-2"
+    assert pointer["glossary_seq"] == 2
     historical = await FasService.ensure_semantic_model(service, "g-1")
     assert historical != current
     assert json.loads(await store.get(HEAD_KEY))["active"] == current
-    # Исторический манифест остаётся.
+    stale = await FasService.publish_semantic_model(service, "g-1")
+    assert stale == historical
+    assert json.loads(await store.get(HEAD_KEY))["active"] == current
     assert validate_manifest(json.loads(await store.get(semantic_model_key(historical))))
 
 
 @pytest.mark.asyncio
-async def test_publish_head_cas_is_idempotent_and_advances_seq(tmp_path: Path):
+async def test_publish_head_cas_is_idempotent_and_advances_on_activation(tmp_path: Path):
     store = LocalStore(tmp_path / "store")
-    service = _service(store)
+    service = _service(store, glossary="g-1", glossary_seq=1)
     first = await FasService.publish_semantic_model(service, "g-1")
     head = json.loads(await store.get(HEAD_KEY))
     assert head["active"] == first
     assert head["seq"] == 1
-    same = await FasService.publish_semantic_model_head(service, first)
+    assert head["glossary_seq"] == 1
+    same = await FasService.publish_semantic_model_head(
+        service, first, glossary="g-1", glossary_seq=1
+    )
     assert same["active"] == first
     assert same["seq"] == 1
+    service.glossary.activate("g-2")
     second = await FasService.publish_semantic_model(service, "g-2")
     assert second != first
     head = json.loads(await store.get(HEAD_KEY))
     assert head["active"] == second
+    assert head["glossary"] == "g-2"
+    assert head["glossary_seq"] == 2
     assert head["seq"] == 2
 
 
 @pytest.mark.asyncio
-async def test_publish_head_survives_concurrent_put_if_absent(tmp_path: Path):
+async def test_stale_delayed_publish_cannot_overwrite_newer_head(tmp_path: Path):
+    store = LocalStore(tmp_path / "store")
+    service = _service(store, glossary="g-1", glossary_seq=1)
+    old_smv = await FasService.ensure_semantic_model(service, "g-1")
+    # Процесс B активировал g-2 и опубликовал указатель.
+    service.glossary.activate("g-2")
+    new_smv = await FasService.publish_semantic_model(service, "g-2")
+    assert json.loads(await store.get(HEAD_KEY))["active"] == new_smv
+    # Отложенный process A с g-1 / seq=1 не должен победить CAS.
+    assert should_advance_head(
+        json.loads(await store.get(HEAD_KEY)),
+        glossary="g-1",
+        glossary_seq=1,
+        version=old_smv,
+    ) is False
+    rejected = await FasService.publish_semantic_model_head(
+        service, old_smv, glossary="g-1", glossary_seq=1
+    )
+    assert rejected is None
+    assert json.loads(await store.get(HEAD_KEY))["active"] == new_smv
+    assert json.loads(await store.get(HEAD_KEY))["glossary_seq"] == 2
+
+
+@pytest.mark.asyncio
+async def test_recover_semantic_model_republishes_active(tmp_path: Path):
+    from finance_analysis.application.glossary_store import GlossaryStore
+
+    store = LocalStore(tmp_path / "store")
+    service = _service(store, glossary="g-3", glossary_seq=3)
+
+    async def _publish(version: str) -> str:
+        return await FasService.publish_semantic_model(service, version)
+
+    service.glossary.on_publish = _publish
+    service.glossary.recover_semantic_model = GlossaryStore.recover_semantic_model.__get__(
+        service.glossary, _GlossaryPeek
+    )
+    version = await FasService.recover_semantic_model(service)
+    assert version
+    pointer = json.loads(await store.get(HEAD_KEY))
+    assert pointer["glossary"] == "g-3"
+    assert pointer["glossary_seq"] == 3
+    assert pointer["active"] == version
+
+
+@pytest.mark.asyncio
+async def test_describe_marks_estimated_smv_for_old_books(tmp_path: Path):
     store = LocalStore(tmp_path / "store")
     service = _service(store)
-    version = await FasService.ensure_semantic_model(service, "g-1")
-    # Имитация гонки: head уже создан другим процессом на другую версию.
-    other = await FasService.ensure_semantic_model(service, "g-2")
-    await store.put_if_absent(
-        HEAD_KEY,
-        json.dumps({"active": other, "updated_at_utc": "t0", "seq": 1}, sort_keys=True).encode(),
+    estimated = await FasService.ensure_semantic_model(service, "g-legacy")
+
+    async def _list(_prefix: str):
+        if False:
+            yield None
+
+    async def _manifest(_job, _build):
+        return {"builder_ref": {}, "warnings": []}
+
+    async def _coverage(_job, _head):
+        return {
+            "row_coverage": {},
+            "critical_path": {"covered": 1.0},
+            "critical_unknown": 0,
+        }
+
+    service.store.list = _list
+    service._manifest = _manifest
+    service._coverage_public = _coverage
+    service.describe = FasService.describe.__get__(service, SimpleNamespace)
+    head = Head(
+        build_key="0123456789abcdef",
+        state_seq=0,
+        derive_key="fedcba9876543210",
+        versions={"glossary": "g-legacy", "profile": "p-0"},
     )
-    body = await FasService.publish_semantic_model_head(service, version)
-    assert body["active"] == version
-    assert body["seq"] == 2
+    view = await FasService.describe(service, "a" * 64, head, fresh=False)
+    assert view.body["semantic_model_source"] == "estimated"
+    assert view.body["semantic_model_version"] == estimated
+    assert view.body["versions"]["semantic_model_estimated"] is True
+    assert any(item.get("code") == "semantic_model_estimated" for item in view.body["warnings"])
+
+    pinned = Head(
+        build_key="0123456789abcdef",
+        state_seq=0,
+        derive_key="fedcba9876543210",
+        versions={"glossary": "g-legacy", "semantic_model": estimated, "profile": "p-0"},
+    )
+    stored = await FasService.describe(service, "a" * 64, pinned, fresh=False)
+    assert stored.body["semantic_model_source"] == "stored"
+    assert "semantic_model_estimated" not in stored.body["versions"]
 
 
 @pytest.mark.asyncio
