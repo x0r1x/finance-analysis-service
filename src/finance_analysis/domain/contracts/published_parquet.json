@@ -63,7 +63,14 @@
       "name": "bindings",
       "group": "derived",
       "schema": "adapters/storage/schemas/bindings.json",
-      "required_keys": ["model_id", "build_key", "binding_key", "state_seq", "derive_key"],
+      "required_keys": [
+        "model_id",
+        "build_key",
+        "binding_key",
+        "state_seq",
+        "derive_key",
+        "glossary_version"
+      ],
       "marker": "derived_done"
     },
     {

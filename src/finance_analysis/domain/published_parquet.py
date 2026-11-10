@@ -4,16 +4,18 @@
 Индекс: domain/contracts/published_parquet.json.
 
 Чистая проверка обещаний: чтение только по маркеру, паритет schemas/*.json,
-аддитивная эволюция в пределах MAJOR. Без Iceberg/Hive writers.
+аддитивная эволюция в пределах MAJOR (append-only), P5-ключи.
+Без Iceberg/Hive writers.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 _CONTRACT_PATH = Path(__file__).resolve().parent / "contracts" / "published_parquet.json"
@@ -31,13 +33,26 @@ _ALLOWED_TYPES = frozenset(
         "float64",
         "date32",
         "timestamp(us, tz=UTC)",
-        # embedding_f32: сырой float32 vector (examples/unmapped); не list/struct Parquet
+        # embedding_f32 only: raw float32 little-endian vector (see design §4.12 P1)
         "binary",
     }
 )
 _DECIMAL = re.compile(r"^decimal128\(\d+,\d+\)$")
+_MARKER_FILE_FIELDS = ("sha256", "rows", "schema")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SCHEMA_TAG = re.compile(r"^[a-z][a-z0-9_]*@\d+\.\d+$")
 
 CONTRACT_LABEL_PREFIX = "published_parquet@"
+
+# P5 baseline keys by published group (docs/published-parquet-contract.md §2).
+_P5_BASE: dict[str, frozenset[str]] = {
+    "projection": frozenset({"model_id", "build_key"}),
+    "derived": frozenset({"model_id", "build_key", "state_seq", "derive_key"}),
+    "results": frozenset({"model_id", "build_key", "analysis_id", "state_seq"}),
+}
+_P5_EXTRA: dict[str, frozenset[str]] = {
+    "bindings": frozenset({"glossary_version"}),
+}
 
 
 class PublishedParquetError(ValueError):
@@ -64,11 +79,39 @@ def load_dataset_schema(dataset: str) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def marker_files(marker: Mapping[str, Any] | None, *, files_field: str = "files") -> dict[str, dict[str, Any]]:
-    """Файлы зафиксированной сборки — только из маркера.
+def _validate_rel_path(rel: str) -> None:
+    if not rel or rel.startswith("/") or rel.endswith("/"):
+        raise PublishedParquetError(f"недопустимый путь в маркере: {rel!r}")
+    parts = PurePosixPath(rel).parts
+    if ".." in parts or any(part == "" for part in parts):
+        raise PublishedParquetError(f"недопустимый путь в маркере: {rel!r}")
+
+
+def _validate_file_meta(rel: str, meta: Mapping[str, Any]) -> dict[str, Any]:
+    missing = [field for field in _MARKER_FILE_FIELDS if field not in meta]
+    if missing:
+        raise PublishedParquetError(f"маркер {rel!r}: нет полей {missing}")
+    sha = meta["sha256"]
+    rows = meta["rows"]
+    schema = meta["schema"]
+    if not isinstance(sha, str) or not _SHA256.fullmatch(sha):
+        raise PublishedParquetError(f"маркер {rel!r}: sha256 должен быть 64 hex")
+    if not isinstance(rows, int) or isinstance(rows, bool) or rows < 0:
+        raise PublishedParquetError(f"маркер {rel!r}: rows должен быть int ≥ 0")
+    if not isinstance(schema, str) or not _SCHEMA_TAG.fullmatch(schema):
+        raise PublishedParquetError(f"маркер {rel!r}: schema должен быть dataset@MAJOR.MINOR")
+    return {"sha256": sha, "rows": rows, "schema": schema, **{k: v for k, v in meta.items() if k not in _MARKER_FILE_FIELDS}}
+
+
+def parse_marker_files(
+    marker: Mapping[str, Any] | None,
+    *,
+    files_field: str = "files",
+) -> dict[str, dict[str, Any]]:
+    """Разобрать маркер: обязательны sha256, rows, schema; пути без ``..``.
 
     Отсутствие маркера или поля files → пустой набор (читать нечего).
-    List-before-marker не поддерживается: листинг префикса сюда не передаётся.
+    Неполный meta → PublishedParquetError (маркер не считается commit-ом).
     """
 
     if marker is None:
@@ -78,18 +121,28 @@ def marker_files(marker: Mapping[str, Any] | None, *, files_field: str = "files"
         return {}
     out: dict[str, dict[str, Any]] = {}
     for rel, meta in raw.items():
-        if not isinstance(rel, str) or not rel:
+        if not isinstance(rel, str):
             raise PublishedParquetError(f"пустой путь в маркере: {rel!r}")
+        _validate_rel_path(rel)
         if not isinstance(meta, Mapping):
             raise PublishedParquetError(f"метаданные файла {rel!r} должны быть объектом")
-        out[rel] = dict(meta)
+        out[rel] = _validate_file_meta(rel, meta)
     return out
 
 
-def is_committed_readable(marker: Mapping[str, Any] | None, *, files_field: str = "files") -> bool:
-    """True только если маркер присутствует и перечисляет хотя бы один файл."""
+def marker_files(marker: Mapping[str, Any] | None, *, files_field: str = "files") -> dict[str, dict[str, Any]]:
+    """Синоним parse_marker_files (P7)."""
 
-    return bool(marker_files(marker, files_field=files_field))
+    return parse_marker_files(marker, files_field=files_field)
+
+
+def is_committed_readable(marker: Mapping[str, Any] | None, *, files_field: str = "files") -> bool:
+    """True только если маркер валиден (P7) и перечисляет хотя бы один файл."""
+
+    try:
+        return bool(parse_marker_files(marker, files_field=files_field))
+    except PublishedParquetError:
+        return False
 
 
 def refuse_list_before_marker(
@@ -98,15 +151,61 @@ def refuse_list_before_marker(
     listed_keys: Sequence[str],
     files_field: str = "files",
 ) -> tuple[str, ...]:
-    """Ключи листинга вне маркера — вне контракта чтения (list-before-marker).
+    """Ключи листинга вне маркера — вне контракта чтения (list-before-marker)."""
 
-    При отсутствии маркера весь листинг считается отказанным.
-    """
-
-    committed = set(marker_files(marker, files_field=files_field))
+    try:
+        committed = set(parse_marker_files(marker, files_field=files_field))
+    except PublishedParquetError:
+        return tuple(sorted(listed_keys))
     if marker is None:
         return tuple(sorted(listed_keys))
     return tuple(sorted(key for key in listed_keys if key not in committed))
+
+
+def verify_committed_files(
+    marker: Mapping[str, Any] | None,
+    payloads: Mapping[str, bytes],
+    *,
+    files_field: str = "files",
+    allowed_prefixes: Sequence[str] = (),
+) -> list[str]:
+    """Сверить sha256 (/ rows / schema footer при Parquet) с payload'ами из store.
+
+    Не полный DataMesh reader: только инварианты commit-маркера против байтов.
+    ``allowed_prefixes`` — если задан, каждый rel должен начинаться с одного из них.
+    """
+
+    errors: list[str] = []
+    try:
+        files = parse_marker_files(marker, files_field=files_field)
+    except PublishedParquetError as exc:
+        return [str(exc)]
+    for rel, meta in files.items():
+        if allowed_prefixes and not any(rel.startswith(prefix) for prefix in allowed_prefixes):
+            errors.append(f"{rel}: путь вне allowed_prefixes {list(allowed_prefixes)}")
+        payload = payloads.get(rel)
+        if payload is None:
+            errors.append(f"{rel}: нет payload")
+            continue
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest != meta["sha256"]:
+            errors.append(f"{rel}: sha256 mismatch")
+        if rel.endswith(".parquet"):
+            try:
+                import io
+
+                import pyarrow.parquet as pq
+
+                pf = pq.ParquetFile(io.BytesIO(payload))
+                if pf.metadata.num_rows != meta["rows"]:
+                    errors.append(f"{rel}: rows {pf.metadata.num_rows} ≠ marker {meta['rows']}")
+                footer = pf.schema_arrow.metadata or {}
+                tag = footer.get(b"fas.schema", b"").decode()
+                if tag != meta["schema"]:
+                    errors.append(f"{rel}: fas.schema {tag!r} ≠ marker {meta['schema']!r}")
+            except Exception as exc:  # noqa: BLE001 — контрактный отчёт
+                errors.append(f"{rel}: не удалось прочитать parquet: {exc}")
+    return errors
 
 
 def parse_schema_version(version: str) -> tuple[int, int]:
@@ -152,6 +251,8 @@ def check_schema_document(doc: Mapping[str, Any]) -> list[str]:
         typ = column.get("type")
         if not isinstance(typ, str) or not _type_ok(typ):
             errors.append(f"{dataset}.{name}: тип вне P1: {typ!r}")
+        if typ == "binary" and name != "embedding_f32":
+            errors.append(f"{dataset}.{name}: binary разрешён только для embedding_f32")
         since = column.get("since")
         if not isinstance(since, str):
             errors.append(f"{dataset}.{name}: нет since")
@@ -169,11 +270,7 @@ def check_schema_document(doc: Mapping[str, Any]) -> list[str]:
 
 
 def check_additive_evolution(doc: Mapping[str, Any]) -> list[str]:
-    """P6: в пределах MAJOR новая колонка (since minor > 0) — nullable.
-
-    Полный «только в конец» проверяется на синтетических документах в тестах:
-    исторические схемы могут иметь вставку перед хвостовыми полями той же MAJOR.
-    """
+    """P6: nullable для since minor > 0 + append-only порядок колонок."""
 
     errors = check_schema_document(doc)
     dataset = doc.get("dataset")
@@ -195,11 +292,15 @@ def check_additive_evolution(doc: Mapping[str, Any]) -> list[str]:
             errors.append(
                 f"{dataset}.{name}: аддитивная колонка since={since} должна быть nullable (P6)"
             )
+    try:
+        assert_columns_append_only(doc)
+    except PublishedParquetError as exc:
+        errors.append(f"{dataset}: {exc}")
     return errors
 
 
 def assert_columns_append_only(doc: Mapping[str, Any]) -> None:
-    """Строгий P6 для нового изменения схемы: since non-decreasing, *.0 только префиксом."""
+    """Строгий P6: since minor non-decreasing; *.0 только префиксом перед аддитивными."""
 
     columns = doc.get("columns")
     if not isinstance(columns, list):
@@ -216,6 +317,31 @@ def assert_columns_append_only(doc: Mapping[str, Any]) -> None:
         raise PublishedParquetError("колонка since=*.0 после аддитивных")
 
 
+def p5_required_keys(group: str, dataset: str) -> frozenset[str]:
+    base = _P5_BASE.get(group, frozenset())
+    return base | _P5_EXTRA.get(dataset, frozenset())
+
+
+def check_p5_required_keys() -> list[str]:
+    """Индекс required_keys ⊇ P5 baseline из published contract §2 / design P5."""
+
+    errors: list[str] = []
+    for item in load_published_contract()["datasets"]:
+        expected = p5_required_keys(item["group"], item["name"])
+        if not expected:
+            continue
+        declared = set(item["required_keys"])
+        missing = sorted(expected - declared)
+        if missing:
+            errors.append(f"{item['name']}: в индексе нет P5-ключей {missing}")
+        doc = load_dataset_schema(item["name"])
+        col_names = {column["name"] for column in doc["columns"]}
+        absent = sorted(expected - col_names)
+        if absent:
+            errors.append(f"{item['name']}: P5-ключи отсутствуют в schema: {absent}")
+    return errors
+
+
 def published_dataset_names() -> frozenset[str]:
     return frozenset(item["name"] for item in load_published_contract()["datasets"])
 
@@ -225,7 +351,7 @@ def schema_file_names() -> frozenset[str]:
 
 
 def check_index_matches_schemas() -> list[str]:
-    """Индекс ↔ schemas/*.json: те же имена; required_keys ⊆ колонки схемы."""
+    """Индекс ↔ schemas/*.json: имена, required_keys, P5, additive/append-only."""
 
     errors: list[str] = []
     contract = load_published_contract()
@@ -243,6 +369,8 @@ def check_index_matches_schemas() -> list[str]:
     sections = aligns.get("design_sections") or []
     if "4.11" not in sections or "4.12" not in sections:
         errors.append("aligns_with.design_sections должен включать 4.11 и 4.12")
+
+    errors.extend(check_p5_required_keys())
 
     for item in contract["datasets"]:
         name = item["name"]
@@ -278,7 +406,7 @@ def check_no_forbidden_writers(
 
 
 def assert_published_contract() -> None:
-    """Падает, если индекс, схемы или эволюция нарушают контракт."""
+    """Падает, если индекс, схемы, P5 или append-only нарушают контракт."""
 
     errors = check_index_matches_schemas()
     if errors:

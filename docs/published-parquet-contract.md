@@ -43,7 +43,7 @@
 
 | Правило | Обещание Mesh |
 |---|---|
-| P1 | Плоские простые типы; сложные поля — `*_json` строкой. Исключение: `binary` у `embedding_f32` (сырой float32 vector), не nested Parquet |
+| P1 | Плоские простые типы; сложные поля — `*_json` строкой. Исключение (согласовано с design §4.12): `binary` **только** у `embedding_f32` — сырой `float32` little-endian (`<f4`), длина `4×dims`, `dims` от `embed_model`; decode `np.frombuffer(raw, dtype="<f4")` |
 | P2 | Имена `snake_case` ASCII; переименование = MAJOR |
 | P3 | Время — `timestamp(us, tz=UTC)` в колонках `*_utc`; даты периодов — `date32` |
 | P4 | Деньги: источник истины `DECIMAL`; `float64`-копия документирована |
@@ -58,8 +58,11 @@
 
 1. Папка **без** маркера для внешнего читателя **не существует**: GC удаляет недописанное (design §4.10).  
 2. Список файлов сборки / derived / result берётся **из маркера**, не листингом префикса до появления маркера.  
-3. Зафиксированное не удаляется: сборки с `manifest.json`, `derived/` с `_done.json`, `results/` с `result.json`, журнал, `_builds/`, релизы глоссария.  
-4. «Текущая» сборка — из `_head.json`; история — листинг `books/{job_id}/_builds/` (одна запись на `build_key`).
+3. Каждый элемент `files` обязан содержать `sha256` (64 hex), `rows` (int ≥ 0) и `schema` (`dataset@MAJOR.MINOR`). Пустой meta `{}` — не commit.  
+4. Зафиксированное не удаляется: сборки с `manifest.json`, `derived/` с `_done.json`, `results/` с `result.json`, журнал, `_builds/`, релизы глоссария.  
+5. «Текущая» сборка — из `_head.json`; история — листинг `books/{job_id}/_builds/` (одна запись на `build_key`).
+
+Код: `parse_marker_files` (структура) и `verify_committed_files` (sha256 / rows / `fas.schema` против payload).
 
 ## 5. Что FAS **не** гарантирует
 

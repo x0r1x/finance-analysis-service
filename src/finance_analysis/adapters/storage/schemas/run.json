@@ -116,14 +116,6 @@
       "since": "1.0"
     },
     {
-      "name": "semantic_model_version",
-      "type": "string",
-      "nullable": true,
-      "unit": "",
-      "description": "Публичный SemanticModelVersion (рядом с derive_key)",
-      "since": "1.1"
-    },
-    {
       "name": "fas_version",
       "type": "string",
       "nullable": false,
@@ -146,6 +138,14 @@
       "unit": "",
       "description": "Конец прогона",
       "since": "1.0"
+    },
+    {
+      "name": "semantic_model_version",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Публичный SemanticModelVersion (аддитивно в конец; смысл рядом с derive_key)",
+      "since": "1.1"
     }
   ]
 }

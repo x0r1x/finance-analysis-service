@@ -206,11 +206,13 @@ def test_validate_manifest_requires_hash_match_and_components():
         validate_manifest({**body, "version": semantic_model_version_for(broken), "components": broken})
 
 
-def test_run_schema_adds_smv_beside_derive_key():
+def test_run_schema_adds_smv_append_only_at_end():
     doc = load_schema("run")
     names = [column["name"] for column in doc["columns"]]
     assert doc["version"] == "1.1"
-    assert names.index("semantic_model_version") == names.index("derive_key") + 1
+    # P6 / Phase 5: additive column at end (not inserted before fas_version).
+    assert names[-1] == "semantic_model_version"
+    assert "derive_key" in names
     assert next(column for column in doc["columns"] if column["name"] == "semantic_model_version")["since"] == "1.1"
 
 
@@ -432,7 +434,8 @@ async def test_run_parquet_writes_smv_beside_derive_key(tmp_path: Path):
     path.write_bytes(payload)
     table = pq.read_table(path)
     names = table.column_names
-    assert names.index("semantic_model_version") == names.index("derive_key") + 1
+    assert names[-1] == "semantic_model_version"
+    assert "derive_key" in names
     assert table.column("semantic_model_version")[0].as_py() == "0123456789abcdef"
     assert table.column("derive_key")[0].as_py() == "fedcba9876543210"
 
