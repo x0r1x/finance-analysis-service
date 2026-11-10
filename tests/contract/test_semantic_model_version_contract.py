@@ -54,9 +54,11 @@ async def test_book_and_run_expose_smv_beside_derive_key(local_service):
     run_key = f"books/{JOB}/{head.build_key}/results/{analysis_id}/run.parquet"
     table = pq.read_table(local_service.store.physical(run_key))
     names = table.column_names
+    # Same run table as derive_key ("beside" semantically); append-only P6 → SMV last.
     assert "derive_key" in names
     assert "semantic_model_version" in names
-    assert names.index("semantic_model_version") == names.index("derive_key") + 1
+    assert names[-1] == "semantic_model_version"
+    assert names.index("semantic_model_version") > names.index("derive_key")
     smv = table.column("semantic_model_version")[0].as_py()
     derive = table.column("derive_key")[0].as_py()
     assert smv == envelope["versions"]["semantic_model"]
