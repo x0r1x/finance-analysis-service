@@ -13,3 +13,7 @@ data/
 htmlcov/
 tests/fixtures/local-builder/
 *.local.yaml
+
+# Local-only mapping eval labels (client books)
+eval/local/labels/
+.DS_Store

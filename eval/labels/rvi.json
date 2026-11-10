@@ -1,0 +1,33 @@
+{
+  "schema_version": "1",
+  "job_id": "2f180b3eec3b8557908beafa659af75dd7c2e93dab02b176f3cab1d625ee7bac",
+  "by_path": {
+    "Senior Debt › Debt Service Coverage Ratio (DSCR) › CFADS during debt term › CFADS": "cfads",
+    "Senior Debt › Debt Service Coverage Ratio (DSCR) › CFADS during debt term › Total debt service": "debt_service",
+    "Senior Debt › Linear repayment › Senior debt tranche › Interest expense": "interest",
+    "Cashflow Statement › Senior debt › Debt interest": "interest",
+    "Senior Debt › Linear repayment › Debt summary › Interest": "interest",
+    "Inputs Time Independent › Funding (debt & equity) › Linear debt repayment tranche › Up-front fee": "NIL",
+    "Cashflow Statement › Senior debt › Debt up-front fee": "NIL",
+    "Senior Debt › Linear repayment › Senior debt tranche › Up-front fee": "NIL",
+    "Senior Debt › Linear repayment › Debt summary › Up-front fee": "NIL",
+    "Inputs Time Independent › Funding (debt & equity) › Linear debt repayment tranche › All-in fixed interest rate": "NIL"
+  },
+  "critical_paths": [
+    "Senior Debt › Debt Service Coverage Ratio (DSCR) › CFADS during debt term › CFADS",
+    "Senior Debt › Debt Service Coverage Ratio (DSCR) › CFADS during debt term › Total debt service",
+    "Senior Debt › Linear repayment › Senior debt tranche › Interest expense",
+    "Cashflow Statement › Senior debt › Debt up-front fee",
+    "Inputs Time Independent › Funding (debt & equity) › Linear debt repayment tranche › Up-front fee"
+  ],
+  "labels": {
+    "26c58519e73e96803d94a1143ee1009ca8d2440b": "cfads",
+    "66aef14c5604c66141c87365e348e9586066f807": "debt_service",
+    "89155c240915d2c2e85c5b5e1274e38b50498bab": "interest"
+  },
+  "critical": [
+    "26c58519e73e96803d94a1143ee1009ca8d2440b",
+    "66aef14c5604c66141c87365e348e9586066f807",
+    "89155c240915d2c2e85c5b5e1274e38b50498bab"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": "1",
+  "job_id": "2eca70a9acd0c7b1812adcb2e1a4aacc84092f52726d001a93b9564950e5dd5e",
+  "by_path": {
+    "Cashflow Statement › Cash Flow Available for Debt Service (CFADS)": "cfads",
+    "Debt Repayment Schedule › Debt service": "debt_service",
+    "Debt Repayment Schedule › Interests": "interest",
+    "Cashflow Statement › Interest": "interest",
+    "P&L › Interest": "interest",
+    "Uses › Arrangement fee (k£)": "NIL",
+    "Uses › Engagement fee (k£)": "NIL",
+    "Cashflow Statement › Cash Flow Available for Equity": "NIL",
+    "PROJECT FINANCING › Arrangement fee": "NIL",
+    "PROJECT FINANCING › Engagement fee": "NIL"
+  },
+  "critical_paths": [
+    "Cashflow Statement › Cash Flow Available for Debt Service (CFADS)",
+    "Debt Repayment Schedule › Debt service",
+    "Debt Repayment Schedule › Interests",
+    "Uses › Arrangement fee (k£)",
+    "Uses › Engagement fee (k£)"
+  ],
+  "labels": {
+    "c692382b9f612c6ba06cbc766b91ad8cce6fafc4": "cfads",
+    "195cdf44f6a06be7c87e5fa8265a3b40970f79bc": "debt_service",
+    "cb2753e64746c5d7e1523da9d59ecce6c4f13f43": "interest"
+  },
+  "critical": [
+    "c692382b9f612c6ba06cbc766b91ad8cce6fafc4",
+    "195cdf44f6a06be7c87e5fa8265a3b40970f79bc",
+    "cb2753e64746c5d7e1523da9d59ecce6c4f13f43"
+  ]
+}

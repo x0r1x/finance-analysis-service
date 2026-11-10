@@ -17,7 +17,7 @@
 |---|---|---|---|
 | 0 | Документы | — | эта дорожная карта; sync §5.7 / §6.1; `eval/README.md` |
 | 1 | Формальная матрица тип×метрика | 5.1 | явные ячейки + check-config/CI против каталогов |
-| 2 | Корпус eval привязки (локально) | 5.2 | labels Packt/RVI/Ашан (+ рост); измеренные гейты |
+| 2 | Корпус eval привязки (локально) | 5.2 | **срез:** `eval/labels/{packt,rvi}.json` + `eval/mapping/report.md` (2 книги); Ашан local-only; до 20–30 ещё расти |
 | 3 | Виды находок аудита | 5.3 | `finding_kind` в Finding/API; маппинг правил |
 
 ---
@@ -94,7 +94,7 @@ fas dump-applicability --stdout # JSON в stdout
 
 ## Фаза 2 — Корпус eval привязки (приоритет; локально)
 
-**Зачем:** цели фазы 2b в design / `eval/README.md` (top-1, ECE, false binds, NIL recall) сейчас **[допущения]** — в репозитории нет `eval/labels/*.json`.
+**Зачем:** цели фазы 2b в design / `eval/README.md` (top-1, ECE, false binds, NIL recall) — **[допущения]** до корпуса 20–30 книг; стартовые labels Packt/RVI + измеренный срез уже в `eval/`, но гейты 2b не закрыты.
 
 **Где:** self-hosted worker с checkout `~/projects/finance-analysis-service` и соседним builder `~/projects/finance-context-builder`.
 
@@ -122,10 +122,10 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 
 **Критерии приёмки:**
 
-- [ ] Labels для Packt и RVI в `eval/labels/` (или явный local-only путь с инструкцией).
-- [ ] Прогон `fas eval mapping` с записанными числами.
-- [ ] Отчёт eval содержит полный pin-набор (labels schema / glossary·taxonomy / builder / FAS SHA·mapping / book+job_id / cmdline / calibrator-если-ECE).
-- [ ] В README / отчёте цели 2b помечены как измеренные или всё ещё допущения; дельты без pins не считаются evidence.
+- [x] Labels для Packt и RVI в `eval/labels/` (или явный local-only путь с инструкцией).
+- [x] Прогон `fas eval mapping` с записанными числами (`eval/mapping/report.md`, срез 2 книг).
+- [x] Отчёт eval содержит полный pin-набор (labels schema / glossary·taxonomy / builder / FAS SHA·mapping / book+job_id / cmdline / calibrator-если-ECE).
+- [x] В README / отчёте цели 2b помечены как измеренные или всё ещё допущения; дельты без pins не считаются evidence.
 
 ---
 
