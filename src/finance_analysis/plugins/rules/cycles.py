@@ -76,7 +76,7 @@ UNEXPECTED_CYCLE = UnexpectedCycle(
 )
 ITERATIVE_CALC_ENABLED = IterativeCalcEnabled(
     "iterative_calc_enabled", "1", "qualitative", "medium", ("ICAEW iterative calculation",),
-    "Включены итеративные вычисления", ROWS_COUNTERS,
+    "Включены итеративные вычисления", ROWS_COUNTERS, finding_kind="methodology",
 )
 ITERATIVE_CYCLE_WITHOUT_ITERATE = IterativeCycleWithoutIterate(
     "iterative_cycle_without_iterate", "1", "mechanical", "high", (),

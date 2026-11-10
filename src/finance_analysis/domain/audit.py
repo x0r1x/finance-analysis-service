@@ -24,7 +24,28 @@ ROWS_COUNTERS = ROWS | {"counters"}
 # Правила фазы 2: знак строки из `row_semantics` (§5.4).
 ROWS_SEMANTICS = ROWS | {"semantics"}
 ERROR_CLASSES = frozenset({"mechanical", "logic", "omission", "quantitative", "qualitative"})
+# Виды находки (§6.1 / analytical-core-roadmap фаза 3): ортогональны severity и error_class.
+FINDING_KINDS = ("error", "warning", "methodology", "insufficient_data", "ambiguity")
 LOCATIONS_MAX = 32
+
+
+def default_finding_kind(error_class: str, severity: str) -> str:
+    """Нормативный default по `error_class`+`severity`; `Rule.finding_kind` авторитетен.
+
+    - mechanical / logic → error
+    - quantitative high|critical → error; иначе warning
+    - omission → insufficient_data как **кандидат** (только required-gap /
+      обязательная проверка; optional → warning/methodology через override)
+    - qualitative → warning (practice notes — override → methodology)
+    """
+
+    if error_class in {"mechanical", "logic"}:
+        return "error"
+    if error_class == "quantitative":
+        return "error" if severity in {"high", "critical"} else "warning"
+    if error_class == "omission":
+        return "insufficient_data"
+    return "warning"
 
 _AXIS = re.compile(r"^(?P<sheet>.*)!r(?P<row>\d+)$")
 
@@ -87,6 +108,7 @@ class Finding:
     binding_key: str | None
     truncated: bool
     basis: tuple[str, ...]
+    finding_kind: str
 
     def as_dict(self, builder_ref: dict | None = None) -> dict:
         return {
@@ -94,6 +116,7 @@ class Finding:
             "version": self.version,
             "error_class": self.error_class,
             "severity": self.severity,
+            "finding_kind": self.finding_kind,
             "params": self.params,
             "locations": [item.as_dict() for item in self.locations],
             "fingerprint": self.fingerprint,
@@ -288,6 +311,13 @@ class Rule:
     title: str
     requires: frozenset[str]
     phase: int = 1
+    # None — default_finding_kind(error_class, severity находки); иначе явный override.
+    finding_kind: str | None = None
+
+    def resolved_kind(self, severity: str | None = None) -> str:
+        if self.finding_kind is not None:
+            return self.finding_kind
+        return default_finding_kind(self.error_class, severity or self.severity)
 
     def describe(self) -> dict:
         return {
@@ -295,6 +325,7 @@ class Rule:
             "version": self.version,
             "error_class": self.error_class,
             "severity": self.severity,
+            "finding_kind": self.resolved_kind(),
             "basis": list(self.basis),
             "title": self.title,
             "requires": sorted(self.requires),
@@ -315,6 +346,7 @@ class Rule:
         subject: str | None = None,
         params: dict | None = None,
         severity: str | None = None,
+        finding_kind: str | None = None,
         truncated: bool = False,
     ) -> Finding:
         """Отпечаток строится из `binding_key` строки, периода и номера оси.
@@ -334,18 +366,64 @@ class Rule:
         print_ = fingerprint(self.code, binding or subject or "", base, marker, ordinal)
         if not located and (row_key or axis_id):
             located = [Location(None, row_key, axis_id, period_id)]
+        level = severity or self.severity
+        kind = finding_kind or self.resolved_kind(level)
         return Finding(
             code=self.code,
             version=self.version,
             error_class=self.error_class,
-            severity=severity or self.severity,
+            severity=level,
             params=params or {},
             locations=tuple(located[:LOCATIONS_MAX]),
             fingerprint=print_,
             binding_key=binding,
             truncated=truncated or len(located) > LOCATIONS_MAX,
             basis=self.basis,
+            finding_kind=kind,
         )
+
+
+def promote_needs_findings(needs: list[dict]) -> list[Finding]:
+    """Выбранные `needs_input` / `missing_input` → поверхность аудита без дубля каждого вопроса.
+
+    - `ambiguous` → `binding_ambiguity` / finding_kind=ambiguity
+    - `concept_unknown` | `no_binding` | `stale` → `insufficient_input` / insufficient_data
+    Один subject — одна находка.
+    """
+
+    seen: set[tuple[str, str]] = set()
+    out: list[Finding] = []
+    for item in needs:
+        reason = str(item.get("reason") or "")
+        subject = str(item.get("subject") or "").strip()
+        if not subject:
+            continue
+        if reason == "ambiguous":
+            code, kind, error_class, severity = "binding_ambiguity", "ambiguity", "qualitative", "low"
+        elif reason in {"concept_unknown", "no_binding", "stale"}:
+            code, kind, error_class, severity = "insufficient_input", "insufficient_data", "omission", "medium"
+        else:
+            continue
+        key = (code, subject)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            Finding(
+                code=code,
+                version="1",
+                error_class=error_class,
+                severity=severity,
+                params={"reason": reason, "subject": subject, "source": item.get("kind")},
+                locations=(),
+                fingerprint=fingerprint(code, subject, "", "", ""),
+                binding_key=None,
+                truncated=False,
+                basis=(),
+                finding_kind=kind,
+            )
+        )
+    return out
 
 
 def strongly_connected(edges: dict[str, list[str]]) -> list[tuple[str, ...]]:

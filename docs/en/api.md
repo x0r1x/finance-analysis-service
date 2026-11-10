@@ -39,7 +39,7 @@ Each tool has `name`, `description`, `method`, `path`, `parameters`, `in`, and `
 - `POST /v1/books/{job_id}/analyses` — `type` is `audit`, `ratios`, `impact`, or `full`. See [analyses](analyses.md).
 - `GET /v1/books/{job_id}/analyses` and `GET /v1/books/{job_id}/analyses/{analysis_id}` — list and one stored analysis.
 - `GET /v1/books/{job_id}/analyses/{analysis_id}/report?format=json|md` — render the stored result.
-- `GET /v1/books/{job_id}/findings` — findings of the last audit. Query: `build_key`, `rule`, `severity`, `concept`, `page_size`, `page_token`.
+- `GET /v1/books/{job_id}/findings` — findings of the last audit. Query: `build_key`, `rule`, `severity`, `finding_kind`, `concept`, `page_size`, `page_token`.
 - `GET /v1/books/{job_id}/findings/{fingerprint}` — one finding plus a trace. Query: `build_key`, `direction` (`precedents` or `dependents`), `depth`.
 - `POST /v1/books/{job_id}:compare` — two builds, two scenarios, or two books.
 

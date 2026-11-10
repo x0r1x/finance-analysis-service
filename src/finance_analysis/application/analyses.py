@@ -33,6 +33,7 @@ from finance_analysis.domain.audit import (
     Finding,
     Location,
     actuals_end_from_journal,
+    promote_needs_findings,
 )
 from finance_analysis.domain.book import (
     FAS_VERSION,
@@ -434,6 +435,7 @@ def _finding_row(job_id: str, build: str, state_seq: int, analysis_id: str, find
         "basis_json": json.dumps(list(finding.basis), ensure_ascii=False),
         "locations_json": json.dumps([item.as_dict() for item in finding.locations], ensure_ascii=False),
         "truncated": finding.truncated,
+        "finding_kind": finding.finding_kind,
     }
 
 
@@ -868,6 +870,7 @@ class Analyses:
         attached = await self._metric_findings(
             job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
         )
+        attached = list(attached) + promote_needs_findings(needs)
         envelope = {
             "analysis_id": analysis_id,
             "status": "succeeded",
@@ -973,6 +976,7 @@ class Analyses:
             if "concepts" in scope:
                 bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
             findings = [item for item in found if _in_scope(item, scope, data, bound)]
+            findings = list(findings) + promote_needs_findings(got["needs_input"])
             warnings = list(got["warnings"])
             impact = None
             if spec:
@@ -1393,10 +1397,13 @@ class Analyses:
         items = list(marker["result"]["result_data"]["findings"])
         rules = _codes(query.get("rule"))
         severities = _codes(query.get("severity"))
+        kinds = _codes(query.get("finding_kind") or query.get("kind"))
         if rules is not None:
             items = [item for item in items if item["code"] in rules]
         if severities is not None:
             items = [item for item in items if item["severity"] in severities]
+        if kinds is not None:
+            items = [item for item in items if item.get("finding_kind") in kinds]
         if query.get("concept"):
             bound = await self._bound_keys(job_id, target, marker.get("derive_key"), {str(query["concept"])})
             items = [item for item in items if item.get("binding_key") in bound]

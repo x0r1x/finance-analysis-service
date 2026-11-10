@@ -39,7 +39,7 @@
 - `POST /v1/books/{job_id}/analyses` — `type` равен `audit`, `ratios`, `impact` или `full`. См. [анализы](analyses.md).
 - `GET /v1/books/{job_id}/analyses` и `GET /v1/books/{job_id}/analyses/{analysis_id}` — список и один сохранённый анализ.
 - `GET /v1/books/{job_id}/analyses/{analysis_id}/report?format=json|md` — отдать сохранённый результат.
-- `GET /v1/books/{job_id}/findings` — находки последнего аудита. Query: `build_key`, `rule`, `severity`, `concept`, `page_size`, `page_token`.
+- `GET /v1/books/{job_id}/findings` — находки последнего аудита. Query: `build_key`, `rule`, `severity`, `finding_kind`, `concept`, `page_size`, `page_token`.
 - `GET /v1/books/{job_id}/findings/{fingerprint}` — одна находка и трасса. Query: `build_key`, `direction` (`precedents` или `dependents`), `depth`.
 - `POST /v1/books/{job_id}:compare` — две сборки, два сценария или две книги.
 

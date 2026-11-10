@@ -270,7 +270,7 @@ Builder для FAS всегда один — один `BUILDER_BASE_URL`, ско
 | | `GET /v1/books/{job_id}/analyses/{analysis_id}` | синхронно | результат анализа | `AnalysisResult` |
 | | `GET /v1/books/{job_id}/analyses/{analysis_id}/report?format=json\|md` | синхронно | отчёт по сохранённому результату (по умолчанию JSON) | JSON / md |
 | | `DELETE /v1/books/{job_id}/analyses/{analysis_id}` | синхронно | отозвать отчёт (событие, файлы остаются, §4.10); отмена идущего — через `:cancel` операции | `AnalysisSummary` |
-| **Находки** | `GET /v1/books/{job_id}/findings?rule=&severity=&concept=` | синхронно | находки последнего аудита на сборке и состоянии; если аудита не было — `404 no_audit` с подсказкой | `Page[Finding]` |
+| **Находки** | `GET /v1/books/{job_id}/findings?rule=&severity=&finding_kind=&concept=` | синхронно | находки последнего аудита на сборке и состоянии; если аудита не было — `404 no_audit` с подсказкой | `Page[Finding]` |
 | | `GET /v1/books/{job_id}/findings/{fingerprint}` | синхронно | находка + цепочка ячеек (trace builder) + пояснение | `FindingDetail` |
 | **Сравнение** | `POST /v1/books/{job_id}:compare` | 200/202 | единый diff: `{base: {build_key?, scenario?}, other: {build_key? \| scenario? \| job_id + build_key?}, metrics?, rules?, scope?}` → кейсы внутри книги, две сборки книги или две книги (два изолированных запроса + diff, §6.4) | `Comparison` |
 | **Профили** | `GET /v1/profiles` | синхронно | список профилей | `Page[ProfileSummary]` |
@@ -1799,9 +1799,9 @@ class Operation(BaseModel):
 - `sign_anomaly`/`sign_convention_mixed` — по знаку потока из `row_semantics`; `cross_sheet_inconsistency` — одна метка на двух листах, одна единица, без ссылки между строками, расхождение модулей > 0.005; `formula_class_mismatch` — класс формулы ячейки отличается от класса большинства (> 50 %) серии, кроме первого периода и `formula_exceptions`.
 - Фаза 3: `sculpting_deviation` без `target_dscr` срабатывает, только если ≥ 2/3 тестовых периодов у медианы DSCR (±0.01), — иначе модель не скульптирована и разброс — норма. `period_grain_mismatch` и `missing_total_row` прикрепляются и к результату `ratios` (`result_data.findings`).
 
-`Finding{code, version, error_class, severity: info|low|medium|high|critical, params (коды builder без переименования), locations[{cell_id, row_key, axis_id, period_id}], fingerprint, truncated, builder_ref, basis: ["FAST 3.02-01", …]}`.
+`Finding{code, version, error_class, severity: info|low|medium|high|critical, finding_kind: error|warning|methodology|insufficient_data|ambiguity, params (коды builder без переименования), locations[{cell_id, row_key, axis_id, period_id}], fingerprint, truncated, builder_ref, basis: ["FAST 3.02-01", …]}`.
 
-**`finding_kind` (норматив; код — [analytical-core-roadmap.md](analytical-core-roadmap.md) фаза 3).** Планируемое **additive nullable** поле находки (Parquet/API) для обратной совместимости. Enum и смыслы — SSOT здесь; дефолтный маппинг `error_class`+`severity` → kind и registry override — фаза 3 дорожной карты.
+**`finding_kind` (норматив + код — [analytical-core-roadmap.md](analytical-core-roadmap.md) фаза 3).** **Additive nullable** поле находки (Parquet/API) для обратной совместимости. Enum и смыслы — SSOT здесь; дефолтный маппинг `error_class`+`severity` → kind и registry override — `default_finding_kind` / `Rule.finding_kind`.
 
 **Что есть Finding.** Находка — выход правил аудита фаз 1–3 **и** явно промотированные `needs_input` / `missing_input`. **Вне Finding** (пока не промотированы): открытые статусы привязки, Questions, статус периода метрики.
 
@@ -1810,12 +1810,12 @@ class Operation(BaseModel):
 `finding_kind ∈ {error, warning, methodology, insufficient_data, ambiguity}`
 
 - `error` — жёсткая ошибка модели/расчёта (обычно quantitative high/critical, mechanical/logic);
-- `warning` — прочие non-error / non-methodology issues (не путать с severity);
-- `methodology` — заметки практики / определения / ковенанта (definition / covenant-definition / practice notes);
-- `insufficient_data` — (a) **явно промотированные** `needs_input` / `missing_input` на поверхность Finding **и** (b) находки фаз 1–3 с `error_class=omission` **только** когда это **пробел в данных**: отсутствует **обязательный** вход или обязательная проверка для применимой метрики / правила. **Не каждый** `error_class=omission` → `insufficient_data`. Дефолтный маппинг может брать omission как кандидата; kind = `insufficient_data` лишь при отсутствии required-входа / required-проверки. Отсутствие необязательного входа или пропуск необязательной проверки → `warning` или `methodology`, не `insufficient_data`. Override в registry / на правило остаётся авторитетным (фиксировать до финализации кода фазы 3);
-- `ambiguity` — неоднозначность, попавшая на Finding (иначе остаётся в статусах привязки / Questions).
+- `warning` — прочие non-error / non-methodology issues (не путать с severity); в т.ч. отсутствие необязательного входа / пропуск необязательной проверки;
+- `methodology` — заметки практики / определения / ковенанта (definition / covenant-definition / practice notes; override на правиле); опциональные methodology-пропуски тоже сюда, не в `insufficient_data`;
+- `insufficient_data` — (a) **явно промотированные** `needs_input` / `missing_input` на поверхность Finding **и** (b) находки фаз 1–3 с `error_class=omission` **только** когда это **пробел в данных**: отсутствует **обязательный** вход или обязательная проверка для применимой метрики / правила. **Не каждый** `error_class=omission` → `insufficient_data`. Дефолтный маппинг может брать omission как кандидата; kind = `insufficient_data` лишь при отсутствии required-входа / required-проверки. Отсутствие необязательного входа или пропуск необязательной проверки → `warning` или `methodology`, не `insufficient_data`. Override в registry / на правило остаётся авторитетным;
+- `ambiguity` — неоднозначность, попавшая на Finding (иначе остаётся в статусах привязки / Questions; call-site override / промоут `reason: ambiguous`).
 
-Три фазы правил аудита не схлопываются: kind режет их поперек. В текущем коде поля ещё нет: потребители по-прежнему читают `severity` + `error_class` и смежные каналы (questions, статусы метрик).
+Три фазы правил аудита не схлопываются: kind режет их поперек. Registry default — `default_finding_kind(error_class, severity)` (omission — кандидат в `insufficient_data`; сужение required vs optional и `Rule.finding_kind` авторитетны); правило может задать `finding_kind` явно. Фильтр `GET …/findings?finding_kind=`.
 
 `fingerprint = sha1(code › binding_key › period_key_base › marker › axis_ordinal)` — устойчив к пересборке на месте. Планировщик собирает `requires` правил и грузит только нужное (`context`, `graph`, `semantics`).
 

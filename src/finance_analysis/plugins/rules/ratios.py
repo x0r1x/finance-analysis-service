@@ -229,6 +229,7 @@ class IcrReference(Rule):
                 self.finding(
                     data,
                     params={"cause": "ambiguous", "message": _ICR_AMBIGUOUS},
+                    finding_kind="ambiguity",
                 )
             ]
         model_key = reference
@@ -1636,6 +1637,7 @@ def _traced_ambiguous(
             "cells": cells,
             **({"forecast_assumptions": notes} if notes else {}),
         },
+        finding_kind="ambiguity",
     )
 
 
@@ -1659,6 +1661,7 @@ def _ambiguous_boundary(rule: StatementReference, data: AuditInput, periods: lis
             "candidates": [str(period.get("period_id")) for period in periods],
             "cells": cells,
         },
+        finding_kind="ambiguity",
     )
 
 

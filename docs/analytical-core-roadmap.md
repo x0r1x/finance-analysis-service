@@ -148,7 +148,7 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 | `error` | quantitative high/critical, mechanical/logic |
 | `warning` | прочие non-error / non-methodology (qualitative/info без смены методологии); в т.ч. отсутствие **необязательного** входа / пропуск необязательной проверки |
 | `methodology` | practice / definition / covenant-definition notes (`dscr_default_definition`, …); опциональные methodology-пропуски тоже сюда, не в `insufficient_data` |
-| `insufficient_data` | (a) явно промотированные `needs_input` / `missing_input`; (b) `error_class=omission` **только** как пробел в данных: отсутствует **обязательный** вход / обязательная проверка для применимой метрики или правила. **Не каждый** omission → `insufficient_data` (дефолт может брать omission как кандидата; kind сужается по required vs optional) |
+| `insufficient_data` | (a) явно промотированные `needs_input` / `missing_input`; (b) `error_class=omission` **только** как пробел в данных: отсутствует **обязательный** вход / обязательная проверка для применимой метрики или правила. **Не каждый** omission → `insufficient_data` (дефолт может брать omission как кандидата; kind сужается по required vs optional; registry override авторитетен) |
 | `ambiguity` | неоднозначность на Finding (иначе — статусы привязки / Questions без дубля) |
 
 **Состав:** additive nullable поле на `Finding` (+ Parquet/API, backward compatible); фильтры `GET …/findings`; registry default по `error_class`+`severity`, override на правило; плагины — постепенно.
@@ -157,9 +157,9 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 
 **Критерии приёмки:**
 
-- [ ] Nullable поле в схеме Finding и API; фильтр по kind.
-- [ ] Документированный маппинг для правил трёх фаз (default + явные override).
-- [ ] Тесты: kind не подменяет severity/error_class; `kind=warning` ≠ severity warning.
+- [x] Nullable поле в схеме Finding и API; фильтр по kind.
+- [x] Документированный маппинг для правил трёх фаз (default + явные override; omission→`insufficient_data` только для required-gap; registry authoritative).
+- [x] Тесты: kind не подменяет severity/error_class; `kind=warning` ≠ severity warning.
 
 ---
 

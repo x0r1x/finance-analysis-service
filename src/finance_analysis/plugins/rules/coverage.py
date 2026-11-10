@@ -267,10 +267,26 @@ def _binding_evidence(row: dict) -> dict:
 
 
 SCULPTING_DEVIATION = SculptingDeviation(
-    "sculpting_deviation", "1", "quantitative", "info", ("Mazars DSCR",), "DSCR отходит от целевого", ROWS, 3,
+    "sculpting_deviation",
+    "1",
+    "quantitative",
+    "info",
+    ("Mazars DSCR",),
+    "DSCR отходит от целевого",
+    ROWS,
+    3,
+    finding_kind="methodology",
 )
 PERIOD_GRAIN_MISMATCH = PeriodGrainMismatch(
-    "period_grain_mismatch", "1", "qualitative", "medium", ("§0 п. 2",), "Тестовый период короче шага модели", ROWS, 3,
+    "period_grain_mismatch",
+    "1",
+    "qualitative",
+    "medium",
+    ("§0 п. 2",),
+    "Тестовый период короче шага модели",
+    ROWS,
+    3,
+    finding_kind="methodology",
 )
 MISSING_TOTAL_ROW = MissingTotalRow(
     "missing_total_row", "1", "omission", "medium", ("§0 п. 2", "§5.5"), "Нет итоговой строки понятия метрики", ROWS, 3,

@@ -1,6 +1,6 @@
 {
   "dataset": "findings",
-  "version": "1.0",
+  "version": "1.1",
   "title": "Находки аудита",
   "columns": [
     {
@@ -146,6 +146,14 @@
       "unit": "",
       "description": "Список мест урезан",
       "since": "1.0"
+    },
+    {
+      "name": "finding_kind",
+      "type": "string",
+      "nullable": true,
+      "unit": "",
+      "description": "Вид находки: error, warning, methodology, insufficient_data, ambiguity (ортогонален severity и error_class)",
+      "since": "1.1"
     }
   ]
 }

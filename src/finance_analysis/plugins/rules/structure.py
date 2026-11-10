@@ -906,7 +906,17 @@ class FormulaClassMismatch(CellRule):
         return found
 
 
-DAISY_CHAIN = DaisyChain("daisy_chain", "1", "qualitative", "info", ("FAST 3.06-02", "ICAEW"), "Ссылка на ссылку", ROWS_LINKS, 2)
+DAISY_CHAIN = DaisyChain(
+    "daisy_chain",
+    "1",
+    "qualitative",
+    "info",
+    ("FAST 3.06-02", "ICAEW"),
+    "Ссылка на ссылку",
+    ROWS_LINKS,
+    2,
+    finding_kind="methodology",
+)
 PARTIAL_RANGE_REFERENCE = PartialRangeReference(
     "partial_range_reference", "1", "logic", "high", ("FAST 3.02-03",), "SUM по части оси", ROWS_LINKS, 2,
 )
