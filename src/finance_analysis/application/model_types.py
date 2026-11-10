@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import yaml
@@ -24,11 +25,18 @@ from finance_analysis.domain.validation.catalog_integrity import (
     CatalogIntegrityError,
     validate_catalog_integrity,
 )
-from finance_analysis.domain.validation.model_types import ModelTypeInvalid
+from finance_analysis.domain.validation.model_types import (
+    ModelTypeInvalid,
+    validate_applicability_matrix,
+)
 
 
 def model_types_dir() -> Path:
     return catalog_file().parent.parent / "model_types"
+
+
+def matrix_file(path: Path | None = None) -> Path:
+    return (path or model_types_dir()) / "matrix.json"
 
 
 def metrics_file() -> Path:
@@ -361,6 +369,18 @@ def load_interest_order(
     return order
 
 
+def load_matrix_snapshot(folder: Path | None = None) -> dict:
+    """Читает checked-in снимок configs/model_types/matrix.json."""
+
+    file = matrix_file(folder)
+    if not file.is_file():
+        raise ModelTypeInvalid("нет configs/model_types/matrix.json")
+    raw = json.loads(file.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ModelTypeInvalid("matrix.json: корень должен быть объектом")
+    return raw
+
+
 def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | None = None) -> ModelTypeCatalog:
     folder = path or model_types_dir()
     common_path = folder / "_common.yaml"
@@ -394,6 +414,9 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
     from finance_analysis.application.catalog import load_dimensions
 
     coverage = load_coverage_document()
+    default = common.get("default_use")
+    if default not in {"required", "optional", "not_applicable"}:
+        raise ModelTypeInvalid("default_use: required, optional или not_applicable")
     try:
         validate_catalog_integrity(
             concepts=concepts,
@@ -410,9 +433,13 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
         )
     except CatalogIntegrityError as exc:
         raise ModelTypeInvalid(str(exc)) from exc
-    default = common.get("default_use")
-    if default not in {"required", "optional", "not_applicable"}:
-        raise ModelTypeInvalid("default_use: required, optional или not_applicable")
+    snapshot = load_matrix_snapshot(folder)
+    validate_applicability_matrix(
+        documents,
+        metric_inputs,
+        default_use=str(default),
+        snapshot=snapshot,
+    )
     compatible = _compatible(common.get("compatible"), documents)
     types = {type_id: _spec(type_id, body) for type_id, body in documents.items()}
     version = hashlib.sha256(

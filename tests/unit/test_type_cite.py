@@ -1013,10 +1013,20 @@ def test_citation_stays_out_of_the_ratio_matrix_and_an_empty_list_adds_no_key():
     for concepts in CITED_BY_TYPE.values():
         assert set(concepts).isdisjoint(RATIO_METRICS)
         assert set(concepts).isdisjoint(_HELD_OUT)
-    assert applicability(catalog, ("real_estate_income",), "dscr") == "optional"
-    assert applicability(catalog, ("renewables_dpm",), "dscr") == "optional"
-    assert applicability(catalog, ("bank_leasing",), "dscr") == "not_applicable"
-    assert applicability(catalog, ("dcf_valuation",), "npv") == "not_applicable"
+    for type_id in ("bank_leasing", "dcf_valuation"):
+        for metric in RATIO_METRICS:
+            assert applicability(catalog, (type_id,), metric) == "not_applicable", (
+                type_id,
+                metric,
+            )
+    optional_dscr = frozenset({"dscr", "dscr_min", "dscr_avg"})
+    for type_id in ("real_estate_income", "renewables_dpm"):
+        for metric in RATIO_METRICS:
+            use = applicability(catalog, (type_id,), metric)
+            if metric in optional_dscr:
+                assert use == "optional", (type_id, metric)
+            else:
+                assert use == "not_applicable", (type_id, metric)
     assert (
         applicability(catalog, ("development_escrow",), "escrow_coverage") == "required"
     )
