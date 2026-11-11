@@ -25,7 +25,14 @@ def _client(app) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://fas")
 
 
+async def _bootstrap(client: AsyncClient, *, headers: dict | None = None) -> tuple[dict, str]:
+    response = await client.post("/v1/glossary/bootstrap", headers=headers or HEADERS, json={})
+    assert response.status_code == 200, response.text
+    return response.json(), response.headers["etag"]
+
+
 async def _state(client: AsyncClient) -> tuple[dict, str]:
+    await _bootstrap(client)
     response = await client.get("/v1/glossary", headers=HEADERS)
     assert response.status_code == 200, response.text
     return response.json(), response.headers["etag"]
@@ -74,7 +81,8 @@ async def test_preconditions_dry_run_rollback_and_export(app, local_service, tas
         assert odd.status_code == 406
         assert odd.json()["formats"] == ["json", "yaml"]
         impact = await client.get("/v1/glossary/impact", headers=HEADERS)
-        assert impact.json()["books"] == []
+        assert impact.status_code == 501, impact.text
+        assert impact.json()["code"] == "not_implemented"
 
         made = await client.post(
             "/v1/glossary/releases",
@@ -153,7 +161,10 @@ async def test_stale_parent_and_idempotent_release(app, local_service, task_work
 async def test_admin_token_when_configured(app, settings):
     settings.fas_admin_token = "secret"
     async with _client(app) as client:
-        _body, etag = await _state(client)
+        denied_bootstrap = await client.post("/v1/glossary/bootstrap", headers=HEADERS, json={})
+        assert denied_bootstrap.status_code == 403
+        assert denied_bootstrap.json()["code"] == "admin_token_required"
+        _body, etag = await _bootstrap(client, headers={**HEADERS, "X-Admin-Token": "secret"})
         denied = await client.post(
             "/v1/glossary/releases",
             headers={**HEADERS, "If-Match": etag},
@@ -167,6 +178,47 @@ async def test_admin_token_when_configured(app, settings):
             json={"ops": [], "dry_run": True},
         )
         assert allowed.status_code == 200, allowed.text
+
+
+async def test_get_does_not_bootstrap_and_bootstrap_publishes(app, local_service):
+    async with _client(app) as client:
+        missing = await client.get("/v1/glossary", headers=HEADERS)
+        assert missing.status_code == 404, missing.text
+        assert missing.json()["code"] == "not_found"
+        assert await local_service.glossary.peek() is None
+
+        for path in (
+            "/v1/glossary/releases",
+            "/v1/glossary/content",
+            "/v1/glossary/concepts",
+            "/v1/glossary/diff",
+            "/v1/glossary/events",
+        ):
+            response = await client.get(path, headers=HEADERS)
+            assert response.status_code == 404, (path, response.text)
+            assert await local_service.glossary.peek() is None
+
+        impact = await client.get("/v1/glossary/impact", headers=HEADERS)
+        assert impact.status_code == 501, impact.text
+        assert impact.json()["code"] == "not_implemented"
+        assert await local_service.glossary.peek() is None
+
+        boot = await client.post("/v1/glossary/bootstrap", headers=HEADERS, json={})
+        assert boot.status_code == 200, boot.text
+        assert boot.json()["seq"] == 1
+        assert boot.headers["etag"] == "h-1"
+        head = await local_service.glossary.peek()
+        assert head is not None
+        assert head["seq"] == 1
+
+        again = await client.post("/v1/glossary/bootstrap", headers=HEADERS, json={})
+        assert again.status_code == 200, again.text
+        assert again.json()["seq"] == 1
+        assert again.json()["active"] == boot.json()["active"]
+
+        state = await client.get("/v1/glossary", headers=HEADERS)
+        assert state.status_code == 200, state.text
+        assert state.json()["active"] == boot.json()["active"]
 
 
 async def test_replace_upload_and_read_routes(app):

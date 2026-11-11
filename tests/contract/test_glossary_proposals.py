@@ -22,6 +22,8 @@ def _client(app) -> AsyncClient:
 
 async def test_accept_edits_text_and_reject_writes_no_release(app, local_service, task_workers):
     async with _client(app) as client:
+        boot = await client.post("/v1/glossary/bootstrap", headers=HEADERS, json={})
+        assert boot.status_code == 200, boot.text
         made = await client.post(
             "/v1/glossary/proposals",
             headers=HEADERS,

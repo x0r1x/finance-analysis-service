@@ -27,6 +27,8 @@ def _client(app) -> AsyncClient:
 
 
 async def _release(client: AsyncClient) -> tuple[str, str, dict]:
+    boot = await client.post("/v1/glossary/bootstrap", headers=HEADERS, json={})
+    assert boot.status_code == 200, boot.text
     state = await client.get("/v1/glossary", headers=HEADERS)
     assert state.status_code == 200, state.text
     made = await client.post(
@@ -201,6 +203,8 @@ async def test_cancel_during_proposal_shadow_does_not_accept(app, local_service,
 
     local_service.glossary.gate = gate
     async with _client(app) as client:
+        boot = await client.post("/v1/glossary/bootstrap", headers=HEADERS, json={})
+        assert boot.status_code == 200, boot.text
         before = await client.get("/v1/glossary", headers=HEADERS)
         made = await client.post(
             "/v1/glossary/proposals",
@@ -223,7 +227,7 @@ async def test_cancel_during_proposal_shadow_does_not_accept(app, local_service,
 
 
 async def test_require_match_does_not_wait_on_the_shadow_lock(local_service):
-    await local_service.glossary.ensure()
+    await local_service.glossary.bootstrap()
     hold = asyncio.Event()
     acquired = asyncio.Event()
 

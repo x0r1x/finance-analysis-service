@@ -10,26 +10,37 @@
 
 ## Чтение и запись
 
-`GET /v1/glossary` возвращает голову и `ETag` вида `h-{seq}`.
+`GET /v1/glossary` возвращает голову и `ETag` вида `h-{seq}`. Без опубликованной головы — `404`, запись не делается.
 
-Несколько чтений публикуют то же самое, если головы ещё нет: `GET /v1/glossary`, `GET /v1/glossary/releases`, `GET /v1/glossary/releases/{version}`, `GET /v1/glossary/content`, `GET /v1/glossary/concepts`, `GET /v1/glossary/diff` и `GET /v1/glossary/events`. Первое из них записывает git-пакет как релиз 1.
+`POST /v1/glossary/bootstrap` публикует git-пакет как релиз 1, если головы ещё нет. Повторный вызов возвращает текущую голову. Если задан `FAS_ADMIN_TOKEN`, нужен `X-Admin-Token`.
 
-Эти не публикуют:
+Эти чтения только читают. Без головы — `404`, `_publish_git` не вызывается:
+
+- `GET /v1/glossary`
+- `GET /v1/glossary/releases`
+- `GET /v1/glossary/releases/{version}`
+- `GET /v1/glossary/content`
+- `GET /v1/glossary/concepts`
+- `GET /v1/glossary/diff`
+- `GET /v1/glossary/events`
+
+Эти тоже не публикуют:
 
 - `GET /v1/glossary/labels?q=`
-- `GET /v1/glossary/impact` — возвращает `{"books": []}` и книги не сканирует
+- `GET /v1/glossary/impact` — **устарел**; всегда `501 not_implemented`. Контракт в design — `GET /v1/glossary/releases/{version}/impact` (ещё не реализован). Пустой `{"books": []}` больше не отдаётся.
 - `GET /v1/glossary/stats?from=&to=&profile_id=`
 - `GET /v1/glossary/proposals` и `GET /v1/glossary/proposals/{proposal_id}`
 - `POST /v1/glossary:resolve`
 
 Запись:
 
-- `POST /v1/glossary/releases` — релиз из `ops` или замена документа при `mode=replace`.
+- `POST /v1/glossary/bootstrap` — первый релиз из git (идемпотентно).
+- `POST /v1/glossary/releases` — релиз из `ops` или замена документа при `mode=replace`. Нужна голова (`404` до bootstrap).
 - `POST /v1/glossary/transitions` — перевод релиза в другой статус. Запрос ставит операцию `glossary.validate` в очередь `fas:glossary`, воркер выполняет теневую проверку и запись. Успешный переход запускает пересчёт книг.
 - `POST /v1/glossary:rollback` — включает предыдущий релиз и запускает ремап.
 - `POST /v1/glossary/proposals` и `POST /v1/glossary/proposals:decide` — открыть предложение или пакетом принять и отклонить.
 
-Если задан `FAS_ADMIN_TOKEN`, релизы, переходы, откат и решения по предложениям требуют заголовок `X-Admin-Token`. Пустое значение токен не проверяет.
+Если задан `FAS_ADMIN_TOKEN`, bootstrap, релизы, переходы, откат и решения по предложениям требуют заголовок `X-Admin-Token`. Пустое значение токен не проверяет.
 
 ## Resolve
 

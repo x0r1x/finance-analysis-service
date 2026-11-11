@@ -45,6 +45,12 @@ class NotAcceptable(FasError):
     title = "Формат не поддерживается"
 
 
+class NotImplementedYet(FasError):
+    code = "not_implemented"
+    status = 501
+    title = "Не реализовано"
+
+
 class BindingConflict(FasError):
     code = "binding_conflict"
     status = 409

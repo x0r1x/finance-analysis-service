@@ -128,6 +128,19 @@ class GlossaryStore:
         return head
 
     async def ensure(self) -> dict:
+        """Читает голову. Без релиза — `NotFound`, git-базу не публикует."""
+
+        head, _etag = await self._read()
+        if head is None:
+            raise NotFound("глоссарий не инициализирован")
+        return head
+
+    async def bootstrap(self) -> dict:
+        """Публикует git-пакет как первый релиз, если головы ещё нет.
+
+        Повторный вызов возвращает текущую голову без записи.
+        """
+
         async with self._lock:
             head, etag = await self._read()
             if head is not None:
@@ -182,15 +195,11 @@ class GlossaryStore:
         обрывался по дедлайну запроса. `if_match` — значение заголовка
         If-Match. Если заголовка нет, поднимается ошибка 428. Если метка не
         совпала с `h-{seq}`, поднимается ошибка 412. Голову метод не меняет.
-        Если головы ещё нет, метод один раз создаёт её под замком: это
-        короткая запись, не теневая проверка. В момент записи перехода метка
-        сверяется ещё раз уже под замком.
+        Если головы ещё нет — `NotFound` (нужен `POST /v1/glossary/bootstrap`).
+        В момент записи перехода метка сверяется ещё раз уже под замком.
         """
 
-        head, _etag = await self._read()
-        if head is None:
-            async with self._lock:
-                head, _etag = await self._ensure_locked()
+        head = await self.ensure()
         self._match(head, if_match)
 
     async def transition(
@@ -454,8 +463,14 @@ class GlossaryStore:
             return {}
 
     async def impact(self) -> dict:
-        # shortcut: книги не сканируются, влияние пустое до отдельного индекса читателей
-        return {"books": []}
+        """Устаревший stub. Контракт — `GET …/releases/{version}/impact` (ещё не реализован)."""
+
+        from finance_analysis.domain.errors import NotImplementedYet
+
+        raise NotImplementedYet(
+            "GET /v1/glossary/impact устарел и не реализован; "
+            "контракт — GET /v1/glossary/releases/{version}/impact"
+        )
 
     async def export_patch(self) -> str:
         git = load_git_document()
@@ -739,10 +754,11 @@ class GlossaryStore:
         return await self._document(head["active"])
 
     async def _ensure_locked(self) -> tuple[dict, str | None]:
+        """Читает голову под замком вызывающего. Без релиза — `NotFound`."""
+
         head, etag = await self._read()
         if head is None:
-            await self._publish_git(etag)
-            head, etag = await self._read()
+            raise NotFound("глоссарий не инициализирован")
         return head, etag
 
     async def _publish_git(self, etag: str | None) -> dict:

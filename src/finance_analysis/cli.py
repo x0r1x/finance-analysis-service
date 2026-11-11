@@ -98,7 +98,7 @@ async def _eval(prune: str | None) -> None:
     from finance_analysis.domain.glossary_release import package_of
 
     async def run(service):
-        state = await service.glossary.ensure()
+        state = await service.glossary.bootstrap()
         document = await service.glossary.document(state["active"])
         calibrator = await service.calibrators.active()
         report = await service.evaluator.run(package_of(document), calibrator=calibrator)
@@ -120,7 +120,7 @@ async def _learn(command: str) -> None:
     from finance_analysis.domain.glossary_release import package_of
 
     async def run(service):
-        state = await service.glossary.ensure()
+        state = await service.glossary.bootstrap()
         document = await service.glossary.document(state["active"])
         if command == "cluster":
             return await service.learning.cluster_unmapped(package_of(document))

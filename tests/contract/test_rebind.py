@@ -58,7 +58,7 @@ async def test_label_removal_drops_only_inferred(local_service):
         wait_sec=60,
     )
     assert posted["results"][0]["status"] == "accepted", posted
-    state = await local_service.glossary.ensure()
+    state = await local_service.glossary.bootstrap()
     released = await local_service.glossary.release(
         [{"op": "remove_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "CFADS"}],
         f"h-{state['seq']}",

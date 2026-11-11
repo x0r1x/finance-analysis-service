@@ -226,14 +226,14 @@ async def test_cluster_unmapped_proposes_once_per_cluster(tmp_path):
 
 async def test_mine_writes_candidates_and_only_proposes(tmp_path):
     learning, glossary = _learning(tmp_path)
-    await glossary.ensure()
+    await glossary.bootstrap()
     for job, actor in (("a", "u1"), ("b", "u2"), ("c", "u3")):
         rows = {"k": {"binding_key": "k", "row_key": "k", "label": "Lender cash", "label_path_text": "Lender cash"}}
         record = {"seq": 1, "type": "concept.confirmed", "binding_key": "k", "value": "cfads", "actor": {"user_id": actor}}
         await learning.record_decisions(job, [record], rows=rows, bindings={}, events=[record], profile=None, glossary_version="g", package=CATALOG)
-    before = (await glossary.ensure())["seq"]
+    before = (await glossary.bootstrap())["seq"]
     result = await learning.mine(CATALOG, load_git_document())
     assert result["mode"] == "proposals" and result["candidates"] == 1
-    assert (await glossary.ensure())["seq"] == before
+    assert (await glossary.bootstrap())["seq"] == before
     origins = {item["origin"] for item in (await glossary.proposals())["proposals"]}
     assert "auto" in origins

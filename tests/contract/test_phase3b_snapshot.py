@@ -44,10 +44,10 @@ async def test_glossary_stats_on_signals(app, local_service):
 
 async def test_remap_batch_snapshot_and_rollback_restores_inferred(local_service):
     # Книга пинит глоссарий при загрузке. Голова должна уже существовать, иначе pin остаётся none.
-    await local_service.glossary.ensure()
+    await local_service.glossary.bootstrap()
     await local_service.perform_load(JOB, actor=Actor(), fence=1)
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
-    state = await local_service.glossary.ensure()
+    state = await local_service.glossary.bootstrap()
     before = state["active"]
     released = await local_service.glossary.release(
         [{"op": "add_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "zz canary token"}],
@@ -75,7 +75,7 @@ async def test_remap_batch_snapshot_and_rollback_restores_inferred(local_service
         wait_sec=60,
     )
     assert posted["results"][0]["status"] == "accepted", posted
-    state = await local_service.glossary.ensure()
+    state = await local_service.glossary.bootstrap()
     removed = await local_service.glossary.release(
         [{"op": "remove_label", "concept": "cfads", "kind": "alt", "lang": "en", "text": "CFADS"}],
         f"h-{state['seq']}",
@@ -93,7 +93,7 @@ async def test_remap_batch_snapshot_and_rollback_restores_inferred(local_service
     assert dropped["status"] == "unknown"
     assert kept["source"] == "confirmed" and kept["effective_concept"] == "debt_service"
 
-    await local_service.glossary.rollback(f"h-{(await local_service.glossary.ensure())['seq']}")
+    await local_service.glossary.rollback(f"h-{(await local_service.glossary.bootstrap())['seq']}")
     await local_service.remap_glossary()
     restored_head = (await local_service._read_head(RVI))[0]
     restored = await local_service._dataset_rows(RVI, restored_head, "bindings")

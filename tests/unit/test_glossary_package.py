@@ -164,7 +164,7 @@ def test_replace_upload_reads_and_profile_list(tmp_path):
 
     async def run():
         gloss = GlossaryStore(LocalStore(tmp_path))
-        head = await gloss.ensure()
+        head = await gloss.bootstrap()
         etag = f"h-{head['seq']}"
         document = await gloss.document(head["active"])
         document["glossaries"]["cfads"]["pref"]["en"] = "Replaced flow"
@@ -313,7 +313,7 @@ def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
         assert "capex" in absent
 
         gloss = GlossaryStore(store)
-        head = await gloss.ensure()
+        head = await gloss.bootstrap()
         proposal = await gloss.add_proposal({"concept": "missing", "kind": "alt", "lang": "en", "text": "nope"})
         try:
             await gloss.decide_proposals([{"id": proposal["id"], "decision": "accept"}])
@@ -498,5 +498,43 @@ def test_catch_glossary_remaps_a_newer_version_once():
         assert not await stub.catch_glossary("g-0001:aaa")
         assert await stub.catch_glossary("g-0002:ccc")
         assert stub.calls == 2
+
+    asyncio.run(run())
+
+
+def test_ensure_does_not_publish_bootstrap_and_impact_is_501(tmp_path):
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.glossary_store import GlossaryStore
+    from finance_analysis.domain.errors import NotFound, NotImplementedYet
+
+    async def run():
+        gloss = GlossaryStore(LocalStore(tmp_path))
+        assert await gloss.peek() is None
+        with pytest.raises(NotFound):
+            await gloss.ensure()
+        assert await gloss.peek() is None
+
+        for method in (
+            gloss.releases,
+            gloss.events,
+            gloss.concepts,
+            lambda: gloss.content(None, "json"),
+            lambda: gloss.diff(None, None),
+        ):
+            with pytest.raises(NotFound):
+                await method()
+            assert await gloss.peek() is None
+
+        with pytest.raises(NotImplementedYet) as impact:
+            await gloss.impact()
+        assert impact.value.status == 501
+        assert await gloss.peek() is None
+
+        head = await gloss.bootstrap()
+        assert head["seq"] == 1
+        assert (await gloss.ensure())["active"] == head["active"]
+        again = await gloss.bootstrap()
+        assert again["seq"] == 1
+        assert again["active"] == head["active"]
 
     asyncio.run(run())

@@ -70,6 +70,16 @@ def register(app, settings, *, svc, write, read) -> None:
 
         return await read(request, load)
 
+    @app.post("/v1/glossary/bootstrap")
+    async def glossary_bootstrap(request: Request):
+        async def run(gloss, _body, _match):
+            _admin(request)
+            head = await gloss.bootstrap()
+            body = state_of(head)
+            return {**body, "etag": body["etag"]}
+
+        return await write(request, run)
+
     @app.get("/v1/glossary/releases")
     async def glossary_releases(request: Request):
         return await read(request, lambda _who: svc().glossary.releases())
@@ -88,6 +98,8 @@ def register(app, settings, *, svc, write, read) -> None:
 
     @app.get("/v1/glossary/impact")
     async def glossary_impact(request: Request):
+        """Deprecated: silent stub removed. Intended contract is `/releases/{version}/impact`."""
+
         return await read(request, lambda _who: svc().glossary.impact())
 
     @app.post("/v1/glossary:resolve")
