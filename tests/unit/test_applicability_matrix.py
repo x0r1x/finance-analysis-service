@@ -22,8 +22,9 @@ from finance_analysis.domain.validation.model_types import (
     validate_model_types,
 )
 
-# Cite-only: все cover/NPV неприменимы. Renewables / RE — DSCR-семейство optional, остальное N/A.
-_CITE_ONLY = ("lbo_ma", "dcf_valuation", "bank_leasing")
+# Типы без показателей покрытия из текущего каталога: все cover/NPV = not_applicable.
+# Полноценные типы моделей; будущие метрики не запрещены. Renewables / RE — DSCR optional.
+_NO_COVER_METRICS = ("lbo_ma", "dcf_valuation", "bank_leasing")
 _OPTIONAL_DSCR = frozenset({"dscr", "dscr_min", "dscr_avg"})
 _DSCR_VARIANT_TYPES = ("renewables_dpm", "real_estate_income")
 
@@ -97,9 +98,9 @@ def test_star_alone_does_not_cover_known_metrics(tmp_path, monkeypatch):
         load_model_types()
 
 
-def test_cite_only_and_dscr_optional_types_match_intended_cells():
+def test_no_cover_metrics_and_dscr_optional_types_match_intended_cells():
     catalog = _catalog()
-    for type_id in _CITE_ONLY:
+    for type_id in _NO_COVER_METRICS:
         for metric in RATIO_METRICS:
             assert applicability(catalog, (type_id,), metric) == "not_applicable", (
                 type_id,

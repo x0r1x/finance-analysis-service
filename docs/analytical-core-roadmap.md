@@ -144,7 +144,7 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 
 **Зачем:** потребители сейчас смешивают ошибки, practice notes, нехватку данных и неоднозначность через один поток `Finding` + `needs_input` + статусы привязки.
 
-**Граница Finding.** Finding = правила аудита фаз 1–3 + явно промотированные `needs_input` / `missing_input` → `insufficient_data`. Вне Finding (если не промотированы): открытые статусы привязки, Questions, статус периода метрики.
+**Граница Finding.** Finding = правила аудита фаз 1–3 + явно промотированные `needs_input` / `missing_input`. Вне Finding (если не промотированы): открытые статусы привязки, Questions, статус периода метрики.
 
 **Нормативный набор** (enum + смыслы — SSOT в design §6.1; код — в этой фазе):
 
@@ -159,7 +159,7 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 | `error` | quantitative high/critical, mechanical/logic |
 | `warning` | прочие non-error / non-methodology (qualitative/info без смены методологии) |
 | `methodology` | practice / definition / covenant-definition notes (`dscr_default_definition`, …) |
-| `insufficient_data` | только явно промотированные `needs_input` / `missing_input` |
+| `insufficient_data` | (a) явно промотированные `needs_input` / `missing_input`; (b) находки с `error_class=omission` |
 | `ambiguity` | неоднозначность на Finding (иначе — статусы привязки / Questions без дубля) |
 
 **Состав:** additive nullable поле на `Finding` (+ Parquet/API, backward compatible); фильтры `GET …/findings`; registry default по `error_class`+`severity`, override на правило; плагины — постепенно.
