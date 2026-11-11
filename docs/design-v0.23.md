@@ -1172,18 +1172,26 @@ metrics:
 
 Типы: `simple`, `ratio`, `expression`, `rolling_ratio`, `reduce`, `npv_window`, `cumulative`.
 
-**Применимость по типу** (`configs/model_types/*.yaml`, валидатор при старте и `fas check-config`). Формулы остаются в `configs/metrics`. `default_use: not_applicable`. У `other` метрики `*: optional`, и только он освобождён от правила «сумма весов сигналов > 0».
+**Применимость по типу.** SSOT — `configs/model_types/*.yaml` (валидатор при старте и `fas check-config`). Формулы остаются в `configs/metrics`. `default_use: not_applicable` (`_common.yaml`). У `other` метрики `*: optional`, и только он освобождён от правила «сумма весов сигналов > 0». Типы на диске: `project_finance`, `corporate`, `development_escrow`, `ppp_concession`, `investment_project`, `renewables_dpm`, `real_estate_income`, `lbo_ma`, `dcf_valuation`, `bank_leasing`, `other` (плюс `_common.yaml`). **Типы без показателей покрытия из текущего каталога** (`lbo_ma`, `dcf_valuation`, `bank_leasing`) — полноценные типы (сигналы + `required_concepts`); все метрики *текущего* каталога `not_applicable`. Ценность сегодня — понятия/цитаты, не cover-ratios; будущие метрики для этих типов не запрещены (см. [analytical-core-roadmap.md](analytical-core-roadmap.md)).
 
-| Метрика | `project_finance` | `corporate` | `development_escrow` | `ppp_concession` | `investment_project` | `other` |
-|---|---|---|---|---|---|---|
-| `dscr` | required, вариант `pf` | optional, вариант `corporate_covenant` | optional, вариант `pf` | required, вариант `pf` | not_applicable | optional |
-| `dscr_min` | required | not_applicable | not_applicable | required | not_applicable | optional |
-| `adscr`, `dscr_avg`, `llcr`, `plcr` | optional | not_applicable | not_applicable | optional | not_applicable | optional |
-| `icr` | optional | required | not_applicable | optional | not_applicable | optional |
-| `net_debt_ebitda` | not_applicable | optional | not_applicable | not_applicable | not_applicable | optional |
-| `escrow_coverage` | not_applicable | not_applicable | required | not_applicable | not_applicable | optional |
-| `npv` | not_applicable | not_applicable | not_applicable | optional | required | optional |
-| `irr` | not_applicable | not_applicable | not_applicable | optional | required | optional |
+Ручная таблица в design **не** ведётся: она устаревала относительно YAML. Актуальная матрица тип×метрика — из YAML; снимок и дорожная карта — [analytical-core-roadmap.md](analytical-core-roadmap.md). Снять матрицу из загруженного каталога:
+
+```bash
+PYTHONPATH=src python - <<'PY'
+from finance_analysis.application.model_types import load_model_types
+from finance_analysis.application.financial_catalog import load_financial_catalog
+
+catalog = load_model_types()
+fin = load_financial_catalog(model_types=catalog)
+for metric_id, ind in sorted(fin.indicators.items()):
+    print(metric_id, {
+        type_id: ({"use": use.use} | ({"variant": use.variant} if use.variant else {}))
+        for type_id, use in sorted(ind.model_types.items())
+    })
+PY
+```
+
+Каждый показатель Financial Model Catalog несёт то же поле `model_types` ([financial-model-catalog.md](financial-model-catalog.md)). Явные ячейки для всех известных метрик и машинный снимок — фаза 1 дорожной карты аналитического ядра.
 
 `required` без входа — `needs_input`. `optional` без входа — `skipped: input_absent`, вопроса нет. `not_applicable` не считается и не порождает вопросов и находок; строка метрики остаётся видимой. `ratio_mismatch`, `sculpting_deviation` и `period_grain_mismatch` считают CFADS ÷ обслуживание долга и запускаются только для варианта `pf` (или когда вариант не назван). Вариант `corporate_covenant` их не включает: расхождение с договором уже предупреждение на результате ratios. Пока тип `unresolved`, применимость — максимум по кандидатам (`required` > `optional` > `not_applicable`). Пустой набор кандидатов берёт все типы каталога, поэтому метрика не пропадает. `missing_total_row` остаётся, если понятие нужно метрике, которая не `not_applicable` (необязательная тоже считается). Обязательная метрика должна достигать своих входов из `required_concepts` типа: все `all_of` и хотя бы один `one_of`. Вариант, если он указан, проверяется так же: его понятия должны быть в каталоге. Вопрос по обязательному входу смотрит на понятия варианта, когда все метки, для которых метрика `required`, называют один и тот же вариант. Разные варианты в объединении кандидатов оставляют базовую формулу и её входы.
 
@@ -1802,6 +1810,22 @@ class Operation(BaseModel):
 - Фаза 3: `sculpting_deviation` без `target_dscr` срабатывает, только если ≥ 2/3 тестовых периодов у медианы DSCR (±0.01), — иначе модель не скульптирована и разброс — норма. `period_grain_mismatch` и `missing_total_row` прикрепляются и к результату `ratios` (`result_data.findings`).
 
 `Finding{code, version, error_class, severity: info|low|medium|high|critical, params (коды builder без переименования), locations[{cell_id, row_key, axis_id, period_id}], fingerprint, truncated, builder_ref, basis: ["FAST 3.02-01", …]}`.
+
+**`finding_kind` (норматив; код — [analytical-core-roadmap.md](analytical-core-roadmap.md) фаза 3).** Планируемое **additive nullable** поле находки (Parquet/API) для обратной совместимости. Enum и смыслы — SSOT здесь; дефолтный маппинг `error_class`+`severity` → kind и registry override — фаза 3 дорожной карты.
+
+**Что есть Finding.** Находка — выход правил аудита фаз 1–3 **и** явно промотированные `needs_input` / `missing_input` → `insufficient_data`. **Вне Finding** (пока не промотированы): открытые статусы привязки, Questions, статус периода метрики.
+
+**Оси независимы.** `finding_kind`, `severity` и `error_class` — три ортогональные оси. У одной Finding — ровно один `finding_kind` (override в registry правила, иначе default от `error_class`+`severity`). Значение `finding_kind=warning` **не** элемент шкалы `severity` (там по-прежнему только `info|low|medium|high|critical`; см. выше «В шкале Finding нет `warning`»).
+
+`finding_kind ∈ {error, warning, methodology, insufficient_data, ambiguity}`
+
+- `error` — жёсткая ошибка модели/расчёта (обычно quantitative high/critical, mechanical/logic);
+- `warning` — прочие non-error / non-methodology issues (не путать с severity);
+- `methodology` — заметки практики / определения / ковенанта (definition / covenant-definition / practice notes);
+- `insufficient_data` — только **явно промотированные** `needs_input` / `missing_input` на поверхность Finding;
+- `ambiguity` — неоднозначность, попавшая на Finding (иначе остаётся в статусах привязки / Questions).
+
+Три фазы правил аудита не схлопываются: kind режет их поперек. В текущем коде поля ещё нет: потребители по-прежнему читают `severity` + `error_class` и смежные каналы (questions, статусы метрик).
 
 `fingerprint = sha1(code › binding_key › period_key_base › marker › axis_ordinal)` — устойчив к пересборке на месте. Планировщик собирает `requires` правил и грузит только нужное (`context`, `graph`, `semantics`).
 
