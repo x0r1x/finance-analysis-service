@@ -6,6 +6,8 @@ Routes below are the ones registered in `adapters/api`. A field-by-field body is
 
 `X-User-Id` and `X-Client-Id` name the actor. FAS does not authenticate them. A `POST` carries `Idempotency-Key`. Work that does not finish inside the sync deadline returns `202` plus an operation. Poll `GET /v1/operations/{op_id}`, or read `GET /v1/operations/{op_id}/events` (`text/event-stream`) when `SSE_ENABLED` is on.
 
+Public units/dimensions contract: [dimensions.md](../dimensions.md) (`configs/dimensions.yaml`; audit rules `dimension_mismatch` / `pricing_basis_mismatch` already enforce). Type-citation payload `result_data.book_rows`: JSON Schema `src/finance_analysis/adapters/storage/schemas/book_rows.json` (`book_rows@1.0`).
+
 ## Process
 
 - `GET /health/live` — the process is up.

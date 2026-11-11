@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fas.local/contracts/book_rows.json",
+  "title": "BookRows",
+  "description": "Публичный контракт цитат строк книги в result_data.book_rows (ratios/full). Число — value_dec ячейки; normalized_value и scale_factor не подменяют value. NaN/Inf в value не входят. Не Parquet-датасет: рядом со schemas/*.json колонок только как API-контракт.",
+  "type": "object",
+  "required": ["version", "book_rows"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Версия публичного контракта book_rows@1.0"
+    },
+    "book_rows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/bookRow" },
+      "description": "Поле AnalysisResult.result_data.book_rows при уверенном основном типе; иначе отсутствует или пусто"
+    }
+  },
+  "$defs": {
+    "decimalText": {
+      "type": ["string", "null"],
+      "description": "Десятичная запись без экспоненты; null — пустая/нечисловая ячейка. Не NaN и не Infinity."
+    },
+    "scaleFactor": {
+      "description": "Множитель листа; строка после decimal_text или число из fact_observation",
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "number" }
+      ]
+    },
+    "observation": {
+      "type": "object",
+      "required": ["value"],
+      "additionalProperties": false,
+      "properties": {
+        "cell_id": { "type": ["string", "null"] },
+        "axis_id": { "type": ["string", "null"] },
+        "period_id": { "type": ["string", "null"] },
+        "period_index": {
+          "description": "Порядковый индекс периода на оси; пропуск сохраняется",
+          "anyOf": [
+            { "type": "integer" },
+            { "type": "string" },
+            { "type": "null" }
+          ]
+        },
+        "value": { "$ref": "#/$defs/decimalText" },
+        "value_status": { "type": ["string", "null"] },
+        "normalized_value": { "$ref": "#/$defs/decimalText" },
+        "scale_factor": { "$ref": "#/$defs/scaleFactor" }
+      }
+    },
+    "bookRow": {
+      "type": "object",
+      "required": ["concept", "status", "observations"],
+      "additionalProperties": false,
+      "properties": {
+        "concept": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Id понятия из среза типа (CITED_BY_TYPE / LBO)"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["cited", "absent", "ambiguous"],
+          "description": "cited — одна основная строка; absent — нет строки/числа; ambiguous — несколько основных"
+        },
+        "row_key": {
+          "type": ["string", "null"],
+          "description": "Ключ основной строки; обычно только при status=cited"
+        },
+        "observations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/observation" },
+          "description": "Наблюдения по period_index внутри axis_id; не суммируются. У absent/ambiguous — []"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "cited" } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["row_key"],
+            "properties": {
+              "row_key": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": { "enum": ["absent", "ambiguous"] }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "observations": { "maxItems": 0 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

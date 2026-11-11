@@ -889,6 +889,43 @@ def test_empty_and_error_statuses_are_not_quoted_as_numbers():
     assert [row["observations"][0]["cell_id"] for row in got] == ["B2", "B5", "B8"]
 
 
+def test_non_finite_decimals_are_not_citations():
+    """NaN и бесконечность не становятся значением цитаты (как в lbo_cite)."""
+
+    got = cite_type_book_rows(
+        source="inferred",
+        primary="real_estate_income",
+        bindings=[
+            _binding("cap_rate", "Assumptions!C20"),
+            _binding("noi", "Summary!C7"),
+        ],
+        facts=[
+            {
+                "row_key": "Assumptions!C20",
+                "value_dec": Decimal("NaN"),
+                "normalized_value": "0.0575",
+                "scale_factor": 1,
+                "value_status": "cached",
+                "cell_id": "Assumptions!D20",
+            },
+            {
+                "row_key": "Summary!C7",
+                "value_dec": Decimal("Infinity"),
+                "normalized_value": Decimal("-Infinity"),
+                "scale_factor": 1,
+                "value_status": "cached",
+                "cell_id": "Summary!D7",
+            },
+        ],
+    )
+    assert got[0]["observations"][0]["value"] is None
+    assert got[1]["observations"][0]["value"] is None
+    assert "normalized_value" not in got[1]["observations"][0]
+    rendered = str([row["observations"][0] for row in got[:2]])
+    assert "NaN" not in rendered
+    assert "Infinity" not in rendered
+
+
 def test_a_gap_keeps_its_slot_and_axes_stay_separate():
     """Пропуск посередине не сдвигает следующий период. Оси не склеиваются."""
 
