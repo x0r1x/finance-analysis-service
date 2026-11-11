@@ -6,6 +6,8 @@
 
 `audit` and `ratios` wait inside the sync deadline (`SYNC_DEADLINE_MS`, and `LOAD_SYNC_SEC` on the HTTP call). `ratios` and `impact` also return `202` when the book has more periods than `SYNC_MAX_PERIODS`, or when `async` is true. `full` always returns `202` with an `op_id`. The run is a Taskiq job on `fas:interactive` (`stage: analysis.full`), so a `fas-worker` for that queue must be up — either a process you start, or children of `fas-api` when `FAS_EMBEDDED_WORKERS=true` (Compose sets this). Audit, ratios, and impact that return `202` still run in the API process.
 
+Enqueue pins `build_key`, `state_seq`, `derive_key`, and `analysis_semantic_model` into `stage_args`. The worker builds the Target from that snapshot, not from the live book head. If the worker dies mid-`analysis.full`, the operation ends failed or cancelled under the existing runner rules. The client must POST a new `type: full`. There is no automatic safe resume (`analysis` is not in `_IDEMPOTENT`).
+
 `render` is `json` or `md`. It selects the report format stored with the result. The default metrics for `full`, when `metrics` is omitted, are `dscr` only.
 
 ## What each type does

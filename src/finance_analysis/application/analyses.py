@@ -528,6 +528,48 @@ class Analyses:
             analysis_semantic_model=live_smv,
         )
 
+    async def _target_pinned(
+        self,
+        job_id: str,
+        *,
+        build_key: str,
+        state_seq: int,
+        derive_key: str | None,
+        analysis_semantic_model: str | None,
+    ) -> Target:
+        """Собирает Target по снимку enqueue, не по текущей голове книги."""
+
+        build = check_build(str(build_key))
+        if not derive_key:
+            raise NotFound("производное состояние сборки не найдено")
+        try:
+            manifest = await self.service._manifest(job_id, build)
+        except NotFound:
+            raise NotFound("сборка не найдена") from None
+        try:
+            await self.service._done(job_id, build, str(derive_key))
+        except NotFound:
+            raise NotFound("производное состояние сборки не найдено") from None
+        live, _token = await self.service._read_head(job_id)
+        if live is None:
+            raise NotFound("книга не загружена")
+        pinned = Head(
+            build_key=build,
+            state_seq=int(state_seq),
+            derive_key=str(derive_key),
+            versions=dict(live.versions or {}),
+            mdl_version=live.mdl_version,
+            fence=live.fence,
+        )
+        return Target(
+            head=pinned,
+            build=build,
+            manifest=manifest,
+            fresh=True,
+            derived=None,
+            analysis_semantic_model=analysis_semantic_model,
+        )
+
     async def _derived_at(self, job_id: str, build: str, state_seq: int) -> str | None:
         async for item in self.store.list(f"books/{job_id}/{build}/derived/"):
             if not item.key.endswith("/_done.json"):
@@ -733,6 +775,10 @@ class Analyses:
             body,
             actor=actor,
             queue=queue,
+            build_key=target.build,
+            state_seq=target.head.state_seq,
+            derive_key=target.derive_key,
+            analysis_semantic_model=target.analysis_semantic_model,
         )
 
     async def _ratios(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):

@@ -2342,17 +2342,24 @@ class FasService:
         *,
         actor: Actor,
         queue: str,
+        build_key: str,
+        state_seq: int,
+        derive_key: str | None,
+        analysis_semantic_model: str | None,
     ) -> Accepted:
         """Ставит полный анализ книги в очередь Taskiq и возвращает операцию.
 
         `job_id` — книга. `analysis_id` — заранее выданный идентификатор
         результата. `metrics` — список метрик для блока ratios. `body` —
-        тело запроса `type=full` после нормализации. `actor` — пользователь
-        и клиент. `queue` — имя очереди Taskiq (обычно `fas:interactive`).
-        Метод не считает отчёт сам: шаг `analysis.full` исполняет воркер и
-        обновляет метку живости `fas:op:{id}:hb`. Возвращает `Accepted`:
-        тело операции `analysis`. HTTP-слой отвечает 202. Если очередь не
-        настроена, метод поднимает `dependency_unavailable`.
+        тело запроса `type=full` после нормализации. `build_key`,
+        `state_seq`, `derive_key` и `analysis_semantic_model` — снимок
+        Target на момент постановки; воркер считает по нему, а не по
+        текущей голове. `actor` — пользователь и клиент. `queue` — имя
+        очереди Taskiq (обычно `fas:interactive`). Метод не считает отчёт
+        сам: шаг `analysis.full` исполняет воркер и обновляет метку
+        живости `fas:op:{id}:hb`. Возвращает `Accepted`: тело операции
+        `analysis`. HTTP-слой отвечает 202. Если очередь не настроена,
+        метод поднимает `dependency_unavailable`.
         """
 
         return await self._submit(
@@ -2366,6 +2373,10 @@ class FasService:
                     "analysis_id": analysis_id,
                     "metrics": list(metrics),
                     "body": body,
+                    "build_key": build_key,
+                    "state_seq": int(state_seq),
+                    "derive_key": derive_key,
+                    "analysis_semantic_model": analysis_semantic_model,
                 },
                 "job_id": job_id,
                 "analysis_id": analysis_id,
@@ -2380,15 +2391,25 @@ class FasService:
         metrics: list,
         body: dict,
         *,
+        build_key: str,
+        state_seq: int,
+        derive_key: str | None,
+        analysis_semantic_model: str | None = None,
         op_id: str | None = None,
     ) -> dict:
         """Считает полный отчёт. Этот метод вызывает воркер, не HTTP-запрос.
 
-        `job_id`, `analysis_id`, `metrics` и `body` — те же значения, что
-        принял `begin_analysis_full`. `op_id` — операция `analysis`. Если
-        операция уже закрыта или стоит флаг отмены, метод не пишет результат
-        и возвращает `{"skipped": True}`. Иначе заново закрепляет сборку и
-        считает отчёт. Успех операции записывает воркер.
+        `job_id`, `analysis_id`, `metrics`, `body` и снимок
+        (`build_key` / `state_seq` / `derive_key` /
+        `analysis_semantic_model`) — те же значения, что принял
+        `begin_analysis_full`. Воркер собирает Target из этого снимка и
+        не перепривязывает анализ к живой голове книги. Если снимок
+        нечитаем, метод поднимает `not_found` / dependency ошибку.
+        `op_id` — операция `analysis`. Если операция уже закрыта или
+        стоит флаг отмены, метод не пишет результат и возвращает
+        `{"skipped": True}`. Успех операции записывает воркер. При
+        краше worker mid-flight операция завершается failed/cancelled;
+        клиент ставит новый `type=full` (analysis не в `_IDEMPOTENT`).
         """
 
         if op_id and not await self._glossary_writable(op_id):
@@ -2401,9 +2422,13 @@ class FasService:
                 user_id=str(info.get("user_id") or "system"),
                 client_id=str(info.get("client_id") or "worker"),
             )
-        target = await self.analyses._target(job_id, actor, body.get("build_key"), wait_sec=0)
-        if isinstance(target, Accepted):
-            raise DependencyUnavailable("книга ещё загружается")
+        target = await self.analyses._target_pinned(
+            job_id,
+            build_key=build_key,
+            state_seq=int(state_seq),
+            derive_key=derive_key,
+            analysis_semantic_model=analysis_semantic_model,
+        )
         from finance_analysis.application.analyses import _impact_target
 
         spec = _impact_target(body.get("target")) if body.get("target") else None
