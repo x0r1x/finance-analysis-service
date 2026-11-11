@@ -528,6 +528,48 @@ class Analyses:
             analysis_semantic_model=live_smv,
         )
 
+    async def _target_pinned(
+        self,
+        job_id: str,
+        *,
+        build_key: str,
+        state_seq: int,
+        derive_key: str | None,
+        analysis_semantic_model: str | None,
+    ) -> Target:
+        """Собирает Target по снимку enqueue, не по текущей голове книги."""
+
+        build = check_build(str(build_key))
+        if not derive_key:
+            raise NotFound("производное состояние сборки не найдено")
+        try:
+            manifest = await self.service._manifest(job_id, build)
+        except NotFound:
+            raise NotFound("сборка не найдена") from None
+        try:
+            await self.service._done(job_id, build, str(derive_key))
+        except NotFound:
+            raise NotFound("производное состояние сборки не найдено") from None
+        live, _token = await self.service._read_head(job_id)
+        if live is None:
+            raise NotFound("книга не загружена")
+        pinned = Head(
+            build_key=build,
+            state_seq=int(state_seq),
+            derive_key=str(derive_key),
+            versions=dict(live.versions or {}),
+            mdl_version=live.mdl_version,
+            fence=live.fence,
+        )
+        return Target(
+            head=pinned,
+            build=build,
+            manifest=manifest,
+            fresh=True,
+            derived=None,
+            analysis_semantic_model=analysis_semantic_model,
+        )
+
     async def _derived_at(self, job_id: str, build: str, state_seq: int) -> str | None:
         async for item in self.store.list(f"books/{job_id}/{build}/derived/"):
             if not item.key.endswith("/_done.json"):
@@ -653,7 +695,7 @@ class Analyses:
             return render_json(result), "application/json"
         raise NotAcceptable("формат json или md", extra={"formats": ["json", "md"]})
 
-    async def run(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
+    async def run(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float, queue: str | None = None):
         from finance_analysis.application.service import Accepted
 
         if "include" in body and body["include"] is not None:
@@ -670,7 +712,7 @@ class Analyses:
         if kind == "impact":
             return await self._impact(job_id, body, actor, wait_sec=wait_sec)
         if kind == "full":
-            return await self._full(job_id, body, actor, wait_sec=wait_sec)
+            return await self._full(job_id, body, actor, wait_sec=wait_sec, queue=queue)
         if kind != "audit":
             raise InvalidArgument("type должен быть audit", extra={"supported": list(ANALYSIS_TYPES)})
         rules = select_rules(self.rules, body.get("rules"))
@@ -712,20 +754,32 @@ class Analyses:
         except TimeoutError:
             return await self._defer(job_id, actor, analysis_id, work, kind="impact")
 
-    async def _full(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
-        """Всегда 202. shortcut: тот же in-process spawn, что у audit, не отдельная задача Taskiq."""
+    async def _full(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float, queue: str | None = None):
+        """Всегда 202. Ставит полный отчёт в очередь Taskiq (`fas:interactive`)."""
 
         from finance_analysis.application.service import Accepted
 
-        spec = _impact_target(body.get("target")) if body.get("target") else None
+        if body.get("target"):
+            _impact_target(body.get("target"))
         metrics = _full_metrics(body)
         target = await self._target(job_id, actor, body.get("build_key"), wait_sec=wait_sec)
         if isinstance(target, Accepted):
             return target
+        if not queue:
+            raise InvalidArgument("очередь для type=full не задана")
         analysis_id = str(ULID())
-        op = await self.service.create_op("analysis", job_id, actor, {"analysis_id": analysis_id, "type": "full"})
-        self.service.spawn(self._execute_full(job_id, target, analysis_id, list(metrics), spec, body, actor, op["id"]))
-        return Accepted(op)
+        return await self.service.begin_analysis_full(
+            job_id,
+            analysis_id,
+            list(metrics),
+            body,
+            actor=actor,
+            queue=queue,
+            build_key=target.build,
+            state_seq=target.head.state_seq,
+            derive_key=target.derive_key,
+            analysis_semantic_model=target.analysis_semantic_model,
+        )
 
     async def _ratios(self, job_id: str, body: dict, actor: Actor, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
@@ -977,85 +1031,81 @@ class Analyses:
         body: dict,
         actor: Actor,
         op_id: str,
-    ) -> None:
-        try:
-            if await self._cancelled(op_id):
-                return
-            started = _now()
-            rules = select_rules(self.rules, body.get("rules"))
-            scope = _scope(body)
+    ) -> dict:
+        """Считает полный отчёт. Успех и провал операции закрывает воркер Taskiq."""
+
+        if op_id and await self._cancelled(op_id):
+            return {"skipped": True}
+        started = _now()
+        rules = select_rules(self.rules, body.get("rules"))
+        scope = _scope(body)
+        if op_id:
             await self.service.progress_op(op_id, "loading")
-            data = await self._input(job_id, target, requirements(rules) | {"links"})
-            if await self._cancelled(op_id):
-                return
+        data = await self._input(job_id, target, requirements(rules) | {"links"})
+        if op_id and await self._cancelled(op_id):
+            return {"skipped": True}
+        if op_id:
             await self.service.progress_op(op_id, "semantics")
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
-            got = await self.compute_metrics(job_id, target, metrics)
-            found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
-            bound: set[str] = set()
-            if "concepts" in scope:
-                bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
-            candidates = list(found) + promote_needs_findings(got["needs_input"])
-            findings = [item for item in candidates if _in_scope(item, scope, data, bound)]
-            warnings = list(got["warnings"])
-            impact = None
-            if spec:
-                impact, extra = await self._impact_of(job_id, target, spec, body)
-                warnings.extend(extra)
+        got = await self.compute_metrics(job_id, target, metrics)
+        found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
+        bound: set[str] = set()
+        if "concepts" in scope:
+            bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
+        candidates = list(found) + promote_needs_findings(got["needs_input"])
+        findings = [item for item in candidates if _in_scope(item, scope, data, bound)]
+        warnings = list(got["warnings"])
+        impact = None
+        if spec:
+            impact, extra = await self._impact_of(job_id, target, spec, body)
+            warnings.extend(extra)
+        if op_id:
             await self.service.progress_op(op_id, "rendering")
-            text_rows, citations = _ratio_rows(got)
-            head = target.head
-            envelope = {
-                "analysis_id": analysis_id,
-                "status": "succeeded",
-                "builder_ref": target.manifest.get("builder_ref"),
-                "versions": target.versions_with_smv(
-                    rules={rule.code: rule.version for rule in rules},
-                    fas=FAS_VERSION,
-                    state_seq=head.state_seq,
-                    derive_key=target.derive_key,
-                ),
-                "build_key": target.build,
-                "is_latest": target.is_latest,
-                "summary": {"code": "full_completed", "params": {"metrics": metrics, "findings": len(findings)}, "text": None},
-                "result_data": {
-                    "findings": [item.as_dict(target.manifest.get("builder_ref")) for item in findings],
-                    "ratios": text_rows,
-                    "series": [],
-                    "expression": None,
-                    "impact": impact,
-                },
-                "tables": [],
-                "charts": [],
-                "citations": citations,
-                "needs_input": got["needs_input"],
-                "warnings": warnings,
-                "model_type": got["model_type"],
-            }
-            envelope["versions"]["model_types"] = self.service.model_types.version
-            envelope["result_data"]["metrics"] = got["applicability"]
-            _attach_book_rows(envelope, got)
-            await self._annotate(envelope)
-            if await self._cancelled(op_id):
-                return
-            stored = [_finding_row(job_id, target.build, head.state_seq, analysis_id, item) for item in findings]
-            ratio_stored = _ratio_stored(job_id, target, analysis_id, head, got["rows"])
-            tables = {}
-            if stored:
-                tables["findings"] = stored
-            if ratio_stored:
-                tables["ratios"] = ratio_stored
-            await self._save_tables(job_id, target, analysis_id, "full", tables, envelope, actor, started)
-            await self.service.finish_op(
-                op_id,
-                "succeeded",
-                result={"analysis_id": analysis_id, "resource": f"/v1/books/{job_id}/analyses/{analysis_id}"},
-            )
-        except Exception as exc:  # noqa: BLE001 — ошибка полного отчёта закрывает операцию
-            if await self._cancelled(op_id):
-                return
-            await self.service.finish_op(op_id, "failed", error={"code": getattr(exc, "code", "failed"), "detail": str(exc)})
+        text_rows, citations = _ratio_rows(got)
+        head = target.head
+        envelope = {
+            "analysis_id": analysis_id,
+            "status": "succeeded",
+            "builder_ref": target.manifest.get("builder_ref"),
+            "versions": target.versions_with_smv(
+                rules={rule.code: rule.version for rule in rules},
+                fas=FAS_VERSION,
+                state_seq=head.state_seq,
+                derive_key=target.derive_key,
+            ),
+            "build_key": target.build,
+            "is_latest": target.is_latest,
+            "summary": {"code": "full_completed", "params": {"metrics": metrics, "findings": len(findings)}, "text": None},
+            "result_data": {
+                "findings": [item.as_dict(target.manifest.get("builder_ref")) for item in findings],
+                "ratios": text_rows,
+                "series": [],
+                "expression": None,
+                "impact": impact,
+            },
+            "tables": [],
+            "charts": [],
+            "citations": citations,
+            "needs_input": got["needs_input"],
+            "warnings": warnings,
+            "model_type": got["model_type"],
+        }
+        envelope["versions"]["model_types"] = self.service.model_types.version
+        envelope["result_data"]["metrics"] = got["applicability"]
+        _attach_book_rows(envelope, got)
+        await self._annotate(envelope)
+        if op_id and await self._cancelled(op_id):
+            return {"skipped": True}
+        stored = [_finding_row(job_id, target.build, head.state_seq, analysis_id, item) for item in findings]
+        ratio_stored = _ratio_stored(job_id, target, analysis_id, head, got["rows"])
+        tables = {}
+        if stored:
+            tables["findings"] = stored
+        if ratio_stored:
+            tables["ratios"] = ratio_stored
+        await self._save_tables(job_id, target, analysis_id, "full", tables, envelope, actor, started)
+        return {"analysis_id": analysis_id, "resource": f"/v1/books/{job_id}/analyses/{analysis_id}"}
 
     async def _cancelled(self, op_id: str) -> bool:
         current = await self.service.get_op(op_id)

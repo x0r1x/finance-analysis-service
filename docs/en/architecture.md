@@ -26,7 +26,7 @@ Those five processes are children of `fas-api` in the `finance-analysis` contain
 | maintenance | `fas-worker --queue fas:maintenance` |
 | scheduler | `fas-scheduler` |
 
-The code registers scheduled work on two of those queues. `fas:batch` runs unmapped clustering, glossary mine, and recalibration. `fas:maintenance` runs compaction, GC of incomplete builds, and operation reconcile. A `fas.run` payload names its queue or lands on `fas:interactive`. A glossary transition (`glossary.validate`) runs on the `fas:glossary` worker. Mapping inference (`mapping.infer`) runs on the `fas:interactive` worker. Analysis work that returns `202`, including `full`, stays in the API process. See [analyses](analyses.md).
+The code registers scheduled work on two of those queues. `fas:batch` runs unmapped clustering, glossary mine, and recalibration. `fas:maintenance` runs compaction, GC of incomplete builds, and operation reconcile. A `fas.run` payload names its queue or lands on `fas:interactive`. A glossary transition (`glossary.validate`) runs on the `fas:glossary` worker. Mapping inference (`mapping.infer`) and full analysis (`analysis.full`, `type: full`) run on the `fas:interactive` worker. Other analysis types that return `202` (audit, ratios, impact) still stay in the API process. Compose sets `FAS_EMBEDDED_WORKERS=true` so `fas-api` starts those workers; without it, start `fas-worker --queue fas:interactive` yourself. A mid-flight crash of `analysis.full` fails or cancels the operation; the client retries with a new `type: full` (`analysis` is not idempotent). See [analyses](analyses.md) and [settings](settings.md).
 
 ## Query engine
 

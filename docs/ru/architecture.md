@@ -26,7 +26,7 @@ Redis обязателен. В нём блокировки, журнал опе�
 | maintenance | `fas-worker --queue fas:maintenance` |
 | scheduler | `fas-scheduler` |
 
-Код регистрирует расписание на двух из этих очередей. `fas:batch` считает кластеры непривязанных строк, разбор глоссария и перекалибровку. `fas:maintenance` уплотняет примеры, убирает недописанные сборки и сверяет операции. Полезная нагрузка `fas.run` называет свою очередь или попадает в `fas:interactive`. Переход глоссария (`glossary.validate`) исполняет воркер `fas:glossary`. Подбор сопоставления `mapping.infer` исполняет воркер `fas:interactive`. Анализ, который отвечает `202`, включая `full`, остаётся в процессе API. См. [анализы](analyses.md).
+Код регистрирует расписание на двух из этих очередей. `fas:batch` считает кластеры непривязанных строк, разбор глоссария и перекалибровку. `fas:maintenance` уплотняет примеры, убирает недописанные сборки и сверяет операции. Полезная нагрузка `fas.run` называет свою очередь или попадает в `fas:interactive`. Переход глоссария (`glossary.validate`) исполняет воркер `fas:glossary`. Подбор сопоставления `mapping.infer` и полный анализ (`analysis.full`, `type: full`) исполняет воркер `fas:interactive`. Остальные анализы, которые отвечают `202` (audit, ratios, impact), по-прежнему остаются в процессе API. Compose ставит `FAS_EMBEDDED_WORKERS=true`, чтобы `fas-api` поднимал этих воркеров; без этого запускайте `fas-worker --queue fas:interactive` сами. Краш mid-flight у `analysis.full` завершает операцию failed/cancelled; клиент повторяет новым `type: full` (`analysis` не идемпотентен). См. [анализы](analyses.md) и [настройки](settings.md).
 
 ## Движок запросов
 
