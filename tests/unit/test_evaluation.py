@@ -2,7 +2,6 @@
 
 from finance_analysis.domain.evaluation import NIL, score_book, summarize
 
-
 FOCUS = frozenset({"cfads", "debt_service", "interest"})
 METRICS = frozenset({"cfads", "debt_service", "interest"})
 
