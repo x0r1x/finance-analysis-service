@@ -4,7 +4,7 @@
 
 `POST /v1/books/{job_id}/analyses` принимает `type` `audit`, `ratios`, `impact` или `full`. Другое значение — `400`. Непустой `include` — `400` (`поле include не принимается`). `include: null` игнорируется.
 
-`audit` и `ratios` ждут в пределах синхронного дедлайна (`SYNC_DEADLINE_MS` и `LOAD_SYNC_SEC` у HTTP-вызова). `ratios` и `impact` также возвращают `202`, если в книге периодов больше, чем `SYNC_MAX_PERIODS`, или если `async` равен true. `full` всегда возвращает `202`. Работа идёт в процессе API, тем же способом, что и аудит. Это не отдельная задача очереди. Если процесс убит, прогон умирает вместе с ним.
+`audit` и `ratios` ждут в пределах синхронного дедлайна (`SYNC_DEADLINE_MS` и `LOAD_SYNC_SEC` у HTTP-вызова). `ratios` и `impact` также возвращают `202`, если в книге периодов больше, чем `SYNC_MAX_PERIODS`, или если `async` равен true. `full` всегда возвращает `202` с `op_id`. Прогон — задача Taskiq в очереди `fas:interactive` (`stage: analysis.full`), поэтому нужен `fas-worker` для этой очереди: отдельный процесс или дети `fas-api` при `FAS_EMBEDDED_WORKERS=true` (Compose ставит `true`). `audit`, `ratios` и `impact`, которые отвечают `202`, по-прежнему выполняются в процессе API.
 
 `render` — `json` или `md`. Он выбирает формат отчёта, который сохраняется вместе с результатом. Метрики `full` по умолчанию, когда ключ `metrics` не передан, — только `dscr`.
 

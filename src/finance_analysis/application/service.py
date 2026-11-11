@@ -2333,6 +2333,91 @@ class FasService:
         if current["status"] == "running":
             await self.finish_op(op_id, "cancelled")
 
+    async def begin_analysis_full(
+        self,
+        job_id: str,
+        analysis_id: str,
+        metrics: list[str],
+        body: dict,
+        *,
+        actor: Actor,
+        queue: str,
+    ) -> Accepted:
+        """Ставит полный анализ книги в очередь Taskiq и возвращает операцию.
+
+        `job_id` — книга. `analysis_id` — заранее выданный идентификатор
+        результата. `metrics` — список метрик для блока ratios. `body` —
+        тело запроса `type=full` после нормализации. `actor` — пользователь
+        и клиент. `queue` — имя очереди Taskiq (обычно `fas:interactive`).
+        Метод не считает отчёт сам: шаг `analysis.full` исполняет воркер и
+        обновляет метку живости `fas:op:{id}:hb`. Возвращает `Accepted`:
+        тело операции `analysis`. HTTP-слой отвечает 202. Если очередь не
+        настроена, метод поднимает `dependency_unavailable`.
+        """
+
+        return await self._submit(
+            "analysis",
+            queue,
+            actor,
+            {
+                "stage": "analysis.full",
+                "stage_args": {
+                    "job_id": job_id,
+                    "analysis_id": analysis_id,
+                    "metrics": list(metrics),
+                    "body": body,
+                },
+                "job_id": job_id,
+                "analysis_id": analysis_id,
+                "type": "full",
+            },
+        )
+
+    async def perform_analysis_full(
+        self,
+        job_id: str,
+        analysis_id: str,
+        metrics: list,
+        body: dict,
+        *,
+        op_id: str | None = None,
+    ) -> dict:
+        """Считает полный отчёт. Этот метод вызывает воркер, не HTTP-запрос.
+
+        `job_id`, `analysis_id`, `metrics` и `body` — те же значения, что
+        принял `begin_analysis_full`. `op_id` — операция `analysis`. Если
+        операция уже закрыта или стоит флаг отмены, метод не пишет результат
+        и возвращает `{"skipped": True}`. Иначе заново закрепляет сборку и
+        считает отчёт. Успех операции записывает воркер.
+        """
+
+        if op_id and not await self._glossary_writable(op_id):
+            await self._close_cancelled_glossary(op_id)
+            return {"skipped": True}
+        actor = Actor()
+        if op_id:
+            info = (await self.get_op(op_id)).get("actor") or {}
+            actor = Actor(
+                user_id=str(info.get("user_id") or "system"),
+                client_id=str(info.get("client_id") or "worker"),
+            )
+        target = await self.analyses._target(job_id, actor, body.get("build_key"), wait_sec=0)
+        if isinstance(target, Accepted):
+            raise DependencyUnavailable("книга ещё загружается")
+        from finance_analysis.application.analyses import _impact_target
+
+        spec = _impact_target(body.get("target")) if body.get("target") else None
+        return await self.analyses._execute_full(
+            job_id,
+            target,
+            analysis_id,
+            list(metrics),
+            spec,
+            body,
+            actor,
+            op_id or "",
+        )
+
     async def infer_mapping(self, job_id: str, actor: Actor, *, queue: str) -> Accepted:
         """Ставит подбор сопоставления книги в очередь и возвращает операцию.
 

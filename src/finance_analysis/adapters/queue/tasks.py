@@ -34,6 +34,7 @@ _SERVICE_STAGES = {
     "glossary.decide": "perform_proposal_decision",
     "glossary.remap": "perform_glossary_remap",
     "mapping.infer": "perform_mapping_infer",
+    "analysis.full": "perform_analysis_full",
 }
 
 

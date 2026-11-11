@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import Request
 from fastapi.responses import Response
 
+from finance_analysis.adapters.queue.names import INTERACTIVE
 from finance_analysis.application.report import REPORT_FORMATS, choose_format
 from finance_analysis.domain.ids import job_id as check_job
 
@@ -12,7 +13,10 @@ from finance_analysis.domain.ids import job_id as check_job
 def register(app, settings, *, actor, limited, svc, support, calc, findings_read) -> None:
     @app.post("/v1/books/{job_id}/analyses")
     async def run_analysis(job_id: str, request: Request):
-        return await calc(job_id, request, svc().analyses.run, prefer_async=True)
+        async def run(checked, body, who, *, wait_sec):
+            return await svc().analyses.run(checked, body, who, wait_sec=wait_sec, queue=INTERACTIVE)
+
+        return await calc(job_id, request, run, prefer_async=True)
 
     @app.post("/v1/books/{job_id}:compare")
     async def compare(job_id: str, request: Request):

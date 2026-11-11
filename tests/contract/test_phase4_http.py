@@ -42,7 +42,7 @@ def _sse(body: str) -> list[tuple[str, str]]:
     return found
 
 
-async def test_report_impact_full_scenario_and_sse(app, local_service, settings):
+async def test_report_impact_full_scenario_and_sse(app, local_service, settings, task_workers):
     async with _client(app) as client:
         denied = await client.get("/v1/capabilities", headers={**HEADERS, "Accept": "text/event-stream"})
         assert denied.status_code == 406, denied.text
