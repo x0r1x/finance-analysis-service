@@ -38,9 +38,9 @@
 
 ---
 
-## Снимок матрицы применимости (фаза 0)
+## Снимок матрицы применимости (фаза 1, машинный снимок)
 
-Источник: `configs/model_types/*.yaml` на момент написания. Типов на диске **11** (+ `_common.yaml` с `compatible` и `default_use: not_applicable`). С фазы 1 у каждого id из `configs/metrics/` на каждом типе есть **явный** `use`; `default_use` и `"*"` у `other` — только запас на ещё не перечисленные метрики. Машинный снимок: `configs/model_types/matrix.json`.
+Источник: `configs/model_types/*.yaml` на момент написания. Типов на диске **11** (+ `_common.yaml` с `compatible` и `default_use: not_applicable`). С фазы 1 у каждого id из `configs/metrics/` на каждом типе есть **явный** `use`; `default_use` и `"*"` у `other` — только запас на ещё не перечисленные метрики. Машинный снимок фазы 1: `configs/model_types/matrix.json`.
 
 Обозначения: **R** = `required`, **O** = `optional`, **—** = `not_applicable`. После `/` — `variant`, если задан.
 
@@ -60,22 +60,11 @@
 
 **Типы без показателей покрытия из текущего каталога** (`lbo_ma`, `dcf_valuation`, `bank_leasing`): полноценные типы моделей (сигналы + `required_concepts`); относительно *текущего* каталога `configs/metrics/` все ячейки покрытия = `not_applicable`. Ценность сегодня — извлечение/цитирование понятий книги, не cover-ratios. Формулировка **не** запрещает будущие метрики для этих типов.
 
-**Как снять актуальную матрицу** (после правок YAML):
+**Как снять актуальную матрицу** (после правок YAML) — форма, которую ждёт `validate_applicability_matrix()`:
 
 ```bash
-PYTHONPATH=src python - <<'PY'
-from finance_analysis.application.model_types import load_model_types
-from finance_analysis.application.financial_catalog import load_financial_catalog
-
-catalog = load_model_types()
-fin = load_financial_catalog(model_types=catalog)
-for metric_id, ind in sorted(fin.indicators.items()):
-    cells = {
-        type_id: ({"use": use.use} | ({"variant": use.variant} if use.variant else {}))
-        for type_id, use in sorted(ind.model_types.items())
-    }
-    print(metric_id, cells)
-PY
+fas dump-applicability          # пишет configs/model_types/matrix.json
+fas dump-applicability --stdout # JSON в stdout
 ```
 
 `fas check-config` / `load_model_types` с фазы 1 дополнительно сверяют dump применимости с `configs/model_types/matrix.json`.
@@ -152,14 +141,14 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 
 `finding_kind`, `severity` (`info|low|medium|high|critical`) и Panko `error_class` (`mechanical|logic|omission|quantitative|qualitative`) — **независимые оси**. У одной Finding — один kind. `finding_kind=warning` ≠ severity с именем warning (в шкале severity warning нет). Три фазы правил аудита сохраняются.
 
-**Дефолтный маппинг** `error_class`+`severity` → kind (override на правило в registry допустим):
+**Дефолтный маппинг** `error_class`+`severity` → kind (override на правило в registry допустим и **авторитетен** — зафиксировать до финализации кода фазы 3):
 
 | kind | Ориентир |
 |---|---|
 | `error` | quantitative high/critical, mechanical/logic |
-| `warning` | прочие non-error / non-methodology (qualitative/info без смены методологии) |
-| `methodology` | practice / definition / covenant-definition notes (`dscr_default_definition`, …) |
-| `insufficient_data` | (a) явно промотированные `needs_input` / `missing_input`; (b) находки с `error_class=omission` |
+| `warning` | прочие non-error / non-methodology (qualitative/info без смены методологии); в т.ч. отсутствие **необязательного** входа / пропуск необязательной проверки |
+| `methodology` | practice / definition / covenant-definition notes (`dscr_default_definition`, …); опциональные methodology-пропуски тоже сюда, не в `insufficient_data` |
+| `insufficient_data` | (a) явно промотированные `needs_input` / `missing_input`; (b) `error_class=omission` **только** как пробел в данных: отсутствует **обязательный** вход / обязательная проверка для применимой метрики или правила. **Не каждый** omission → `insufficient_data` (дефолт может брать omission как кандидата; kind сужается по required vs optional) |
 | `ambiguity` | неоднозначность на Finding (иначе — статусы привязки / Questions без дубля) |
 
 **Состав:** additive nullable поле на `Finding` (+ Parquet/API, backward compatible); фильтры `GET …/findings`; registry default по `error_class`+`severity`, override на правило; плагины — постепенно.

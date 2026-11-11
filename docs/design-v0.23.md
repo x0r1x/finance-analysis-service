@@ -1172,23 +1172,13 @@ metrics:
 
 Типы: `simple`, `ratio`, `expression`, `rolling_ratio`, `reduce`, `npv_window`, `cumulative`.
 
-**Применимость по типу.** SSOT — `configs/model_types/*.yaml` (валидатор при старте и `fas check-config`). Формулы остаются в `configs/metrics`. У каждого id из `configs/metrics/` на каждом типе (кроме `_common.yaml`) должен быть **явный** `use`; тихий `default_use` / опора только на `"*"` для известных метрик запрещены. `default_use: not_applicable` (`_common.yaml`) и `"*": optional` у `other` — запас на метрики, ещё не перечисленные в YAML. Машинный снимок — `configs/model_types/matrix.json` (dump из YAML; `fas check-config` / `load_model_types` падают при расхождении). Типы на диске: `project_finance`, `corporate`, `development_escrow`, `ppp_concession`, `investment_project`, `renewables_dpm`, `real_estate_income`, `lbo_ma`, `dcf_valuation`, `bank_leasing`, `other` (плюс `_common.yaml`). **Типы без показателей покрытия из текущего каталога** (`lbo_ma`, `dcf_valuation`, `bank_leasing`) — полноценные типы (сигналы + `required_concepts`); все метрики *текущего* каталога `not_applicable`. Ценность сегодня — понятия/цитаты, не cover-ratios; будущие метрики для этих типов не запрещены (см. [analytical-core-roadmap.md](analytical-core-roadmap.md)).
+**Применимость по типу.** SSOT — `configs/model_types/*.yaml` (валидатор при старте и `fas check-config`). Формулы остаются в `configs/metrics`. У каждого id из `configs/metrics/` на каждом типе (кроме `_common.yaml`) должен быть **явный** `use`; тихий `default_use` / опора только на `"*"` для известных метрик запрещены. `default_use: not_applicable` (`_common.yaml`) и `"*": optional` у `other` — запас на метрики, ещё не перечисленные в YAML. Машинный снимок — `configs/model_types/matrix.json` (`fas dump-applicability` из YAML; `fas check-config` / `load_model_types` падают при расхождении). Типы на диске: `project_finance`, `corporate`, `development_escrow`, `ppp_concession`, `investment_project`, `renewables_dpm`, `real_estate_income`, `lbo_ma`, `dcf_valuation`, `bank_leasing`, `other` (плюс `_common.yaml`). **Типы без показателей покрытия из текущего каталога** (`lbo_ma`, `dcf_valuation`, `bank_leasing`) — полноценные типы (сигналы + `required_concepts`); все метрики *текущего* каталога `not_applicable`. Ценность сегодня — понятия/цитаты, не cover-ratios; будущие метрики для этих типов не запрещены (см. [analytical-core-roadmap.md](analytical-core-roadmap.md)).
 
-Ручная таблица в design **не** ведётся: она устаревала относительно YAML. Актуальная матрица тип×метрика — из YAML; снимок и дорожная карта — [analytical-core-roadmap.md](analytical-core-roadmap.md). Снять матрицу из загруженного каталога:
+Ручная таблица в design **не** ведётся: она устаревала относительно YAML. Актуальная матрица тип×метрика — из YAML; снимок и дорожная карта — [analytical-core-roadmap.md](analytical-core-roadmap.md). Снять / обновить машинный снимок `configs/model_types/matrix.json` (форма `validate_applicability_matrix`):
 
 ```bash
-PYTHONPATH=src python - <<'PY'
-from finance_analysis.application.model_types import load_model_types
-from finance_analysis.application.financial_catalog import load_financial_catalog
-
-catalog = load_model_types()
-fin = load_financial_catalog(model_types=catalog)
-for metric_id, ind in sorted(fin.indicators.items()):
-    print(metric_id, {
-        type_id: ({"use": use.use} | ({"variant": use.variant} if use.variant else {}))
-        for type_id, use in sorted(ind.model_types.items())
-    })
-PY
+fas dump-applicability          # пишет configs/model_types/matrix.json
+fas dump-applicability --stdout # JSON в stdout
 ```
 
 Каждый показатель Financial Model Catalog несёт то же поле `model_types` ([financial-model-catalog.md](financial-model-catalog.md)). Явные ячейки для всех известных метрик и машинный снимок — фаза 1 дорожной карты аналитического ядра.
@@ -1822,7 +1812,7 @@ class Operation(BaseModel):
 - `error` — жёсткая ошибка модели/расчёта (обычно quantitative high/critical, mechanical/logic);
 - `warning` — прочие non-error / non-methodology issues (не путать с severity);
 - `methodology` — заметки практики / определения / ковенанта (definition / covenant-definition / practice notes);
-- `insufficient_data` — (a) **явно промотированные** `needs_input` / `missing_input` на поверхность Finding **и** (b) находки фаз 1–3 с `error_class=omission`;
+- `insufficient_data` — (a) **явно промотированные** `needs_input` / `missing_input` на поверхность Finding **и** (b) находки фаз 1–3 с `error_class=omission` **только** когда это **пробел в данных**: отсутствует **обязательный** вход или обязательная проверка для применимой метрики / правила. **Не каждый** `error_class=omission` → `insufficient_data`. Дефолтный маппинг может брать omission как кандидата; kind = `insufficient_data` лишь при отсутствии required-входа / required-проверки. Отсутствие необязательного входа или пропуск необязательной проверки → `warning` или `methodology`, не `insufficient_data`. Override в registry / на правило остаётся авторитетным (фиксировать до финализации кода фазы 3);
 - `ambiguity` — неоднозначность, попавшая на Finding (иначе остаётся в статусах привязки / Questions).
 
 Три фазы правил аудита не схлопываются: kind режет их поперек. В текущем коде поля ещё нет: потребители по-прежнему читают `severity` + `error_class` и смежные каналы (questions, статусы метрик).

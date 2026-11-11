@@ -151,6 +151,27 @@ def _check_config() -> None:
     )
 
 
+def _dump_applicability(*, stdout: bool) -> None:
+    """Пишет matrix.json в форме validate_applicability_matrix (или печатает с --stdout)."""
+
+    from finance_analysis.application.model_types import (
+        dump_applicability_matrix,
+        write_applicability_matrix,
+    )
+    from finance_analysis.domain.validation.model_types import ModelTypeInvalid
+
+    try:
+        if stdout:
+            payload = dump_applicability_matrix()
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            return
+        path = write_applicability_matrix()
+    except ModelTypeInvalid as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(f"wrote {path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="fas")
     sub = parser.add_subparsers(dest="command")
@@ -176,6 +197,15 @@ def main(argv: list[str] | None = None) -> None:
     learn = sub.add_parser("learn")
     learn.add_argument("learn_command", choices=["cluster", "mine", "compact"])
     sub.add_parser("check-config")
+    dump_applicability = sub.add_parser(
+        "dump-applicability",
+        help="записать configs/model_types/matrix.json из YAML (или --stdout)",
+    )
+    dump_applicability.add_argument(
+        "--stdout",
+        action="store_true",
+        help="печатать JSON в stdout вместо записи matrix.json",
+    )
     ops = sub.add_parser("ops")
     ops_sub = ops.add_subparsers(dest="ops_command")
     requeue = ops_sub.add_parser("requeue")
@@ -201,6 +231,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "check-config":
         _check_config()
+        return
+    if args.command == "dump-applicability":
+        _dump_applicability(stdout=bool(args.stdout))
         return
     if args.command == "ops" and args.ops_command == "requeue":
         asyncio.run(_requeue(args.entry_id))

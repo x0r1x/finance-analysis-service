@@ -27,6 +27,7 @@ from finance_analysis.domain.validation.catalog_integrity import (
 )
 from finance_analysis.domain.validation.model_types import (
     ModelTypeInvalid,
+    build_applicability_matrix,
     validate_applicability_matrix,
 )
 
@@ -381,8 +382,9 @@ def load_matrix_snapshot(folder: Path | None = None) -> dict:
     return raw
 
 
-def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | None = None) -> ModelTypeCatalog:
-    folder = path or model_types_dir()
+def _load_model_type_documents(folder: Path) -> tuple[dict, dict[str, dict]]:
+    """Читает _common.yaml и документы типов без сверки matrix.json."""
+
     common_path = folder / "_common.yaml"
     if not common_path.is_file():
         raise ModelTypeInvalid("нет configs/model_types/_common.yaml")
@@ -397,6 +399,41 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
         if not isinstance(body, dict) or body.get("id") != file.stem:
             raise ModelTypeInvalid(f"{file.name}: id должен совпадать с именем файла")
         documents[file.stem] = body
+    return common, documents
+
+
+def dump_applicability_matrix(folder: Path | None = None) -> dict[str, dict[str, dict[str, str]]]:
+    """Снимок тип×метрика из YAML в форме validate_applicability_matrix (без сверки matrix.json)."""
+
+    root = folder or model_types_dir()
+    common, documents = _load_model_type_documents(root)
+    default = common.get("default_use")
+    if default not in {"required", "optional", "not_applicable"}:
+        raise ModelTypeInvalid("default_use: required, optional или not_applicable")
+    metric_inputs, *_rest = load_metric_catalog()
+    return build_applicability_matrix(documents, metric_inputs, default_use=str(default))
+
+
+def write_applicability_matrix(
+    folder: Path | None = None,
+    *,
+    path: Path | None = None,
+) -> Path:
+    """Пишет configs/model_types/matrix.json (или path) из dump_applicability_matrix."""
+
+    root = folder or model_types_dir()
+    target = path or matrix_file(root)
+    payload = dump_applicability_matrix(root)
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return target
+
+
+def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | None = None) -> ModelTypeCatalog:
+    folder = path or model_types_dir()
+    common, documents = _load_model_type_documents(folder)
     package = None
     if concepts is None:
         from finance_analysis.application.catalog import load_catalog
