@@ -12,7 +12,7 @@
 |---|---|---|
 | Packt | builder `resources/corpus/` (`packt-project-finance.xlsx`, fetch по `corpus.lock.json`) | golden dump: `tests/fixtures/builder/` + алиас `packt` в `tests/books.py` |
 | RVI | то же (`rvi-project-finance.xlsx`) | dump + алиас `rvi` |
-| Ашан | builder `resources/corpus/АШАН_модель*.xls(x)` (приватно; не в lock / не в git) | нет; labels при чувствительных путях — только локально |
+| Ашан | builder `resources/corpus/` private xls(x) (не в lock / не в git) | нет в git; local-only labels → `eval/local/` |
 
 Интеграционный путь FAS: `FAS_IT_CORPUS` или sibling `…/finance-context-builder/resources/corpus`, плюс `BUILDER_BASE_URL` и `POST /v1/books/{job_id}:load`. Для unit/contract без живого builder достаточно fixture dumps (`FixtureBuilder`).
 
@@ -22,6 +22,7 @@
 
 ```json
 {
+  "schema_version": "1",
   "job_id": "<sha256 содержимого книги>",
   "labels": {"<binding_key>": "cfads"},
   "by_path": {"Лист › Раздел › CFADS": "cfads", "Лист › Раздел › Agency fee": "NIL"},
@@ -32,6 +33,8 @@
 
 `NIL` — строка вне глоссария: её правильный исход `unknown` или `ambiguous`, а не соседнее понятие.
 `by_path` сверяется с `label_path_text` строки; `labels` по `binding_key` приоритетнее.
+
+**Контракт NIL-метрик** (`domain/evaluation.py`, `NIL_STATUSES`): recall и precision считают попаданием только статусы `unknown` и `ambiguous`. Статусы `not_applicable` и `ignored` **не** входят в NIL recall и **не** считаются предсказанием NIL для precision (даже если truth = `NIL`).
 
 ## Workflow разметки (локально)
 
@@ -50,7 +53,9 @@
    - точная командная строка `fas eval mapping` (включая `--prune`, если был);
    - version калибратора — если в отчёте есть ECE.
 
-В репозитории каталог `eval/labels/` пока пуст (только `.gitkeep`).
+В репозитории: `eval/labels/packt.json` и `eval/labels/rvi.json` (fixture `job_id` из `tests/books.py`). Ашан — только локально (`eval/local/`, см. `eval/local/README.md`), без клиентских имён/путей в git.
+
+Измеренный прогон на этом срезе: [eval/mapping/report.md](mapping/report.md). Это **не** полный корпус 20–30 книг; цели фазы 2b по-прежнему нельзя считать закрытыми.
 
 ## Команды
 
@@ -68,6 +73,4 @@
 
 Цели фазы 2b **[допущение]** до появления размеченного корпуса: top-1 ≥ 0.9 на cfads/debt_service/interest, ECE < 0.05, ложные привязки ≤ 2 %,
 NIL recall ≥ 0.9 на critical-строках. Проверить их можно только на 20–30 размеченных книгах
-(открытый вопрос 2, §14): в репозитории labels нет. После локальной разметки Packt/RVI/Ашан (+ рост корпуса)
-числа из `fas eval mapping` становятся evidence **только вместе с pin-набором** (см. workflow п. 7);
-до этого пороги в README/design не считать измеренными. Сравнение прогонов без совпадающих pins — не evidence.
+(открытый вопрос 2, §14): есть стартовые labels Packt/RVI; полный корпус 20–30 книг ещё не собран. Числа в `eval/mapping/report.md` — evidence на **размеченном срезе** **только вместе с pin-набором** (см. workflow п. 7), не закрытие целей фазы 2b. Сравнение прогонов без совпадающих pins — не evidence.
