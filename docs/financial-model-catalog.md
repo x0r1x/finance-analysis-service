@@ -84,7 +84,7 @@
 | `definition`, `status` | те же записи YAML (опциональные ключи; неверный тип → ошибка загрузки) |
 | размерности входов | таксономия `configs/concepts/` + `configs/dimensions.yaml` |
 | `unit` результата | вывод из формулы (частное → `ratio`; NPV-подобные → размерность числителя) |
-| `model_types` + `variant` | `configs/model_types/*.yaml` → `metrics` / `default_use` |
+| `model_types` + `variant` | `configs/model_types/*.yaml` → явные `metrics` (+ снимок `matrix.json`); `default_use` / `"*"` — только запас |
 | `row_fallbacks` | тот же YAML; **не** входы формул и **не** concept_id |
 
 Связи таксономии (`composed_of` и др.) **не** считают и **не** подставляют формулу показателя.

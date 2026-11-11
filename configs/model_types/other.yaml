@@ -5,4 +5,16 @@ title:
 signals: []
 required_concepts: []
 metrics:
+  # Явные ячейки по каталогу; "*" — запас только на метрики, ещё не перечисленные здесь.
   "*": {use: optional}
+  dscr: {use: optional}
+  dscr_min: {use: optional}
+  dscr_avg: {use: optional}
+  adscr: {use: optional}
+  llcr: {use: optional}
+  plcr: {use: optional}
+  icr: {use: optional}
+  net_debt_ebitda: {use: optional}
+  escrow_coverage: {use: optional}
+  npv: {use: optional}
+  irr: {use: optional}

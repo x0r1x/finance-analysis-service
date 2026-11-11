@@ -1172,7 +1172,7 @@ metrics:
 
 Типы: `simple`, `ratio`, `expression`, `rolling_ratio`, `reduce`, `npv_window`, `cumulative`.
 
-**Применимость по типу.** SSOT — `configs/model_types/*.yaml` (валидатор при старте и `fas check-config`). Формулы остаются в `configs/metrics`. `default_use: not_applicable` (`_common.yaml`). У `other` метрики `*: optional`, и только он освобождён от правила «сумма весов сигналов > 0». Типы на диске: `project_finance`, `corporate`, `development_escrow`, `ppp_concession`, `investment_project`, `renewables_dpm`, `real_estate_income`, `lbo_ma`, `dcf_valuation`, `bank_leasing`, `other` (плюс `_common.yaml`). **Типы без показателей покрытия из текущего каталога** (`lbo_ma`, `dcf_valuation`, `bank_leasing`) — полноценные типы (сигналы + `required_concepts`); все метрики *текущего* каталога `not_applicable`. Ценность сегодня — понятия/цитаты, не cover-ratios; будущие метрики для этих типов не запрещены (см. [analytical-core-roadmap.md](analytical-core-roadmap.md)).
+**Применимость по типу.** SSOT — `configs/model_types/*.yaml` (валидатор при старте и `fas check-config`). Формулы остаются в `configs/metrics`. У каждого id из `configs/metrics/` на каждом типе (кроме `_common.yaml`) должен быть **явный** `use`; тихий `default_use` / опора только на `"*"` для известных метрик запрещены. `default_use: not_applicable` (`_common.yaml`) и `"*": optional` у `other` — запас на метрики, ещё не перечисленные в YAML. Машинный снимок — `configs/model_types/matrix.json` (dump из YAML; `fas check-config` / `load_model_types` падают при расхождении). Типы на диске: `project_finance`, `corporate`, `development_escrow`, `ppp_concession`, `investment_project`, `renewables_dpm`, `real_estate_income`, `lbo_ma`, `dcf_valuation`, `bank_leasing`, `other` (плюс `_common.yaml`). **Типы без показателей покрытия из текущего каталога** (`lbo_ma`, `dcf_valuation`, `bank_leasing`) — полноценные типы (сигналы + `required_concepts`); все метрики *текущего* каталога `not_applicable`. Ценность сегодня — понятия/цитаты, не cover-ratios; будущие метрики для этих типов не запрещены (см. [analytical-core-roadmap.md](analytical-core-roadmap.md)).
 
 Ручная таблица в design **не** ведётся: она устаревала относительно YAML. Актуальная матрица тип×метрика — из YAML; снимок и дорожная карта — [analytical-core-roadmap.md](analytical-core-roadmap.md). Снять матрицу из загруженного каталога:
 
@@ -1813,7 +1813,7 @@ class Operation(BaseModel):
 
 **`finding_kind` (норматив; код — [analytical-core-roadmap.md](analytical-core-roadmap.md) фаза 3).** Планируемое **additive nullable** поле находки (Parquet/API) для обратной совместимости. Enum и смыслы — SSOT здесь; дефолтный маппинг `error_class`+`severity` → kind и registry override — фаза 3 дорожной карты.
 
-**Что есть Finding.** Находка — выход правил аудита фаз 1–3 **и** явно промотированные `needs_input` / `missing_input` → `insufficient_data`. **Вне Finding** (пока не промотированы): открытые статусы привязки, Questions, статус периода метрики.
+**Что есть Finding.** Находка — выход правил аудита фаз 1–3 **и** явно промотированные `needs_input` / `missing_input`. **Вне Finding** (пока не промотированы): открытые статусы привязки, Questions, статус периода метрики.
 
 **Оси независимы.** `finding_kind`, `severity` и `error_class` — три ортогональные оси. У одной Finding — ровно один `finding_kind` (override в registry правила, иначе default от `error_class`+`severity`). Значение `finding_kind=warning` **не** элемент шкалы `severity` (там по-прежнему только `info|low|medium|high|critical`; см. выше «В шкале Finding нет `warning`»).
 
@@ -1822,7 +1822,7 @@ class Operation(BaseModel):
 - `error` — жёсткая ошибка модели/расчёта (обычно quantitative high/critical, mechanical/logic);
 - `warning` — прочие non-error / non-methodology issues (не путать с severity);
 - `methodology` — заметки практики / определения / ковенанта (definition / covenant-definition / practice notes);
-- `insufficient_data` — только **явно промотированные** `needs_input` / `missing_input` на поверхность Finding;
+- `insufficient_data` — (a) **явно промотированные** `needs_input` / `missing_input` на поверхность Finding **и** (b) находки фаз 1–3 с `error_class=omission`;
 - `ambiguity` — неоднозначность, попавшая на Finding (иначе остаётся в статусах привязки / Questions).
 
 Три фазы правил аудита не схлопываются: kind режет их поперек. В текущем коде поля ещё нет: потребители по-прежнему читают `severity` + `error_class` и смежные каналы (questions, статусы метрик).

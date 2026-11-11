@@ -22,7 +22,7 @@
 
 ---
 
-## Фаза 0 — Документы (текущая)
+## Фаза 0 — Документы
 
 **Состав:** этот файл; §5.7 design указывает на YAML как SSOT и способ снять матрицу; нормативная заметка `finding_kind` в §6.1 (без кода); уточнение `eval/README.md` про источники корпуса и разметку.
 
@@ -40,7 +40,7 @@
 
 ## Снимок матрицы применимости (фаза 0)
 
-Источник: `configs/model_types/*.yaml` на момент написания. Типов на диске **11** (+ `_common.yaml` с `compatible` и `default_use: not_applicable`). Ячейка без явного `use` у типа (кроме `other` с `"*": optional`) = `default_use`.
+Источник: `configs/model_types/*.yaml` на момент написания. Типов на диске **11** (+ `_common.yaml` с `compatible` и `default_use: not_applicable`). С фазы 1 у каждого id из `configs/metrics/` на каждом типе есть **явный** `use`; `default_use` и `"*"` у `other` — только запас на ещё не перечисленные метрики. Машинный снимок: `configs/model_types/matrix.json`.
 
 Обозначения: **R** = `required`, **O** = `optional`, **—** = `not_applicable`. После `/` — `variant`, если задан.
 
@@ -78,7 +78,7 @@ for metric_id, ind in sorted(fin.indicators.items()):
 PY
 ```
 
-`fas check-config` загружает те же каталоги и падает на битом YAML; отдельного артефакта-снимка матрицы в фазе 0 ещё нет (фаза 1).
+`fas check-config` / `load_model_types` с фазы 1 дополнительно сверяют dump применимости с `configs/model_types/matrix.json`.
 
 ---
 
@@ -97,9 +97,9 @@ PY
 
 **Критерии приёмки:**
 
-- [ ] Каждая ячейка тип×метрика каталога явная в YAML или в утверждённом снимке.
-- [ ] `fas check-config` ломается на пропущенной ячейке / битом variant.
-- [ ] Снимок в docs (или генерация в CI) совпадает с YAML.
+- [x] Каждая ячейка тип×метрика каталога явная в YAML или в утверждённом снимке.
+- [x] `fas check-config` ломается на пропущенной ячейке / битом variant.
+- [x] Снимок `configs/model_types/matrix.json` совпадает с YAML (проверка в `load_model_types` / `fas check-config`).
 
 ---
 
@@ -144,7 +144,7 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 
 **Зачем:** потребители сейчас смешивают ошибки, practice notes, нехватку данных и неоднозначность через один поток `Finding` + `needs_input` + статусы привязки.
 
-**Граница Finding.** Finding = правила аудита фаз 1–3 + явно промотированные `needs_input` / `missing_input` → `insufficient_data`. Вне Finding (если не промотированы): открытые статусы привязки, Questions, статус периода метрики.
+**Граница Finding.** Finding = правила аудита фаз 1–3 + явно промотированные `needs_input` / `missing_input`. Вне Finding (если не промотированы): открытые статусы привязки, Questions, статус периода метрики.
 
 **Нормативный набор** (enum + смыслы — SSOT в design §6.1; код — в этой фазе):
 
@@ -159,7 +159,7 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 | `error` | quantitative high/critical, mechanical/logic |
 | `warning` | прочие non-error / non-methodology (qualitative/info без смены методологии) |
 | `methodology` | practice / definition / covenant-definition notes (`dscr_default_definition`, …) |
-| `insufficient_data` | только явно промотированные `needs_input` / `missing_input` |
+| `insufficient_data` | (a) явно промотированные `needs_input` / `missing_input`; (b) находки с `error_class=omission` |
 | `ambiguity` | неоднозначность на Finding (иначе — статусы привязки / Questions без дубля) |
 
 **Состав:** additive nullable поле на `Finding` (+ Parquet/API, backward compatible); фильтры `GET …/findings`; registry default по `error_class`+`severity`, override на правило; плагины — постепенно.
