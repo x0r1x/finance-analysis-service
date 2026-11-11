@@ -14,7 +14,7 @@ Enqueue pins `build_key`, `state_seq`, `derive_key`, and `analysis_semantic_mode
 
 `audit` runs the selected rules. Omit `rules` and every rule runs. An empty `rules` list runs none.
 
-`ratios` requires a non-empty `metrics` list. The allowed names are the `metrics` array in `GET /v1/capabilities`.
+`ratios` requires a non-empty `metrics` list. The allowed names are the `metrics` array in `GET /v1/capabilities`. On a confident primary model type, `result_data.book_rows` cites book cells for the type slice (`cited` / `absent` / `ambiguous` + `observations`). Contract: `adapters/storage/schemas/book_rows.json` (`book_rows@1.0`).
 
 `impact` traces one target. Pass `target` as a `cell_id`, a `row_key`, or a `concept`. `direction` is `precedents` or `dependents`. `depth` defaults when it is omitted.
 

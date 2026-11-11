@@ -347,7 +347,19 @@ def published_dataset_names() -> frozenset[str]:
 
 
 def schema_file_names() -> frozenset[str]:
-    return frozenset(path.stem for path in _SCHEMAS_DIR.glob("*.json"))
+    """Имена Parquet-схем колонок. JSON Schema API-контракты (с `$schema`) не входят."""
+
+    names: set[str] = set()
+    for path in _SCHEMAS_DIR.glob("*.json"):
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            raise PublishedParquetError(
+                f"схема {path.name}: корень должен быть объектом, получено {type(doc).__name__}"
+            )
+        if "$schema" in doc and "dataset" not in doc:
+            continue
+        names.add(path.stem)
+    return frozenset(names)
 
 
 def check_index_matches_schemas() -> list[str]:

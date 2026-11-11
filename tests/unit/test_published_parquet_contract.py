@@ -166,6 +166,36 @@ def test_index_matches_schemas_p5_and_append_only():
     assert_published_contract()
 
 
+def test_schema_file_names_fails_on_non_object_json(tmp_path, monkeypatch):
+    """Битый корень схемы (не object) — fail-closed, не silent skip."""
+
+    from finance_analysis.domain import published_parquet as mod
+
+    schemas = tmp_path / "schemas"
+    schemas.mkdir()
+    (schemas / "broken.json").write_text("[1, 2]", encoding="utf-8")
+    monkeypatch.setattr(mod, "_SCHEMAS_DIR", schemas)
+    with pytest.raises(PublishedParquetError, match="broken.json"):
+        mod.schema_file_names()
+
+
+def test_schema_file_names_skips_api_json_schema(tmp_path, monkeypatch):
+    from finance_analysis.domain import published_parquet as mod
+
+    schemas = tmp_path / "schemas"
+    schemas.mkdir()
+    (schemas / "book_rows.json").write_text(
+        '{"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "array"}',
+        encoding="utf-8",
+    )
+    (schemas / "dim_row.json").write_text(
+        '{"dataset": "dim_row", "version": "1.0", "columns": []}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_SCHEMAS_DIR", schemas)
+    assert mod.schema_file_names() == frozenset({"dim_row"})
+
+
 def test_bindings_index_requires_glossary_version():
     bindings = next(item for item in load_published_contract()["datasets"] if item["name"] == "bindings")
     assert "glossary_version" in bindings["required_keys"]

@@ -14,7 +14,7 @@
 
 `audit` гоняет выбранные правила. Нет ключа `rules` — гоняются все. Пустой список `rules` не гоняет ни одного.
 
-`ratios` требует непустой список `metrics`. Допустимые имена — массив `metrics` в `GET /v1/capabilities`.
+`ratios` требует непустой список `metrics`. Допустимые имена — массив `metrics` в `GET /v1/capabilities`. При уверенном основном типе в `result_data.book_rows` — цитаты строк среза типа (`cited` / `absent` / `ambiguous` + `observations`). Контракт: `adapters/storage/schemas/book_rows.json` (`book_rows@1.0`).
 
 `impact` строит трассу одной цели. `target` — это `cell_id`, `row_key` или `concept`. `direction` — `precedents` или `dependents`. Пропущенный `depth` берёт значение по умолчанию.
 

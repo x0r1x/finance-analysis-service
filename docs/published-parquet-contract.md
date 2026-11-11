@@ -1,6 +1,6 @@
 # Published Parquet contract (DataMesh)
 
-Фаза 5 дорожной карты метаслоя ([meta-layer-roadmap.md](meta-layer-roadmap.md)). Целевая модель — [meta-layer.md](meta-layer.md) (G5). Нормативные внутренние правила записи — [design-v0.23.md](design-v0.23.md) §4.11–4.12. Схемы колонок — `src/finance_analysis/adapters/storage/schemas/*.json`. Машинный индекс наборов — `src/finance_analysis/domain/contracts/published_parquet.json`.
+Фаза 5 дорожной карты метаслоя ([meta-layer-roadmap.md](meta-layer-roadmap.md)). Целевая модель — [meta-layer.md](meta-layer.md) (G5). Нормативные внутренние правила записи — [design-v0.23.md](design-v0.23.md) §4.11–4.12. Схемы колонок — `src/finance_analysis/adapters/storage/schemas/*.json` с полем `dataset` (Parquet). JSON Schema API-контракты в той же папке (например `book_rows.json` с `$schema`) **не** входят в индекс датасетов. Машинный индекс наборов — `src/finance_analysis/domain/contracts/published_parquet.json`.
 
 Код проверок: `finance_analysis.domain.published_parquet`.
 

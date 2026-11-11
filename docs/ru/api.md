@@ -6,6 +6,8 @@
 
 `X-User-Id` и `X-Client-Id` называют актора. FAS их не проверяет. `POST` несёт `Idempotency-Key`. Работа, которая не уложилась в синхронный дедлайн, возвращает `202` и операцию. Дальше `GET /v1/operations/{op_id}` или, при включённом `SSE_ENABLED`, `GET /v1/operations/{op_id}/events` (`text/event-stream`).
 
+Публичный контракт единиц/размерностей: [dimensions.md](../dimensions.md) (`configs/dimensions.yaml`; правила аудита `dimension_mismatch` / `pricing_basis_mismatch` уже действуют). Цитаты строк типа в `result_data.book_rows`: JSON Schema `src/finance_analysis/adapters/storage/schemas/book_rows.json` (`book_rows@1.0`).
+
 ## Процесс
 
 - `GET /health/live` — процесс жив.
