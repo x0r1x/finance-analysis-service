@@ -66,3 +66,35 @@ def test_promoted_needs_respect_concept_scope():
         "cfads",
         "debt_service",
     ]
+
+
+def test_unlocated_cycle_survives_concept_scope():
+    """unexpected_cycle без locations не режется concepts; promoted — режется."""
+
+    data = AuditInput(periods=PERIODS)
+    cycle_rule = select_rules(load_rules(), ["unexpected_cycle"])[0]
+    # Как у book-level цикла: subject только в fingerprint, locations пусты.
+    cycle = cycle_rule.finding(
+        data,
+        subject="cycle:c1",
+        params={"cycle_id": "c1", "members": ["A1", "B1"], "located": False},
+    )
+    assert cycle.locations == ()
+    assert cycle.binding_key is None
+    assert "subject" not in cycle.params
+
+    debt = promote_needs_findings(
+        [{"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}]
+    )[0]
+    cfads = promote_needs_findings(
+        [{"kind": "concept", "reason": "concept_unknown", "subject": "cfads"}]
+    )[0]
+
+    concepts = _scope({"scope": {"concepts": ["cfads"]}})
+    kept = [item for item in (cycle, debt, cfads) if _in_scope(item, concepts, data, set())]
+    assert [item.code for item in kept] == ["unexpected_cycle", "insufficient_input"]
+    assert kept[1].params["subject"] == "cfads"
+
+    debt_scope = _scope({"scope": {"concepts": ["debt_service"]}})
+    assert _in_scope(debt, debt_scope, data, set()) is True
+    assert _in_scope(cfads, debt_scope, data, set()) is False

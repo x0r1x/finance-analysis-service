@@ -268,28 +268,31 @@ class _Periods:
         return max(indexes) if upper else min(indexes)
 
 
+# Коды `promote_needs_findings`: только они режутся по scope.concepts без locations.
+_PROMOTED_NEED_CODES = frozenset({"insufficient_input", "binding_ambiguity"})
+
+
 def _in_scope(finding: Finding, scope: dict, data: AuditInput, bound: set[str]) -> bool:
     """Находка в срезе, если хоть одно её место проходит все условия `scope`.
 
-    Находка уровня книги (циклы без мест, счётчики R1, `no_master_check`)
-    от sheet/period/marker среза не зависит. Промотированные `needs_input`
-    без locations режутся по `scope.concepts` через `params.subject` /
-    `binding_key` (не по листам). Место без периода не проходит условия по периоду.
+    Находка уровня книги без locations (циклы, счётчики R1, `no_master_check`)
+    не зависит от sheet/period/marker и от `scope.concepts`. По concepts без
+    locations режутся **только** промотированные needs (`insufficient_input` /
+    `binding_ambiguity`) через `params.subject` / `binding_key` — не любой
+    пустой-location finding с binding_key. Место без периода не проходит
+    условия по периоду.
     """
 
     if not scope:
         return True
     located = [item for item in finding.locations if item.row_key or item.cell_id]
     if not located:
-        if "concepts" not in scope:
+        if "concepts" not in scope or finding.code not in _PROMOTED_NEED_CODES:
             return True
         subject = finding.params.get("subject")
         if isinstance(subject, str) and subject in scope["concepts"]:
             return True
-        if finding.binding_key and finding.binding_key in bound:
-            return True
-        # Без concept-identity — настоящая находка уровня книги; concepts её не режет.
-        return subject is None and finding.binding_key is None
+        return bool(finding.binding_key and finding.binding_key in bound)
     periods = _Periods(data.periods)
     return any(_location_in_scope(item, scope, data, periods, bound) for item in located)
 
