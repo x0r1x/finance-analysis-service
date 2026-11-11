@@ -226,6 +226,20 @@ async def test_get_does_not_bootstrap_and_bootstrap_publishes(app, local_service
         assert state.json()["active"] == boot.json()["active"]
 
 
+async def test_parallel_bootstrap_converges_under_redis_lock(local_service, redis_runtime):
+    import asyncio
+
+    from finance_analysis.application.glossary_store import GlossaryStore
+
+    assert await local_service.glossary.peek() is None
+    left = GlossaryStore(local_service.store, redis_runtime, lock_ttl_ms=local_service.settings.lock_ttl_ms)
+    right = GlossaryStore(local_service.store, redis_runtime, lock_ttl_ms=local_service.settings.lock_ttl_ms)
+    first, second = await asyncio.gather(left.bootstrap(), right.bootstrap())
+    assert first["active"] == second["active"]
+    assert first["seq"] == 1
+    assert (await local_service.glossary.peek())["active"] == first["active"]
+
+
 async def test_replace_upload_and_read_routes(app):
     async with _client(app) as client:
         body, etag = await _state(client)

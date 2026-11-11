@@ -12,7 +12,7 @@ Labeled books and the `fas eval mapping` command are described in [eval/README.m
 
 `GET /v1/glossary` returns the head and an `ETag` of `h-{seq}`. Without a published head it returns `404` and does not write.
 
-`POST /v1/glossary/bootstrap` publishes the git package as release 1 when no head exists. A repeat call returns the current head. When `FAS_ADMIN_TOKEN` is set, this route requires `X-Admin-Token`.
+`POST /v1/glossary/bootstrap` publishes the git package as release 1 when no head exists. A repeat call returns the current head. When `FAS_ADMIN_TOKEN` is set, this route requires `X-Admin-Token`. The CLI equivalent is `uv run fas glossary bootstrap`. Cron jobs (`glossary_mine`, `cluster_unmapped`) and `fas eval` / `fas learn` require a head already; they do not publish.
 
 These reads only read. Without a head they return `404` and never call `_publish_git`:
 

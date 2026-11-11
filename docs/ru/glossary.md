@@ -12,7 +12,7 @@
 
 `GET /v1/glossary` возвращает голову и `ETag` вида `h-{seq}`. Без опубликованной головы — `404`, запись не делается.
 
-`POST /v1/glossary/bootstrap` публикует git-пакет как релиз 1, если головы ещё нет. Повторный вызов возвращает текущую голову. Если задан `FAS_ADMIN_TOKEN`, нужен `X-Admin-Token`.
+`POST /v1/glossary/bootstrap` публикует git-пакет как релиз 1, если головы ещё нет. Повторный вызов возвращает текущую голову. Если задан `FAS_ADMIN_TOKEN`, нужен `X-Admin-Token`. В CLI то же делает `uv run fas glossary bootstrap`. Cron (`glossary_mine`, `cluster_unmapped`) и `fas eval` / `fas learn` требуют уже существующую голову и сами не публикуют.
 
 Эти чтения только читают. Без головы — `404`, `_publish_git` не вызывается:
 

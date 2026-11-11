@@ -98,7 +98,7 @@ async def _eval(prune: str | None) -> None:
     from finance_analysis.domain.glossary_release import package_of
 
     async def run(service):
-        state = await service.glossary.bootstrap()
+        state = await service.glossary.ensure()
         document = await service.glossary.document(state["active"])
         calibrator = await service.calibrators.active()
         report = await service.evaluator.run(package_of(document), calibrator=calibrator)
@@ -116,11 +116,15 @@ async def _shadow(version: str) -> None:
     _print(await _with_service(lambda service: service.evaluator.shadow(version)))
 
 
+async def _glossary_bootstrap() -> None:
+    _print(await _with_service(lambda service: service.glossary.bootstrap()))
+
+
 async def _learn(command: str) -> None:
     from finance_analysis.domain.glossary_release import package_of
 
     async def run(service):
-        state = await service.glossary.bootstrap()
+        state = await service.glossary.ensure()
         document = await service.glossary.document(state["active"])
         if command == "cluster":
             return await service.learning.cluster_unmapped(package_of(document))
@@ -184,6 +188,7 @@ def main(argv: list[str] | None = None) -> None:
     sync.add_argument("--verify", action="store_true")
     glossary = sub.add_parser("glossary")
     glossary_sub = glossary.add_subparsers(dest="glossary_command")
+    glossary_sub.add_parser("bootstrap", help="опубликовать git-пакет как первый релиз, если головы нет")
     export = glossary_sub.add_parser("export")
     export.add_argument("--since", action="store_true")
     shadow = glossary_sub.add_parser("shadow")
@@ -213,6 +218,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.command == "storage" and args.storage_command == "sync":
         asyncio.run(_sync(args.source, args.destination, dry_run=args.dry_run, verify=args.verify))
+        return
+    if args.command == "glossary" and args.glossary_command == "bootstrap":
+        asyncio.run(_glossary_bootstrap())
         return
     if args.command == "glossary" and args.glossary_command == "export":
         asyncio.run(_export())

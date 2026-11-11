@@ -538,3 +538,39 @@ def test_ensure_does_not_publish_bootstrap_and_impact_is_501(tmp_path):
         assert again["active"] == head["active"]
 
     asyncio.run(run())
+
+
+def test_bootstrap_recovers_orphan_release_and_converges(tmp_path):
+    from finance_analysis.adapters.queue.learning_tasks import _active
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.glossary_store import HEAD, GlossaryStore
+    from finance_analysis.domain.errors import NotFound
+
+    async def run():
+        store = LocalStore(tmp_path / "main")
+        gloss = GlossaryStore(store)
+        first = await gloss.bootstrap()
+        removed = await store.delete_prefix(HEAD)
+        assert removed >= 1
+        assert await gloss.peek() is None
+
+        recovered = await gloss.bootstrap()
+        assert recovered["active"] == first["active"]
+        assert recovered["seq"] == 1
+        assert (await gloss.peek())["active"] == first["active"]
+
+        left = GlossaryStore(store)
+        right = GlossaryStore(store)
+        concurrent = await asyncio.gather(left.bootstrap(), right.bootstrap())
+        assert {item["active"] for item in concurrent} == {first["active"]}
+
+        empty = GlossaryStore(LocalStore(tmp_path / "empty"))
+        with pytest.raises(NotFound):
+            await _active(empty)
+        assert await empty.peek() is None
+
+        package, document = await _active(gloss)
+        assert document
+        assert package is not None
+
+    asyncio.run(run())

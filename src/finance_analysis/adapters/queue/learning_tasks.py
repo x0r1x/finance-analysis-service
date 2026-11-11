@@ -52,7 +52,9 @@ def _learning() -> tuple[Learning, GlossaryStore, CalibratorStore]:
 
 
 async def _active(glossary: GlossaryStore):
-    state = await glossary.bootstrap()
+    """Активный пакет. Без головы — `NotFound`; git-базу не публикует."""
+
+    state = await glossary.ensure()
     document = await glossary.document(state["active"])
     return package_of(document), document
 
