@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     wren_engine_queue_max: int = Field(default=8, alias="WREN_ENGINE_QUEUE_MAX")
     wren_hot_queue: int = Field(default=3, alias="WREN_HOT_QUEUE")
     wren_engines_per_book: int = Field(default=2, alias="WREN_ENGINES_PER_BOOK")
-    wren_engine_idle_sec: int = Field(default=600, alias="WREN_ENGINE_IDLE_SEC")
     wren_threads: int = Field(default=8, alias="WREN_THREADS")
     cpu_threads: int = Field(default=8, alias="CPU_THREADS")
 
@@ -47,9 +46,7 @@ class Settings(BaseSettings):
     operation_wait_max_ms: int = Field(default=30_000, alias="OPERATION_WAIT_MAX_MS")
     sse_enabled: bool = Field(default=True, alias="SSE_ENABLED")
     sse_heartbeat_sec: int = Field(default=15, alias="SSE_HEARTBEAT_SEC")
-    async_slow_callback_ms: int = Field(default=100, alias="ASYNC_SLOW_CALLBACK_MS")
 
-    result_cache_ttl: int = Field(default=86_400, alias="RESULT_CACHE_TTL")
     idempotency_ttl: int = Field(default=86_400, alias="IDEMPOTENCY_TTL")
     rate_user_rps: float = Field(default=10, alias="RATE_USER_RPS")
     rate_user_burst: int = Field(default=20, alias="RATE_USER_BURST")
@@ -59,7 +56,6 @@ class Settings(BaseSettings):
     user_max_inflight: int = Field(default=8, alias="USER_MAX_INFLIGHT")
     redis_max_connections: int = Field(default=64, alias="REDIS_MAX_CONNECTIONS")
 
-    state_compact_every: int = Field(default=200, alias="STATE_COMPACT_EVERY")
     gc_incomplete_age: str = Field(default="1h", alias="GC_INCOMPLETE_AGE")
     gc_cron: str = Field(default="0 3 * * *", alias="GC_CRON")
     retry_max: int = Field(default=2, alias="RETRY_MAX")
@@ -77,7 +73,6 @@ class Settings(BaseSettings):
     heavy_stage_timeout_sec: float = Field(default=1800, alias="HEAVY_STAGE_TIMEOUT_SEC")
     heavy_stage_kill_grace_sec: float = Field(default=5, alias="HEAVY_STAGE_KILL_GRACE_SEC")
     heavy_stage_memory_mb: int = Field(default=4096, alias="HEAVY_STAGE_MEMORY_MB")
-    isolate_projection_min_rows: int = Field(default=200_000, alias="ISOLATE_PROJECTION_MIN_ROWS")
     cb_failures: int = Field(default=5, alias="CB_FAILURES")
     cb_open_sec: int = Field(default=30, alias="CB_OPEN_SEC")
     shutdown_grace_sec: int = Field(default=25, alias="SHUTDOWN_GRACE_SEC")
@@ -120,7 +115,6 @@ class Settings(BaseSettings):
     examples_refresh_sec: float = Field(default=60, alias="EXAMPLES_REFRESH_SEC")
 
     propose_min_books: int = Field(default=3, alias="PROPOSE_MIN_BOOKS")
-    unknown_material_share: float = Field(default=0.05, alias="UNKNOWN_MATERIAL_SHARE")
     unmapped_cluster_cron: str = Field(default="0 4 * * *", alias="UNMAPPED_CLUSTER_CRON")
     unmapped_min_cluster: int = Field(default=2, ge=2, alias="UNMAPPED_MIN_CLUSTER")
     glossary_mine_cron: str = Field(default="30 4 * * *", alias="GLOSSARY_MINE_CRON")
@@ -128,7 +122,6 @@ class Settings(BaseSettings):
     glossary_auto_promote: bool = Field(default=False, alias="GLOSSARY_AUTO_PROMOTE")
     glossary_auto_min_books: int = Field(default=3, alias="GLOSSARY_AUTO_MIN_BOOKS")
     glossary_auto_min_confirmations: int = Field(default=2, alias="GLOSSARY_AUTO_MIN_CONFIRMATIONS")
-    glossary_auto_precision_gate: float = Field(default=0.98, alias="GLOSSARY_AUTO_PRECISION_GATE")
     glossary_shadow_recent_books: int = Field(default=50, alias="GLOSSARY_SHADOW_RECENT_BOOKS")
     glossary_canary_share: int = Field(default=10, ge=0, le=100, alias="GLOSSARY_CANARY_SHARE")
     glossary_canary_hours: int = Field(default=48, alias="GLOSSARY_CANARY_HOURS")
