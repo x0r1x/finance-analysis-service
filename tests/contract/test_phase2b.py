@@ -203,6 +203,7 @@ async def test_shadow_gate_blocks_metric_concept_moving_to_another_row(local_ser
 
 
 async def test_blocked_proposal_stays_open(local_service):
+    await local_service.glossary.bootstrap()
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
     await local_service.settle()
     proposal = await local_service.glossary.add_proposal(

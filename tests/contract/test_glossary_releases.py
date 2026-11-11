@@ -53,6 +53,11 @@ async def _transition(client: AsyncClient, service, headers: dict, body: dict) -
 
 async def test_preconditions_dry_run_rollback_and_export(app, local_service, task_workers):
     async with _client(app) as client:
+        unbootstrapped = await client.post("/v1/glossary/releases", headers=HEADERS, json={"ops": []})
+        assert unbootstrapped.status_code == 404
+        assert unbootstrapped.json()["code"] == "not_found"
+
+        await _bootstrap(client)
         missing = await client.post("/v1/glossary/releases", headers=HEADERS, json={"ops": []})
         assert missing.status_code == 428
         assert missing.headers["cache-control"] == "no-store"
