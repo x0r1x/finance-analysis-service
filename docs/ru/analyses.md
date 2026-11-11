@@ -24,7 +24,7 @@
 
 `GET /v1/books/{job_id}/analyses/{analysis_id}/report?format=json|md` рисует сохранённый `result.json`. Повторное чтение того же результата побайтно совпадает. `GET` не пересчитывает и модель не вызывает.
 
-`GET /v1/books/{job_id}/findings` читает последний аудит сборки `build_key` или текущей головы, если `build_key` не передан. `rule` и `severity` задаются через запятую. `concept` оставляет находки строк, привязанных к этому понятию. `page_size` по умолчанию 50.
+`GET /v1/books/{job_id}/findings` читает последний аудит сборки `build_key` или текущей головы, если `build_key` не передан. `rule`, `severity` и `finding_kind` задаются через запятую (`finding_kind` ∈ `error|warning|methodology|insufficient_data|ambiguity`). `concept` оставляет находки строк, привязанных к этому понятию. `page_size` по умолчанию 50.
 
 `GET /v1/books/{job_id}/findings/{fingerprint}` поясняет одну находку и трассирует её граф формул. `direction` по умолчанию `precedents`. Отпечаток со старой сборки требует `build_key` этой сборки, иначе поиск идёт по текущей голове и возвращает `404`.
 

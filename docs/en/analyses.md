@@ -24,7 +24,7 @@
 
 `GET /v1/books/{job_id}/analyses/{analysis_id}/report?format=json|md` renders the stored `result.json`. The same result is byte-identical on a second read. `GET` does not recompute and does not call a model.
 
-`GET /v1/books/{job_id}/findings` reads the last audit on `build_key`, or on the current head when `build_key` is omitted. `rule` and `severity` are comma-separated. `concept` keeps findings whose row is bound to that concept. `page_size` defaults to 50.
+`GET /v1/books/{job_id}/findings` reads the last audit on `build_key`, or on the current head when `build_key` is omitted. `rule`, `severity`, and `finding_kind` are comma-separated (`finding_kind` ∈ `error|warning|methodology|insufficient_data|ambiguity`). `concept` keeps findings whose row is bound to that concept. `page_size` defaults to 50.
 
 `GET /v1/books/{job_id}/findings/{fingerprint}` explains one finding and traces its formula graph. `direction` defaults to `precedents`. A fingerprint from an older build needs that build's `build_key`, or the lookup uses the current head and returns `404`.
 

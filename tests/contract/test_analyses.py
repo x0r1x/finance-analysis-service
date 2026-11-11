@@ -60,7 +60,26 @@ async def test_audit_history_and_findings(app, local_service):
         assert result["summary"]["params"]["findings"] == len(findings)
         assert len({item["fingerprint"] for item in findings}) == len(findings)
         first = findings[0]
-        assert set(first) >= {"code", "version", "error_class", "severity", "params", "locations", "fingerprint", "truncated", "builder_ref", "basis"}
+        assert set(first) >= {
+            "code",
+            "version",
+            "error_class",
+            "severity",
+            "finding_kind",
+            "params",
+            "locations",
+            "fingerprint",
+            "truncated",
+            "builder_ref",
+            "basis",
+        }
+        assert {item["finding_kind"] for item in findings} <= {
+            "error",
+            "warning",
+            "methodology",
+            "insufficient_data",
+            "ambiguity",
+        }
         cited = {item["cell_id"] for item in result["citations"]}
         assert "PF Model!M537" in cited
         assert all(item["sheet"] == "PF Model" for item in result["citations"])
@@ -85,6 +104,13 @@ async def test_audit_history_and_findings(app, local_service):
         )
         assert {item["code"] for item in missing.json()["items"]} == {"missing_cached_value"}
         assert len(missing.json()["items"]) == 20
+        assert {item["finding_kind"] for item in missing.json()["items"]} == {"insufficient_data"}
+        by_kind = await client.get(
+            f"/v1/books/{RVI}/findings", headers=HEADERS, params={"finding_kind": "insufficient_data", "page_size": 1000}
+        )
+        assert by_kind.status_code == 200, by_kind.text
+        assert by_kind.json()["items"]
+        assert all(item["finding_kind"] == "insufficient_data" for item in by_kind.json()["items"])
         paged = await client.get(f"/v1/books/{RVI}/findings", headers=HEADERS, params={"page_size": 5})
         assert len(paged.json()["items"]) == 5
         assert paged.json()["next_page_token"] == paged.json()["items"][-1]["fingerprint"]
@@ -139,6 +165,7 @@ async def test_audit_history_and_findings(app, local_service):
     rows = pq.read_table(local_service.store.physical(f"books/{RVI}/{build}/results/{analysis_id}/findings.parquet")).to_pylist()
     assert {row["fingerprint"] for row in rows} == {item["fingerprint"] for item in findings}
     assert {row["analysis_id"] for row in rows} == {analysis_id}
+    assert {row["finding_kind"] for row in rows} == {item["finding_kind"] for item in findings}
 
     # Строка схемы в маркерах совпадает с fas.schema в footer файла.
     manifest = json.loads(await local_service.store.get(f"books/{RVI}/{build}/manifest.json"))

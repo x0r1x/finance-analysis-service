@@ -33,6 +33,7 @@ from finance_analysis.domain.audit import (
     Finding,
     Location,
     actuals_end_from_journal,
+    promote_needs_findings,
 )
 from finance_analysis.domain.book import (
     FAS_VERSION,
@@ -267,18 +268,31 @@ class _Periods:
         return max(indexes) if upper else min(indexes)
 
 
+# Коды `promote_needs_findings`: только они режутся по scope.concepts без locations.
+_PROMOTED_NEED_CODES = frozenset({"insufficient_input", "binding_ambiguity"})
+
+
 def _in_scope(finding: Finding, scope: dict, data: AuditInput, bound: set[str]) -> bool:
     """Находка в срезе, если хоть одно её место проходит все условия `scope`.
 
-    Находка уровня книги (циклы без мест, счётчики R1, `no_master_check`)
-    от среза не зависит. Место без периода не проходит условия по периоду.
+    Находка уровня книги без locations (циклы, счётчики R1, `no_master_check`)
+    не зависит от sheet/period/marker и от `scope.concepts`. По concepts без
+    locations режутся **только** промотированные needs (`insufficient_input` /
+    `binding_ambiguity`) через `params.subject` / `binding_key` — не любой
+    пустой-location finding с binding_key. Место без периода не проходит
+    условия по периоду.
     """
 
     if not scope:
         return True
     located = [item for item in finding.locations if item.row_key or item.cell_id]
     if not located:
-        return True
+        if "concepts" not in scope or finding.code not in _PROMOTED_NEED_CODES:
+            return True
+        subject = finding.params.get("subject")
+        if isinstance(subject, str) and subject in scope["concepts"]:
+            return True
+        return bool(finding.binding_key and finding.binding_key in bound)
     periods = _Periods(data.periods)
     return any(_location_in_scope(item, scope, data, periods, bound) for item in located)
 
@@ -434,6 +448,7 @@ def _finding_row(job_id: str, build: str, state_seq: int, analysis_id: str, find
         "basis_json": json.dumps(list(finding.basis), ensure_ascii=False),
         "locations_json": json.dumps([item.as_dict() for item in finding.locations], ensure_ascii=False),
         "truncated": finding.truncated,
+        "finding_kind": finding.finding_kind,
     }
 
 
@@ -720,7 +735,7 @@ class Analyses:
         if isinstance(target, Accepted):
             return target
         analysis_id = str(ULID())
-        work = self.service.spawn(self._execute_ratios(job_id, target, analysis_id, list(metrics), actor))
+        work = self.service.spawn(self._execute_ratios(job_id, target, analysis_id, list(metrics), body, actor))
         wide = False
         try:
             periods = await self.service._dataset_rows(job_id, target.head, "dim_period")
@@ -859,15 +874,24 @@ class Analyses:
             ),
         }
 
-    async def _execute_ratios(self, job_id: str, target: Target, analysis_id: str, metrics: list[str], actor: Actor) -> dict:
+    async def _execute_ratios(
+        self, job_id: str, target: Target, analysis_id: str, metrics: list[str], body: dict, actor: Actor
+    ) -> dict:
         started = _now()
         head = target.head
+        scope = _scope(body)
         got = await self.compute_metrics(job_id, target, metrics)
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
             job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
         )
+        candidates = list(attached) + promote_needs_findings(needs)
+        bound: set[str] = set()
+        if "concepts" in scope:
+            bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
+        data = AuditInput(periods=got["periods"], facts=got["facts"], bindings=got["bindings"])
+        attached = [item for item in candidates if _in_scope(item, scope, data, bound)]
         envelope = {
             "analysis_id": analysis_id,
             "status": "succeeded",
@@ -972,7 +996,8 @@ class Analyses:
             bound: set[str] = set()
             if "concepts" in scope:
                 bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
-            findings = [item for item in found if _in_scope(item, scope, data, bound)]
+            candidates = list(found) + promote_needs_findings(got["needs_input"])
+            findings = [item for item in candidates if _in_scope(item, scope, data, bound)]
             warnings = list(got["warnings"])
             impact = None
             if spec:
@@ -1393,10 +1418,13 @@ class Analyses:
         items = list(marker["result"]["result_data"]["findings"])
         rules = _codes(query.get("rule"))
         severities = _codes(query.get("severity"))
+        kinds = _codes(query.get("finding_kind") or query.get("kind"))
         if rules is not None:
             items = [item for item in items if item["code"] in rules]
         if severities is not None:
             items = [item for item in items if item["severity"] in severities]
+        if kinds is not None:
+            items = [item for item in items if item.get("finding_kind") in kinds]
         if query.get("concept"):
             bound = await self._bound_keys(job_id, target, marker.get("derive_key"), {str(query["concept"])})
             items = [item for item in items if item.get("binding_key") in bound]

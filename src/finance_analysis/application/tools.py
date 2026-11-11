@@ -175,6 +175,9 @@ def build_tools(*, decision_kinds: tuple[str, ...], measures: tuple[str, ...], d
         {
             "rule": _text_or_null("Коды правил через запятую."),
             "severity": _text_or_null("Уровни через запятую."),
+            "finding_kind": _text_or_null(
+                "Виды находок через запятую: error, warning, methodology, insufficient_data, ambiguity."
+            ),
             "concept": _text_or_null("Понятие."),
             "build_key": _text_or_null("Сборка."),
             "page_token": _text_or_null("Токен следующей страницы."),

@@ -6,7 +6,7 @@ import pytest
 
 from finance_analysis.application.analyses import _in_scope, _scope
 from finance_analysis.application.rule_engine import load_rules, select_rules
-from finance_analysis.domain.audit import AuditInput
+from finance_analysis.domain.audit import AuditInput, promote_needs_findings
 from finance_analysis.domain.errors import InvalidArgument
 from tests.unit.rule_inputs import PERIODS, fact, row
 
@@ -35,3 +35,66 @@ def test_scope_periods_and_markers():
     assert kept({"period_from": "1999"}) == [book]
     with pytest.raises(InvalidArgument):
         _scope({"scope": {"markers": "план"}})
+
+
+def test_promoted_needs_respect_concept_scope():
+    """Промотированные needs без locations режутся по concepts; book-level — нет."""
+
+    data = AuditInput(periods=PERIODS)
+    book = select_rules(load_rules(), ["no_master_check"])[0].finding(data)
+    promoted = promote_needs_findings(
+        [
+            {"kind": "concept", "reason": "concept_unknown", "subject": "cfads", "binding_key": "bk-cfads"},
+            {"kind": "concept", "reason": "ambiguous", "subject": "debt_service"},
+        ]
+    )
+    assert {item.params["subject"] for item in promoted} == {"cfads", "debt_service"}
+    assert promoted[0].binding_key == "bk-cfads"
+
+    concepts = _scope({"scope": {"concepts": ["cfads"]}})
+    bound = {"bk-cfads"}
+    kept = [item for item in [book, *promoted] if _in_scope(item, concepts, data, bound)]
+    assert [item.code for item in kept] == ["no_master_check", "insufficient_input"]
+    assert kept[1].params["subject"] == "cfads"
+
+    empty = _scope({"scope": {}})
+    assert len([item for item in promoted if _in_scope(item, empty, data, set())]) == 2
+
+    # Sheet-only scope: promoted без locations остаются book-level (не sheet-scoped).
+    sheets = _scope({"scope": {"sheets": ["Other"]}})
+    assert [item.params["subject"] for item in promoted if _in_scope(item, sheets, data, set())] == [
+        "cfads",
+        "debt_service",
+    ]
+
+
+def test_unlocated_cycle_survives_concept_scope():
+    """unexpected_cycle без locations не режется concepts; promoted — режется."""
+
+    data = AuditInput(periods=PERIODS)
+    cycle_rule = select_rules(load_rules(), ["unexpected_cycle"])[0]
+    # Как у book-level цикла: subject только в fingerprint, locations пусты.
+    cycle = cycle_rule.finding(
+        data,
+        subject="cycle:c1",
+        params={"cycle_id": "c1", "members": ["A1", "B1"], "located": False},
+    )
+    assert cycle.locations == ()
+    assert cycle.binding_key is None
+    assert "subject" not in cycle.params
+
+    debt = promote_needs_findings(
+        [{"kind": "concept", "reason": "concept_unknown", "subject": "debt_service"}]
+    )[0]
+    cfads = promote_needs_findings(
+        [{"kind": "concept", "reason": "concept_unknown", "subject": "cfads"}]
+    )[0]
+
+    concepts = _scope({"scope": {"concepts": ["cfads"]}})
+    kept = [item for item in (cycle, debt, cfads) if _in_scope(item, concepts, data, set())]
+    assert [item.code for item in kept] == ["unexpected_cycle", "insufficient_input"]
+    assert kept[1].params["subject"] == "cfads"
+
+    debt_scope = _scope({"scope": {"concepts": ["debt_service"]}})
+    assert _in_scope(debt, debt_scope, data, set()) is True
+    assert _in_scope(cfads, debt_scope, data, set()) is False

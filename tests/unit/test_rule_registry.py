@@ -9,6 +9,7 @@ from finance_analysis.application.rule_engine import (
     requirements,
     select_rules,
 )
+from finance_analysis.domain.audit import FINDING_KINDS, default_finding_kind
 from finance_analysis.domain.errors import InvalidArgument
 
 # Правила фазы 1 по таблице §6.1.
@@ -62,6 +63,30 @@ def test_registry_covers_phase1_table():
         assert rule.severity in {"info", "low", "medium", "high", "critical"}
         assert rule.error_class in {"mechanical", "logic", "omission", "quantitative", "qualitative"}
         assert rule.requires <= {"rows", "periods", "facts", "links", "counters", "semantics"}
+        kind = rule.resolved_kind()
+        assert kind in FINDING_KINDS
+        if rule.finding_kind is None:
+            assert kind == default_finding_kind(rule.error_class, rule.severity)
+        else:
+            assert kind == rule.finding_kind
+        described = rule.describe()
+        assert described["finding_kind"] == kind
+        assert described["severity"] == rule.severity
+        assert described["error_class"] == rule.error_class
+    # Явные override: methodology / (ambiguity задаётся на call-site).
+    assert registry["no_master_check"].resolved_kind() == "methodology"
+    assert registry["period_grain_mismatch"].resolved_kind() == "methodology"
+    assert registry["missing_total_row"].resolved_kind() == "insufficient_data"
+    assert registry["hardcoded_formula"].resolved_kind() == "error"
+    assert registry["literal_in_formula"].resolved_kind() == "warning"
+    # Omission invariant: default insufficient_data unless Rule.finding_kind override.
+    for rule in registry.values():
+        if rule.error_class != "omission":
+            continue
+        if rule.finding_kind is None:
+            assert rule.resolved_kind() == "insufficient_data", rule.code
+        else:
+            assert rule.finding_kind in FINDING_KINDS, rule.code
     with pytest.raises(InvalidArgument):
         select_rules(registry, ["no_such_rule"])
     assert "links" not in requirements(select_rules(registry, ["no_master_check"]))

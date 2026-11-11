@@ -57,5 +57,5 @@ CHECK_FAILURE = CheckFailure(
 )
 NO_MASTER_CHECK = NoMasterCheck(
     "no_master_check", "1", "qualitative", "info", ("ICAEW master check", "FAST 2.03-05"),
-    "В книге нет проверочных строк", ROWS,
+    "В книге нет проверочных строк", ROWS, finding_kind="methodology",
 )

@@ -17,6 +17,7 @@ from finance_analysis.domain.audit import (
     Finding,
     Location,
     Rule,
+    default_finding_kind,
     group_cells,
     grouped_finding,
 )
@@ -109,7 +110,9 @@ class LiteralInFormula(FormulaRule):
         findings = []
         for finding in super().check(data):
             if finding.params.get("varies"):
-                finding = Finding(**{**finding.__dict__, "severity": "medium"})
+                severity = "medium"
+                kind = self.finding_kind or default_finding_kind(finding.error_class, severity)
+                finding = Finding(**{**finding.__dict__, "severity": severity, "finding_kind": kind})
             findings.append(finding)
         return findings
 
@@ -239,14 +242,18 @@ MISSING_CACHED_VALUE = MissingCachedValue(
 )
 OFFSET_INDIRECT_USED = FunctionRule(
     "offset_indirect_used", "1", "qualitative", "low", ("FAST 4.01-03",),
-    "OFFSET или INDIRECT в формуле", ROWS_LINKS, names=frozenset({"OFFSET", "INDIRECT"}),
+    "OFFSET или INDIRECT в формуле", ROWS_LINKS, finding_kind="methodology",
+    names=frozenset({"OFFSET", "INDIRECT"}),
 )
 EXCEL_NPV_USED = FunctionRule(
     "excel_npv_used", "1", "logic", "medium", ("FAST 4.01-02", "Mazars XNPV"),
     "Функция NPV вместо XNPV", ROWS_LINKS, names=frozenset({"NPV"}),
 )
-NESTED_IF = NestedIf("nested_if", "1", "qualitative", "low", ("FAST 3.03-07",), "Вложенные IF", ROWS_LINKS)
+NESTED_IF = NestedIf(
+    "nested_if", "1", "qualitative", "low", ("FAST 3.03-07",), "Вложенные IF", ROWS_LINKS,
+    finding_kind="methodology",
+)
 LONG_FORMULA = LongFormula(
     "long_formula", "1", "qualitative", "info", ("FAST 3.03-01", "ICAEW minimise complexity"),
-    "Длинная формула", ROWS_LINKS,
+    "Длинная формула", ROWS_LINKS, finding_kind="methodology",
 )
