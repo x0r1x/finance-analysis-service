@@ -58,7 +58,7 @@
 | `npv` | — | — | — | O | R | — | — | — | — | — | O |
 | `irr` | — | — | — | O | R | — | — | — | — | — | O |
 
-Cite-only типы (`lbo_ma`, `dcf_valuation`, `bank_leasing`): все метрики каталога `not_applicable`; смысл типа — цитаты понятий книги, не cover-ratios.
+**Типы без показателей покрытия из текущего каталога** (`lbo_ma`, `dcf_valuation`, `bank_leasing`): полноценные типы моделей (сигналы + `required_concepts`); относительно *текущего* каталога `configs/metrics/` все ячейки покрытия = `not_applicable`. Ценность сегодня — извлечение/цитирование понятий книги, не cover-ratios. Формулировка **не** запрещает будущие метрики для этих типов.
 
 **Как снять актуальную матрицу** (после правок YAML):
 
@@ -91,7 +91,7 @@ PY
 1. Правило `fas check-config` / CI: у каждого id из `configs/metrics/` явный `use` на каждом типе (запрет тихого `default_use` для известных метрик; `default_use` — только запас на новые метрики до backfill, либо снятие после заполнения).
 2. Машинночитаемая матрица (снимок `configs/model_types/matrix.json` или assert dump == checked-in) по полному набору метрик.
 3. Сохранить проверки достижимости входов обязательных метрик из `required_concepts` / таксономии.
-4. Тесты cite-only типов: ячейки cover/NPV = `not_applicable`.
+4. Тесты типов без показателей покрытия из текущего каталога (`lbo_ma`, `dcf_valuation`, `bank_leasing`): ячейки cover/NPV = `not_applicable`.
 
 **Не-цели:** новые типы; новые формулы DSCR/ICR/…; смена порогов `FAS_MODEL_TYPE_*`.
 
@@ -124,7 +124,8 @@ PY
 3. Авторство `eval/labels/{name}.json`: critical CFADS / `debt_service` / `interest` (+ NIL); предпочтительно стабильный `by_path`.
 4. `fas eval mapping` (+ BLINKout `--prune` для ключевых понятий); коммит non-secret labels; Ашан — local-only при необходимости (как K3 / escrow: env + `.local.yaml`).
 5. Зафиксировать измеренные метрики в отчёте `eval/`; только после этого цели 2b — evidence, не assumptions.
-6. Stretch: рост к 20–30 книгам из уже имеющегося корпуса/фикстур.
+6. **Воспроизводимость отчёта (обязательные pins).** В каждом измеренном отчёте фиксировать: version схемы labels; SHA/version glossary (и taxonomy при отдельной версии); identity builder; FAS git SHA / mapping version; источник книги + `job_id`; точную командную строку `fas eval mapping` (+ `--prune` если был); version калибратора, если в отчёте есть ECE. **Дельты метрик без этого pin-набора недействительны** (несравнимы между прогонами).
+7. Stretch: рост к 20–30 книгам из уже имеющегося корпуса/фикстур.
 
 Cloud PR могут добавить helpers формата labels и CI skip без корпуса; **измерение и Ашан — локально**.
 
@@ -134,7 +135,8 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 
 - [ ] Labels для Packt и RVI в `eval/labels/` (или явный local-only путь с инструкцией).
 - [ ] Прогон `fas eval mapping` с записанными числами.
-- [ ] В README / отчёте цели 2b помечены как измеренные или всё ещё допущения.
+- [ ] Отчёт eval содержит полный pin-набор (labels schema / glossary·taxonomy / builder / FAS SHA·mapping / book+job_id / cmdline / calibrator-если-ECE).
+- [ ] В README / отчёте цели 2b помечены как измеренные или всё ещё допущения; дельты без pins не считаются evidence.
 
 ---
 
@@ -142,31 +144,33 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 
 **Зачем:** потребители сейчас смешивают ошибки, practice notes, нехватку данных и неоднозначность через один поток `Finding` + `needs_input` + статусы привязки.
 
-**Нормативный набор** (design §6.1; код — в этой фазе):
+**Граница Finding.** Finding = правила аудита фаз 1–3 + явно промотированные `needs_input` / `missing_input` → `insufficient_data`. Вне Finding (если не промотированы): открытые статусы привязки, Questions, статус периода метрики.
+
+**Нормативный набор** (enum + смыслы — SSOT в design §6.1; код — в этой фазе):
 
 `finding_kind ∈ {error, warning, methodology, insufficient_data, ambiguity}`
 
-Ортогонален `severity` (`info|low|medium|high|critical`) и Panko `error_class` (`mechanical|logic|omission|quantitative|qualitative`). Три фазы правил аудита сохраняются.
+`finding_kind`, `severity` (`info|low|medium|high|critical`) и Panko `error_class` (`mechanical|logic|omission|quantitative|qualitative`) — **независимые оси**. У одной Finding — один kind. `finding_kind=warning` ≠ severity с именем warning (в шкале severity warning нет). Три фазы правил аудита сохраняются.
 
-**Маппинг (норматив → код):**
+**Дефолтный маппинг** `error_class`+`severity` → kind (override на правило в registry допустим):
 
 | kind | Ориентир |
 |---|---|
 | `error` | quantitative high/critical, mechanical/logic |
-| `warning` | qualitative / low info без смены методологии |
-| `methodology` | заметки определения/ковенанта/практики (`dscr_default_definition`, practice notes) |
-| `insufficient_data` | выбранные пути `needs_input` / `missing_input` на поверхности аудита |
-| `ambiguity` | неоднозначность привязки/вопроса (или связь с существующим question без дубля) |
+| `warning` | прочие non-error / non-methodology (qualitative/info без смены методологии) |
+| `methodology` | practice / definition / covenant-definition notes (`dscr_default_definition`, …) |
+| `insufficient_data` | только явно промотированные `needs_input` / `missing_input` |
+| `ambiguity` | неоднозначность на Finding (иначе — статусы привязки / Questions без дубля) |
 
-**Состав:** поле на `Finding` (+ Parquet/API); фильтры `GET …/findings`; registry default по `error_class`+`severity`, override на правило; плагины — постепенно.
+**Состав:** additive nullable поле на `Finding` (+ Parquet/API, backward compatible); фильтры `GET …/findings`; registry default по `error_class`+`severity`, override на правило; плагины — постепенно.
 
-**Не-цели:** схлопывание трёх фаз аудита; смена open-world статусов привязки.
+**Не-цели:** схлопывание трёх фаз аудита; смена open-world статусов привязки; автопромоут всех `needs_input`/`missing_input` без явного списка.
 
 **Критерии приёмки:**
 
-- [ ] Поле в схеме Finding и API; фильтр по kind.
-- [ ] Документированный маппинг для правил трёх фаз (хотя бы default + явные override).
-- [ ] Тесты: kind не подменяет severity/error_class.
+- [ ] Nullable поле в схеме Finding и API; фильтр по kind.
+- [ ] Документированный маппинг для правил трёх фаз (default + явные override).
+- [ ] Тесты: kind не подменяет severity/error_class; `kind=warning` ≠ severity warning.
 
 ---
 
