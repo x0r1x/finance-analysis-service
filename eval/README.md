@@ -34,6 +34,8 @@
 `NIL` — строка вне глоссария: её правильный исход `unknown` или `ambiguous`, а не соседнее понятие.
 `by_path` сверяется с `label_path_text` строки; `labels` по `binding_key` приоритетнее.
 
+**Контракт NIL-метрик** (`domain/evaluation.py`, `NIL_STATUSES`): recall и precision считают попаданием только статусы `unknown` и `ambiguous`. Статусы `not_applicable` и `ignored` **не** входят в NIL recall и **не** считаются предсказанием NIL для precision (даже если truth = `NIL`).
+
 ## Workflow разметки (локально)
 
 1. Убедиться, что книга есть в корпусе builder или уже загружена по fixture `job_id` (Packt/RVI — `tests/books.py`).

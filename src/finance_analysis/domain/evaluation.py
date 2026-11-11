@@ -14,7 +14,9 @@ from finance_analysis.domain.calibration import brier, expected_calibration_erro
 
 NIL = "NIL"
 ACCEPTED = frozenset({"bound", "bound_with_warning"})
+# Общий abstain (не bind). Для NIL recall/precision — только unknown|ambiguous (см. eval/README).
 ABSTAIN = frozenset({"unknown", "ambiguous", "not_applicable", "ignored"})
+NIL_STATUSES = frozenset({"unknown", "ambiguous"})
 
 
 @dataclass
@@ -73,12 +75,12 @@ def score_book(
                 score.confidences.append((float(row["confidence"]), int(not wrong)))
         if truth == NIL:
             score.nil_total += 1
-            hit = status in ABSTAIN
+            hit = status in NIL_STATUSES
             score.nil_hit += int(hit)
             if is_critical:
                 score.nil_total_critical += 1
                 score.nil_hit_critical += int(hit)
-        if status == "unknown":
+        if status in NIL_STATUSES:
             score.nil_predicted += 1
             score.nil_predicted_true += int(truth == NIL)
     return score
