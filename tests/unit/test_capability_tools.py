@@ -71,7 +71,7 @@ async def test_resolve_ranks_against_the_active_release(tmp_path):
     assert await gloss.peek() is None
     await gloss.resolve({"label": "нет такой метки"}, rank=rank)
     assert seen == [version_for(1, load_git_document())]
-    head = await gloss.ensure()
+    head = await gloss.bootstrap()
     await gloss.resolve({"label": "другая метка"}, rank=rank)
     assert seen[-1] == head["active"]
     assert (await gloss.peek())["seq"] == head["seq"]

@@ -66,7 +66,7 @@ async def test_book_and_run_expose_smv_beside_derive_key(local_service):
     assert smv != derive
 
     # Глобальный _head — только после публикации активного глоссария (не от load книги).
-    gloss = await local_service.glossary.ensure()
+    gloss = await local_service.glossary.bootstrap()
     await local_service.publish_semantic_model(gloss["active"])
     pointer = json.loads(await local_service.store.get(HEAD_KEY))
     assert pointer["glossary"] == gloss["active"]

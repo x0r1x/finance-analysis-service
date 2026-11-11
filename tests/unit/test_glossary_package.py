@@ -164,7 +164,7 @@ def test_replace_upload_reads_and_profile_list(tmp_path):
 
     async def run():
         gloss = GlossaryStore(LocalStore(tmp_path))
-        head = await gloss.ensure()
+        head = await gloss.bootstrap()
         etag = f"h-{head['seq']}"
         document = await gloss.document(head["active"])
         document["glossaries"]["cfads"]["pref"]["en"] = "Replaced flow"
@@ -313,7 +313,7 @@ def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
         assert "capex" in absent
 
         gloss = GlossaryStore(store)
-        head = await gloss.ensure()
+        head = await gloss.bootstrap()
         proposal = await gloss.add_proposal({"concept": "missing", "kind": "alt", "lang": "en", "text": "nope"})
         try:
             await gloss.decide_proposals([{"id": proposal["id"], "decision": "accept"}])
@@ -498,5 +498,79 @@ def test_catch_glossary_remaps_a_newer_version_once():
         assert not await stub.catch_glossary("g-0001:aaa")
         assert await stub.catch_glossary("g-0002:ccc")
         assert stub.calls == 2
+
+    asyncio.run(run())
+
+
+def test_ensure_does_not_publish_bootstrap_and_impact_is_501(tmp_path):
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.glossary_store import GlossaryStore
+    from finance_analysis.domain.errors import NotFound, NotImplementedYet
+
+    async def run():
+        gloss = GlossaryStore(LocalStore(tmp_path))
+        assert await gloss.peek() is None
+        with pytest.raises(NotFound):
+            await gloss.ensure()
+        assert await gloss.peek() is None
+
+        for method in (
+            gloss.releases,
+            gloss.events,
+            gloss.concepts,
+            lambda: gloss.content(None, "json"),
+            lambda: gloss.diff(None, None),
+        ):
+            with pytest.raises(NotFound):
+                await method()
+            assert await gloss.peek() is None
+
+        with pytest.raises(NotImplementedYet) as impact:
+            await gloss.impact()
+        assert impact.value.status == 501
+        assert await gloss.peek() is None
+
+        head = await gloss.bootstrap()
+        assert head["seq"] == 1
+        assert (await gloss.ensure())["active"] == head["active"]
+        again = await gloss.bootstrap()
+        assert again["seq"] == 1
+        assert again["active"] == head["active"]
+
+    asyncio.run(run())
+
+
+def test_bootstrap_recovers_orphan_release_and_converges(tmp_path):
+    from finance_analysis.adapters.queue.learning_tasks import _active
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.glossary_store import HEAD, GlossaryStore
+    from finance_analysis.domain.errors import NotFound
+
+    async def run():
+        store = LocalStore(tmp_path / "main")
+        gloss = GlossaryStore(store)
+        first = await gloss.bootstrap()
+        removed = await store.delete_prefix(HEAD)
+        assert removed >= 1
+        assert await gloss.peek() is None
+
+        recovered = await gloss.bootstrap()
+        assert recovered["active"] == first["active"]
+        assert recovered["seq"] == 1
+        assert (await gloss.peek())["active"] == first["active"]
+
+        left = GlossaryStore(store)
+        right = GlossaryStore(store)
+        concurrent = await asyncio.gather(left.bootstrap(), right.bootstrap())
+        assert {item["active"] for item in concurrent} == {first["active"]}
+
+        empty = GlossaryStore(LocalStore(tmp_path / "empty"))
+        with pytest.raises(NotFound):
+            await _active(empty)
+        assert await empty.peek() is None
+
+        package, document = await _active(gloss)
+        assert document
+        assert package is not None
 
     asyncio.run(run())

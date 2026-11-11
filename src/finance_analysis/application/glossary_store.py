@@ -128,11 +128,47 @@ class GlossaryStore:
         return head
 
     async def ensure(self) -> dict:
+        """Читает голову. Без релиза — `NotFound`, git-базу не публикует."""
+
+        head, _etag = await self._read()
+        if head is None:
+            raise NotFound("глоссарий не инициализирован")
+        return head
+
+    async def bootstrap(self) -> dict:
+        """Публикует git-пакет как первый релиз, если головы ещё нет.
+
+        Повторный вызов возвращает текущую голову без записи. При наличии
+        Redis берёт `fas:lock:glossary`, чтобы параллельные API/worker не
+        оставили релиз без головы. Частичная публикация (релизы есть, головы
+        нет) дописывается при повторе.
+        """
+
         async with self._lock:
-            head, etag = await self._read()
+            return await self._bootstrap_locked()
+
+    async def _bootstrap_locked(self) -> dict:
+        head, etag = await self._read()
+        if head is not None:
+            return head
+        if self.support is not None:
+            async with self.support.lock("glossary", self.lock_ttl_ms):
+                head, etag = await self._read()
+                if head is not None:
+                    return head
+                return await self._publish_git_safe(etag)
+        return await self._publish_git_safe(etag)
+
+    async def _publish_git_safe(self, etag: str | None) -> dict:
+        """Пишет git-базу; при гонке за голову возвращает уже записанную."""
+
+        try:
+            return await self._publish_git(etag)
+        except (AlreadyExists, PreconditionFailed):
+            head, _token = await self._read()
             if head is not None:
                 return head
-            return await self._publish_git(etag)
+            raise
 
     async def recover_semantic_model(self) -> str | None:
         """Повторно публикует SMV для активного глоссария (идемпотентно)."""
@@ -182,15 +218,11 @@ class GlossaryStore:
         обрывался по дедлайну запроса. `if_match` — значение заголовка
         If-Match. Если заголовка нет, поднимается ошибка 428. Если метка не
         совпала с `h-{seq}`, поднимается ошибка 412. Голову метод не меняет.
-        Если головы ещё нет, метод один раз создаёт её под замком: это
-        короткая запись, не теневая проверка. В момент записи перехода метка
-        сверяется ещё раз уже под замком.
+        Если головы ещё нет — `NotFound` (нужен `POST /v1/glossary/bootstrap`).
+        В момент записи перехода метка сверяется ещё раз уже под замком.
         """
 
-        head, _etag = await self._read()
-        if head is None:
-            async with self._lock:
-                head, _etag = await self._ensure_locked()
+        head = await self.ensure()
         self._match(head, if_match)
 
     async def transition(
@@ -454,8 +486,14 @@ class GlossaryStore:
             return {}
 
     async def impact(self) -> dict:
-        # shortcut: книги не сканируются, влияние пустое до отдельного индекса читателей
-        return {"books": []}
+        """Устаревший stub. Контракт — `GET …/releases/{version}/impact` (ещё не реализован)."""
+
+        from finance_analysis.domain.errors import NotImplementedYet
+
+        raise NotImplementedYet(
+            "GET /v1/glossary/impact устарел и не реализован; "
+            "контракт — GET /v1/glossary/releases/{version}/impact"
+        )
 
     async def export_patch(self) -> str:
         git = load_git_document()
@@ -739,10 +777,11 @@ class GlossaryStore:
         return await self._document(head["active"])
 
     async def _ensure_locked(self) -> tuple[dict, str | None]:
+        """Читает голову под замком вызывающего. Без релиза — `NotFound`."""
+
         head, etag = await self._read()
         if head is None:
-            await self._publish_git(etag)
-            head, etag = await self._read()
+            raise NotFound("глоссарий не инициализирован")
         return head, etag
 
     async def _publish_git(self, etag: str | None) -> dict:
@@ -1009,8 +1048,21 @@ class GlossaryStore:
         return f"glossary/releases/{version}/release.json"
 
     async def _put_release(self, version: str, release: dict, document: dict) -> None:
-        await self.store.put_if_absent(f"glossary/releases/{version}/glossary.json", canonical_json(document).encode())
-        await self.store.put_if_absent(self._release_key(version), _dumps(release))
+        await self._put_absent_or_same(
+            f"glossary/releases/{version}/glossary.json",
+            canonical_json(document).encode(),
+        )
+        await self._put_absent_or_same(self._release_key(version), _dumps(release))
+
+    async def _put_absent_or_same(self, key: str, data: bytes) -> None:
+        """Пишет объект один раз; повтор с теми же байтами — успех, иначе конфликт."""
+
+        try:
+            await self.store.put_if_absent(key, data)
+        except AlreadyExists:
+            existing = await self.store.get(key)
+            if existing != data:
+                raise PreconditionFailed(f"конфликт объекта {key}") from None
 
     async def _event(self, seq: int, payload: dict) -> None:
         body = {"seq": seq, "at_utc": _now(), **payload}

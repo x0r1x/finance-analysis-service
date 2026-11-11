@@ -3121,6 +3121,7 @@ PROBLEM_CATALOG = [
     {"code": "not_found", "http": 404, "retryable": False},
     {"code": "no_audit", "http": 404, "retryable": False},
     {"code": "not_acceptable", "http": 406, "retryable": False},
+    {"code": "not_implemented", "http": 501, "retryable": False},
     {"code": "binding_conflict", "http": 409, "retryable": False},
     {"code": "request_in_progress", "http": 409, "retryable": True},
     {"code": "unsupported_builder_shape", "http": 409, "retryable": False},

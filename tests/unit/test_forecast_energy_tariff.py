@@ -194,7 +194,7 @@ async def test_glossary_resolve_lists_ambiguous_candidates_and_skips_the_model(t
     from finance_analysis.application.glossary_store import GlossaryStore
 
     gloss = GlossaryStore(LocalStore(tmp_path))
-    head = await gloss.ensure()
+    head = await gloss.bootstrap()
     document = deepcopy(load_git_document())
     phrase = "shared electricity price"
     for concept in ("energy_tariff", "forecast_energy_tariff"):

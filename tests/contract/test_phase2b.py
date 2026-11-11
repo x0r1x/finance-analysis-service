@@ -75,6 +75,7 @@ async def test_models_add_candidates_and_decisions_feed_learning(settings, redis
 
 
 async def test_shadow_gate_blocks_regression_over_http(settings, local_service, redis_runtime, task_workers):
+    await local_service.glossary.bootstrap()
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
     await local_service.settle()
     app = create_app(settings, service=local_service, support=redis_runtime)
@@ -132,7 +133,7 @@ async def test_eval_and_pruned_concept_on_golden_book(settings, local_service, t
         encoding="utf-8",
     )
     local_service.settings.fas_eval_dir = str(tmp_path / "eval")
-    state = await local_service.glossary.ensure()
+    state = await local_service.glossary.bootstrap()
     document = await local_service.glossary.document(state["active"])
     report = await local_service.evaluator.run(package_of(document))
     summary = report["summary"]
@@ -186,7 +187,7 @@ async def test_s5_slow_and_failing_model_servers_degrade(settings, redis_runtime
 async def test_shadow_gate_blocks_metric_concept_moving_to_another_row(local_service):
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
     await local_service.settle()
-    state = await local_service.glossary.ensure()
+    state = await local_service.glossary.bootstrap()
     released = await local_service.glossary.release(
         [
             {"op": "remove_label", "concept": "debt_service", "kind": "alt", "lang": "en", "text": "Total debt service"},
@@ -202,6 +203,7 @@ async def test_shadow_gate_blocks_metric_concept_moving_to_another_row(local_ser
 
 
 async def test_blocked_proposal_stays_open(local_service):
+    await local_service.glossary.bootstrap()
     await local_service.perform_load(RVI, actor=Actor(), fence=1)
     await local_service.settle()
     proposal = await local_service.glossary.add_proposal(

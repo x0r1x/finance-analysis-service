@@ -10,26 +10,37 @@ Labeled books and the `fas eval mapping` command are described in [eval/README.m
 
 ## Read and write
 
-`GET /v1/glossary` returns the head and an `ETag` of `h-{seq}`.
+`GET /v1/glossary` returns the head and an `ETag` of `h-{seq}`. Without a published head it returns `404` and does not write.
 
-Several reads call the same publish when no head exists yet: `GET /v1/glossary`, `GET /v1/glossary/releases`, `GET /v1/glossary/releases/{version}`, `GET /v1/glossary/content`, `GET /v1/glossary/concepts`, `GET /v1/glossary/diff`, and `GET /v1/glossary/events`. The first of them writes the git package as release 1.
+`POST /v1/glossary/bootstrap` publishes the git package as release 1 when no head exists. A repeat call returns the current head. When `FAS_ADMIN_TOKEN` is set, this route requires `X-Admin-Token`. The CLI equivalent is `uv run fas glossary bootstrap`. Cron jobs (`glossary_mine`, `cluster_unmapped`) and `fas eval` / `fas learn` require a head already; they do not publish.
 
-These do not publish:
+These reads only read. Without a head they return `404` and never call `_publish_git`:
+
+- `GET /v1/glossary`
+- `GET /v1/glossary/releases`
+- `GET /v1/glossary/releases/{version}`
+- `GET /v1/glossary/content`
+- `GET /v1/glossary/concepts`
+- `GET /v1/glossary/diff`
+- `GET /v1/glossary/events`
+
+These do not publish either:
 
 - `GET /v1/glossary/labels?q=`
-- `GET /v1/glossary/impact` — returns `{"books": []}` and does not scan books
+- `GET /v1/glossary/impact` — **deprecated**; always `501 not_implemented`. The design contract is `GET /v1/glossary/releases/{version}/impact` (not implemented yet). Do not treat `{"books": []}` as a real index.
 - `GET /v1/glossary/stats?from=&to=&profile_id=`
 - `GET /v1/glossary/proposals` and `GET /v1/glossary/proposals/{proposal_id}`
 - `POST /v1/glossary:resolve`
 
 Writes:
 
-- `POST /v1/glossary/releases` — create a release from `ops`, or replace the document when `mode` is `replace`.
+- `POST /v1/glossary/bootstrap` — first release from git (idempotent).
+- `POST /v1/glossary/releases` — create a release from `ops`, or replace the document when `mode` is `replace`. Requires a head (`404` until bootstrap).
 - `POST /v1/glossary/transitions` — move a release to another status. The request enqueues a `glossary.validate` operation on `fas:glossary`; the worker runs the shadow check and the write. A successful transition starts a book remap.
 - `POST /v1/glossary:rollback` — activate the previous release and start a remap.
 - `POST /v1/glossary/proposals` and `POST /v1/glossary/proposals:decide` — open a proposal, or accept and reject a batch.
 
-When `FAS_ADMIN_TOKEN` is set, releases, transitions, rollback, and proposal decisions require the header `X-Admin-Token`. When it is empty, those routes do not check a token.
+When `FAS_ADMIN_TOKEN` is set, bootstrap, releases, transitions, rollback, and proposal decisions require the header `X-Admin-Token`. When it is empty, those routes do not check a token.
 
 ## Resolve
 

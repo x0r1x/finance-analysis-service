@@ -46,7 +46,7 @@ def test_profile_overlay_beats_global_for_that_profile_only():
 
 async def test_label_search_sees_text_inside_a_parenthesis(tmp_path):
     glossary = _learning(tmp_path)[1]
-    await glossary.ensure()
+    await glossary.bootstrap()
     texts = {item["text"] for item in (await glossary.labels("убыток"))["labels"]}
     assert "Операционная прибыль (убыток)" in texts
 
@@ -100,12 +100,12 @@ async def _confirm(learning, job: str, actor: str, profile: str):
 
 async def test_auto_promote_stops_at_profile_canary(tmp_path):
     learning, glossary = _learning(tmp_path, GLOSSARY_AUTO_PROMOTE=True)
-    await glossary.ensure()
+    await glossary.bootstrap()
     for job, actor in (("a", "u1"), ("b", "u2"), ("c", "u3")):
         await _confirm(learning, job, actor, "acme")
     result = await learning.mine(CATALOG, load_git_document())
     assert result["mode"] == "canary"
-    head = await glossary.ensure()
+    head = await glossary.bootstrap()
     assert head["canary"] and head["canary"] != head["active"]
     document = await glossary.document(head["canary"])
     scoped = document["glossaries"]["cfads"]["scoped"]["acme"]["alt"]["en"]
@@ -113,7 +113,7 @@ async def test_auto_promote_stops_at_profile_canary(tmp_path):
     assert "Lender cash" not in list((document["glossaries"]["cfads"].get("alt") or {}).get("en") or [])
     again = await learning.mine(CATALOG, load_git_document())
     assert again["mode"] == "proposals" and again["candidates"] == 0
-    assert (await glossary.ensure())["canary"] == head["canary"]
+    assert (await glossary.bootstrap())["canary"] == head["canary"]
 
 
 async def test_shadow_failure_keeps_auto_proposal(tmp_path):
@@ -123,12 +123,12 @@ async def test_shadow_failure_keeps_auto_proposal(tmp_path):
         return {"passed": False, "reasons": ["test"]}
 
     glossary.gate = deny
-    await glossary.ensure()
+    await glossary.bootstrap()
     for job, actor in (("a", "u1"), ("b", "u2"), ("c", "u3")):
         await _confirm(learning, job, actor, "acme")
     result = await learning.mine(CATALOG, load_git_document())
     assert result["mode"] == "proposals"
-    head = await glossary.ensure()
+    head = await glossary.bootstrap()
     assert head.get("canary") is None
     opened = [item for item in (await glossary.proposals())["proposals"] if item["origin"] == "auto"]
     assert opened and opened[0]["status"] == "open" and opened[0]["text"] == "Lender cash"
