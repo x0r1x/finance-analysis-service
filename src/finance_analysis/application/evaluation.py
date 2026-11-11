@@ -108,11 +108,32 @@ class Evaluator:
     def eval_dir(self) -> Path:
         return Path(self.service.settings.fas_eval_dir) / "labels"
 
+    def label_dirs(self) -> list[Path]:
+        """Committed labels plus optional local overlay (`eval/local/labels`, gitignored)."""
+
+        root = Path(self.service.settings.fas_eval_dir)
+        dirs = [root / "labels"]
+        local = root / "local" / "labels"
+        if local.is_dir():
+            dirs.append(local)
+        return dirs
+
     def eval_set(self) -> list[dict]:
-        folder = self.eval_dir()
-        if not folder.is_dir():
-            return []
-        return [json.loads(path.read_text(encoding="utf-8")) for path in sorted(folder.glob("*.json"))]
+        """Load label JSON. Local overlay wins on the same `job_id`; filenames become `id` when missing."""
+
+        by_job: dict[str, dict] = {}
+        order: list[str] = []
+        for folder in self.label_dirs():
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.glob("*.json")):
+                item = json.loads(path.read_text(encoding="utf-8"))
+                item.setdefault("id", path.stem)
+                job_id = item["job_id"]
+                if job_id not in by_job:
+                    order.append(job_id)
+                by_job[job_id] = item
+        return [by_job[job_id] for job_id in order]
 
     @staticmethod
     def labels_of(item: dict, rows: list[dict]) -> tuple[dict[str, str], frozenset[str]]:
@@ -138,7 +159,16 @@ class Evaluator:
                 missing.append(item["job_id"])
                 continue
             labels, critical = self.labels_of(item, rows)
-            scores.append(score_book(item["job_id"], bindings, labels, metric_concepts=METRIC_CONCEPTS, critical=critical))
+            scores.append(
+                score_book(
+                    item["job_id"],
+                    bindings,
+                    labels,
+                    metric_concepts=METRIC_CONCEPTS,
+                    critical=critical,
+                    book_id=str(item.get("id") or item["job_id"]),
+                )
+            )
         summary = summarize(scores, focus=FOCUS)
         return {"summary": summary, "targets": targets_met(summary, focus=FOCUS), "missing_books": missing, "scores": scores}
 

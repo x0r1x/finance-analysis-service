@@ -64,6 +64,17 @@ uv run fas eval mapping --prune cfads,debt_service
 | ECE | **not_measured** (null; calibrator `none`, no confidence scores) |
 | Brier | **not_measured** (null) |
 
+### Per-book top-1 (`summary.top1_by_book`)
+
+Derived from the same measured run (aggregate interest **3/6** = Packt **3/3** bound + RVI **0/3** ambiguous under lexical-only mapping). Future CLI runs emit this block directly.
+
+| Book (`id`) | `cfads` | `debt_service` | `interest` |
+|---|---|---|---|
+| packt | **1.0** (1/1) | **1.0** (1/1) | **1.0** (3/3) |
+| rvi | **1.0** (1/1) | **1.0** (1/1) | **0.0** (0/3) |
+
+Private books (Ashan, …) appear here only when loaded via `eval/local/labels/` (not committed).
+
 ### Status histogram (labeled eval rows, n=21)
 
 | Status | Count |

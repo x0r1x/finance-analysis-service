@@ -40,7 +40,7 @@ Writes:
 - `POST /v1/glossary:rollback` — activate the previous release and start a remap.
 - `POST /v1/glossary/proposals` and `POST /v1/glossary/proposals:decide` — open a proposal, or accept and reject a batch.
 
-When `FAS_ADMIN_TOKEN` is set, bootstrap, releases, transitions, rollback, and proposal decisions require the header `X-Admin-Token`. When it is empty, those routes do not check a token.
+When `FAS_ADMIN_TOKEN` is set, bootstrap, releases, transitions, rollback, and proposal decisions require the header `X-Admin-Token`. When it is empty, those routes do not check a token. Production should set `FAS_REQUIRE_ADMIN_TOKEN=true` so a missing token fails startup (fail-closed); see [settings — auth perimeter](settings.md#auth-perimeter-prod). `X-User-Id` is still not authentication.
 
 ## Resolve
 

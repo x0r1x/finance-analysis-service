@@ -15,6 +15,39 @@ def _row(key: str, *, status: str, concept: str | None = None) -> dict:
     }
 
 
+def test_summarize_includes_per_book_top1():
+    packt = score_book(
+        "job-packt",
+        [
+            _row("c1", status="bound", concept="cfads"),
+            _row("i1", status="bound", concept="interest"),
+            _row("i2", status="bound", concept="interest"),
+            _row("i3", status="bound", concept="interest"),
+        ],
+        {"c1": "cfads", "i1": "interest", "i2": "interest", "i3": "interest"},
+        metric_concepts=METRICS,
+        book_id="packt",
+    )
+    rvi = score_book(
+        "job-rvi",
+        [
+            _row("c1", status="bound", concept="cfads"),
+            _row("i1", status="ambiguous", concept="interest"),
+            _row("i2", status="ambiguous", concept="interest"),
+            _row("i3", status="ambiguous", concept="interest"),
+        ],
+        {"c1": "cfads", "i1": "interest", "i2": "interest", "i3": "interest"},
+        metric_concepts=METRICS,
+        book_id="rvi",
+    )
+    summary = summarize([packt, rvi], focus=FOCUS)
+    assert summary["top1"]["cfads"] == 1.0
+    assert summary["top1"]["interest"] == 0.5
+    assert summary["top1_by_book"]["packt"]["cfads"] == {"rate": 1.0, "correct": 1, "total": 1}
+    assert summary["top1_by_book"]["packt"]["interest"] == {"rate": 1.0, "correct": 3, "total": 3}
+    assert summary["top1_by_book"]["rvi"]["interest"] == {"rate": 0.0, "correct": 0, "total": 3}
+
+
 def test_nil_recall_counts_unknown_and_ambiguous_only():
     labels = {
         "u": NIL,

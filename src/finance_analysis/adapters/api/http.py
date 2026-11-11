@@ -25,6 +25,12 @@ def accept_ok(path: str, accept: str) -> bool:
 
 
 def actor(request: Request) -> Actor:
+    """Opaque actor labels for audit, quotas, and idempotency — not authentication.
+
+    Raw ``X-User-Id`` / ``X-Client-Id`` are never verified. Prod must not treat them as
+    proof of identity; privileged glossary writes use ``FAS_ADMIN_TOKEN`` instead.
+    """
+
     user = request.headers.get("x-user-id")
     client = request.headers.get("x-client-id")
     if user:

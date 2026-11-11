@@ -99,6 +99,31 @@ def test_container_rejects_loopback_redis():
     assert remote.fas_redis_url == "redis://redis:6379/1"
 
 
+def test_require_admin_token_fail_closed():
+    """Prod perimeter: require flag without token refuses startup; with token loads."""
+
+    ok = Settings(_env_file=None, FAS_REDIS_URL="redis://unused")
+    assert ok.fas_require_admin_token is False
+    assert ok.fas_admin_token is None
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, FAS_REDIS_URL="redis://unused", FAS_REQUIRE_ADMIN_TOKEN=True)
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            FAS_REDIS_URL="redis://unused",
+            FAS_REQUIRE_ADMIN_TOKEN=True,
+            FAS_ADMIN_TOKEN="   ",
+        )
+    locked = Settings(
+        _env_file=None,
+        FAS_REDIS_URL="redis://unused",
+        FAS_REQUIRE_ADMIN_TOKEN=True,
+        FAS_ADMIN_TOKEN="prod-secret",
+    )
+    assert locked.fas_require_admin_token is True
+    assert locked.fas_admin_token == "prod-secret"
+
+
 def test_s3_url_without_credentials_is_rejected(monkeypatch):
     for name in ("FAS_S3_BUCKET", "FAS_S3_ACCESS_KEY", "FAS_S3_SECRET_KEY", "FAS_S3_ENDPOINT"):
         monkeypatch.delenv(name, raising=False)

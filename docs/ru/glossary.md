@@ -40,7 +40,7 @@
 - `POST /v1/glossary:rollback` — включает предыдущий релиз и запускает ремап.
 - `POST /v1/glossary/proposals` и `POST /v1/glossary/proposals:decide` — открыть предложение или пакетом принять и отклонить.
 
-Если задан `FAS_ADMIN_TOKEN`, bootstrap, релизы, переходы, откат и решения по предложениям требуют заголовок `X-Admin-Token`. Пустое значение токен не проверяет.
+Если задан `FAS_ADMIN_TOKEN`, bootstrap, релизы, переходы, откат и решения по предложениям требуют заголовок `X-Admin-Token`. Пустое значение токен не проверяет. В проде задавайте `FAS_REQUIRE_ADMIN_TOKEN=true`, чтобы старт без токена падал (fail-closed); см. [настройки — периметр auth](settings.md#периметр-auth-prod). `X-User-Id` по-прежнему не аутентификация.
 
 ## Resolve
 
