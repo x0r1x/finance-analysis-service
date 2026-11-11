@@ -67,3 +67,21 @@ async def test_profile_etag_and_derive_key(app, local_service):
     fresh = (await local_service._read_head(JOB))[0]
     assert fresh.derive_key != head.derive_key
     assert fresh.versions["profile"] == "bank@p-1"
+
+
+async def test_profile_put_requires_admin_token_when_configured(app, settings):
+    settings.fas_admin_token = "secret"
+    async with _client(app) as client:
+        denied = await client.put(
+            "/v1/profiles/bank",
+            headers={**HEADERS, "If-None-Match": "*"},
+            json={"sign_convention": "outflow_positive", "marker_class": "actual"},
+        )
+        assert denied.status_code == 403
+        assert denied.json()["code"] == "admin_token_required"
+        created = await client.put(
+            "/v1/profiles/bank",
+            headers={**HEADERS, "If-None-Match": "*", "X-Admin-Token": "secret"},
+            json={"sign_convention": "outflow_positive", "marker_class": "actual"},
+        )
+        assert created.status_code == 200, created.text

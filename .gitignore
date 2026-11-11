@@ -14,6 +14,7 @@ htmlcov/
 tests/fixtures/local-builder/
 *.local.yaml
 
-# Local-only mapping eval labels (client books)
+# Local-only mapping eval labels (client / private books, e.g. Ashan CF workbook).
+# Do not commit private xlsx or client-identifying label paths.
 eval/local/labels/
 .DS_Store

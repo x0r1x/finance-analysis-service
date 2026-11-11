@@ -22,6 +22,7 @@ NIL_STATUSES = frozenset({"unknown", "ambiguous"})
 @dataclass
 class BookScore:
     job_id: str
+    book_id: str = ""
     accepted: int = 0
     false: int = 0
     accepted_metric: int = 0
@@ -45,8 +46,9 @@ def score_book(
     *,
     metric_concepts: frozenset[str],
     critical: frozenset[str] = frozenset(),
+    book_id: str = "",
 ) -> BookScore:
-    score = BookScore(job_id)
+    score = BookScore(job_id, book_id=book_id or job_id)
     for row in bindings:
         key = row["binding_key"]
         truth = labels.get(key)
@@ -102,6 +104,17 @@ def summarize(scores: list[BookScore], *, focus: frozenset[str]) -> dict:
     y = np.array([t for _c, t in confidences], dtype=float)
     nil_total = sum(item.nil_total for item in scores)
     nil_pred = sum(item.nil_predicted for item in scores)
+    top1_by_book: dict[str, dict] = {}
+    for item in scores:
+        key = item.book_id or item.job_id
+        top1_by_book[key] = {
+            concept: {
+                "rate": rate(hit, total),
+                "correct": hit,
+                "total": total,
+            }
+            for concept, (hit, total) in sorted(item.per_concept.items())
+        }
     return {
         "books": len(scores),
         "accepted": accepted,
@@ -109,6 +122,7 @@ def summarize(scores: list[BookScore], *, focus: frozenset[str]) -> dict:
         "false_binding_rate_metric": rate(sum(i.false_metric for i in scores), sum(i.accepted_metric for i in scores)),
         "top1": {concept: rate(hit, total) for concept, (hit, total) in sorted(per_concept.items())},
         "top1_focus": {concept: rate(*per_concept[concept]) for concept in sorted(focus) if per_concept[concept][1]},
+        "top1_by_book": top1_by_book,
         "nil_recall": rate(sum(i.nil_hit for i in scores), nil_total),
         "nil_recall_critical": rate(sum(i.nil_hit_critical for i in scores), sum(i.nil_total_critical for i in scores)),
         "nil_precision": rate(sum(i.nil_predicted_true for i in scores), nil_pred),

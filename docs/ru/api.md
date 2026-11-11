@@ -4,7 +4,7 @@
 
 Ниже маршруты, которые зарегистрированы в `adapters/api`. Поля тел сюда не скопированы. Они в [design-v0.23.md](../design-v0.23.md) §3, а живая карточка аргументов — `GET /v1/capabilities`.
 
-`X-User-Id` и `X-Client-Id` называют актора. FAS их не проверяет. `POST` несёт `Idempotency-Key`. Работа, которая не уложилась в синхронный дедлайн, возвращает `202` и операцию. Дальше `GET /v1/operations/{op_id}` или, при включённом `SSE_ENABLED`, `GET /v1/operations/{op_id}/events` (`text/event-stream`).
+`X-User-Id` и `X-Client-Id` называют актора. FAS их не проверяет — и в проде тоже (только квоты, аудит и идемпотентность). Привилегированная запись в глоссарий — через опциональный `FAS_ADMIN_TOKEN` / `X-Admin-Token`; прод может требовать токен при старте через `FAS_REQUIRE_ADMIN_TOKEN` (см. [настройки](settings.md#периметр-auth-prod)). `POST` несёт `Idempotency-Key`. Работа, которая не уложилась в синхронный дедлайн, возвращает `202` и операцию. Дальше `GET /v1/operations/{op_id}` или, при включённом `SSE_ENABLED`, `GET /v1/operations/{op_id}/events` (`text/event-stream`).
 
 Публичный контракт единиц/размерностей: [dimensions.md](../dimensions.md) (`configs/dimensions.yaml`; правила аудита `dimension_mismatch` / `pricing_basis_mismatch` уже действуют). Цитаты строк типа в `result_data.book_rows`: JSON Schema `src/finance_analysis/adapters/storage/schemas/book_rows.json` (`book_rows@1.0`).
 
@@ -58,4 +58,4 @@
 
 - `GET /v1/profiles`
 - `GET /v1/profiles/{profile}`
-- `PUT /v1/profiles/{profile}`
+- `PUT /v1/profiles/{profile}` — при заданном `FAS_ADMIN_TOKEN` нужен `X-Admin-Token` (как у привилегированной записи глоссария).

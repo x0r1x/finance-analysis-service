@@ -24,6 +24,7 @@ def register(app, *, svc, write, read) -> None:
                 if_match=match,
                 if_none_match=request.headers.get("if-none-match"),
             ),
+            admin=True,
         )
 
     @app.get("/v1/profiles/{profile}")

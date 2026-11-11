@@ -15,6 +15,7 @@ from finance_analysis.adapters.api.http import (
     idem_key,
     idem_response,
     op_headers,
+    require_admin,
     route_template,
 )
 from finance_analysis.adapters.api.http import (
@@ -47,9 +48,10 @@ def _json_object(raw: bytes) -> dict:
 
 
 def register(app, settings, *, actor, limited, svc, support) -> None:
-    async def write(request: Request, run, *, fingerprint=None):
+    async def write(request: Request, run, *, fingerprint=None, admin: bool = False):
         # fingerprint(raw, body) добавляет к телу то, что меняет смысл запроса.
         # Без него ключ идемпотентности по-прежнему считается только по байтам тела.
+        # admin=True: require_admin before idem_begin so replays without token stay 403.
         who = actor(request)
         runtime = await limited(request, who)
         method = request.method
@@ -58,6 +60,8 @@ def register(app, settings, *, actor, limited, svc, support) -> None:
         hashed = b""
         pending = False
         try:
+            if admin:
+                require_admin(request, settings)
             raw = await request.body()
             parsed = _json_object(raw) if fingerprint is not None else None
             hashed = raw if fingerprint is None else fingerprint(raw, parsed)
