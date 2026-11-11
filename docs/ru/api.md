@@ -58,4 +58,4 @@
 
 - `GET /v1/profiles`
 - `GET /v1/profiles/{profile}`
-- `PUT /v1/profiles/{profile}`
+- `PUT /v1/profiles/{profile}` — при заданном `FAS_ADMIN_TOKEN` нужен `X-Admin-Token` (как у привилегированной записи глоссария).

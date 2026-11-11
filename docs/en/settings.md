@@ -20,8 +20,8 @@ FAS reads every name below from the environment and from `.env` in the working d
 | `FAS_EMBEDDED_WORKERS` | `false` | `true` starts four `fas-worker` processes and `fas-scheduler` as children of `fas-api`. `false` leaves the queues to processes you start. Compose sets `true`. A child exits when the pid that spawned it is no longer its parent, unless that parent is PID 1. |
 | `FAS_IN_CONTAINER` | `false` | Compose sets `true`. A Redis host of `127.0.0.1`, `localhost`, or `::1` then fails startup. Leave it unset for `uv run fas-api`. |
 | `FAS_EMBEDDED_RESTART_BACKOFF_SEC` | `1` | Seconds a supervisor waits before it starts a dead embedded child again. Must be greater than 0. |
-| `FAS_ADMIN_TOKEN` | empty | Empty allows glossary release writes. Any other value requires the request header `x-admin-token` to match it. |
-| `FAS_REQUIRE_ADMIN_TOKEN` | `false` | Prod fail-closed profile. `true` refuses process startup unless `FAS_ADMIN_TOKEN` is non-empty, so privileged glossary writes always need `X-Admin-Token`. Leave `false` for local/dev. |
+| `FAS_ADMIN_TOKEN` | empty | Empty allows privileged writes (glossary bootstrap / releases / transitions / rollback / `proposals:decide`, and `PUT /v1/profiles/{profile}`). Any other value requires the request header `x-admin-token` to match it. Checked before idempotency replay. |
+| `FAS_REQUIRE_ADMIN_TOKEN` | `false` | Prod fail-closed profile. `true` refuses process startup unless `FAS_ADMIN_TOKEN` is non-empty, so those privileged writes always need `X-Admin-Token`. Leave `false` for local/dev. |
 | `FAS_READ_ONLY` | `false` | `true` makes the object store refuse writes. The conditional-write self-test is skipped. |
 | `FAS_EVAL_DIR` | `eval` | `fas eval` reads labels from `FAS_EVAL_DIR/labels` and, when present, also merges `FAS_EVAL_DIR/local/labels` (gitignored client books). |
 | `LOCK_TTL_MS` | `60000` | Lifetime of a book lock and of the GC lock. Also the floor of the pending idempotency TTL. |
@@ -172,6 +172,6 @@ Prod fail-closed profile for privileged glossary writes:
 
 1. Set a non-empty `FAS_ADMIN_TOKEN`.
 2. Set `FAS_REQUIRE_ADMIN_TOKEN=true` so startup fails if the token is missing or blank.
-3. Callers of releases / transitions / rollback / `proposals:decide` must send matching `X-Admin-Token`.
+3. Callers of bootstrap / releases / transitions / rollback / `proposals:decide` and `PUT /v1/profiles/{profile}` must send matching `X-Admin-Token`. The check runs before idempotency begin, so a replay without the token is `403`, not a cached success.
 
 Local and CI leave `FAS_REQUIRE_ADMIN_TOKEN` unset/`false` and may leave `FAS_ADMIN_TOKEN` empty (admin gate off). Book and analysis routes stay open to the internal network; this flag does not add user auth.

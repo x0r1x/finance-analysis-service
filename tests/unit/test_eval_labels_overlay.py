@@ -38,3 +38,24 @@ def test_eval_set_merges_local_labels_and_sets_id(tmp_path):
     assert by_id["packt"]["job_id"] == "job-packt"
     assert by_id["rvi-local"]["by_path"] == {"X": "NIL"}
     assert by_id["private"]["job_id"] == "job-private"
+
+
+def test_eval_set_rejects_duplicate_label_id(tmp_path):
+    labels = tmp_path / "labels"
+    labels.mkdir(parents=True)
+    (labels / "a.json").write_text(
+        json.dumps({"schema_version": "1", "id": "same", "job_id": "job-a", "by_path": {}}),
+        encoding="utf-8",
+    )
+    (labels / "b.json").write_text(
+        json.dumps({"schema_version": "1", "id": "same", "job_id": "job-b", "by_path": {}}),
+        encoding="utf-8",
+    )
+    service = SimpleNamespace(settings=SimpleNamespace(fas_eval_dir=str(tmp_path)))
+    try:
+        Evaluator(service).eval_set()
+    except ValueError as exc:
+        assert "duplicate eval label id 'same'" in str(exc)
+        assert "job-a" in str(exc) and "job-b" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for duplicate id")

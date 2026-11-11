@@ -119,7 +119,10 @@ class Evaluator:
         return dirs
 
     def eval_set(self) -> list[dict]:
-        """Load label JSON. Local overlay wins on the same `job_id`; filenames become `id` when missing."""
+        """Load label JSON. Local overlay wins on the same `job_id`; filenames become `id` when missing.
+
+        Final set must have unique non-empty ``id`` values (human keys for ``top1_by_book``).
+        """
 
         by_job: dict[str, dict] = {}
         order: list[str] = []
@@ -129,11 +132,24 @@ class Evaluator:
             for path in sorted(folder.glob("*.json")):
                 item = json.loads(path.read_text(encoding="utf-8"))
                 item.setdefault("id", path.stem)
+                item["id"] = str(item["id"] or path.stem)
                 job_id = item["job_id"]
                 if job_id not in by_job:
                     order.append(job_id)
                 by_job[job_id] = item
-        return [by_job[job_id] for job_id in order]
+        items = [by_job[job_id] for job_id in order]
+        seen_ids: dict[str, str] = {}
+        for item in items:
+            book_id = item["id"]
+            if not book_id:
+                raise ValueError("eval label id must be non-empty")
+            prior = seen_ids.get(book_id)
+            if prior is not None:
+                raise ValueError(
+                    f"duplicate eval label id {book_id!r}: jobs {prior} and {item['job_id']}"
+                )
+            seen_ids[book_id] = item["job_id"]
+        return items
 
     @staticmethod
     def labels_of(item: dict, rows: list[dict]) -> tuple[dict[str, str], frozenset[str]]:

@@ -11,7 +11,7 @@ from finance_analysis.application.glossary_store import (
     check_transition_request,
     state_of,
 )
-from finance_analysis.domain.errors import Forbidden, InvalidArgument
+from finance_analysis.domain.errors import InvalidArgument
 
 
 def agreed_dry_run(query: str | None, body: dict) -> bool:
@@ -53,14 +53,7 @@ def _body_flag(value: object) -> bool:
     raise InvalidArgument("Поле dry_run в теле запроса должно быть логическим значением true или false.")
 
 
-def register(app, settings, *, svc, write, read) -> None:
-    def _admin(request: Request) -> None:
-        expected = settings.fas_admin_token
-        if not expected:
-            return
-        if request.headers.get("x-admin-token") != expected:
-            raise Forbidden("нужен токен администратора")
-
+def register(app, _settings, *, svc, write, read) -> None:
     @app.get("/v1/glossary")
     async def glossary_state(request: Request):
         async def load(_who):
@@ -73,12 +66,11 @@ def register(app, settings, *, svc, write, read) -> None:
     @app.post("/v1/glossary/bootstrap")
     async def glossary_bootstrap(request: Request):
         async def run(gloss, _body, _match):
-            _admin(request)
             head = await gloss.bootstrap()
             body = state_of(head)
             return {**body, "etag": body["etag"]}
 
-        return await write(request, run)
+        return await write(request, run, admin=True)
 
     @app.get("/v1/glossary/releases")
     async def glossary_releases(request: Request):
@@ -119,14 +111,13 @@ def register(app, settings, *, svc, write, read) -> None:
             return raw + b"\ndry_run=" + mark
 
         async def run(gloss, body, match):
-            _admin(request)
             preview = agreed_dry_run(dry_run, body)
             source = str(body.get("source") or "api")
             if body.get("mode") == "replace":
                 return await gloss.release([], match, dry_run=preview, source=source, document=body.get("document"))
             return await gloss.release(body.get("ops") or [], match, dry_run=preview, source=source)
 
-        return await write(request, run, fingerprint=fingerprint)
+        return await write(request, run, fingerprint=fingerprint, admin=True)
 
     @app.get("/v1/glossary/releases/{version}")
     async def glossary_release_one(version: str, request: Request):
@@ -148,7 +139,6 @@ def register(app, settings, *, svc, write, read) -> None:
     @app.post("/v1/glossary/transitions")
     async def glossary_transition(request: Request):
         async def run(gloss, body, match):
-            _admin(request)
             status = str(body.get("status") or "")
             version = body.get("version")
             force = bool(body.get("force"))
@@ -166,7 +156,7 @@ def register(app, settings, *, svc, write, read) -> None:
                 queue=GLOSSARY,
             )
 
-        return await write(request, run)
+        return await write(request, run, admin=True)
 
     @app.get("/v1/glossary/stats")
     async def glossary_stats(request: Request, to: str | None = None, profile_id: str | None = None):
@@ -176,12 +166,11 @@ def register(app, settings, *, svc, write, read) -> None:
     @app.post("/v1/glossary:rollback")
     async def glossary_rollback(request: Request):
         async def run(gloss, _body, match):
-            _admin(request)
             result = await gloss.rollback(match)
             await svc().begin_remap()
             return result
 
-        return await write(request, run)
+        return await write(request, run, admin=True)
 
     @app.post("/v1/glossary/proposals")
     async def glossary_propose(request: Request):
@@ -198,7 +187,6 @@ def register(app, settings, *, svc, write, read) -> None:
     @app.post("/v1/glossary/proposals:decide")
     async def glossary_decide(request: Request):
         async def run(gloss, body, _match):
-            _admin(request)
             decisions = body.get("decisions") or []
             accepts = isinstance(decisions, list) and any(
                 isinstance(item, dict) and item.get("decision") == "accept" for item in decisions
@@ -209,4 +197,4 @@ def register(app, settings, *, svc, write, read) -> None:
             await svc().learning.proposals_rejected(result.pop("rejected", []))
             return result
 
-        return await write(request, run)
+        return await write(request, run, admin=True)

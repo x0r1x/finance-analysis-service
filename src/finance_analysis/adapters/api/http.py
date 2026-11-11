@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from finance_analysis.application.service import Accepted
 from finance_analysis.domain.book import Actor
-from finance_analysis.domain.errors import InvalidId
+from finance_analysis.domain.errors import Forbidden, InvalidId
 from finance_analysis.domain.ids import actor_token
 
 
@@ -38,6 +38,20 @@ def actor(request: Request) -> Actor:
     if client:
         client = actor_token(client, header="X-Client-Id")
     return Actor(user_id=user or "anonymous", client_id=client or "anonymous")
+
+
+def require_admin(request: Request, settings) -> None:
+    """Gate privileged writes when ``FAS_ADMIN_TOKEN`` is set.
+
+    Call before idempotency begin so a replay without ``X-Admin-Token`` is 403,
+    not a cached admin success.
+    """
+
+    expected = settings.fas_admin_token
+    if not expected:
+        return
+    if request.headers.get("x-admin-token") != expected:
+        raise Forbidden("нужен токен администратора")
 
 
 def prefer_async(request: Request) -> bool:

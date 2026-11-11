@@ -55,6 +55,24 @@ async def test_profile_etag_and_derive_key(app, local_service):
         assert wrong.status_code == 412
         assert wrong.json()["etag"] == "p-1"
 
+
+async def test_profile_put_requires_admin_token_when_configured(app, settings):
+    settings.fas_admin_token = "secret"
+    async with _client(app) as client:
+        denied = await client.put(
+            "/v1/profiles/bank",
+            headers={**HEADERS, "If-None-Match": "*"},
+            json={"sign_convention": "outflow_positive", "marker_class": "actual"},
+        )
+        assert denied.status_code == 403
+        assert denied.json()["code"] == "admin_token_required"
+        created = await client.put(
+            "/v1/profiles/bank",
+            headers={**HEADERS, "If-None-Match": "*", "X-Admin-Token": "secret"},
+            json={"sign_convention": "outflow_positive", "marker_class": "actual"},
+        )
+        assert created.status_code == 200, created.text
+
     await local_service.perform_load(JOB, actor=Actor(), fence=1)
     head = (await local_service._read_head(JOB))[0]
     posted = await local_service.submit_decisions(

@@ -58,4 +58,4 @@ Glossary routes are listed in [glossary](glossary.md). Profile routes:
 
 - `GET /v1/profiles`
 - `GET /v1/profiles/{profile}`
-- `PUT /v1/profiles/{profile}`
+- `PUT /v1/profiles/{profile}` — admin-gated when `FAS_ADMIN_TOKEN` is set (same `X-Admin-Token` as glossary privileged writes).

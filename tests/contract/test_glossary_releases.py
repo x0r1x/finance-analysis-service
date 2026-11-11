@@ -185,6 +185,29 @@ async def test_admin_token_when_configured(app, settings):
         assert allowed.status_code == 200, allowed.text
 
 
+async def test_admin_token_before_idem_replay(app, settings):
+    """Admin gate runs before idem_begin: replay without token is 403, with token is cached."""
+
+    settings.fas_admin_token = "secret"
+    admin = {**HEADERS, "X-Admin-Token": "secret"}
+    async with _client(app) as client:
+        _body, etag = await _bootstrap(client, headers=admin)
+        headers = {**admin, "If-Match": etag, "Idempotency-Key": "admin-idem-1"}
+        body = {"ops": [], "dry_run": True}
+        first = await client.post("/v1/glossary/releases", headers=headers, json=body)
+        assert first.status_code == 200, first.text
+        denied = await client.post(
+            "/v1/glossary/releases",
+            headers={**HEADERS, "If-Match": etag, "Idempotency-Key": "admin-idem-1"},
+            json=body,
+        )
+        assert denied.status_code == 403
+        assert denied.json()["code"] == "admin_token_required"
+        replay = await client.post("/v1/glossary/releases", headers=headers, json=body)
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == first.json()
+
+
 async def test_get_does_not_bootstrap_and_bootstrap_publishes(app, local_service):
     async with _client(app) as client:
         missing = await client.get("/v1/glossary", headers=HEADERS)
