@@ -55,6 +55,19 @@ async def test_profile_etag_and_derive_key(app, local_service):
         assert wrong.status_code == 412
         assert wrong.json()["etag"] == "p-1"
 
+    await local_service.perform_load(JOB, actor=Actor(), fence=1)
+    head = (await local_service._read_head(JOB))[0]
+    posted = await local_service.submit_decisions(
+        JOB,
+        {"decisions": [{"kind": "profile.set", "target": "book", "value": "bank", "expected_seq": None}]},
+        Actor(),
+        wait_sec=60,
+    )
+    assert posted["results"][0]["status"] == "accepted", posted
+    fresh = (await local_service._read_head(JOB))[0]
+    assert fresh.derive_key != head.derive_key
+    assert fresh.versions["profile"] == "bank@p-1"
+
 
 async def test_profile_put_requires_admin_token_when_configured(app, settings):
     settings.fas_admin_token = "secret"
@@ -72,16 +85,3 @@ async def test_profile_put_requires_admin_token_when_configured(app, settings):
             json={"sign_convention": "outflow_positive", "marker_class": "actual"},
         )
         assert created.status_code == 200, created.text
-
-    await local_service.perform_load(JOB, actor=Actor(), fence=1)
-    head = (await local_service._read_head(JOB))[0]
-    posted = await local_service.submit_decisions(
-        JOB,
-        {"decisions": [{"kind": "profile.set", "target": "book", "value": "bank", "expected_seq": None}]},
-        Actor(),
-        wait_sec=60,
-    )
-    assert posted["results"][0]["status"] == "accepted", posted
-    fresh = (await local_service._read_head(JOB))[0]
-    assert fresh.derive_key != head.derive_key
-    assert fresh.versions["profile"] == "bank@p-1"
