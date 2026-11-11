@@ -1,4 +1,4 @@
-"""Публичный JSON Schema book_rows@1.0: cited/absent/ambiguous + observations."""
+"""Публичный JSON Schema book_rows@1.0: массив result_data.book_rows."""
 
 from __future__ import annotations
 
@@ -30,10 +30,6 @@ def validator() -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
-def _envelope(rows: list[dict]) -> dict:
-    return {"version": "1.0", "book_rows": rows}
-
-
 def _binding(concept: str, row_key: str, *, primary: bool = True) -> dict:
     return {
         "effective_concept": concept,
@@ -57,7 +53,9 @@ def _fact(row_key: str, value, **fields) -> dict:
     return body
 
 
-def test_schema_accepts_cited_absent_ambiguous(validator):
+def test_schema_accepts_cited_absent_ambiguous_list(validator):
+    """Валидирует голый список, как result_data.book_rows после _attach_book_rows."""
+
     rows = cite_type_book_rows(
         source="inferred",
         primary="real_estate_income",
@@ -92,10 +90,10 @@ def test_schema_accepts_cited_absent_ambiguous(validator):
     assert by_concept["noi"]["status"] == "cited"
     assert by_concept["vacancy"]["status"] == "ambiguous"
     assert by_concept["vacancy"]["observations"] == []
-    assert list(validator.iter_errors(_envelope(rows))) == []
+    assert list(validator.iter_errors(rows)) == []
 
 
-def test_schema_accepts_lbo_rows(validator):
+def test_schema_accepts_lbo_rows_list(validator):
     rows = cite_lbo_book_rows(
         source="inferred",
         primary="lbo_ma",
@@ -117,24 +115,44 @@ def test_schema_accepts_lbo_rows(validator):
     )
     assert rows[0]["status"] == "cited"
     assert rows[1]["status"] == "absent"
-    assert list(validator.iter_errors(_envelope(rows))) == []
+    assert list(validator.iter_errors(rows)) == []
 
 
-def test_schema_rejects_bad_status_and_version(validator):
+def test_schema_rejects_bad_status_and_extra_fields(validator):
     assert list(
         validator.iter_errors(
-            {
-                "version": "1.0",
-                "book_rows": [
-                    {"concept": "cap_rate", "status": "bound", "observations": []}
-                ],
-            }
+            [{"concept": "cap_rate", "status": "bound", "observations": []}]
         )
     )
     assert list(
         validator.iter_errors(
+            [
+                {
+                    "concept": "cap_rate",
+                    "status": "cited",
+                    "row_key": "r",
+                    "observations": [{"value": "1"}],
+                    "needs_input": True,
+                }
+            ]
+        )
+    )
+    assert list(
+        validator.iter_errors(
+            [
+                {
+                    "concept": "cap_rate",
+                    "status": "absent",
+                    "observations": [{"value": "1"}],
+                }
+            ]
+        )
+    )
+    # Wrapper object is not the API shape.
+    assert list(
+        validator.iter_errors(
             {
-                "version": "2.0",
+                "version": "1.0",
                 "book_rows": [
                     {
                         "concept": "cap_rate",
@@ -146,36 +164,37 @@ def test_schema_rejects_bad_status_and_version(validator):
             }
         )
     )
-    assert list(
-        validator.iter_errors(
-            {
-                "version": "1.0",
-                "book_rows": [
-                    {
-                        "concept": "cap_rate",
-                        "status": "cited",
-                        "row_key": "r",
-                        "observations": [{"value": "1"}],
-                        "needs_input": True,
-                    }
-                ],
-            }
-        )
-    )
-    assert list(
-        validator.iter_errors(
-            {
-                "version": "1.0",
-                "book_rows": [
-                    {
-                        "concept": "cap_rate",
-                        "status": "absent",
-                        "observations": [{"value": "1"}],
-                    }
-                ],
-            }
-        )
-    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["NaN", "Infinity", "-Infinity", "not-a-number", "1e3", "01", "+1", ".5", "1."],
+)
+def test_schema_rejects_non_plain_decimal_text(validator, bad):
+    payload = [
+        {
+            "concept": "cap_rate",
+            "status": "cited",
+            "row_key": "r",
+            "observations": [{"value": bad}],
+        }
+    ]
+    assert list(validator.iter_errors(payload))
+    payload[0]["observations"] = [{"value": "1", "normalized_value": bad}]
+    assert list(validator.iter_errors(payload))
+
+
+@pytest.mark.parametrize("ok", ["0", "1", "-2", "0.0575", "512.4", "1417.151736", None])
+def test_schema_accepts_plain_decimal_text(validator, ok):
+    payload = [
+        {
+            "concept": "cap_rate",
+            "status": "cited",
+            "row_key": "r",
+            "observations": [{"value": ok}],
+        }
+    ]
+    assert list(validator.iter_errors(payload)) == []
 
 
 def test_book_rows_schema_is_not_a_parquet_dataset():
@@ -185,4 +204,5 @@ def test_book_rows_schema_is_not_a_parquet_dataset():
     doc = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
     assert doc["$schema"].endswith("2020-12/schema")
     assert "dataset" not in doc
-    assert doc["properties"]["version"]["const"] == "1.0"
+    assert doc["type"] == "array"
+    assert "book_rows@1.0" in doc["$comment"]

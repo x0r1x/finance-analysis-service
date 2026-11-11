@@ -353,7 +353,9 @@ def schema_file_names() -> frozenset[str]:
     for path in _SCHEMAS_DIR.glob("*.json"):
         doc = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(doc, dict):
-            continue
+            raise PublishedParquetError(
+                f"схема {path.name}: корень должен быть объектом, получено {type(doc).__name__}"
+            )
         if "$schema" in doc and "dataset" not in doc:
             continue
         names.add(path.stem)
