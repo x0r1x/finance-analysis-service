@@ -69,7 +69,7 @@ def validate_applicability_matrix(
     if canonical_json(dict(snapshot)) != canonical_json(got):
         raise ModelTypeInvalid(
             "matrix.json не совпадает с configs/model_types/*.yaml; "
-            "обновите снимок из dump применимости"
+            "обновите снимок: fas dump-applicability"
         )
 
 

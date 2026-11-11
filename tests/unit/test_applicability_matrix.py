@@ -10,6 +10,7 @@ import yaml
 
 from finance_analysis.application.analyses import RATIO_METRICS
 from finance_analysis.application.model_types import (
+    dump_applicability_matrix,
     load_matrix_snapshot,
     load_model_types,
     matrix_file,
@@ -121,3 +122,33 @@ def test_no_cover_metrics_and_dscr_optional_types_match_intended_cells():
 def test_matrix_file_path_is_under_model_types():
     assert matrix_file().name == "matrix.json"
     assert matrix_file().parent == model_types_dir()
+
+
+def test_dump_applicability_matches_checked_in_snapshot():
+    assert dump_applicability_matrix() == load_matrix_snapshot()
+
+
+def test_dump_applicability_cli_stdout(capsys):
+    from finance_analysis.cli import main
+
+    main(["dump-applicability", "--stdout"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == load_matrix_snapshot()
+
+
+def test_dump_applicability_cli_writes_file(tmp_path, monkeypatch, capsys):
+    from finance_analysis.cli import main
+
+    folder = tmp_path / "model_types"
+    shutil.copytree(model_types_dir(), folder)
+    (folder / "matrix.json").unlink()
+    monkeypatch.setattr(
+        "finance_analysis.application.model_types.model_types_dir", lambda: folder
+    )
+    main(["dump-applicability"])
+    out = capsys.readouterr().out.strip()
+    written = folder / "matrix.json"
+    assert str(written) in out
+    assert json.loads(written.read_text(encoding="utf-8")) == dump_applicability_matrix(
+        folder
+    )
