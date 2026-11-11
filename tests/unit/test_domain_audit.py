@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from finance_analysis.adapters.storage.parquet_io import load_schema, write_table
 from finance_analysis.domain.audit import (
     FINDING_KINDS,
@@ -39,6 +41,46 @@ def test_default_finding_kind_by_error_class_and_severity():
     assert default_finding_kind("omission", "medium") == "insufficient_data"
     assert default_finding_kind("qualitative", "low") == "warning"
     assert set(FINDING_KINDS) == {"error", "warning", "methodology", "insufficient_data", "ambiguity"}
+    with pytest.raises(ValueError, match="error_class"):
+        default_finding_kind("not_a_class", "high")
+
+
+def test_invalid_finding_kind_and_error_class_rejected():
+    with pytest.raises(ValueError, match="finding_kind"):
+        Finding(
+            code="x",
+            version="1",
+            error_class="logic",
+            severity="high",
+            params={},
+            locations=(),
+            fingerprint="a" * 40,
+            binding_key=None,
+            truncated=False,
+            basis=(),
+            finding_kind="not_a_kind",
+        )
+    with pytest.raises(ValueError, match="error_class"):
+        Finding(
+            code="x",
+            version="1",
+            error_class="bogus",
+            severity="high",
+            params={},
+            locations=(),
+            fingerprint="a" * 40,
+            binding_key=None,
+            truncated=False,
+            basis=(),
+            finding_kind="error",
+        )
+    with pytest.raises(ValueError, match="finding_kind"):
+        Rule("bad", "1", "logic", "high", (), "t", frozenset({"rows"}), finding_kind="nope")
+    with pytest.raises(ValueError, match="error_class"):
+        Rule("bad", "1", "bogus", "high", (), "t", frozenset({"rows"}))
+    rule = Rule("ok", "1", "logic", "high", (), "t", frozenset({"rows"}))
+    with pytest.raises(ValueError, match="finding_kind"):
+        rule.finding(AuditInput(), finding_kind="still_bad")
 
 
 def test_finding_construction_keeps_severity_and_error_class():
@@ -80,15 +122,15 @@ def test_finding_construction_keeps_severity_and_error_class():
 
 def test_promote_needs_findings_dedupes_subjects():
     needs = [
-        {"kind": "concept", "reason": "concept_unknown", "subject": "cfads"},
-        {"kind": "concept", "reason": "concept_unknown", "subject": "cfads"},
+        {"kind": "concept", "reason": "concept_unknown", "subject": "cfads", "binding_key": "bk-1"},
+        {"kind": "concept", "reason": "concept_unknown", "subject": "cfads", "binding_key": "bk-1"},
         {"kind": "concept", "reason": "ambiguous", "subject": "debt_service"},
         {"kind": "concept", "reason": "other", "subject": "ignored"},
     ]
     found = promote_needs_findings(needs)
-    assert [(item.code, item.finding_kind, item.params["subject"]) for item in found] == [
-        ("insufficient_input", "insufficient_data", "cfads"),
-        ("binding_ambiguity", "ambiguity", "debt_service"),
+    assert [(item.code, item.finding_kind, item.params["subject"], item.binding_key) for item in found] == [
+        ("insufficient_input", "insufficient_data", "cfads", "bk-1"),
+        ("binding_ambiguity", "ambiguity", "debt_service", None),
     ]
 
 

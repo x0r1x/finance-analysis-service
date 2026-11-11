@@ -79,6 +79,14 @@ def test_registry_covers_phase1_table():
     assert registry["missing_total_row"].resolved_kind() == "insufficient_data"
     assert registry["hardcoded_formula"].resolved_kind() == "error"
     assert registry["literal_in_formula"].resolved_kind() == "warning"
+    # Omission invariant: default insufficient_data unless Rule.finding_kind override.
+    for rule in registry.values():
+        if rule.error_class != "omission":
+            continue
+        if rule.finding_kind is None:
+            assert rule.resolved_kind() == "insufficient_data", rule.code
+        else:
+            assert rule.finding_kind in FINDING_KINDS, rule.code
     with pytest.raises(InvalidArgument):
         select_rules(registry, ["no_such_rule"])
     assert "links" not in requirements(select_rules(registry, ["no_master_check"]))

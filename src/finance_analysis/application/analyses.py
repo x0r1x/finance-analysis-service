@@ -272,14 +272,24 @@ def _in_scope(finding: Finding, scope: dict, data: AuditInput, bound: set[str]) 
     """Находка в срезе, если хоть одно её место проходит все условия `scope`.
 
     Находка уровня книги (циклы без мест, счётчики R1, `no_master_check`)
-    от среза не зависит. Место без периода не проходит условия по периоду.
+    от sheet/period/marker среза не зависит. Промотированные `needs_input`
+    без locations режутся по `scope.concepts` через `params.subject` /
+    `binding_key` (не по листам). Место без периода не проходит условия по периоду.
     """
 
     if not scope:
         return True
     located = [item for item in finding.locations if item.row_key or item.cell_id]
     if not located:
-        return True
+        if "concepts" not in scope:
+            return True
+        subject = finding.params.get("subject")
+        if isinstance(subject, str) and subject in scope["concepts"]:
+            return True
+        if finding.binding_key and finding.binding_key in bound:
+            return True
+        # Без concept-identity — настоящая находка уровня книги; concepts её не режет.
+        return subject is None and finding.binding_key is None
     periods = _Periods(data.periods)
     return any(_location_in_scope(item, scope, data, periods, bound) for item in located)
 
@@ -722,7 +732,7 @@ class Analyses:
         if isinstance(target, Accepted):
             return target
         analysis_id = str(ULID())
-        work = self.service.spawn(self._execute_ratios(job_id, target, analysis_id, list(metrics), actor))
+        work = self.service.spawn(self._execute_ratios(job_id, target, analysis_id, list(metrics), body, actor))
         wide = False
         try:
             periods = await self.service._dataset_rows(job_id, target.head, "dim_period")
@@ -861,16 +871,24 @@ class Analyses:
             ),
         }
 
-    async def _execute_ratios(self, job_id: str, target: Target, analysis_id: str, metrics: list[str], actor: Actor) -> dict:
+    async def _execute_ratios(
+        self, job_id: str, target: Target, analysis_id: str, metrics: list[str], body: dict, actor: Actor
+    ) -> dict:
         started = _now()
         head = target.head
+        scope = _scope(body)
         got = await self.compute_metrics(job_id, target, metrics)
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
             job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
         )
-        attached = list(attached) + promote_needs_findings(needs)
+        candidates = list(attached) + promote_needs_findings(needs)
+        bound: set[str] = set()
+        if "concepts" in scope:
+            bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
+        data = AuditInput(periods=got["periods"], facts=got["facts"], bindings=got["bindings"])
+        attached = [item for item in candidates if _in_scope(item, scope, data, bound)]
         envelope = {
             "analysis_id": analysis_id,
             "status": "succeeded",
@@ -975,8 +993,8 @@ class Analyses:
             bound: set[str] = set()
             if "concepts" in scope:
                 bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
-            findings = [item for item in found if _in_scope(item, scope, data, bound)]
-            findings = list(findings) + promote_needs_findings(got["needs_input"])
+            candidates = list(found) + promote_needs_findings(got["needs_input"])
+            findings = [item for item in candidates if _in_scope(item, scope, data, bound)]
             warnings = list(got["warnings"])
             impact = None
             if spec:

@@ -151,6 +151,8 @@ Cloud PR могут добавить helpers формата labels и CI skip б
 | `insufficient_data` | (a) явно промотированные `needs_input` / `missing_input`; (b) `error_class=omission` **только** как пробел в данных: отсутствует **обязательный** вход / обязательная проверка для применимой метрики или правила. **Не каждый** omission → `insufficient_data` (дефолт может брать omission как кандидата; kind сужается по required vs optional; registry override авторитетен) |
 | `ambiguity` | неоднозначность на Finding (иначе — статусы привязки / Questions без дубля) |
 
+**Инвариант omission:** `default_finding_kind` намеренно даёт `insufficient_data` для `error_class=omission` (кандидат data-gap). Любое omission-правило, которое на деле methodology / optional practice, **обязано** задать `Rule.finding_kind` (или call-site override). Registry guard в тестах: у каждого omission-правила либо default `insufficient_data`, либо явный override.
+
 **Состав:** additive nullable поле на `Finding` (+ Parquet/API, backward compatible); фильтры `GET …/findings`; registry default по `error_class`+`severity`, override на правило; плагины — постепенно.
 
 **Не-цели:** схлопывание трёх фаз аудита; смена open-world статусов привязки; автопромоут всех `needs_input`/`missing_input` без явного списка.

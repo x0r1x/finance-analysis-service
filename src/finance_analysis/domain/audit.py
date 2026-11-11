@@ -29,6 +29,12 @@ FINDING_KINDS = ("error", "warning", "methodology", "insufficient_data", "ambigu
 LOCATIONS_MAX = 32
 
 
+def check_finding_kind(kind: str) -> str:
+    if kind not in FINDING_KINDS:
+        raise ValueError(f"finding_kind вне набора: {kind!r}")
+    return kind
+
+
 def default_finding_kind(error_class: str, severity: str) -> str:
     """Нормативный default по `error_class`+`severity`; `Rule.finding_kind` авторитетен.
 
@@ -37,8 +43,12 @@ def default_finding_kind(error_class: str, severity: str) -> str:
     - omission → insufficient_data как **кандидат** (только required-gap /
       обязательная проверка; optional → warning/methodology через override)
     - qualitative → warning (practice notes — override → methodology)
+
+    Неизвестный `error_class` — ошибка конфигурации, не silent warning.
     """
 
+    if error_class not in ERROR_CLASSES:
+        raise ValueError(f"неизвестный error_class: {error_class!r}")
     if error_class in {"mechanical", "logic"}:
         return "error"
     if error_class == "quantitative":
@@ -109,6 +119,11 @@ class Finding:
     truncated: bool
     basis: tuple[str, ...]
     finding_kind: str
+
+    def __post_init__(self) -> None:
+        check_finding_kind(self.finding_kind)
+        if self.error_class not in ERROR_CLASSES:
+            raise ValueError(f"неизвестный error_class: {self.error_class!r}")
 
     def as_dict(self, builder_ref: dict | None = None) -> dict:
         return {
@@ -314,9 +329,15 @@ class Rule:
     # None — default_finding_kind(error_class, severity находки); иначе явный override.
     finding_kind: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.error_class not in ERROR_CLASSES:
+            raise ValueError(f"неизвестный error_class: {self.error_class!r}")
+        if self.finding_kind is not None:
+            check_finding_kind(self.finding_kind)
+
     def resolved_kind(self, severity: str | None = None) -> str:
         if self.finding_kind is not None:
-            return self.finding_kind
+            return check_finding_kind(self.finding_kind)
         return default_finding_kind(self.error_class, severity or self.severity)
 
     def describe(self) -> dict:
@@ -367,7 +388,7 @@ class Rule:
         if not located and (row_key or axis_id):
             located = [Location(None, row_key, axis_id, period_id)]
         level = severity or self.severity
-        kind = finding_kind or self.resolved_kind(level)
+        kind = check_finding_kind(finding_kind) if finding_kind is not None else self.resolved_kind(level)
         return Finding(
             code=self.code,
             version=self.version,
@@ -388,7 +409,8 @@ def promote_needs_findings(needs: list[dict]) -> list[Finding]:
 
     - `ambiguous` → `binding_ambiguity` / finding_kind=ambiguity
     - `concept_unknown` | `no_binding` | `stale` → `insufficient_input` / insufficient_data
-    Один subject — одна находка.
+    Один subject — одна находка. `binding_key` / `subject` переносятся для среза
+    `scope.concepts` (без выдуманных sheet/row locations).
     """
 
     seen: set[tuple[str, str]] = set()
@@ -408,6 +430,8 @@ def promote_needs_findings(needs: list[dict]) -> list[Finding]:
         if key in seen:
             continue
         seen.add(key)
+        raw_binding = item.get("binding_key")
+        binding = raw_binding.strip() if isinstance(raw_binding, str) and raw_binding.strip() else None
         out.append(
             Finding(
                 code=code,
@@ -416,8 +440,8 @@ def promote_needs_findings(needs: list[dict]) -> list[Finding]:
                 severity=severity,
                 params={"reason": reason, "subject": subject, "source": item.get("kind")},
                 locations=(),
-                fingerprint=fingerprint(code, subject, "", "", ""),
-                binding_key=None,
+                fingerprint=fingerprint(code, binding or subject, "", "", ""),
+                binding_key=binding,
                 truncated=False,
                 basis=(),
                 finding_kind=kind,
