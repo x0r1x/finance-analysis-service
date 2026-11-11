@@ -8,8 +8,6 @@ FAS reads every name below from the environment and from `.env` in the working d
 
 `appendonly yes`, `appendfsync everysec`, and `maxmemory-policy noeviction` are the command of the `redis` service in `deploy/docker-compose.override.yml`. They are not application variables.
 
-Seven names are accepted and stored, and the process does not read them: `WREN_ENGINE_IDLE_SEC`, `ASYNC_SLOW_CALLBACK_MS`, `RESULT_CACHE_TTL`, `STATE_COMPACT_EVERY`, `ISOLATE_PROJECTION_MIN_ROWS`, `UNKNOWN_MATERIAL_SHARE`, `GLOSSARY_AUTO_PRECISION_GATE`.
-
 ## Process
 
 | Name | Default | What the process does |
@@ -80,7 +78,7 @@ A stage is off until both its URL and its model name are set. An API key, when s
 
 ## Wren
 
-The number of live engines is the smaller of `WREN_ENGINE_POOL` and `WREN_POOL_MEMORY_MB / WREN_DUCKDB_MEMORY_MB`, and at least 1. At that cap the oldest engine that nobody is using is closed. `WREN_ENGINE_IDLE_SEC` is not part of that decision.
+The number of live engines is the smaller of `WREN_ENGINE_POOL` and `WREN_POOL_MEMORY_MB / WREN_DUCKDB_MEMORY_MB`, and at least 1. At that cap the oldest engine that nobody is using is closed.
 
 | Name | Default | What the process does |
 | --- | --- | --- |
@@ -91,7 +89,6 @@ The number of live engines is the smaller of `WREN_ENGINE_POOL` and `WREN_POOL_M
 | `WREN_ENGINE_QUEUE_MAX` | `8` | An engine for a book is reused while its waiter count is below this. |
 | `WREN_HOT_QUEUE` | `3` | A second engine for the same book starts only when the first engine already has at least this many waiters. |
 | `WREN_ENGINES_PER_BOOK` | `2` | Engines one book may hold. Past this, a full queue returns "очередь движка переполнена". |
-| `WREN_ENGINE_IDLE_SEC` | `600` | The process does not read this value. |
 | `WREN_THREADS` | `8` | Size of the thread pool that runs Wren calls. |
 | `CPU_THREADS` | `8` | Size of the thread pool that runs CPU work in the service. |
 
@@ -105,8 +102,6 @@ The number of live engines is the smaller of `WREN_ENGINE_POOL` and `WREN_POOL_M
 | `OPERATION_WAIT_MAX_MS` | `30000` | Upper bound of the `wait_ms` query on an operation. |
 | `SSE_ENABLED` | `true` | `false` makes `GET /v1/operations/{id}/events` answer 404 "SSE выключен". |
 | `SSE_HEARTBEAT_SEC` | `15` | Seconds between SSE comments while no event arrives. |
-| `ASYNC_SLOW_CALLBACK_MS` | `100` | The process does not read this value. |
-| `RESULT_CACHE_TTL` | `86400` | The process does not read this value. Findings use `ETAG_TTL`. |
 | `IDEMPOTENCY_TTL` | `86400` | Seconds a finished idempotency record stays in Redis. |
 | `RATE_USER_RPS` | `10` | Requests per second for one `X-User-Id`. |
 | `RATE_USER_BURST` | `20` | Burst allowed on that user quota. |
@@ -124,7 +119,6 @@ A Redis error inside the rate-limit script allows the request through. A Redis e
 
 | Name | Default | What the process does |
 | --- | --- | --- |
-| `STATE_COMPACT_EVERY` | `200` | The process does not read this value. |
 | `GC_INCOMPLETE_AGE` | `1h` | Age after which GC deletes an incomplete build. A suffix `h`, `m`, or `s` is hours, minutes, or seconds. A bare number is seconds. |
 | `GC_CRON` | `0 3 * * *` | When that GC is enqueued. |
 | `RETRY_MAX` | `2` | Extra attempts after a failed builder call or a failed embed or rerank call. |
@@ -142,7 +136,6 @@ A Redis error inside the rate-limit script allows the request through. A Redis e
 | `HEAVY_STAGE_TIMEOUT_SEC` | `1800` | An isolated heavy stage is killed after this many seconds. |
 | `HEAVY_STAGE_KILL_GRACE_SEC` | `5` | Seconds that stage gets after the timeout signal. |
 | `HEAVY_STAGE_MEMORY_MB` | `4096` | Memory cap of that stage. |
-| `ISOLATE_PROJECTION_MIN_ROWS` | `200000` | The process does not read this value. |
 | `CB_FAILURES` | `5` | Failures that open the builder circuit and a model circuit. |
 | `CB_OPEN_SEC` | `30` | Seconds those circuits stay open. |
 | `SHUTDOWN_GRACE_SEC` | `25` | Seconds an embedded child is given to exit. |
@@ -152,7 +145,6 @@ A Redis error inside the rate-limit script allows the request through. A Redis e
 | Name | Default | What the process does |
 | --- | --- | --- |
 | `PROPOSE_MIN_BOOKS` | `3` | A cluster becomes a glossary proposal only when it spans this many books. A row marked critical skips this floor. |
-| `UNKNOWN_MATERIAL_SHARE` | `0.05` | The process does not read this value. |
 | `UNMAPPED_CLUSTER_CRON` | `0 4 * * *` | When unmapped clustering is enqueued. |
 | `UNMAPPED_MIN_CLUSTER` | `2` | `min_cluster_size` for HDBSCAN when row embeddings exist. Groups built from the label alone do not use it. |
 | `GLOSSARY_MINE_CRON` | `30 4 * * *` | When glossary mining is enqueued. |
@@ -160,7 +152,6 @@ A Redis error inside the rate-limit script allows the request through. A Redis e
 | `GLOSSARY_AUTO_PROMOTE` | `false` | `true` lets mining write labels that already cleared the auto decision, and only while no canary is active. `false` leaves those rows as proposals. |
 | `GLOSSARY_AUTO_MIN_BOOKS` | `3` | Books a mined label must appear in before it can be auto. |
 | `GLOSSARY_AUTO_MIN_CONFIRMATIONS` | `2` | Confirmations that label must have. |
-| `GLOSSARY_AUTO_PRECISION_GATE` | `0.98` | The process does not read this value. |
 | `GLOSSARY_SHADOW_RECENT_BOOKS` | `50` | How many of the latest glossary jobs a shadow report includes. |
 | `GLOSSARY_CANARY_SHARE` | `10` | Percent of books, from 0 to 100, that read a canary release. The release stores this share. A book is in the canary when `sha256(job_id) % 100` is below it. |
 | `GLOSSARY_CANARY_HOURS` | `48` | Hours a canary waits before it may promote. |
