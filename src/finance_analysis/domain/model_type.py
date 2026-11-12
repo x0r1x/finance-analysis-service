@@ -395,6 +395,25 @@ def confirmed_variants(catalog: ModelTypeCatalog, verdict: Effective) -> dict[st
     return dict(catalog.types[verdict.primary].variants)
 
 
+def resolve_trace_variant(
+    explicit: str | None,
+    verdict_source: str,
+    variants: dict[str, str],
+    metric_id: str,
+) -> str | None:
+    """Явный variant запроса побеждает. Иначе вариант уверенного типа.
+
+    `verdict_source == "unresolved"` оставляет базовую формулу (`None`),
+    как `confirmed_variants`.
+    """
+
+    if explicit:
+        return explicit
+    if verdict_source == "unresolved":
+        return None
+    return variants.get(metric_id)
+
+
 def decision_labels(verdict: Effective) -> tuple[str, ...]:
     """Метки, по которым считается применимость: подтверждённые или объединение кандидатов."""
 
