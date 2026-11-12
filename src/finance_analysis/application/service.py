@@ -101,9 +101,11 @@ from finance_analysis.domain.mapping import decide
 from finance_analysis.domain.metrics import _primaries
 from finance_analysis.domain.model_type import (
     assignment_error,
+    confirmed_variants,
     contradicts_signals,
     decision_labels,
     infer,
+    resolve_trace_variant,
 )
 from finance_analysis.domain.model_type import (
     effective as model_type_effective,
@@ -2889,11 +2891,20 @@ class FasService:
             graph_links_available = False
 
         indicator = self.financial_catalog.get(metric_id)
-        inputs = None
         resolved_variant = variant
+        if not resolved_variant:
+            verdict = await self.resolve_model_type(job_id, head)
+            book_variants = confirmed_variants(self.model_types, verdict)
+            resolved_variant = resolve_trace_variant(
+                None,
+                verdict.source,
+                book_variants,
+                metric_id,
+            )
+        inputs = None
         if indicator is not None:
-            if variant:
-                spec = indicator.variants.get(variant)
+            if resolved_variant:
+                spec = indicator.variants.get(resolved_variant)
                 if spec is None:
                     raise NotFound("вариант показателя не найден")
                 inputs = spec.inputs.as_dict()
