@@ -13,10 +13,12 @@ interest_order:
   pf: [interest_paid, interest]
 metrics:
   dscr:
+    definition: "CFADS / обслуживание долга. Вариант pf считает это за период. Вариант corporate_covenant считает другой состав и окно LTM."
     numerator: [cfads]
     denominator: debt_service
     variants:
       pf:
+        definition: "Проектное финансирование: CFADS / обслуживание долга за один период. Знак оттока и неполное окно считает Python. Уплаченные проценты вместо debt_service — запасной путь кода, не вход этой формулы."
         numerator: [cfads]
         denominator: debt_service
         window: period
