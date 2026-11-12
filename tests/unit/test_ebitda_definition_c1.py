@@ -13,6 +13,20 @@ from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.mapping import assign_rows
 from finance_analysis.domain.metrics import coverage_ratio
 
+_RAS_SKIP = (
+    "Коэффициент не посчитан: выбрана EBITDA (РСБУ), а она ещё не собрана. "
+    "Нужны прибыль от продаж и амортизация за тот же период. "
+    "Прочие доходы и расходы входят только после удаления курсовых разниц, резервов, "
+    "продажи и переоценки имущества, штрафов и других статей не обычной работы. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
+_IFRS_SKIP = (
+    "Коэффициент не посчитан: выбрана EBITDA (МСФО), а она ещё не собрана. "
+    "Нужны операционная прибыль и амортизация за тот же период. "
+    "Продажу активов, переоценку, курсовые разницы и участие в других организациях убирают "
+    "только если они внутри этой операционной прибыли и человек их отметил. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
 _FRESH = frozenset(
     {
         "profit_from_sales",
@@ -150,6 +164,12 @@ def test_ras_lines_bind_and_operating_profit_stays_apart():
     assert glossary.resolve("EBITDA (МСФО)").concept == "ebitda_ifrs"
     assert glossary.display_label("ebitda_ras", "ru") == "EBITDA (РСБУ)"
     assert glossary.display_label("ebitda_ifrs", "ru") == "EBITDA (МСФО)"
+    assert "не EBITDA (РСБУ)" in glossary.concepts["ebitda"].definition["ru"]
+    assert "ещё не собрана" not in glossary.concepts["ebitda"].definition["ru"]
+    assert "Пока показатель не считается" in glossary.concepts["ebitda_ras"].definition["ru"]
+    assert "Пока показатель не считается" in glossary.concepts["ebitda_ifrs"].definition["ru"]
+    assert "finance-lease" in glossary.concepts["ebitda_ras"].definition["en"]
+    assert "does not define EBITDA" in glossary.concepts["ebitda_ifrs"].definition["en"]
     notes = _assign(glossary, "Амортизация на конец года (заполняется только 4 кв.)")
     assert notes.status == "bound" and notes.concept == "depreciation_notes"
     bare = _row("bare", "Амортизация на конец года (заполняется только 4 кв.)")
@@ -222,18 +242,11 @@ def test_ras_and_ifrs_skip_the_three_ratios_without_the_dirty_sum():
             assert got["rows"] == [], (kind, metric)
             text = got["message"]
             assert "20385911" not in text
-            assert "ebitda" not in text.casefold()
-            assert "ebit" not in text.casefold()
             folded = _blob(got)
             assert "20385911" not in folded
-            if kind == "ras":
-                assert "Прибыль от продаж найдена" in text
-                assert "50" in text and "90" in text and "100" in text and "ф.5 (740)" in text
-                assert "расшифровки исключений нет" in text
-                assert "год, а не период прибыли" in text
-            else:
-                assert "операционной прибыли" in text
-                assert "того же периода" in text
+            expected = _RAS_SKIP if kind == "ras" else _IFRS_SKIP
+            assert text == expected
+            assert expected in [item.get("params", {}).get("message") for item in got["warnings"]]
 
 
 def test_project_finance_dscr_still_uses_cfads_when_the_recipe_is_requested():

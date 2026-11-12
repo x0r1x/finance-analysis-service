@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import json
-import re
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
@@ -73,13 +71,20 @@ def interest_choice(
 
 
 _EBITDA_DEFINITION = frozenset({"book", "ras", "ifrs"})
-_RECIPE_CODES = {
-    "profit_from_sales": ("50", "2200"),
-    "other_income": ("90", "2340"),
-    "other_expense": ("100", "2350"),
-    "depreciation_notes": ("5640", "740"),
-}
-_IFRS_UNPUBLISHED = "Нет операционной прибыли с числом того же периода и амортизации того же периода."
+_RAS_UNPUBLISHED = (
+    "Коэффициент не посчитан: выбрана EBITDA (РСБУ), а она ещё не собрана. "
+    "Нужны прибыль от продаж и амортизация за тот же период. "
+    "Прочие доходы и расходы входят только после удаления курсовых разниц, резервов, "
+    "продажи и переоценки имущества, штрафов и других статей не обычной работы. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
+_IFRS_UNPUBLISHED = (
+    "Коэффициент не посчитан: выбрана EBITDA (МСФО), а она ещё не собрана. "
+    "Нужны операционная прибыль и амортизация за тот же период. "
+    "Продажу активов, переоценку, курсовые разницы и участие в других организациях убирают "
+    "только если они внутри этой операционной прибыли и человек их отметил. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
 
 
 def ebitda_definition_error(value) -> str | None:
@@ -115,7 +120,9 @@ def recipe_block(
         return None
     if names is not None and "ebitda" not in names and "ebit" not in names:
         return None
-    message = _recipe_message(kind, bindings)
+    # Одна фраза на ICR, чистый долг к EBITDA и корпоративный DSCR. Найденные строки её не меняют.
+    del bindings
+    message = _recipe_message(kind)
     return {
         "metric": metric,
         "rows": [],
@@ -127,114 +134,12 @@ def recipe_block(
     }
 
 
-def _recipe_message(kind: str, bindings: list[dict]) -> str:
+def _recipe_message(kind: str) -> str:
+    if kind == "ras":
+        return _RAS_UNPUBLISHED
     if kind == "ifrs":
         return _IFRS_UNPUBLISHED
-    if kind != "ras":
-        return "Пометка определения: book, ras или ifrs."
-    sales = _clause(
-        _present(bindings, "profit_from_sales"),
-        "Прибыль от продаж найдена",
-        "Прибыль от продаж не найдена",
-        _codes(bindings, "profit_from_sales"),
-    )
-    others = _present(bindings, "other_income") or _present(bindings, "other_expense")
-    other_codes = [*_codes(bindings, "other_income"), *_codes(bindings, "other_expense")]
-    if others:
-        other = "Прочие найдены"
-        if other_codes:
-            other += f" ({', '.join(other_codes)})"
-        other += ", но расшифровки исключений нет, поэтому сумму не публикуем"
-    else:
-        other = "Прочие не найдены, поэтому сумму не публикуем"
-    notes = _depreciation_clause(bindings)
-    return f"{sales}. {other}. {notes}."
-
-
-def _clause(found: bool, yes: str, no: str, codes: list[str]) -> str:
-    if not found:
-        return no
-    if codes:
-        return f"{yes} ({', '.join(codes)})"
-    return yes
-
-
-def _depreciation_clause(bindings: list[dict]) -> str:
-    texts = _texts(bindings, "depreciation_notes")
-    if not texts:
-        return "Амортизация пояснений не найдена; это год, а не период прибыли"
-    blob = " ".join(texts)
-    mark = "ф.5 (740)" if "ф.5" in blob.casefold() and _has_code(blob, "740") else None
-    if mark is None:
-        codes = _codes(bindings, "depreciation_notes")
-        mark = ", ".join(codes)
-    head = "Амортизация пояснений"
-    if mark:
-        head += f" ({mark})"
-    return f"{head} — год, а не период прибыли"
-
-
-def _present(bindings: list[dict], concept: str) -> bool:
-    return any(_bound(row, concept) for row in bindings)
-
-
-def _codes(bindings: list[dict], concept: str) -> list[str]:
-    blob = " ".join(_texts(bindings, concept))
-    return [code for code in _RECIPE_CODES[concept] if _has_code(blob, code)]
-
-
-def _texts(bindings: list[dict], concept: str) -> list[str]:
-    found = []
-    for row in bindings:
-        if not _bound(row, concept):
-            continue
-        text = str(row.get("label_path_text") or row.get("label") or "")
-        code = _line_code(row)
-        parts = []
-        if text:
-            parts.append(text)
-        if code and code not in text:
-            parts.append(code)
-        if parts:
-            found.append(" ".join(parts))
-    return found
-
-
-def _line_code(row: dict) -> str | None:
-    """Код столбца отчёта. На привязке он лежит в evidence, не в подписи."""
-
-    raw = row.get("line_code")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-    evidence = row.get("evidence")
-    if isinstance(evidence, dict):
-        raw = evidence.get("line_code")
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
-    blob = row.get("evidence_json")
-    if not isinstance(blob, str) or not blob:
-        return None
-    try:
-        parsed = json.loads(blob)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    raw = parsed.get("line_code")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-    return None
-
-
-def _bound(row: dict, concept: str) -> bool:
-    name = row.get("effective_concept") or row.get("concept")
-    if name != concept or row.get("is_primary") is False:
-        return False
-    return row.get("status") in (None, "bound", "bound_with_warning")
-
-
-def _has_code(text: str, code: str) -> bool:
-    return re.search(rf"(?<!\d){re.escape(code)}(?!\d)", text) is not None
+    return "Пометка определения: book, ras или ifrs."
 
 
 def coverage_ratio(

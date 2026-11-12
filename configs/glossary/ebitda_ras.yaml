@@ -3,5 +3,5 @@ pref:
   en: "EBITDA (RAS)"
   ru: "EBITDA (РСБУ)"
 definition:
-  en: "Named result of the RAS picture. This release does not calculate it and does not publish a raw sum under this name."
-  ru: "Именованный результат рецепта РСБУ. В этом релизе не считается и сырая сумма под этим именем не публикуется."
+  en: "Profit from sales plus depreciation for the same period. Other income is added and other expenses are deducted only after items that are not part of ordinary operations have been removed, including foreign-exchange differences, provisions, asset sales and revaluations, and penalties. A finance-lease cost inside cost of sales is not added by itself. The figure is not calculated yet, and the model's own EBITDA line is not used in its place."
+  ru: "Прибыль от продаж плюс амортизация за тот же период. Прочие доходы прибавляют, а прочие расходы вычитают только после того, как из них убраны курсовые разницы, резервы, продажа и переоценка имущества, штрафы и другие статьи не обычной работы. Расход по финансовому лизингу внутри себестоимости сам по себе не прибавляется. Пока показатель не считается, и строка EBITDA из модели на его место не ставится."
