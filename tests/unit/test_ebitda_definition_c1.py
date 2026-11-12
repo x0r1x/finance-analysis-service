@@ -74,7 +74,7 @@ def _assign(glossary, label: str):
     return assign_rows([_row("row", label)], [], glossary)["row"]
 
 
-def _bind(concept: str, row: str, label: str | None = None) -> dict:
+def _bind(concept: str, row: str, label: str | None = None, line_code: str | None = None) -> dict:
     item = {
         "effective_concept": concept,
         "row_key": row,
@@ -83,7 +83,10 @@ def _bind(concept: str, row: str, label: str | None = None) -> dict:
         "source": "inferred",
     }
     if label:
+        item["label"] = label
         item["label_path_text"] = label
+    if line_code:
+        item["evidence_json"] = '{"line_code": "' + line_code + '"}'
     return item
 
 
@@ -143,6 +146,17 @@ def test_ras_lines_bind_and_operating_profit_stays_apart():
         assert item.status == "unknown", label
         assert item.concept is None, label
     assert glossary.resolve("EBITDA").concept == "ebitda"
+    assert glossary.resolve("EBITDA (РСБУ)").concept == "ebitda_ras"
+    assert glossary.resolve("EBITDA (МСФО)").concept == "ebitda_ifrs"
+    assert glossary.display_label("ebitda_ras", "ru") == "EBITDA (РСБУ)"
+    assert glossary.display_label("ebitda_ifrs", "ru") == "EBITDA (МСФО)"
+    notes = _assign(glossary, "Амортизация на конец года (заполняется только 4 кв.)")
+    assert notes.status == "bound" and notes.concept == "depreciation_notes"
+    bare = _row("bare", "Амортизация на конец года (заполняется только 4 кв.)")
+    bare["line_code"] = "ф.5 (740)"
+    coded = assign_rows([bare], [], glossary)["bare"]
+    assert coded.concept == "depreciation_notes"
+    assert coded.evidence.get("line_code") == "ф.5 (740)"
     assert glossary.resolve("Операционная прибыль").concept != "profit_from_sales"
     assert "ebitda_ras" in glossary.ids and "ebitda_ifrs" in glossary.ids
     catalog = _catalog()
@@ -189,10 +203,10 @@ def test_ras_and_ifrs_skip_the_three_ratios_without_the_dirty_sum():
         [
             _bind("ebitda", "e", "EBITDA"),
             _bind("ebit", "b", "EBIT"),
-            _bind("profit_from_sales", "sales", "Прибыль (убыток) от реализации (50)"),
-            _bind("other_income", "income", "Прочие доходы (90)"),
-            _bind("other_expense", "expense", "Прочие расходы (100)"),
-            _bind("depreciation_notes", "dep", "ф.5 (740)"),
+            _bind("profit_from_sales", "sales", "Прибыль (убыток) от реализации", "50"),
+            _bind("other_income", "income", "Прочие доходы", "90"),
+            _bind("other_expense", "expense", "Прочие расходы", "100"),
+            _bind("depreciation_notes", "dep", "Амортизация на конец года (заполняется только 4 кв.)", "ф.5 (740)"),
             _bind("interest", "i"),
             _bind("net_debt", "debt"),
             _bind("cash_taxes", "tax"),
@@ -261,3 +275,64 @@ def test_profile_stores_only_book_ras_or_ifrs(tmp_path):
             )
 
     asyncio.run(run())
+
+
+def test_code_column_beside_the_label_reaches_the_binding():
+    """Столбец D книги, не текст подписи. Код 50 и ф.5 (740) живут в ячейке справа от заголовка."""
+
+    from finance_analysis.adapters.builder.acl import parse_context
+    from finance_analysis.application.project import derive_rows, project
+    from finance_analysis.domain.book import WorkbookSnapshot
+
+    snapshot = parse_context(
+        {
+            "axes": [
+                {
+                    "id": "ax",
+                    "sheet": "Фин отчетность РСБУ",
+                    "kind": "time",
+                    "periods": [{"col": 6, "period_key": "Y1", "index": 1, "text": "2024"}],
+                }
+            ],
+            "blocks": [
+                {
+                    "block_id": "Фин отчетность РСБУ!r1",
+                    "sheet": "Фин отчетность РСБУ",
+                    "kind": "timeline",
+                    "label_col": 3,
+                    "rows": [
+                        _sheet_row(30, "Прибыль (убыток) от реализации", "50"),
+                        _sheet_row(43, "Амортизация на конец года (заполняется только 4 кв.)", "ф.5 (740)"),
+                    ],
+                }
+            ],
+        }
+    )
+    assert isinstance(snapshot, WorkbookSnapshot)
+    projected, _warnings = project(snapshot, model_id="m", build="b")
+    by_num = {row["row_num"]: row for row in projected["dim_row"]}
+    assert by_num[30]["line_code"] == "50"
+    assert by_num[43]["line_code"] == "ф.5 (740)"
+    assert "50" not in by_num[30]["label"]
+    assert "ф.5" not in by_num[43]["label_path_text"]
+    derived = derive_rows(projected, state_seq=1, derive="d", versions={"glossary": "g"}, glossary=load_catalog())
+    rows = {row["row_key"]: row for row in derived["bindings"]}
+    sales = rows["Фин отчетность РСБУ|30|Фин отчетность РСБУ!r1"]
+    notes = rows["Фин отчетность РСБУ|43|Фин отчетность РСБУ!r1"]
+    assert sales["concept"] == "profit_from_sales"
+    assert notes["concept"] == "depreciation_notes"
+    assert '"line_code": "50"' in sales["evidence_json"] or '"line_code":"50"' in sales["evidence_json"].replace(" ", "")
+    assert "ф.5 (740)" in notes["evidence_json"]
+    assert "ф.5" not in notes["label_path_text"]
+
+
+def _sheet_row(number: int, label: str, code: str) -> dict:
+    return {
+        "row_key": f"Фин отчетность РСБУ|{number}|Фин отчетность РСБУ!r1",
+        "sheet": "Фин отчетность РСБУ",
+        "row": number,
+        "label": label,
+        "kind": "fact",
+        "unit": "money",
+        "cells": [{"col": 4, "cached_value": code, "role": "code"}],
+    }

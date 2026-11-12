@@ -126,6 +126,7 @@ def project(
                 "formula": row.formula,
                 "formula_exceptions_json": __import__("json").dumps(_exceptions(row), ensure_ascii=False),
                 "formula_exceptions_truncated": _exceptions_truncated(row),
+                "line_code": row.line_code,
             }
         )
         series_list = list(row.series)

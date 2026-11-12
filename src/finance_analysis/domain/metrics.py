@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
@@ -187,10 +188,42 @@ def _texts(bindings: list[dict], concept: str) -> list[str]:
     for row in bindings:
         if not _bound(row, concept):
             continue
-        text = row.get("label_path_text") or row.get("label") or ""
+        text = str(row.get("label_path_text") or row.get("label") or "")
+        code = _line_code(row)
+        parts = []
         if text:
-            found.append(str(text))
+            parts.append(text)
+        if code and code not in text:
+            parts.append(code)
+        if parts:
+            found.append(" ".join(parts))
     return found
+
+
+def _line_code(row: dict) -> str | None:
+    """Код столбца отчёта. На привязке он лежит в evidence, не в подписи."""
+
+    raw = row.get("line_code")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    evidence = row.get("evidence")
+    if isinstance(evidence, dict):
+        raw = evidence.get("line_code")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    blob = row.get("evidence_json")
+    if not isinstance(blob, str) or not blob:
+        return None
+    try:
+        parsed = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    raw = parsed.get("line_code")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
 
 
 def _bound(row: dict, concept: str) -> bool:

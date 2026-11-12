@@ -264,6 +264,7 @@ class SnapshotRow:
     block_id: str
     block_kind: str
     formula_exceptions: tuple[str, ...] = ()
+    line_code: str | None = None
 
 
 @dataclass(frozen=True)

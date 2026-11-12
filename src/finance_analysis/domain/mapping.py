@@ -201,6 +201,9 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         "label": {"id": label_id(hit.concept, hit.kind, hit.text), "kind": hit.kind, "text": hit.text},
         "match_strength": strength,
     }
+    code = row.get("line_code")
+    if isinstance(code, str) and code.strip():
+        evidence["line_code"] = code.strip()
     if strength == "section_heading":
         evidence["match_provenance"] = "section_heading"
         evidence["section_heading"] = _nearest_heading(row)
@@ -257,6 +260,13 @@ def lexical_hit(row: dict, glossary: GlossaryPackage):
         if not structure_pass(row, glossary.concepts[hit.concept], label=label):
             return None
         return found
+    code = str(row.get("line_code") or "").strip()
+    if code and code != label:
+        coded = glossary.resolve_match(code)
+        if coded is not None:
+            hit, _strength = coded
+            if structure_pass(row, glossary.concepts[hit.concept], label=label):
+                return coded
     return _heading_hit(row, glossary, label)
 
 
