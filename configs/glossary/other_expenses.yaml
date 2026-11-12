@@ -1,0 +1,10 @@
+concept: other_expenses
+pref:
+  en: "RAS other expenses line 2350"
+  ru: "Прочие расходы"
+alt:
+  ru:
+    - "2350"
+definition:
+  en: "Line 2350 of the income statement. This release does not calculate it and does not fold breakdown rows into it."
+  ru: "Строка 2350 отчёта о финансовых результатах. В этом релизе не считается и не собирает расшифровку."

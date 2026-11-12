@@ -7,6 +7,7 @@ alt:
     - "Операционная прибыль"
     - "Операционная прибыль (убыток)"
     - "Прибыль (убыток) от продаж"
+    - "2200"
 definition:
   en: "Line of the official financial statement. This release does not calculate it."
   ru: "Строка официальной формы отчётности. В этом релизе не считается."

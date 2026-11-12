@@ -1,0 +1,10 @@
+concept: other_income
+pref:
+  en: "RAS other income line 2340"
+  ru: "Прочие доходы"
+alt:
+  ru:
+    - "2340"
+definition:
+  en: "Line 2340 of the income statement. This release does not calculate it and does not fold breakdown rows into it."
+  ru: "Строка 2340 отчёта о финансовых результатах. В этом релизе не считается и не собирает расшифровку."

@@ -1,0 +1,10 @@
+concept: production_cost_depreciation
+pref:
+  en: "Depreciation in the production-cost notes"
+  ru: "Амортизация в пояснениях, затраты на производство"
+alt:
+  ru:
+    - "5640"
+definition:
+  en: "Annual line 5640 of the production-cost notes. Not a balance of accumulated depreciation and not calculated here."
+  ru: "Годовая строка 5640 пояснений, таблица затрат на производство. Не накопленная амортизация баланса. В этом релизе не считается."

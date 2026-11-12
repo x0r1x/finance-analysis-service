@@ -1,0 +1,7 @@
+concept: finance_lease_in_cost
+pref:
+  en: "Finance lease expense inside cost of sales"
+  ru: "Расходы по финансовому лизингу в себестоимости"
+definition:
+  en: "Finance lease cost sitting inside cost of sales. Not lessor interest income. This release does not add it back."
+  ru: "Расход по финансовому лизингу внутри себестоимости. Не процентный доход лизингодателя. В этом релизе не прибавляется."
