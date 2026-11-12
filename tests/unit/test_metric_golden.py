@@ -212,3 +212,93 @@ def test_dscr_corporate_covenant_catalog_matches_python_and_golden():
     assert got["rows"][0]["value"] == Decimal("3.5000000000")
     assert got["rows"][0]["window"] == ["Y1"]
     assert set(got["rows"][0]["inputs"]) == variant.inputs.concepts
+
+
+ICR_DEFINITION = (
+    "ICR: EBITDA или EBIT, делённые на проценты. "
+    "Если в книге один числитель, частное считается по нему. "
+    "Если оба, Python берёт EBITDA и ставит предупреждение icr_numerator."
+)
+
+ICR_USE = {
+    "bank_leasing": ("not_applicable", None),
+    "corporate": ("required", None),
+    "dcf_valuation": ("not_applicable", None),
+    "development_escrow": ("not_applicable", None),
+    "investment_project": ("not_applicable", None),
+    "lbo_ma": ("not_applicable", None),
+    "other": ("optional", None),
+    "ppp_concession": ("optional", None),
+    "project_finance": ("optional", None),
+    "real_estate_income": ("not_applicable", None),
+    "renewables_dpm": ("not_applicable", None),
+}
+
+ICR_FORMULA = {
+    "denominator": {"plus": ["interest"], "minus": []},
+    "one_of": ["ebit", "ebitda"],
+}
+
+
+def assert_book(record, values: dict[str, str], components: dict) -> None:
+    """all_of входят все. Из one_of в книге ровно то, что оказалось в components.
+
+    Оба члена one_of в книге сюда не подходят: лишний числитель не входит в components.
+    """
+
+    present = set(values)
+    used_one = set(components) & record.inputs.one_of
+    assert record.inputs.all_of <= present
+    assert present & record.inputs.one_of == used_one
+    assert set(components) == record.inputs.all_of | used_one
+
+
+def test_icr_catalog_matches_python_and_golden():
+    icr = load_financial_catalog().indicators["icr"]
+    assert icr.base is None
+    assert icr.status == "active"
+    assert icr.variants == {}
+    terms = {"ebitda": "money", "ebit": "money", "interest": "money"}
+    assert_slice(
+        icr,
+        definition=ICR_DEFINITION,
+        all_of=frozenset({"interest"}),
+        one_of=frozenset({"ebitda", "ebit"}),
+        formula=ICR_FORMULA,
+        unit="ratio",
+        window=None,
+        dimensions=terms,
+    )
+    assert set(icr.model_types) == set(ICR_USE)
+    for type_id, (use, variant) in ICR_USE.items():
+        got = icr.model_types[type_id]
+        assert (got.use, got.variant) == (use, variant)
+
+    ebitda_only = {"ebitda": "80", "interest": "20"}
+    # one_of не требует обоих числителей: set(values) == inputs.concepts здесь ложно.
+    assert set(ebitda_only) != icr.inputs.concepts
+    got = _run("icr", None, ebitda_only)
+    assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+    # 80 / 20. В components есть ebitda и interest, ebit нет.
+    assert got["rows"][0]["value"] == Decimal("4.0000000000")
+    assert_book(icr, ebitda_only, got["rows"][0]["components"])
+    assert "ebit" not in got["rows"][0]["components"]
+
+    ebit_only = {"ebit": "30", "interest": "10"}
+    got = _run("icr", None, ebit_only)
+    assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+    # 30 / 10, числитель — ebit.
+    assert got["rows"][0]["value"] == Decimal("3.0000000000")
+    assert_book(icr, ebit_only, got["rows"][0]["components"])
+    assert set(got["rows"][0]["components"]) == {"ebit", "interest"}
+
+    both = {"ebitda": "80", "ebit": "10", "interest": "20"}
+    assert set(both) == icr.inputs.concepts
+    got = _run("icr", None, both)
+    assert got["status"] == "succeeded"
+    # Оба числителя: код берёт ebitda (80/20), не ebit (10/20).
+    assert got["rows"][0]["value"] == Decimal("4.0000000000")
+    assert set(got["rows"][0]["components"]) == {"ebitda", "interest"}
+    assert got["warnings"] == [{"code": "icr_numerator", "params": {"concept": "ebitda"}}]

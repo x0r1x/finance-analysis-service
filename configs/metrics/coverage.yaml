@@ -28,6 +28,7 @@ metrics:
         denominator: {plus: [interest, principal]}
         window: LTM
   icr:
+    definition: "ICR: EBITDA или EBIT, делённые на проценты. Если в книге один числитель, частное считается по нему. Если оба, Python берёт EBITDA и ставит предупреждение icr_numerator."
     numerator: [ebitda, ebit]
     denominator: interest
   adscr:
