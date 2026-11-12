@@ -98,9 +98,10 @@ def assemble_financial_fact_provenance(
     """Собрать провенанс одной ячейки из справочников §4.4.
 
     Ровно одна primary binding. Ноль primary — UndefinedFinancialFact.
-    Несколько primary — ProvenanceIntegrityError. Семантика в этом слое
-    по-прежнему присоединяется отдельно. semantic_model_version — публичный
-    SMV, переданный снаружи; он не выбирает binding и не подменяет derive_key.
+    Несколько primary — ProvenanceIntegrityError. row_semantics
+    присоединяется только с derive_key этой binding; чужой ключ не
+    подставляется. semantic_model_version — публичный SMV, переданный
+    снаружи; он не выбирает binding и не подменяет derive_key.
     """
 
     model_id = _req(fact, "model_id")
@@ -264,8 +265,6 @@ def _find_semantics(
     binding_key: str,
     derive_key: str,
 ) -> Mapping[str, Any] | None:
-    if not rows:
-        return None
     matched = [
         row
         for row in rows
@@ -275,10 +274,10 @@ def _find_semantics(
                 "model_id": model_id,
                 "build_key": build_key,
                 "binding_key": binding_key,
+                "derive_key": derive_key,
             },
         )
     ]
     if not matched:
         return None
-    same_derive = [row for row in matched if str(row.get("derive_key")) == derive_key]
-    return (same_derive or matched)[0]
+    return matched[0]

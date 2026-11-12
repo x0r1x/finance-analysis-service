@@ -351,3 +351,62 @@ def test_binding_for_another_key_is_still_a_join_error():
             periods=book["dim_period"],
             bindings=[other],
         )
+
+
+_OLDER = "0000000000000000"
+
+
+def test_semantics_do_not_substitute_another_derive_key():
+    book = _golden_book()
+    older = dict(book["row_semantics"][0])
+    older["derive_key"] = _OLDER
+    older["sign"] = "negative"
+    older["nature"] = "stock"
+    older["aggregation"] = "last"
+    older["excluded"] = True
+    record = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=book["dim_period"],
+        bindings=book["bindings"],
+        row_semantics=[older],
+    )
+    assert record.sign is None
+    assert record.nature is None
+    assert record.aggregation is None
+    assert record.excluded is None
+    assert record.derive_key == _DERIVE
+
+
+def test_semantics_join_exact_derive_key_and_ignore_older():
+    book = _golden_book()
+    current = book["row_semantics"][0]
+    older = dict(current)
+    older["derive_key"] = _OLDER
+    older["sign"] = "negative"
+    record = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=book["dim_period"],
+        bindings=book["bindings"],
+        row_semantics=[older, current],
+    )
+    assert record.sign == "positive"
+    assert record.nature == "flow"
+    assert record.excluded is False
+    assert record.derive_key == _DERIVE
+
+
+def test_several_semantics_with_same_derive_key_take_input_order():
+    book = _golden_book()
+    first = dict(book["row_semantics"][0])
+    second = dict(first)
+    second["sign"] = "negative"
+    record = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=book["dim_period"],
+        bindings=book["bindings"],
+        row_semantics=[first, second],
+    )
+    assert record.sign == "positive"
