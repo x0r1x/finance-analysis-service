@@ -1,14 +1,24 @@
 """Контракт каталога и золотой результат Python.
 
-Каталог не исполняется. Число считает select_ratio.
+Каталог не исполняется. Число считает тот же Python, что и расчёт коэффициентов.
 """
 
+from datetime import date, timedelta
 from decimal import Decimal
 
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.financial_catalog import load_financial_catalog
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.domain.covenant import select_ratio
+from finance_analysis.domain.cover_metrics import (
+    LOAN_LIFE,
+    REDUCED,
+    add_months,
+    adscr,
+    dscr_reductions,
+    loan_life_ratio,
+)
+from tests.unit.test_cover_metrics import LLCR_2025, PLCR_2025
 
 AXIS = "Sheet!r1"
 
@@ -53,24 +63,36 @@ def _bind(concept: str) -> dict:
     }
 
 
-def _fact(concept: str, value: str) -> dict:
+def _fact(concept: str, value: str, *, period_id: str = "Y1", axis: str = AXIS) -> dict:
     return {
         "row_key": concept,
-        "axis_id": AXIS,
-        "period_id": "Y1",
+        "axis_id": axis,
+        "period_id": period_id,
         "normalized_value": value,
     }
 
 
-def _period() -> dict:
-    return {
-        "axis_id": AXIS,
-        "period_id": "Y1",
-        "period_index": 1,
-        "period_key_base": "Y1",
-        "grain": "year",
+def _period(
+    *,
+    period_id: str = "Y1",
+    index: int = 1,
+    grain: str = "year",
+    start: date | None = None,
+    end: date | None = None,
+    axis: str = AXIS,
+) -> dict:
+    item = {
+        "axis_id": axis,
+        "period_id": period_id,
+        "period_index": index,
+        "period_key_base": period_id,
+        "grain": grain,
         "timeline_id": "t",
     }
+    if start is not None:
+        item["period_start"] = start
+        item["period_end"] = end
+    return item
 
 
 def _money(package) -> frozenset[str]:
@@ -100,19 +122,44 @@ def assert_slice(
         assert package.concepts[name].dimension == dimension
 
 
-def _run(metric: str, variant: str | None, values: dict[str, str]) -> dict:
+def _run(
+    metric: str,
+    variant: str | None,
+    values: dict[str, str],
+    *,
+    periods: list[dict] | None = None,
+    series: dict[str, list[str]] | None = None,
+) -> dict:
     package = load_catalog()
     types = load_model_types()
+    period_rows = periods if periods is not None else [_period()]
+    if series is None:
+        facts = [_fact(name, value) for name, value in values.items()]
+        bound = list(values)
+    else:
+        facts = []
+        for name, column in series.items():
+            if len(column) != len(period_rows):
+                raise AssertionError(name)
+            for period, value in zip(period_rows, column, strict=True):
+                facts.append(_fact(name, value, period_id=period["period_id"], axis=period["axis_id"]))
+        bound = list(series)
     common = {
-        "facts": [_fact(name, value) for name, value in values.items()],
-        "bindings": [_bind(name) for name in values],
-        "periods": [_period()],
+        "facts": facts,
+        "bindings": [_bind(name) for name in bound],
+        "periods": period_rows,
         "period_phase": {},
         "explicit_phases": False,
         "sign_convention": "outflow_negative",
         "marker_class": None,
         "absent": frozenset(),
     }
+    if metric in LOAN_LIFE:
+        return loan_life_ratio(metric, basis="period_end", **common)
+    if metric in REDUCED:
+        return dscr_reductions(metric, **common)
+    if metric == "adscr":
+        return adscr(direction="lookback", **common)
     return select_ratio(
         metric,
         variant,
@@ -302,3 +349,348 @@ def test_icr_catalog_matches_python_and_golden():
     assert got["rows"][0]["value"] == Decimal("4.0000000000")
     assert set(got["rows"][0]["components"]) == {"ebitda", "interest"}
     assert got["warnings"] == [{"code": "icr_numerator", "params": {"concept": "ebitda"}}]
+
+
+NET_DEBT_EBITDA_DEFINITION = (
+    "Чистый долг на конец периода / EBITDA как поток, окно LTM. "
+    "На годовой зернистости окно совпадает с одним периодом."
+)
+
+
+def test_net_debt_ebitda_catalog_matches_python_and_golden():
+    record = load_financial_catalog().indicators["net_debt_ebitda"]
+    assert record.base is None
+    assert record.status == "active"
+    assert record.variants == {}
+    terms = {"net_debt": "money", "ebitda": "money"}
+    assert_slice(
+        record,
+        definition=NET_DEBT_EBITDA_DEFINITION,
+        all_of=frozenset(terms),
+        one_of=frozenset(),
+        formula={
+            "numerator": {"plus": ["net_debt"], "minus": []},
+            "denominator": {"plus": ["ebitda"], "minus": []},
+        },
+        unit="ratio",
+        window="LTM",
+        dimensions=terms,
+    )
+    assert record.model_types["corporate"].use == "optional"
+    assert record.model_types["corporate"].variant is None
+    values = {"net_debt": "300", "ebitda": "100"}
+    assert set(values) == record.inputs.concepts
+    got = _run("net_debt_ebitda", None, values)
+    assert got["status"] == "succeeded"
+    # 300 / 100 на годе: LTM схлопывается в один период.
+    assert got["rows"][0]["value"] == Decimal("3.0000000000")
+    assert got["rows"][0]["window"] == ["Y1"]
+    assert set(got["rows"][0]["inputs"]) == record.inputs.concepts
+
+
+ESCROW_COVERAGE_DEFINITION = (
+    "Покрытие счетов эскроу: остаток эскроу / остаток долга за период. Это покрытие, не ставка."
+)
+
+
+def test_escrow_coverage_catalog_matches_python_and_golden():
+    record = load_financial_catalog().indicators["escrow_coverage"]
+    assert record.base is None
+    assert record.status == "active"
+    terms = {"escrow_balance": "money", "debt_outstanding": "money"}
+    assert_slice(
+        record,
+        definition=ESCROW_COVERAGE_DEFINITION,
+        all_of=frozenset(terms),
+        one_of=frozenset(),
+        formula={
+            "numerator": {"plus": ["escrow_balance"], "minus": []},
+            "denominator": {"plus": ["debt_outstanding"], "minus": []},
+        },
+        unit="ratio",
+        window="period",
+        dimensions=terms,
+    )
+    assert record.model_types["development_escrow"].use == "required"
+    assert record.model_types["development_escrow"].variant is None
+    values = {"escrow_balance": "50", "debt_outstanding": "200"}
+    # Строка книги escrow_coverage в золото не входит: иначе предупреждение стало бы контрактом.
+    assert "escrow_coverage" not in values
+    assert set(values) == record.inputs.concepts
+    got = _run("escrow_coverage", None, values)
+    assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+    # 50 / 200.
+    assert got["rows"][0]["value"] == Decimal("0.2500000000")
+    assert set(got["rows"][0]["inputs"]) == record.inputs.concepts
+
+
+ADSCR_DEFINITION = (
+    "ADSCR наследует входы DSCR, CFADS и обслуживание долга, "
+    "и считает сумму CFADS к сумме обслуживания долга за 12 месяцев lookback. "
+    "На годе код отвечает adscr_not_applicable. "
+    "Неполное окно FAS не досчитывает доли периода."
+)
+
+
+def test_adscr_catalog_matches_python_and_golden():
+    record = load_financial_catalog().indicators["adscr"]
+    assert record.base == "dscr"
+    assert record.status == "active"
+    money = {"cfads": "money", "debt_service": "money"}
+    assert_slice(
+        record,
+        definition=ADSCR_DEFINITION,
+        all_of=frozenset(money),
+        one_of=frozenset(),
+        formula={"base": "dscr"},
+        unit="ratio",
+        window=None,
+        dimensions=money,
+    )
+    year = _run("adscr", None, {"cfads": "100", "debt_service": "40"})
+    assert year["rows"] == []
+    assert any(item["code"] == "adscr_not_applicable" for item in year["warnings"])
+    periods = []
+    for index in range(4):
+        start = add_months(date(2025, 1, 1), 3 * index)
+        end = add_months(start, 3) - timedelta(days=1)
+        quarter = (start.month - 1) // 3 + 1
+        periods.append(
+            _period(
+                period_id=f"{start.year}Q{quarter}",
+                index=index,
+                grain="quarter",
+                start=start,
+                end=end,
+            )
+        )
+    series = {"cfads": ["25", "25", "25", "25"], "debt_service": ["20", "20", "20", "20"]}
+    assert set(series) == record.inputs.concepts
+    got = _run("adscr", None, {}, periods=periods, series=series)
+    by_period = {row["period_id"]: row for row in got["rows"]}
+    assert by_period["2025Q1"]["status"] == "not_computed"
+    assert by_period["2025Q1"]["reason"] == "partial_window"
+    # 100 / 80 за четыре квартала.
+    assert by_period["2025Q4"]["value"] == Decimal("1.2500000000")
+    assert by_period["2025Q4"]["window"] == ["2025Q1", "2025Q2", "2025Q3", "2025Q4"]
+
+
+DSCR_MIN_DEFINITION = "Минимум посчитанных DSCR. Входы те же, что у базового DSCR."
+DSCR_AVG_DEFINITION = (
+    "Среднее DSCR двумя методиками, mean_of_ratios и ratio_of_sums. "
+    "Код отдаёт обе, а не выбирает одну молча."
+)
+
+
+def _two_dscr_years() -> tuple[list[dict], dict[str, list[str]]]:
+    periods = [_period(period_id="Y1", index=1), _period(period_id="Y2", index=2)]
+    return periods, {"cfads": ["100", "100"], "debt_service": ["50", "25"]}
+
+
+def test_dscr_min_catalog_matches_python_and_golden():
+    record = load_financial_catalog().indicators["dscr_min"]
+    assert record.base == "dscr"
+    money = {"cfads": "money", "debt_service": "money"}
+    assert_slice(
+        record,
+        definition=DSCR_MIN_DEFINITION,
+        all_of=frozenset(money),
+        one_of=frozenset(),
+        formula={"base": "dscr"},
+        unit="ratio",
+        window=None,
+        dimensions=money,
+    )
+    periods, series = _two_dscr_years()
+    assert set(series) == record.inputs.concepts
+    got = _run("dscr_min", None, {}, periods=periods, series=series)
+    assert got["status"] == "succeeded"
+    # Отношения 2 и 4, минимум 2.
+    assert got["rows"][0]["value"] == Decimal("2.0000000000")
+    assert got["rows"][0]["period_id"] == "Y1"
+    assert set(got["rows"][0]["components"]) == record.inputs.concepts
+
+
+def test_dscr_avg_catalog_matches_python_and_golden():
+    record = load_financial_catalog().indicators["dscr_avg"]
+    assert record.base == "dscr"
+    money = {"cfads": "money", "debt_service": "money"}
+    assert_slice(
+        record,
+        definition=DSCR_AVG_DEFINITION,
+        all_of=frozenset(money),
+        one_of=frozenset(),
+        formula={"base": "dscr"},
+        unit="ratio",
+        window=None,
+        dimensions=money,
+    )
+    periods, series = _two_dscr_years()
+    got = _run("dscr_avg", None, {}, periods=periods, series=series)
+    assert got["status"] == "succeeded"
+    # Среднее отношений 3, отношение сумм 200/75.
+    assert {row["variant"]: row["value"] for row in got["rows"]} == {
+        "mean_of_ratios": Decimal("3.0000000000"),
+        "ratio_of_sums": Decimal("2.6666666667"),
+    }
+
+
+LLCR_DEFINITION = (
+    "LLCR: дисконт CFADS по дням/365, делённый на остаток долга. "
+    "DSRA в числитель не входит. "
+    "basis period_end берёт поток со следующего периода. "
+    "period_start читает остаток как открывающий."
+)
+PLCR_DEFINITION = (
+    "PLCR: дисконт CFADS по дням/365 до конца шкалы, делённый на остаток долга. "
+    "basis period_end считает по умолчанию. "
+    "period_start сдвигает окно на текущий период."
+)
+
+
+def _loan_life_book() -> tuple[list[dict], dict[str, list[str]]]:
+    periods = [
+        _period(
+            period_id=str(year),
+            index=index,
+            grain="year",
+            start=date(year, 1, 1),
+            end=date(year, 12, 31),
+        )
+        for index, year in enumerate((2025, 2026, 2027, 2028))
+    ]
+    series = {
+        "cfads": ["100", "100", "100", "100"],
+        "debt_service": ["-50", "-50", "-50", "0"],
+        "debt_outstanding": ["140", "95", "0", "0"],
+        "discount_rate": ["0.10", "0.10", "0.10", "0.10"],
+    }
+    return periods, series
+
+
+def _cover_life(metric: str):
+    record = load_financial_catalog().indicators[metric]
+    assert record.base is None
+    terms = {"cfads": "money", "debt_outstanding": "money", "discount_rate": "ratio"}
+    assert_slice(
+        record,
+        definition=LLCR_DEFINITION if metric == "llcr" else PLCR_DEFINITION,
+        all_of=frozenset(terms),
+        one_of=frozenset(),
+        formula={
+            "numerator": {"plus": ["cfads"], "minus": []},
+            "denominator": {"plus": ["debt_outstanding"], "minus": []},
+            "rate": "discount_rate",
+        },
+        unit="ratio",
+        window=None,
+        dimensions=terms,
+    )
+    # Срок долга режет Python по debt_service. В каталоге этого входа нет.
+    assert "debt_service" not in record.inputs.concepts
+    periods, series = _loan_life_book()
+    return record, _run(metric, None, {}, periods=periods, series=series)
+
+
+def test_llcr_catalog_matches_python_and_golden():
+    _record, got = _cover_life("llcr")
+    row = next(item for item in got["rows"] if item["period_id"] == "2025")
+    assert row["value"] == LLCR_2025
+    assert row["basis"] == "period_end"
+    assert any(
+        item["code"] == "dsra_not_included" and item["params"]["period_id"] == "2025" for item in got["warnings"]
+    )
+
+
+def test_plcr_catalog_matches_python_and_golden():
+    _record, got = _cover_life("plcr")
+    row = next(item for item in got["rows"] if item["period_id"] == "2025")
+    assert row["value"] == PLCR_2025
+    assert row["basis"] == "period_end"
+    assert not any(item["code"] == "dsra_not_included" for item in got["warnings"])
+
+
+NPV_DEFINITION = (
+    "NPV дисконтирует project_fcf степенью period_index и квантует деньги. Это не дисконт LLCR по дням/365."
+)
+IRR_DEFINITION = (
+    "IRR: ставка, обнуляющая NPV потока project_fcf. Степень дисконта - period_index, результат - отношение."
+)
+
+
+def test_npv_catalog_matches_python_and_golden():
+    record = load_financial_catalog().indicators["npv"]
+    assert record.base is None
+    assert record.unit == "money"
+    terms = {"project_fcf": "money", "discount_rate": "ratio"}
+    assert_slice(
+        record,
+        definition=NPV_DEFINITION,
+        all_of=frozenset(terms),
+        one_of=frozenset(),
+        formula={
+            "numerator": {"plus": ["project_fcf"], "minus": []},
+            "rate": "discount_rate",
+        },
+        unit="money",
+        window=None,
+        dimensions=terms,
+    )
+    assert record.model_types["investment_project"].use == "required"
+    assert record.model_types["investment_project"].variant is None
+    periods = [_period(period_id="Y0", index=0), _period(period_id="Y1", index=1)]
+    series = {"project_fcf": ["100", "100"], "discount_rate": ["0.10", "0.10"]}
+    assert set(series) == record.inputs.concepts
+    got = _run("npv", None, {}, periods=periods, series=series)
+    assert got["status"] == "succeeded"
+    # 100 + 100/1.1, квант MONEY, не quantize_ratio.
+    assert got["rows"][0]["value"] == Decimal("190.909091")
+    assert set(got["rows"][0]["inputs"]) == record.inputs.concepts
+
+
+def test_irr_catalog_matches_python_and_golden():
+    record = load_financial_catalog().indicators["irr"]
+    assert record.base is None
+    assert_slice(
+        record,
+        definition=IRR_DEFINITION,
+        all_of=frozenset({"project_fcf"}),
+        one_of=frozenset(),
+        formula={"numerator": {"plus": ["project_fcf"], "minus": []}},
+        unit="ratio",
+        window=None,
+        dimensions={"project_fcf": "money"},
+    )
+    assert record.model_types["investment_project"].use == "required"
+    periods = [_period(period_id="Y0", index=0), _period(period_id="Y1", index=1)]
+    series = {"project_fcf": ["-100", "110"]}
+    assert set(series) == record.inputs.concepts
+    got = _run("irr", None, {}, periods=periods, series=series)
+    assert got["status"] == "succeeded"
+    # Минус 100, плюс 110 через один шаг: 0.10 после quantize_ratio.
+    assert got["rows"][0]["value"] == Decimal("0.1000000000")
+    assert got["rows"][0]["inputs"] == ["project_fcf"]
+
+
+def test_dscr_pf_interest_fallback_matches_python_and_golden():
+    pf = load_financial_catalog().indicators["dscr"].variants["pf"]
+    assert_slice(
+        pf,
+        definition=DSCR_PF_DEFINITION,
+        all_of=frozenset({"cfads", "debt_service"}),
+        one_of=frozenset(),
+        formula=PF_FORMULA,
+        unit="ratio",
+        window="period",
+        dimensions={"cfads": "money", "debt_service": "money"},
+    )
+    values = {"cfads": "100", "interest_paid": "20", "principal": "30"}
+    assert "interest_paid" not in pf.inputs.concepts
+    assert "debt_service" not in values
+    got = _run("dscr", "pf", values)
+    assert got["status"] == "succeeded"
+    # 100 / (20 + 30). Каталог по-прежнему говорит debt_service.
+    assert got["rows"][0]["value"] == Decimal("2.0000000000")
+    assert any(item["code"] == "interest_basis_fallback" for item in got["warnings"])
+    assert set(got["rows"][0]["components"]) == {"cfads", "interest_paid", "principal"}
