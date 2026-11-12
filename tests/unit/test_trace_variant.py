@@ -1,12 +1,17 @@
 """Трассировка DSCR следует варианту типа, а не базовой формуле."""
 
+import pytest
+
 from finance_analysis.application.financial_catalog import load_financial_catalog
 from finance_analysis.application.model_types import load_model_types
+from finance_analysis.application.service import FasService
+from finance_analysis.domain.book import Actor, Head
+from finance_analysis.domain.errors import NotFound
 from finance_analysis.domain.graphs import (
     MISSING_NO_PRIMARY,
     check_metric_physical_trace,
 )
-from finance_analysis.domain.model_type import resolve_trace_variant
+from finance_analysis.domain.model_type import Effective, resolve_trace_variant
 
 
 def test_omitted_variant_follows_corporate_covenant():
@@ -56,3 +61,68 @@ def test_covenant_trace_names_cash_taxes_not_cfads():
     missing = [step.concept for step in trace.steps if step.missing_trace == MISSING_NO_PRIMARY]
     assert "cash_taxes" in missing
     assert trace.variant == "corporate_covenant"
+
+
+@pytest.mark.parametrize("source", ["inferred", "confirmed"])
+async def test_metric_trace_view_omitted_variant_uses_book_covenant(source):
+    service = FasService.__new__(FasService)
+    service.financial_catalog = load_financial_catalog()
+    service.model_types = load_model_types()
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+
+    async def head_ready(*_args, **_kwargs):
+        return head
+
+    async def rows_or_accepted(*_args, **_kwargs):
+        return [
+            {
+                "model_id": "job",
+                "build_key": "build",
+                "binding_key": "ebitda",
+                "row_key": "ebitda",
+                "effective_concept": "ebitda",
+                "concept": "ebitda",
+                "is_primary": True,
+                "status": "bound",
+                "stale": False,
+            }
+        ]
+
+    async def dataset_rows(_job_id, _head, dataset):
+        if dataset == "dim_row":
+            return [
+                {
+                    "model_id": "job",
+                    "build_key": "build",
+                    "row_key": "ebitda",
+                    "binding_key": "ebitda",
+                }
+            ]
+        if dataset == "fact_observation":
+            return []
+        raise NotFound(dataset)
+
+    async def resolve_model_type(_job_id, _head):
+        return Effective(
+            labels=("corporate",),
+            primary="corporate",
+            source=source,
+            reason=None,
+            seq=None,
+            profile_version=None,
+            score=1.0,
+            scores={"corporate": 1.0},
+            candidates=(),
+        )
+
+    service._head_ready = head_ready
+    service._rows_or_accepted = rows_or_accepted
+    service._dataset_rows = dataset_rows
+    service.resolve_model_type = resolve_model_type
+
+    body = await service.metric_trace_view("job", "dscr", Actor(), wait_sec=0, variant=None)
+    concepts = [step["concept"] for step in body["steps"]]
+    assert body["variant"] == "corporate_covenant"
+    assert "cash_taxes" in concepts
+    assert "cfads" not in concepts
+    assert "debt_service" not in concepts
