@@ -4,6 +4,10 @@
 
 Логическая запись **не** является новым Parquet-датасетом и **не** копирует `value*` / `concept` в широкую таблицу фактов. Это стабильный контракт сборки (view) поверх существующих датасетов §4.4.
 
+Выбор строки ужесточён относительно прежней редакции этого документа. Несколько истинных `is_primary` на один `binding_key` — ошибка целостности, ноль истинных `is_primary` — `UndefinedFinancialFact`, а не первая кандидат. `row_semantics` берётся только с `derive_key` выбранной primary; строка другой свёртки не подставляется, отдельного статуса у этого промаха нет. Прежняя редакция разрешала запасной выбор, и код ей соответствовал. Это смена контракта, а не исправление расхождения кода с документом.
+
+`SemanticModelVersion` в выборе не участвует и эту редакцию не меняет. Раскладка `build_key` / `derive_key` / `SemanticModelVersion` / `analysis_id` — в [semantic-model-version.md](semantic-model-version.md).
+
 Код: `finance_analysis.domain.provenance.assemble_financial_fact_provenance`.
 
 ## 1. Правило join
@@ -13,16 +17,39 @@ fact_observation
   ⨝ dim_row      ON (model_id, build_key, row_key)
   ⨝ bindings     ON (model_id, build_key, binding_key)
                     — binding_key берётся из dim_row;
-                      при нескольких строках bindings с тем же ключом
-                      предпочитается is_primary = true, иначе первая
+                      ровно одна строка с истинным is_primary;
+                      ноль таких — UndefinedFinancialFact,
+                      не первая кандидат;
+                      две и больше — ProvenanceIntegrityError
   ⨝ dim_period   ON (model_id, build_key, axis_id, period_id)
-  ⟕ row_semantics ON (model_id, build_key, binding_key)
-                    — опционально; при нескольких — первая с тем же derive_key
+  ⟕ row_semantics ON (model_id, build_key, binding_key, derive_key)
+                    — derive_key равен derive_key выбранной primary;
+                      нет такой строки — поля семантики null;
+                      другой derive_key не подставляется;
+                      несколько с тем же derive_key — первая во входе
 ```
 
 Ключи join уже есть в схемах; **новые nullable колонки-ссылки не требуются**. Предпочтение — документировать join, а не расширять схемы (MINOR только если join иначе нестабилен — в фазе 1 не применяется).
 
 Точка входа сборки — одна строка `fact_observation` (ячейка). Остальные датасеты — справочники по ключам выше.
+
+Ноль строк `bindings` с этим `binding_key` — по-прежнему `ProvenanceJoinError`. Это не неопределённый результат. Строки другого `binding_key` в выборку не входят.
+
+Строки с этим ключом есть, но ни у одной `is_primary` не истинно (`row.get("is_primary")`; `False`, `None` и отсутствие ключа не первичны) — функция возвращает `UndefinedFinancialFact`:
+
+| Поле | Значение |
+|---|---|
+| `model_id`, `build_key`, `row_key` | из `fact_observation` |
+| `binding_key` | из найденной `dim_row` |
+| `reason` | `no_primary_binding` |
+
+Других полей нет. `concept`, `derive_key`, значения ячейки, семантика и `semantic_model_version` с кандидата не копируются. `dim_period` для этого результата не читается.
+
+Две и больше строк с истинным `is_primary` — `ProvenanceIntegrityError` (`reason = multiple_primary_bindings`, текст содержит `multiple primary`). Это не подкласс `ProvenanceJoinError`. Первая primary не выбирается. Период тоже не читается.
+
+Ровно одна истинная primary используется целиком, даже если она `stale` и даже если раньше в списке стоит непервичная. Отбор по `status` не добавляется.
+
+Таблица полей в §2 описывает только собранный `FinancialFactProvenance`. `UndefinedFinancialFact` её не заполняет и список §4 (минимальный полный провенанс) не закрывает.
 
 ## 2. Поля контракта и источники
 

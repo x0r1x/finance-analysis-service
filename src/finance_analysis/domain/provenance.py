@@ -15,6 +15,26 @@ class ProvenanceJoinError(ValueError):
     """Не удалось собрать провенанс: отсутствует строка справочника по ключу join."""
 
 
+class ProvenanceIntegrityError(ValueError):
+    """Несколько primary bindings на один ключ. Сборка не выбирает строку."""
+
+    reason: str = "multiple_primary_bindings"
+
+
+@dataclass(frozen=True)
+class UndefinedFinancialFact:
+    """Нет primary binding. Поля кандидата не копируются."""
+
+    model_id: str
+    build_key: str
+    row_key: str
+    binding_key: str
+    reason: str = "no_primary_binding"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass(frozen=True)
 class FinancialFactProvenance:
     """Логический view финансового факта (не строка Parquet)."""
@@ -74,11 +94,14 @@ def assemble_financial_fact_provenance(
     bindings: Sequence[Mapping[str, Any]],
     row_semantics: Sequence[Mapping[str, Any]] | None = None,
     semantic_model_version: str | None = None,
-) -> FinancialFactProvenance:
-    """Собрать FinancialFactProvenance из одной ячейки и справочников §4.4.
+) -> FinancialFactProvenance | UndefinedFinancialFact:
+    """Собрать провенанс одной ячейки из справочников §4.4.
 
-    Join: fact_observation ⨝ dim_row ⨝ bindings ⨝ dim_period
-    [⟕ row_semantics]. ``semantic_model_version`` — публичный SMV (фаза 2), не derive_key.
+    Ровно одна primary binding. Ноль primary — UndefinedFinancialFact.
+    Несколько primary — ProvenanceIntegrityError. row_semantics
+    присоединяется только с derive_key этой binding; чужой ключ не
+    подставляется. semantic_model_version — публичный SMV, переданный
+    снаружи; он не выбирает binding и не подменяет derive_key.
     """
 
     model_id = _req(fact, "model_id")
@@ -94,12 +117,16 @@ def assemble_financial_fact_provenance(
     )
     binding_key = _req(row, "binding_key")
 
-    binding = _find_binding(
+    resolved = _resolve_binding(
         bindings,
         model_id=model_id,
         build_key=build_key,
+        row_key=row_key,
         binding_key=binding_key,
     )
+    if isinstance(resolved, UndefinedFinancialFact):
+        return resolved
+    binding = resolved
     period = _find_one(
         periods,
         {
@@ -192,13 +219,14 @@ def _find_one(
     return matched[0]
 
 
-def _find_binding(
+def _resolve_binding(
     bindings: Sequence[Mapping[str, Any]],
     *,
     model_id: str,
     build_key: str,
+    row_key: str,
     binding_key: str,
-) -> Mapping[str, Any]:
+) -> Mapping[str, Any] | UndefinedFinancialFact:
     matched = [
         row
         for row in bindings
@@ -213,8 +241,20 @@ def _find_binding(
             f"binding_key={binding_key!r}"
         )
     primary = [row for row in matched if row.get("is_primary")]
-    chosen = primary[0] if primary else matched[0]
-    return chosen
+    if len(primary) > 1:
+        raise ProvenanceIntegrityError(
+            "bindings: multiple primary rows for "
+            f"model_id={model_id!r} build_key={build_key!r} "
+            f"binding_key={binding_key!r}"
+        )
+    if not primary:
+        return UndefinedFinancialFact(
+            model_id=model_id,
+            build_key=build_key,
+            row_key=row_key,
+            binding_key=binding_key,
+        )
+    return primary[0]
 
 
 def _find_semantics(
@@ -225,8 +265,6 @@ def _find_semantics(
     binding_key: str,
     derive_key: str,
 ) -> Mapping[str, Any] | None:
-    if not rows:
-        return None
     matched = [
         row
         for row in rows
@@ -236,10 +274,10 @@ def _find_semantics(
                 "model_id": model_id,
                 "build_key": build_key,
                 "binding_key": binding_key,
+                "derive_key": derive_key,
             },
         )
     ]
     if not matched:
         return None
-    same_derive = [row for row in matched if str(row.get("derive_key")) == derive_key]
-    return (same_derive or matched)[0]
+    return matched[0]

@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from finance_analysis.domain.provenance import (
+    FinancialFactProvenance,
+    ProvenanceIntegrityError,
     ProvenanceJoinError,
+    UndefinedFinancialFact,
     assemble_financial_fact_provenance,
 )
 
@@ -114,6 +117,12 @@ def _golden_book() -> dict:
             }
         ],
     }
+
+
+def _binding(**overrides):
+    binding = dict(_golden_book()["bindings"][0])
+    binding.update(overrides)
+    return binding
 
 
 def test_golden_row_assembles_full_provenance():
@@ -227,3 +236,177 @@ def test_field_sources_match_contract_mapping():
     assert record.header_text == period["header_text"]
     # row_semantics
     assert record.aggregation == book["row_semantics"][0]["aggregation"]
+
+
+def test_no_primary_binding_is_undefined_not_first_candidate():
+    book = _golden_book()
+    first = _binding(concept="revenue", effective_concept="revenue", is_primary=False)
+    second = _binding(concept="ebitda", effective_concept="ebitda", is_primary=False)
+    result = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=[],
+        bindings=[first, second],
+        row_semantics=book["row_semantics"],
+        semantic_model_version="0123456789abcdef",
+    )
+    assert isinstance(result, UndefinedFinancialFact)
+    assert result.reason == "no_primary_binding"
+    assert result.to_dict() == {
+        "model_id": _MODEL,
+        "build_key": _BUILD,
+        "row_key": _ROW,
+        "binding_key": _BIND,
+        "reason": "no_primary_binding",
+    }
+
+
+def test_missing_is_primary_is_not_a_primary():
+    book = _golden_book()
+    row = _binding()
+    del row["is_primary"]
+    result = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=[],
+        bindings=[row],
+    )
+    assert isinstance(result, UndefinedFinancialFact)
+    assert result.reason == "no_primary_binding"
+
+
+def test_multiple_primary_bindings_are_an_integrity_error():
+    book = _golden_book()
+    first = _binding(concept="ebitda")
+    second = _binding(concept="revenue", effective_concept="revenue")
+    with pytest.raises(ProvenanceIntegrityError, match="multiple primary") as caught:
+        assemble_financial_fact_provenance(
+            book["fact_observation"][0],
+            rows=book["dim_row"],
+            periods=[],
+            bindings=[first, second],
+        )
+    assert caught.value.reason == "multiple_primary_bindings"
+    assert not isinstance(caught.value, ProvenanceJoinError)
+
+
+def test_one_primary_beats_an_earlier_non_primary():
+    book = _golden_book()
+    other = _binding(concept="revenue", effective_concept="revenue", is_primary=False)
+    record = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=book["dim_period"],
+        bindings=[other, book["bindings"][0]],
+        row_semantics=book["row_semantics"],
+    )
+    assert type(record) is FinancialFactProvenance
+    assert record.concept == "ebitda"
+    assert record.is_primary is True
+    assert record.derive_key == _DERIVE
+
+
+def test_only_primary_is_used_even_if_stale():
+    book = _golden_book()
+    stale = _binding(stale=True)
+    other = _binding(
+        concept="revenue",
+        effective_concept="revenue",
+        is_primary=False,
+        stale=False,
+    )
+    record = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=book["dim_period"],
+        bindings=[other, stale],
+        row_semantics=book["row_semantics"],
+    )
+    assert record.concept == "ebitda"
+    assert record.binding_stale is True
+
+
+def test_zero_binding_rows_stay_a_join_error():
+    book = _golden_book()
+    with pytest.raises(ProvenanceJoinError, match="bindings"):
+        assemble_financial_fact_provenance(
+            book["fact_observation"][0],
+            rows=book["dim_row"],
+            periods=book["dim_period"],
+            bindings=[],
+        )
+
+
+def test_binding_for_another_key_is_still_a_join_error():
+    book = _golden_book()
+    other = _binding(
+        binding_key="bk_other",
+        concept="revenue",
+        effective_concept="revenue",
+    )
+    with pytest.raises(ProvenanceJoinError, match="bindings"):
+        assemble_financial_fact_provenance(
+            book["fact_observation"][0],
+            rows=book["dim_row"],
+            periods=book["dim_period"],
+            bindings=[other],
+        )
+
+
+_OLDER = "0000000000000000"
+
+
+def test_semantics_do_not_substitute_another_derive_key():
+    book = _golden_book()
+    older = dict(book["row_semantics"][0])
+    older["derive_key"] = _OLDER
+    older["sign"] = "negative"
+    older["nature"] = "stock"
+    older["aggregation"] = "last"
+    older["excluded"] = True
+    record = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=book["dim_period"],
+        bindings=book["bindings"],
+        row_semantics=[older],
+    )
+    assert record.sign is None
+    assert record.nature is None
+    assert record.aggregation is None
+    assert record.excluded is None
+    assert record.derive_key == _DERIVE
+
+
+def test_semantics_join_exact_derive_key_and_ignore_older():
+    book = _golden_book()
+    current = book["row_semantics"][0]
+    older = dict(current)
+    older["derive_key"] = _OLDER
+    older["sign"] = "negative"
+    record = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=book["dim_period"],
+        bindings=book["bindings"],
+        row_semantics=[older, current],
+    )
+    assert record.sign == "positive"
+    assert record.nature == "flow"
+    assert record.excluded is False
+    assert record.derive_key == _DERIVE
+
+
+def test_several_semantics_with_same_derive_key_take_input_order():
+    book = _golden_book()
+    first = dict(book["row_semantics"][0])
+    second = dict(first)
+    second["sign"] = "negative"
+    record = assemble_financial_fact_provenance(
+        book["fact_observation"][0],
+        rows=book["dim_row"],
+        periods=book["dim_period"],
+        bindings=book["bindings"],
+        row_semantics=[first, second],
+    )
+    assert record.sign == "positive"
