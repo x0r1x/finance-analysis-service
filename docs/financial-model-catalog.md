@@ -17,7 +17,7 @@
 | `formula` | Декларативная структура формулы (числитель/знаменатель/ставка/base) | да |
 | `unit` | Размерность **результата** (`ratio`, `money`, …) | да |
 | `window` | `LTM` \| `period` \| `null` | нет |
-| `variants` | Карта вариантов формулы (`pf`, `corporate_covenant`, …) | да (может быть `{}`) |
+| `variants` | Карта вариантов формулы (`pf`, `corporate_covenant`, `ocf_covenant`, …). Тип `corporate` сам выбирает только `corporate_covenant`. | да (может быть `{}`) |
 | `model_types` | Применимость по типу: `{use, variant?}` | да |
 | `status` | `active` \| `deprecated` | да (по умолчанию `active`) |
 | `base` | Ссылка на базовый metric id, если формула наследует | нет |

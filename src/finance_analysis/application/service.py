@@ -2019,6 +2019,22 @@ class FasService:
         )
         return verdict
 
+    async def _profile_dscr_variant(self, job_id: str) -> str | None:
+        """Имя варианта из профиля книги. Явный состав профиля след не подменяет."""
+
+        events = await self.guard.read_all(job_id)
+        profile_id = _profile_id(events)
+        if not profile_id:
+            return None
+        body = await self.glossary.profile_body(profile_id)
+        raw = body.get("dscr_definition") if isinstance(body, dict) else None
+        if not isinstance(raw, dict) or "numerator" in raw or "denominator" in raw:
+            return None
+        name = raw.get("variant")
+        if not isinstance(name, str) or not name:
+            return None
+        return name
+
     async def questions_view(self, job_id: str, actor: Actor, *, wait_sec: float) -> dict | Accepted:
         head = await self._head_ready(job_id, actor, wait_sec)
         if isinstance(head, Accepted):
@@ -2901,6 +2917,10 @@ class FasService:
                 book_variants,
                 metric_id,
             )
+            if metric_id == "dscr":
+                named = await self._profile_dscr_variant(job_id)
+                if named:
+                    resolved_variant = named
         inputs = None
         if indicator is not None:
             if resolved_variant:

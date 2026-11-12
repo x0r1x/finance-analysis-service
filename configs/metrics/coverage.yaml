@@ -10,6 +10,7 @@ row_fallbacks:
 interest_order:
   icr: [interest, interest_paid]
   corporate_covenant: [interest, interest_paid]
+  ocf_covenant: [interest, interest_paid]
   pf: [interest_paid, interest]
 metrics:
   dscr:
@@ -25,6 +26,10 @@ metrics:
       corporate_covenant:
         definition: "Ковенантный DSCR по умолчанию, не текст договора: (EBITDA - денежные налоги - capex) / (проценты + основной долг), окно LTM. На годовой зернистости окно совпадает с одним периодом. Профиль может подменить состав."
         numerator: {plus: [ebitda], minus: [cash_taxes, capex]}
+        denominator: {plus: [interest, principal]}
+        window: LTM
+      ocf_covenant:
+        numerator: {plus: [operating_cash_flow, interest], minus: [capex]}
         denominator: {plus: [interest, principal]}
         window: LTM
   icr:

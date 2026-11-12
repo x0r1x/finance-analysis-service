@@ -37,7 +37,8 @@ from finance_analysis.domain.returns import project_return
 
 DEFAULT_DEFINITION_TEXT = "определение по умолчанию, не из договора"
 _WINDOWS = frozenset({"LTM", "period"})
-_FIELDS = frozenset({"numerator", "denominator", "window", "basis_ref"})
+_FIELDS = frozenset({"numerator", "denominator", "window", "basis_ref", "variant"})
+_VARIANT_FIELDS = frozenset({"variant", "basis_ref"})
 _SIDE_FIELDS = frozenset({"plus", "minus"})
 _CYCLE = frozenset({"dscr", "dscr_covenant"})
 _MISMATCH = Decimal("0.005")
@@ -59,11 +60,19 @@ def _terms(side: dict) -> list:
     return [*(side.get("plus") or []), *(side.get("minus") or [])]
 
 
-def dscr_definition_error(value, *, concepts: frozenset[str], money: frozenset[str]) -> str | None:
+def dscr_definition_error(
+    value,
+    *,
+    concepts: frozenset[str],
+    money: frozenset[str],
+    variants: frozenset[str] | None = None,
+) -> str | None:
     """None — структуру можно сохранить. Числа, чужие понятия и цикл отвергаются."""
 
     if not isinstance(value, dict) or set(value) - _FIELDS or _number(value):
         return "dscr_definition: только состав числителя и знаменателя, окно и basis_ref, без чисел"
+    if "variant" in value:
+        return _variant_error(value, variants or frozenset())
     if value.get("window") not in _WINDOWS:
         return "dscr_definition: окно LTM или period"
     if "basis_ref" in value and not isinstance(value["basis_ref"], str):
@@ -77,6 +86,33 @@ def dscr_definition_error(value, *, concepts: frozenset[str], money: frozenset[s
     if not _terms(value["denominator"]):
         return "dscr_definition: знаменатель не пуст"
     return None
+
+
+def _variant_error(value: dict, variants: frozenset[str]) -> str | None:
+    name = value.get("variant")
+    if not isinstance(name, str) or not name:
+        return "dscr_definition: variant — имя варианта"
+    if set(value) - _VARIANT_FIELDS:
+        return "dscr_definition: либо имя варианта, либо состав"
+    if name not in variants:
+        return "dscr_definition: неизвестный вариант"
+    if "basis_ref" in value and not isinstance(value["basis_ref"], str):
+        return "dscr_definition: basis_ref — строка"
+    return None
+
+
+def _named_variant(profile: dict | None) -> str | None:
+    raw = (profile or {}).get("dscr_definition")
+    if not isinstance(raw, dict) or "numerator" in raw or "denominator" in raw:
+        return None
+    name = raw.get("variant")
+    if not isinstance(name, str) or not name:
+        return None
+    return name
+
+
+def _variant_ids(composed: dict[str, Composed] | None) -> frozenset[str]:
+    return frozenset(key.removeprefix("dscr.") for key in (composed or {}) if key.startswith("dscr."))
 
 
 def _side_error(side, concepts: frozenset[str], money: frozenset[str], name: str) -> str | None:
@@ -109,12 +145,14 @@ def resolve_covenant(
     *,
     concepts: frozenset[str],
     money: frozenset[str],
+    composed: dict[str, Composed] | None = None,
 ) -> tuple[Composed, str, dict | None, list[dict]]:
     raw = (profile or {}).get("dscr_definition")
     note = {"code": "dscr_default_definition", "params": {"text": DEFAULT_DEFINITION_TEXT}}
     if not raw:
         return default, "default", None, [note]
-    problem = dscr_definition_error(raw, concepts=concepts, money=money)
+    known = _variant_ids(composed)
+    problem = dscr_definition_error(raw, concepts=concepts, money=money, variants=known)
     if problem:
         return default, "default", None, [note, {"code": "dscr_definition_invalid", "params": {"reason": problem}}]
     ref = {
@@ -122,6 +160,9 @@ def resolve_covenant(
         "profile_version": profile_ref,
         "basis_ref": raw.get("basis_ref"),
     }
+    named = _named_variant(profile)
+    if named:
+        return composed[f"dscr.{named}"], "profile", ref, []
     return _parse(raw), "profile", ref, []
 
 
@@ -140,14 +181,20 @@ def covenant_dscr(
     absent: frozenset[str] = frozenset(),
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
+    composed: dict[str, Composed] | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
-        profile, profile_ref, default, concepts=concepts, money=money
+        profile, profile_ref, default, concepts=concepts, money=money, composed=composed
     )
+    order_name = _named_variant(profile) if source == "profile" else None
+    orders = interest_order or {}
+    order = orders.get(order_name or "corporate_covenant", ())
+    if not order:
+        order = orders.get("corporate_covenant", ())
     definition, fallback = _swap_interest(
         definition,
         _primaries(bindings, absent),
-        (interest_order or {}).get("corporate_covenant", ()),
+        order,
         row_fallbacks=row_fallbacks,
     )
     if fallback:
@@ -262,7 +309,10 @@ def composed_ratio(
                     )
                     continue
             else:
-                numerator = _total(keys, series, formula.numerator, sign_convention, pay_plus=False, basis=basis)
+                shared = frozenset(formula.numerator.plus) & frozenset(formula.denominator.plus)
+                numerator = _total(
+                    keys, series, formula.numerator, sign_convention, pay_plus=False, basis=basis, pay_names=shared
+                )
                 denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True, basis=basis)
             if numerator is None or denominator is None:
                 rows.append(_line(metric, period, None, "missing_input", "no_binding", inputs, window))
@@ -353,6 +403,7 @@ def select_ratio(
             money=money,
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
+            composed=composed,
         )
     formula = composed.get(metric)
     if formula is not None:
@@ -480,10 +531,19 @@ def _same_end(periods: list[dict], period: dict) -> list[dict]:
     return found or [period]
 
 
-def _total(keys, series: dict, side: Side, convention: str, *, pay_plus: bool, basis: dict | None = None) -> Decimal | None:
+def _total(
+    keys,
+    series: dict,
+    side: Side,
+    convention: str,
+    *,
+    pay_plus: bool,
+    basis: dict | None = None,
+    pay_names: frozenset[str] = frozenset(),
+) -> Decimal | None:
     total = Decimal(0)
     for name in side.plus:
-        part = _part(keys, series, name, convention, pay_plus, basis)
+        part = _part(keys, series, name, convention, pay_plus or name in pay_names, basis)
         if part is None:
             return None
         total += part
