@@ -1,0 +1,7 @@
+concept: ebitda_ifrs
+pref:
+  en: "Unpublished IFRS recipe"
+  ru: "Неопубликованный рецепт по МСФО"
+definition:
+  en: "Named result of the IFRS picture. This release does not calculate it."
+  ru: "Именованный результат рецепта МСФО. В этом релизе не считается."

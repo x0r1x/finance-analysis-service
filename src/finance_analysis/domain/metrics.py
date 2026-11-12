@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
@@ -70,6 +71,139 @@ def interest_choice(
     return None, None
 
 
+_EBITDA_DEFINITION = frozenset({"book", "ras", "ifrs"})
+_RECIPE_CODES = {
+    "profit_from_sales": ("50", "2200"),
+    "other_income": ("90", "2340"),
+    "other_expense": ("100", "2350"),
+    "depreciation_notes": ("5640", "740"),
+}
+_IFRS_UNPUBLISHED = "Нет операционной прибыли с числом того же периода и амортизации того же периода."
+
+
+def ebitda_definition_error(value) -> str | None:
+    """None — значение можно сохранить. Чисел и свободной формулы нет."""
+
+    if value not in _EBITDA_DEFINITION:
+        return "ebitda_definition: book, ras или ifrs"
+    return None
+
+
+def ebitda_definition(profile: dict | None) -> str:
+    """Пустая пометка равна book. Чужое значение не читается как книжная строка."""
+
+    raw = (profile or {}).get("ebitda_definition")
+    if raw in (None, ""):
+        return "book"
+    if raw in _EBITDA_DEFINITION:
+        return raw
+    return "invalid"
+
+
+def recipe_block(
+    profile: dict | None,
+    bindings: list[dict],
+    *,
+    metric: str,
+    names: tuple[str, ...] | None = None,
+) -> dict | None:
+    """ras и ifrs не подставляют книжную EBITDA. В этом срезе число рецепта не выпускается."""
+
+    kind = ebitda_definition(profile)
+    if kind == "book":
+        return None
+    if names is not None and "ebitda" not in names and "ebit" not in names:
+        return None
+    message = _recipe_message(kind, bindings)
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [],
+        "missing_inputs": [],
+        "warnings": [{"code": "ebitda_recipe_unpublished", "params": {"message": message}}],
+        "status": "not_computed",
+        "message": message,
+    }
+
+
+def _recipe_message(kind: str, bindings: list[dict]) -> str:
+    if kind == "ifrs":
+        return _IFRS_UNPUBLISHED
+    if kind != "ras":
+        return "Пометка определения: book, ras или ifrs."
+    sales = _clause(
+        _present(bindings, "profit_from_sales"),
+        "Прибыль от продаж найдена",
+        "Прибыль от продаж не найдена",
+        _codes(bindings, "profit_from_sales"),
+    )
+    others = _present(bindings, "other_income") or _present(bindings, "other_expense")
+    other_codes = [*_codes(bindings, "other_income"), *_codes(bindings, "other_expense")]
+    if others:
+        other = "Прочие найдены"
+        if other_codes:
+            other += f" ({', '.join(other_codes)})"
+        other += ", но расшифровки исключений нет, поэтому сумму не публикуем"
+    else:
+        other = "Прочие не найдены, поэтому сумму не публикуем"
+    notes = _depreciation_clause(bindings)
+    return f"{sales}. {other}. {notes}."
+
+
+def _clause(found: bool, yes: str, no: str, codes: list[str]) -> str:
+    if not found:
+        return no
+    if codes:
+        return f"{yes} ({', '.join(codes)})"
+    return yes
+
+
+def _depreciation_clause(bindings: list[dict]) -> str:
+    texts = _texts(bindings, "depreciation_notes")
+    if not texts:
+        return "Амортизация пояснений не найдена; это год, а не период прибыли"
+    blob = " ".join(texts)
+    mark = "ф.5 (740)" if "ф.5" in blob.casefold() and _has_code(blob, "740") else None
+    if mark is None:
+        codes = _codes(bindings, "depreciation_notes")
+        mark = ", ".join(codes)
+    head = "Амортизация пояснений"
+    if mark:
+        head += f" ({mark})"
+    return f"{head} — год, а не период прибыли"
+
+
+def _present(bindings: list[dict], concept: str) -> bool:
+    return any(_bound(row, concept) for row in bindings)
+
+
+def _codes(bindings: list[dict], concept: str) -> list[str]:
+    blob = " ".join(_texts(bindings, concept))
+    return [code for code in _RECIPE_CODES[concept] if _has_code(blob, code)]
+
+
+def _texts(bindings: list[dict], concept: str) -> list[str]:
+    found = []
+    for row in bindings:
+        if not _bound(row, concept):
+            continue
+        text = row.get("label_path_text") or row.get("label") or ""
+        if text:
+            found.append(str(text))
+    return found
+
+
+def _bound(row: dict, concept: str) -> bool:
+    name = row.get("effective_concept") or row.get("concept")
+    if name != concept or row.get("is_primary") is False:
+        return False
+    return row.get("status") in (None, "bound", "bound_with_warning")
+
+
+def _has_code(text: str, code: str) -> bool:
+    return re.search(rf"(?<!\d){re.escape(code)}(?!\d)", text) is not None
+
+
 def coverage_ratio(
     *,
     metric: str,
@@ -83,6 +217,7 @@ def coverage_ratio(
     absent: frozenset[str] = frozenset(),
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
+    profile: dict | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -92,6 +227,10 @@ def coverage_ratio(
 
     from finance_analysis.domain.coverage import is_coverage_test_period
 
+    if metric == "icr":
+        blocked = recipe_block(profile, bindings, metric=metric)
+        if blocked:
+            return blocked
     primaries = _primaries(bindings, absent)
     order = interest_order or {}
     warnings: list[dict] = []

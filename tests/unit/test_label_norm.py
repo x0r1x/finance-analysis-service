@@ -42,7 +42,7 @@ def test_trailing_paren_explanation_is_not_its_own_key():
     package = load_catalog()
     raw = "Операционная прибыль (убыток)"
     assert normalize_label(raw) == normalize_label("Операционная прибыль")
-    assert package.resolve(raw).concept == "operating_profit"
+    assert package.resolve(raw).concept == "ifrs_operating_profit"
     assert package.resolve("убыток") is None
 
 
@@ -160,8 +160,8 @@ def test_profile_does_not_take_another_concepts_key():
         ("debt_outstanding", "Долг всего"),
         ("debt_outstanding", "Остаток долга"),
         ("debt_outstanding", "Остаток кредитов на конец периода"),
-        ("operating_profit", "Операционная прибыль"),
-        ("operating_profit", "Операционная прибыль (убыток)"),
+        ("ifrs_operating_profit", "Операционная прибыль"),
+        ("ifrs_operating_profit", "Операционная прибыль (убыток)"),
         ("ebit", "Earnings before interest and taxes"),
         ("ebit", "Earnings before interest and tax"),
         ("ebit", "Прибыль до вычета процентов и налогов"),

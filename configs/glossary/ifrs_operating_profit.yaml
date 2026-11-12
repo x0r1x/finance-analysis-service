@@ -1,0 +1,7 @@
+concept: ifrs_operating_profit
+pref:
+  en: "IFRS operating profit line"
+  ru: "Операционная прибыль (убыток)"
+definition:
+  en: "The line the company called operating profit. Not RAS profit from sales. This release does not calculate it."
+  ru: "Строка, которую компания назвала операционной прибылью. Не прибыль от продаж РСБУ. В этом релизе не считается."

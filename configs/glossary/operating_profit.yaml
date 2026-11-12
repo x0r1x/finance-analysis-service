@@ -1,12 +1,7 @@
 concept: operating_profit
 pref:
   en: "Profit from sales"
-  ru: "Прибыль (убыток) от реализации"
-alt:
-  ru:
-    - "Операционная прибыль"
-    - "Операционная прибыль (убыток)"
-    - "Прибыль (убыток) от продаж"
+  ru: "Profit from sales"
 definition:
-  en: "Line of the official financial statement. This release does not calculate it."
-  ru: "Строка официальной формы отчётности. В этом релизе не считается."
+  en: "Model line. Russian sales profit and IFRS operating profit are separate inputs and are not calculated here."
+  ru: "Строка модели. Прибыль от продаж РСБУ и операционная прибыль МСФО — отдельные входы. В этом релизе не считается."

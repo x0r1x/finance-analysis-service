@@ -1,0 +1,11 @@
+concept: other_income
+pref:
+  en: "RAS other income line 2340"
+  ru: "Прочие доходы"
+alt:
+  ru:
+    - "2340"
+    - "90"
+definition:
+  en: "Other income, line 2340 or old line 90. This release does not strip exclusions and does not publish the sum."
+  ru: "Прочие доходы, строка 2340 или старый код 90. В этом релизе исключения не вычитаются и сумма не публикуется."

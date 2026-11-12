@@ -29,6 +29,7 @@ from finance_analysis.domain.metrics import (
     aligned_keys,
     coverage_ratio,
     interest_choice,
+    recipe_block,
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
@@ -208,6 +209,7 @@ def covenant_dscr(
         sign_convention=sign_convention,
         marker_class=marker_class,
         absent=absent,
+        profile=profile,
     )
     if source == "default" and result["status"] == "succeeded":
         notes = [*notes, *_mismatch(result["rows"], facts, bindings, periods, absent)]
@@ -224,7 +226,21 @@ def composed_ratio(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    profile: dict | None = None,
 ) -> dict:
+    blocked = recipe_block(
+        profile,
+        bindings,
+        metric=metric,
+        names=(
+            *formula.numerator.plus,
+            *formula.numerator.minus,
+            *formula.denominator.plus,
+            *formula.denominator.minus,
+        ),
+    )
+    if blocked:
+        return blocked
     needed = (
         *formula.numerator.plus,
         *formula.numerator.minus,
@@ -420,9 +436,14 @@ def select_ratio(
             sign_convention=common["sign_convention"],
             marker_class=common["marker_class"],
             absent=common["absent"],
+            profile=profile,
         )
     return coverage_ratio(
-        metric=metric, interest_order=interest_order, row_fallbacks=row_fallbacks, **common
+        metric=metric,
+        interest_order=interest_order,
+        row_fallbacks=row_fallbacks,
+        profile=profile,
+        **common,
     )
 
 

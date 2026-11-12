@@ -46,7 +46,15 @@ HEAD = "glossary/_head.json"
 PROPOSALS = "glossary/proposals.json"
 INDEX = "glossary/_label_index.json"
 _PROFILE_FIELDS = frozenset(
-    {"sign_convention", "marker_class", "model_type_default", "dscr_definition", "actuals_end", "sheet_class"}
+    {
+        "sign_convention",
+        "marker_class",
+        "model_type_default",
+        "dscr_definition",
+        "ebitda_definition",
+        "actuals_end",
+        "sheet_class",
+    }
 )
 _SHEET_CLASS = {"reporting": "reporting", "отчетность": "reporting", "assumptions": "assumptions", "предпосылки": "assumptions"}
 _SIGNS = frozenset({"outflow_negative", "outflow_positive"})
@@ -514,7 +522,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, actuals_end и sheet_class",
+                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, actuals_end и sheet_class",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -545,6 +553,12 @@ class GlossaryStore:
             )
             if problem:
                 raise InvalidArgument(problem)
+        if "ebitda_definition" in body and body["ebitda_definition"] is not None:
+            from finance_analysis.domain.metrics import ebitda_definition_error
+
+            problem = ebitda_definition_error(body["ebitda_definition"])
+            if problem:
+                raise InvalidArgument(problem)
         if "sign_convention" in body and body["sign_convention"] not in _SIGNS:
             raise InvalidArgument("sign_convention: outflow_negative или outflow_positive")
         if "marker_class" in body and body["marker_class"] not in _MARKERS:
@@ -566,6 +580,8 @@ class GlossaryStore:
                     saved["model_type_default"] = body["model_type_default"]
                 if "dscr_definition" in body:
                     saved["dscr_definition"] = body["dscr_definition"]
+                if body.get("ebitda_definition"):
+                    saved["ebitda_definition"] = body["ebitda_definition"]
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]
                 if body.get("sheet_class"):
@@ -587,6 +603,11 @@ class GlossaryStore:
                 saved["dscr_definition"] = body["dscr_definition"]
             elif "dscr_definition" in current["body"]:
                 saved["dscr_definition"] = current["body"]["dscr_definition"]
+            if "ebitda_definition" in body:
+                if body.get("ebitda_definition"):
+                    saved["ebitda_definition"] = body["ebitda_definition"]
+            elif current["body"].get("ebitda_definition"):
+                saved["ebitda_definition"] = current["body"]["ebitda_definition"]
             if "actuals_end" in body:
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]

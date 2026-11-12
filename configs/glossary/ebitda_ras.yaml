@@ -1,0 +1,7 @@
+concept: ebitda_ras
+pref:
+  en: "Unpublished RAS recipe"
+  ru: "Неопубликованный рецепт по РСБУ"
+definition:
+  en: "Named result of the RAS picture. This release does not calculate it and does not publish a raw sum under this name."
+  ru: "Именованный результат рецепта РСБУ. В этом релизе не считается и сырая сумма под этим именем не публикуется."
