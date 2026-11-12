@@ -1,0 +1,12 @@
+concept: operating_cash_flow
+pref:
+  en: "Operating cash flow"
+  ru: "Операционный денежный поток"
+alt:
+  en: ["OCF", "cash flow from operating activities"]
+  ru:
+    - "Денежный поток от операционной деятельности"
+    - "ИТОГО - Операционный денежный поток"
+definition:
+  en: "Cash from operations before debt service and before adding back interest or subtracting capex"
+  ru: "Операционный денежный поток до обслуживания долга, до прибавления процентов и до вычета капитальных затрат"

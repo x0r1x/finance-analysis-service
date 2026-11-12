@@ -29,6 +29,7 @@ _MONEY = frozenset(
         "net_debt",
         "escrow_balance",
         "debt_outstanding",
+        "operating_cash_flow",
     }
 )
 _CONCEPTS = _MONEY | {"dscr", "dscr_covenant", "icr"}
@@ -184,6 +185,13 @@ def test_profile_definition_rejects_numbers_unknown_terms_and_a_cycle():
         "window": "LTM",
     }
     assert dscr_definition_error(empty, concepts=_CONCEPTS, money=_MONEY)
+    mixed = {"variant": "ocf_covenant", "numerator": {"plus": ["ebitda"]}}
+    assert "либо имя варианта, либо состав" in dscr_definition_error(
+        mixed, concepts=_CONCEPTS, money=_MONEY, variants=frozenset({"ocf_covenant"})
+    )
+    assert "неизвестный вариант" in dscr_definition_error(
+        {"variant": "missing"}, concepts=_CONCEPTS, money=_MONEY, variants=frozenset({"ocf_covenant"})
+    )
 
 
 def test_ltm_sums_four_quarters_and_period_window_does_not():
@@ -1017,3 +1025,122 @@ def _quarter(index: int, start: date, end: date) -> dict:
         "period_start": start,
         "period_end": end,
     }
+
+
+def test_corporate_default_still_needs_cash_taxes():
+    catalog = _catalog()
+    got = covenant_dscr(
+        facts=[],
+        bindings=[_bind(name, name) for name in ("ebitda", "capex", "interest", "principal")],
+        periods=[],
+        default=catalog.composed["dscr.corporate_covenant"],
+        concepts=_CONCEPTS | {"operating_cash_flow"},
+        money=_MONEY,
+        profile=None,
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    assert got["status"] == "missing_input"
+    assert "cash_taxes" in got["missing_inputs"]
+    assert got["definition_source"] == "default"
+
+
+def test_profile_names_ocf_covenant_and_ignores_cash_taxes():
+    catalog = _catalog()
+    # Зерно year: LTM — этот же период. Процент отрицательный:
+    # add-back обязан прибавить 20, а не вычесть сырое значение.
+    got = covenant_dscr(
+        facts=[
+            _fact("o", "Y1", "100"),
+            _fact("i", "Y1", "-20"),
+            _fact("c", "Y1", "-10"),
+            _fact("p", "Y1", "-30"),
+        ],
+        bindings=[
+            _bind("operating_cash_flow", "o"),
+            _bind("interest", "i"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+        periods=[_year()],
+        default=catalog.composed["dscr.corporate_covenant"],
+        concepts=_CONCEPTS | {"operating_cash_flow"},
+        money=_MONEY,
+        profile={"dscr_definition": {"variant": "ocf_covenant", "basis_ref": "Формулы!B53"}},
+        profile_ref="auchan@1",
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+        composed=catalog.composed,
+    )
+    assert got["definition_source"] == "profile"
+    assert got["rows"][0]["status"] == "computed"
+    # (100 + 20 - 10) / (20 + 30) = 2.2, квант как у соседнего теста (10 знаков).
+    assert got["rows"][0]["value"] == Decimal("2.2000000000")
+    assert "cash_taxes" not in got.get("missing_inputs", [])
+
+
+def test_ocf_label_does_not_bind_a_tax_row():
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.domain.mapping import assign_rows
+    from tests.unit.test_mapping_ml import _row
+
+    glossary = load_catalog()
+    rows = assign_rows(
+        [
+            _row(
+                "taxmix",
+                "Налоговые обязательства, отложеннные налоговые обязательства, налог на прибыль",
+                unit="money",
+            ),
+            _row("ocf", "ИТОГО - Операционный денежный поток", unit="money"),
+        ],
+        [],
+        glossary,
+    )
+    assert rows["taxmix"].status == "unknown"
+    assert rows["taxmix"].concept is None
+    assert rows["ocf"].concept == "operating_cash_flow"
+    assert rows["ocf"].status == "bound"
+
+
+def test_select_ratio_uses_named_profile_variant_for_any_book():
+    catalog = _catalog()
+    common = {
+        "facts": [
+            _fact("o", "Y1", "100"),
+            _fact("i", "Y1", "-20"),
+            _fact("c", "Y1", "-10"),
+            _fact("p", "Y1", "-30"),
+        ],
+        "bindings": [
+            _bind("operating_cash_flow", "o"),
+            _bind("interest", "i"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    profile = {"dscr_definition": {"variant": "ocf_covenant", "basis_ref": "Формулы!B53"}}
+    kwargs = {
+        "profile_ref": "auchan@1",
+        "composed": catalog.composed,
+        "concepts": _CONCEPTS | {"operating_cash_flow"},
+        "money": _MONEY,
+        "interest_order": catalog.interest_order,
+        "row_fallbacks": catalog.row_fallbacks,
+    }
+    # corporate_covenant + профиль: снятие composed= внутри select_ratio
+    # возвращает корпоративный дефолт и не даёт 2.2.
+    for book_variant in ("corporate_covenant", "pf", None):
+        got = select_ratio("dscr", book_variant, common, profile=profile, **kwargs)
+        assert got["definition_source"] == "profile", book_variant
+        assert got["rows"][0]["value"] == Decimal("2.2000000000"), book_variant
+        assert "cash_taxes" not in got.get("missing_inputs", [])
+    plain = select_ratio("dscr", "pf", common, profile=None, **kwargs)
+    assert plain.get("definition_source") != "profile"
+    assert all(row.get("value") != Decimal("2.2000000000") for row in plain["rows"])

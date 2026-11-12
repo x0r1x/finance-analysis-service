@@ -79,6 +79,11 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  operating_cash_flow:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: inflow
   net_debt:
     semantic_role: measure
     dimension: money

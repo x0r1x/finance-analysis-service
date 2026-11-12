@@ -532,11 +532,17 @@ class GlossaryStore:
                 raise InvalidArgument(problem[1])
         if "dscr_definition" in body:
             from finance_analysis.application.catalog import load_catalog
+            from finance_analysis.application.model_types import load_model_types
             from finance_analysis.domain.covenant import dscr_definition_error
 
             package = load_catalog()
             money = frozenset(name for name, item in package.concepts.items() if item.unit == "money")
-            problem = dscr_definition_error(body["dscr_definition"], concepts=package.ids, money=money)
+            known = frozenset(
+                key.removeprefix("dscr.") for key in load_model_types().composed if key.startswith("dscr.")
+            )
+            problem = dscr_definition_error(
+                body["dscr_definition"], concepts=package.ids, money=money, variants=known
+            )
             if problem:
                 raise InvalidArgument(problem)
         if "sign_convention" in body and body["sign_convention"] not in _SIGNS:

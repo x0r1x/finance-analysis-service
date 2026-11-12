@@ -101,7 +101,7 @@ def test_catalog_migrates_energy_payback_and_keeps_coarse_aliases():
     assert catalog.units["years"] == "duration"
     assert catalog.units["RUB/MWh"] == "currency_per_energy"
     assert catalog.same("currency_per_energy", "currency_per_power_time")
-    assert len(package.concepts) == 71
+    assert len(package.concepts) == 72
     assert all(item.object_aggregation is None and item.weight is None for item in package.concepts.values())
 
 
