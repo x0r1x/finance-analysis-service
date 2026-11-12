@@ -1101,3 +1101,46 @@ def test_ocf_label_does_not_bind_a_tax_row():
     assert rows["taxmix"].concept is None
     assert rows["ocf"].concept == "operating_cash_flow"
     assert rows["ocf"].status == "bound"
+
+
+def test_select_ratio_uses_named_profile_variant_for_any_book():
+    catalog = _catalog()
+    common = {
+        "facts": [
+            _fact("o", "Y1", "100"),
+            _fact("i", "Y1", "-20"),
+            _fact("c", "Y1", "-10"),
+            _fact("p", "Y1", "-30"),
+        ],
+        "bindings": [
+            _bind("operating_cash_flow", "o"),
+            _bind("interest", "i"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    profile = {"dscr_definition": {"variant": "ocf_covenant", "basis_ref": "Формулы!B53"}}
+    kwargs = {
+        "profile_ref": "auchan@1",
+        "composed": catalog.composed,
+        "concepts": _CONCEPTS | {"operating_cash_flow"},
+        "money": _MONEY,
+        "interest_order": catalog.interest_order,
+        "row_fallbacks": catalog.row_fallbacks,
+    }
+    # corporate_covenant + профиль: снятие composed= внутри select_ratio
+    # возвращает корпоративный дефолт и не даёт 2.2.
+    for book_variant in ("corporate_covenant", "pf", None):
+        got = select_ratio("dscr", book_variant, common, profile=profile, **kwargs)
+        assert got["definition_source"] == "profile", book_variant
+        assert got["rows"][0]["value"] == Decimal("2.2000000000"), book_variant
+        assert "cash_taxes" not in got.get("missing_inputs", [])
+    plain = select_ratio("dscr", "pf", common, profile=None, **kwargs)
+    assert plain.get("definition_source") != "profile"
+    assert all(row.get("value") != Decimal("2.2000000000") for row in plain["rows"])

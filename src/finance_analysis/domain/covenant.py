@@ -378,7 +378,10 @@ def select_ratio(
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
 ) -> dict:
-    """Вариант `corporate_covenant` считает определение из профиля или из каталога."""
+    """Именованный вариант профиля считает свою формулу на любом типе книги.
+
+    Без имени корпоративный тип остаётся на `corporate_covenant`, остальные — на своей формуле.
+    """
 
     if metric in {"npv", "irr"}:
         return project_return(
@@ -388,7 +391,8 @@ def select_ratio(
             periods=common["periods"],
             absent=common["absent"],
         )
-    if metric == "dscr" and variant == "corporate_covenant":
+    named = _named_variant(profile)
+    if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         return covenant_dscr(
             facts=common["facts"],
             bindings=common["bindings"],
