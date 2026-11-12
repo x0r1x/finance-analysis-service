@@ -13,7 +13,7 @@ from pathlib import Path
 import anyio
 import opendal
 from opendal.exceptions import AlreadyExists as OdalExists
-from opendal.exceptions import ConditionNotMatch
+from opendal.exceptions import ConditionNotMatch, Unexpected
 from opendal.exceptions import NotFound as OdalNotFound
 
 from finance_analysis.application.ports import ObjMeta
@@ -28,6 +28,16 @@ from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.settings import Settings
 
 _READ_ONLY = "хранилище в режиме только чтения"
+_WRITE_PAUSES = (0.05, 0.1, 0.2)
+
+
+def _temporary(exc: BaseException) -> bool:
+    if not isinstance(exc, Unexpected):
+        return False
+    flag = getattr(exc, "temporary", None)
+    if isinstance(flag, bool):
+        return flag
+    return "(temporary)" in str(exc)
 
 
 def _reject_key(key: str) -> str:
@@ -308,28 +318,54 @@ class S3Store(_StoreBase):
 
     async def put(self, key: str, data: bytes) -> ObjMeta:
         self._guard()
-        await self._op.write(_reject_key(key), data)
+        await self._retry_write(_reject_key(key), data)
         stat = await self.stat(key)
         assert stat is not None
         return stat
 
     async def put_if_absent(self, key: str, data: bytes) -> ObjMeta:
         self._guard()
-        try:
-            await self._op.write(_reject_key(key), data, if_not_exists=True)
-        except (ConditionNotMatch, OdalExists) as exc:
-            raise AlreadyExists(key) from exc
+        key = _reject_key(key)
+        saw_blip = False
+        last: BaseException | None = None
+        for index, pause in enumerate(_WRITE_PAUSES):
+            try:
+                await self._op.write(key, data, if_not_exists=True)
+                break
+            except (ConditionNotMatch, OdalExists) as exc:
+                if not saw_blip:
+                    raise AlreadyExists(key) from exc
+                found = await self._stored(key)
+                if found == data:
+                    break
+                if found is not None:
+                    raise AlreadyExists(key) from exc
+                last = exc
+            except Exception as exc:
+                if not _temporary(exc):
+                    raise
+                saw_blip = True
+                found = await self._stored(key)
+                if found == data:
+                    break
+                if found is not None:
+                    raise AlreadyExists(key) from exc
+                last = exc
+            if index == len(_WRITE_PAUSES) - 1:
+                raise DependencyUnavailable("временный обрыв записи") from last
+            await anyio.sleep(pause)
         stat = await self.stat(key)
         assert stat is not None
         return stat
 
     async def put_if_match(self, key: str, data: bytes, token: str) -> ObjMeta:
         self._guard()
+        key = _reject_key(key)
         quoted = token if token.startswith('"') else f'"{token}"'
         last_error: Exception | None = None
         for candidate in (token, quoted):
             try:
-                await self._op.write(_reject_key(key), data, if_match=candidate)
+                await self._retry_write(key, data, if_match=candidate)
                 stat = await self.stat(key)
                 assert stat is not None
                 return stat
@@ -337,6 +373,27 @@ class S3Store(_StoreBase):
                 last_error = exc
                 continue
         raise PreconditionFailed("токен не совпал", extra={"etag": token}) from last_error
+
+    async def _retry_write(self, key: str, data: bytes, **conds) -> None:
+        last: BaseException | None = None
+        for index, pause in enumerate(_WRITE_PAUSES):
+            try:
+                await self._op.write(key, data, **conds)
+                return
+            except Exception as exc:
+                if not _temporary(exc):
+                    raise
+                last = exc
+            if index == len(_WRITE_PAUSES) - 1:
+                break
+            await anyio.sleep(pause)
+        raise DependencyUnavailable("временный обрыв записи") from last
+
+    async def _stored(self, key: str) -> bytes | None:
+        try:
+            return bytes(await self._op.read(key))
+        except OdalNotFound:
+            return None
 
     async def list(self, prefix: str) -> AsyncIterator[ObjMeta]:
         scope = _list_prefix(prefix)
