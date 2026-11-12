@@ -165,3 +165,50 @@ def test_dscr_pf_catalog_matches_python_and_golden():
     # 100 / 40, quantize_ratio до 1e-10. Знак плюса не переворачивается.
     assert got["rows"][0]["value"] == Decimal("2.5000000000")
     assert set(got["rows"][0]["components"]) == pf.inputs.concepts
+
+
+DSCR_COVENANT_DEFINITION = (
+    "Ковенантный DSCR по умолчанию, не текст договора: "
+    "(EBITDA - денежные налоги - capex) / (проценты + основной долг), окно LTM. "
+    "На годовой зернистости окно совпадает с одним периодом. "
+    "Профиль может подменить состав."
+)
+
+
+def test_dscr_corporate_covenant_catalog_matches_python_and_golden():
+    variant = load_financial_catalog().indicators["dscr"].variants["corporate_covenant"]
+    terms = {
+        "ebitda": "money",
+        "cash_taxes": "money",
+        "capex": "money",
+        "interest": "money",
+        "principal": "money",
+    }
+    assert_slice(
+        variant,
+        definition=DSCR_COVENANT_DEFINITION,
+        all_of=frozenset(terms),
+        one_of=frozenset(),
+        formula={
+            "numerator": {"plus": ["ebitda"], "minus": ["cash_taxes", "capex"]},
+            "denominator": {"plus": ["interest", "principal"], "minus": []},
+        },
+        unit="ratio",
+        window="LTM",
+        dimensions=terms,
+    )
+    values = {
+        "ebitda": "100",
+        "cash_taxes": "10",
+        "capex": "20",
+        "interest": "15",
+        "principal": "5",
+    }
+    assert set(values) == variant.inputs.concepts
+    got = _run("dscr", "corporate_covenant", values)
+    assert got["status"] == "succeeded"
+    assert got["definition_source"] == "default"
+    # (100 - 10 - 20) / (15 + 5) = 3.5 на годе: LTM схлопывается в один период.
+    assert got["rows"][0]["value"] == Decimal("3.5000000000")
+    assert got["rows"][0]["window"] == ["Y1"]
+    assert set(got["rows"][0]["inputs"]) == variant.inputs.concepts
