@@ -32,30 +32,39 @@ metrics:
     numerator: [ebitda, ebit]
     denominator: interest
   adscr:
+    definition: "ADSCR наследует входы DSCR, CFADS и обслуживание долга, и считает сумму CFADS к сумме обслуживания долга за 12 месяцев lookback. На годе код отвечает adscr_not_applicable. Неполное окно FAS не досчитывает доли периода."
     base: dscr
   dscr_min:
+    definition: "Минимум посчитанных DSCR. Входы те же, что у базового DSCR."
     base: dscr
   dscr_avg:
+    definition: "Среднее DSCR двумя методиками, mean_of_ratios и ratio_of_sums. Код отдаёт обе, а не выбирает одну молча."
     base: dscr
   llcr:
+    definition: "LLCR: дисконт CFADS по дням/365, делённый на остаток долга. DSRA в числитель не входит. basis period_end берёт поток со следующего периода. period_start читает остаток как открывающий."
     numerator: [cfads]
     denominator: debt_outstanding
     rate: discount_rate
   plcr:
+    definition: "PLCR: дисконт CFADS по дням/365 до конца шкалы, делённый на остаток долга. basis period_end считает по умолчанию. period_start сдвигает окно на текущий период."
     numerator: [cfads]
     denominator: debt_outstanding
     rate: discount_rate
   net_debt_ebitda:
+    definition: "Чистый долг на конец периода / EBITDA как поток, окно LTM. На годовой зернистости окно совпадает с одним периодом."
     numerator: {plus: [net_debt]}
     denominator: {plus: [ebitda]}
     window: LTM
   escrow_coverage:
+    definition: "Покрытие счетов эскроу: остаток эскроу / остаток долга за период. Это покрытие, не ставка."
     numerator: {plus: [escrow_balance]}
     denominator: {plus: [debt_outstanding]}
     window: period
   npv:
+    definition: "NPV дисконтирует project_fcf степенью period_index и квантует деньги. Это не дисконт LLCR по дням/365."
     numerator: [project_fcf]
     rate: discount_rate
   irr:
+    definition: "IRR: ставка, обнуляющая NPV потока project_fcf. Степень дисконта - period_index, результат - отношение."
     numerator: [project_fcf]
 tolerance: "0.005"
