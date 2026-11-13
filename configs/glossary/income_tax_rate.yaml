@@ -1,0 +1,7 @@
+concept: income_tax_rate
+pref:
+  en: "Income tax rate"
+  ru: "Ставка налога на прибыль"
+definition:
+  en: "Income tax as a share from 0 to 1 for one period. Not the tax amount and not the discount rate."
+  ru: "Налог на прибыль долей от 0 до 1 за период. Не сумма налога и не ставка дисконтирования."

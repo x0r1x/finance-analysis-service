@@ -94,6 +94,7 @@ RATIO_METRICS = (
     "escrow_coverage",
     "npv",
     "irr",
+    "fcff",
 )
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs")

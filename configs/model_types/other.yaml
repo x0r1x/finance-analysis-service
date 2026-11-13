@@ -18,3 +18,4 @@ metrics:
   escrow_coverage: {use: optional}
   npv: {use: optional}
   irr: {use: optional}
+  fcff: {use: optional}

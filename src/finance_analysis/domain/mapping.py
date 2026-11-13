@@ -42,18 +42,24 @@ _OPERATING_PROFIT_REVIEW = (
     "Она сохраняется и не переносится на другое понятие. "
     "Подтверждение текущего смысла снимает пометку."
 )
-# Явная форма кода пояснений. Голое число соседней ячейки кодом не является.
+# Явная форма. Голое число соседней ячейки кодом не является: 50, 90 и 100 — метки глоссария.
 _MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
+_STATED_LINE_CODE = re.compile(r"(?i)^(?:стр\.?|код|строка)\s*(\d{3,4})$")
 
 
 def marked_line_code(value: object) -> str | None:
-    """Код строки только в форме «Ф. 5 (740)». Иначе код для сопоставления не определён."""
+    """Явная форма кода. Голое число соседней ячейки кодом не является."""
 
     if not isinstance(value, str):
         return None
-    if not _MARKED_LINE_CODE.match(value.strip()):
+    text = value.strip()
+    if _MARKED_LINE_CODE.match(text):
+        return "ф.5 (740)"
+    stated = _STATED_LINE_CODE.match(text)
+    if stated is None:
         return None
-    return "ф.5 (740)"
+    # Канон снова проходит эту функцию. Голый «4123» второй проход отбрасывает.
+    return f"стр. {stated.group(1)}"
 
 
 @dataclass(frozen=True)
