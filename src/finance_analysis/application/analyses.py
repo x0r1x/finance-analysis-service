@@ -95,6 +95,7 @@ RATIO_METRICS = (
     "escrow_coverage",
     "npv",
     "irr",
+    "fcff",
 )
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs")
@@ -818,6 +819,10 @@ class Analyses:
             semantics = await svc._dataset_rows(job_id, pinned, "period_semantics")
         except (NotFound, StopIteration):
             semantics = []
+        try:
+            links = await svc._dataset_rows(job_id, pinned, "graph_links")
+        except (NotFound, StopIteration):
+            links = []
         phase_of = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics}
         explicit = any(phase_of.values())
         body = await self._profile(target.head)
@@ -838,6 +843,7 @@ class Analyses:
             "marker_class": body.get("marker_class"),
             "absent": await self._absent(job_id, target),
         }
+        statement_sheets = frozenset(load_sheet_roles().statement)
         verdict = await svc.resolve_model_type(job_id, target.head)
         labels = decision_labels(verdict)
         computed = []
@@ -877,6 +883,8 @@ class Analyses:
                     money=money,
                     interest_order=svc.model_types.interest_order,
                     row_fallbacks=svc.model_types.row_fallbacks,
+                    links=links,
+                    statement_sheets=statement_sheets,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})

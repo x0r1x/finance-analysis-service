@@ -97,7 +97,7 @@ from finance_analysis.domain.glossary_release import (
 )
 from finance_analysis.domain.ids import job_id as check_job
 from finance_analysis.domain.ids import ulid as check_ulid
-from finance_analysis.domain.mapping import decide
+from finance_analysis.domain.mapping import absent_in_journal, decide
 from finance_analysis.domain.metrics import _primaries
 from finance_analysis.domain.model_type import (
     assignment_error,
@@ -2930,6 +2930,10 @@ class FasService:
                 inputs = spec.inputs.as_dict()
             else:
                 inputs = indicator.inputs.as_dict()
+        events = await self.guard.read_all(job_id)
+        absent = absent_in_journal(
+            [event for event in events if int(event["seq"]) <= head.state_seq]
+        )
         trace, _findings = check_metric_physical_trace(
             metric_id,
             inputs=inputs,
@@ -2942,6 +2946,7 @@ class FasService:
             model_id=job_id,
             build_key=head.build_key,
             graph_links_available=graph_links_available,
+            absent=absent,
         )
         # catalog_version / build_key уже в trace; ответ валидируется схемой.
         return assemble_metric_trace_response(trace)

@@ -15,6 +15,7 @@ from finance_analysis.domain.cover_metrics import (
     _window,
     grain_months,
 )
+from finance_analysis.domain.free_cash_flow import free_cash_flow
 from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
@@ -27,6 +28,7 @@ from finance_analysis.domain.metrics import (
     _primaries,
     _sums,
     aligned_keys,
+    confirm_paid_interest,
     coverage_ratio,
     interest_choice,
     recipe_block,
@@ -192,12 +194,16 @@ def covenant_dscr(
     order = orders.get(order_name or "corporate_covenant", ())
     if not order:
         order = orders.get("corporate_covenant", ())
+    primaries = _primaries(bindings, absent)
+    injected = confirm_paid_interest(primaries, bindings, absent)
     definition, fallback = _swap_interest(
         definition,
-        _primaries(bindings, absent),
+        primaries,
         order,
         row_fallbacks=row_fallbacks,
     )
+    if injected is not None:
+        bindings = [*bindings, injected]
     if fallback:
         notes = [*notes, fallback]
     result = composed_ratio(
@@ -393,6 +399,8 @@ def select_ratio(
     money: frozenset[str],
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
+    links: list[dict] | None = None,
+    statement_sheets: frozenset[str] | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -416,6 +424,21 @@ def select_ratio(
             bindings=common["bindings"],
             periods=common["periods"],
             absent=common["absent"],
+        )
+    if metric == "fcff":
+        return free_cash_flow(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common.get("sign_convention") or "outflow_negative",
+            absent=common.get("absent") or frozenset(),
+            links=common.get("graph_links") if links is None else links,
+            book=common.get("book_fcff") or [],
+            statement_sheets=(
+                statement_sheets
+                if statement_sheets is not None
+                else common.get("statement_sheets") or frozenset()
+            ),
         )
     named = _named_variant(profile)
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):

@@ -21,3 +21,4 @@ metrics:
   icr: {use: not_applicable}
   escrow_coverage: {use: not_applicable}
   net_debt_ebitda: {use: not_applicable}
+  fcff: {use: not_applicable}

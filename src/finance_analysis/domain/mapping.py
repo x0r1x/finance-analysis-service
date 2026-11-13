@@ -45,15 +45,15 @@ _OPERATING_PROFIT_REVIEW = (
     "Она сохраняется и не переносится на другое понятие. "
     "Подтверждение текущего смысла снимает пометку."
 )
-# Явная форма кода пояснений и коды баланса из каталога этого релиза.
-# Голое число вне каталога кодом не является: так значения 50, 90 и 100 не становятся строками.
+# Явная форма, коды баланса из каталога и «стр. N». Голое число вне каталога кодом не является.
 _MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
+_STATED_LINE_CODE = re.compile(r"(?i)^(?:стр\.?|код|строка)\s*(\d{3,4})$")
 _BALANCE_LINE_CODES = frozenset({"1400", "1410", "1500", "1510", "1520", "510", "610"})
 _MULTI_PRIMARY = frozenset({"lease_liability"})
 
 
 def marked_line_code(value: object) -> str | None:
-    """Код строки: «Ф. 5 (740)» или код баланса из каталога релиза."""
+    """«Ф. 5 (740)», «стр. N» или код баланса из каталога. Голое число вне каталога — не код."""
 
     if isinstance(value, bool) or value is None:
         return None
@@ -65,6 +65,10 @@ def marked_line_code(value: object) -> str | None:
         return None
     if _MARKED_LINE_CODE.match(text):
         return "ф.5 (740)"
+    stated = _STATED_LINE_CODE.match(text)
+    if stated is not None:
+        # Канон снова проходит эту функцию. Голый «4123» второй проход отбрасывает.
+        return f"стр. {stated.group(1)}"
     if text in _BALANCE_LINE_CODES:
         return text
     return None
