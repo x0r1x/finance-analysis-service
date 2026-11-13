@@ -390,7 +390,7 @@ def _rolls(primaries: dict, formula: Composed) -> bool:
 
 
 _LEASE_MODES = frozenset({"in_interest", "add_interest", "nominal"})
-_DENOMINATOR_FIELDS = ("source", "binding", "period", "standard", "method")
+_DENOMINATOR_FIELDS = ("source", "binding", "axis", "period", "standard", "method")
 _DENOMINATOR_METHODS = frozenset({"interest_expense", "capitalised", "interest_paid"})
 _QUARTER_LABEL = "за квартал, справочно"
 
@@ -416,11 +416,11 @@ def icr_definition_error(value) -> str | None:
 
 def _denominator_error(value) -> str | None:
     if not isinstance(value, dict) or set(value) != set(_DENOMINATOR_FIELDS):
-        return "icr_definition: denominator — source, binding, period, standard, method"
-    for key in ("source", "binding", "period", "standard"):
+        return "icr_definition: denominator — source, binding, axis, period, standard, method"
+    for key in ("source", "binding", "axis", "period", "standard"):
         item = value.get(key)
         if not isinstance(item, str) or not item.strip():
-            return "icr_definition: denominator — непустые source, binding, period, standard"
+            return "icr_definition: denominator — непустые source, binding, axis, period, standard"
     if value.get("method") not in _DENOMINATOR_METHODS:
         return "icr_definition: method interest_expense, capitalised или interest_paid"
     return None
@@ -745,9 +745,16 @@ def _require_interest_expense(profile, primaries, periods, binding_name: str) ->
         return _ask("icr", "denominator_method", "missing")
     if evidence.get("binding") != binding_name or binding_name not in primaries:
         return _ask("icr", "denominator_evidence", "binding")
+    axis = str(evidence.get("axis") or "").strip()
     period = str(evidence.get("period") or "").strip()
-    known = {item.get("period_id") for item in periods}
-    if period != "each" and period not in known:
+    if axis == "each":
+        if period != "each":
+            return _ask("icr", "denominator_evidence", "axis")
+        return None
+    pairs = {(item.get("axis_id"), item.get("period_id")) for item in periods}
+    if axis not in {item[0] for item in pairs}:
+        return _ask("icr", "denominator_evidence", "axis")
+    if period != "each" and (axis, period) not in pairs:
         return _ask("icr", "denominator_evidence", "period")
     return None
 
@@ -869,11 +876,16 @@ def bank_icr(
         for name in dict.fromkeys(names)
     }
     home_name = formula.denominator.plus[0]
-    attested = None
+    attested_axis = None
+    attested_period = None
     if mode == "in_interest":
-        attested = str((_denominator(profile) or {}).get("period") or "").strip()
-        if attested == "each":
-            attested = None
+        evidence = _denominator(profile) or {}
+        axis_name = str(evidence.get("axis") or "").strip()
+        period_name = str(evidence.get("period") or "").strip()
+        if axis_name != "each":
+            attested_axis = axis_name
+        if period_name != "each":
+            attested_period = period_name
     rows = []
     for axis in sorted(_axes_of(facts, primaries[home_name])):
         ordered = _ordered(periods, axis)
@@ -881,7 +893,21 @@ def bank_icr(
             marker = period.get("marker_class")
             if marker_class and marker and marker != marker_class:
                 continue
-            if attested is not None and period.get("period_id") != attested:
+            if attested_axis is not None and period.get("axis_id") != attested_axis:
+                rows.append(
+                    _line(
+                        "icr",
+                        period,
+                        None,
+                        "needs_input",
+                        "denominator_axis",
+                        names,
+                        "LTM",
+                        variant="bank",
+                    )
+                )
+                continue
+            if attested_period is not None and period.get("period_id") != attested_period:
                 rows.append(
                     _line(
                         "icr",

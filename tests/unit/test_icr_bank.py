@@ -93,6 +93,7 @@ def _evidence(**extra) -> dict:
     item = {
         "source": "statement line",
         "binding": "interest",
+        "axis": "each",
         "period": "each",
         "standard": "ifrs16",
         "method": "interest_expense",
@@ -729,11 +730,39 @@ def test_denominator_evidence_for_one_period_does_not_cover_the_next():
             [_bind("ebitda"), _bind("interest")],
             [_year(), other],
         ),
-        _profile(denominator=_evidence(period="Y1")),
+        _profile(denominator=_evidence(axis="a", period="Y1")),
     )
     assert _at(got, "Y1")["value"] == Decimal("2.0000000000")
     assert _at(got, "Y2")["status"] == "needs_input"
     assert _at(got, "Y2")["reason"] == "denominator_period"
+
+
+def test_denominator_evidence_does_not_cross_axes_unless_both_scopes_are_each():
+    periods = [
+        {**_year(), "axis_id": "actuals", "period_id": "2025Q4"},
+        {**_year(), "axis_id": "forecast", "period_id": "2025Q4"},
+    ]
+    facts = []
+    for axis in ("actuals", "forecast"):
+        facts.append({"row_key": "ebitda", "axis_id": axis, "period_id": "2025Q4", "normalized_value": "8"})
+        facts.append({"row_key": "interest", "axis_id": axis, "period_id": "2025Q4", "normalized_value": "4"})
+    common = _common(facts, [_bind("ebitda"), _bind("interest")], periods)
+    one = _select("icr", common, _profile(denominator=_evidence(axis="actuals", period="2025Q4")))
+    by_axis = {row["axis_id"]: row for row in one["rows"] if row.get("variant") == "bank"}
+    assert by_axis["actuals"]["value"] == Decimal("2.0000000000")
+    assert by_axis["forecast"]["status"] == "needs_input"
+    assert by_axis["forecast"]["reason"] == "denominator_axis"
+    assert by_axis["forecast"]["value"] is None
+    leaked = _select("icr", common, _profile(denominator=_evidence(axis="each", period="2025Q4")))
+    assert leaked["rows"] == []
+    assert leaked["needs_input"][0]["subject"] == "denominator_evidence"
+    assert leaked["needs_input"][0]["reason"] == "axis"
+    both = _select("icr", common, _profile())
+    published = {row["axis_id"]: row["value"] for row in both["rows"] if row.get("variant") == "bank"}
+    assert published == {
+        "actuals": Decimal("2.0000000000"),
+        "forecast": Decimal("2.0000000000"),
+    }
 
 
 def _series(row: str, periods: list[dict], values: list[str]) -> list[dict]:
