@@ -1,10 +1,7 @@
 concept: short_term_borrowings
 pref:
-  en: "Short-term borrowings"
-  ru: "Краткосрочные заемные средства"
-alt:
-  ru:
-    - "Строка 1510"
+  en: "Off-balance-adjusted debt, line 1510"
+  ru: "Строка 1510"
 definition:
   en: "RAS balance line 1510, including the current portion of long-term borrowings."
   ru: "Строка 1510 бухгалтерского баланса, включая текущую часть долгосрочных займов."

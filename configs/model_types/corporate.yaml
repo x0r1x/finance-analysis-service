@@ -27,3 +27,4 @@ metrics:
   fcff: {use: optional}
   ncf: {use: optional}
   escrow_blended_rate: {use: not_applicable}
+  debt_incl_off_balance: {use: optional}

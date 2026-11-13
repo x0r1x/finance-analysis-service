@@ -283,6 +283,8 @@ def result_unit(
     if resolved.rate and num and not den:
         # NPV-подобные: результат в размерности числителя (обычно money).
         return _dim(name, num[0], concept_dimensions)
+    if resolved.aggregate == "sum" and num and not den:
+        return _dim(name, num[0], concept_dimensions)
     if name == "ncf" and num and not den:
         # Сумма трёх потоков. Ставку не вешаем: ветка IRR остаётся отношением.
         return "money"

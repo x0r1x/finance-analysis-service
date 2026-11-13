@@ -98,6 +98,7 @@ RATIO_METRICS = (
     "escrow_blended_rate",
     "npv",
     "irr",
+    "debt_incl_off_balance",
     "fcff",
     "ncf",
 )

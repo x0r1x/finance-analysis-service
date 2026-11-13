@@ -58,6 +58,7 @@ async def test_capabilities_health_metrics(app):
         "escrow_blended_rate",
         "npv",
         "irr",
+        "debt_incl_off_balance",
         "fcff",
         "ncf",
     ]

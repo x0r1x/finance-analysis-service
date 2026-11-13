@@ -130,7 +130,25 @@ def _side(raw: dict) -> Side:
     return Side(tuple(str(item) for item in raw.get("plus") or []), tuple(str(item) for item in raw.get("minus") or []))
 
 
+def _aggregate_value(body: dict, name: str) -> str | None:
+    if "aggregate" not in body:
+        return None
+    value = body.get("aggregate")
+    if value != "sum":
+        raise ModelTypeInvalid(f"{name}: aggregate — sum")
+    return value
+
+
 def _composed(body: dict, name: str) -> Composed | None:
+    if body.get("aggregate") == "sum":
+        numerator = body.get("numerator")
+        window = body.get("window")
+        if not isinstance(numerator, dict) or window not in {"period", "LTM"} or "denominator" in body:
+            raise ModelTypeInvalid(f"{name}: сумма — числитель, окно period или LTM, без знаменателя")
+        side = _side(numerator)
+        if not side.plus and not side.minus:
+            raise ModelTypeInvalid(f"{name}: сумма пуста")
+        return Composed(side, Side((), ()), str(window))
     if body.get("aggregation") == "stock":
         numerator = body.get("numerator")
         if not isinstance(numerator, dict) or body.get("window") != "period" or "denominator" in body:
@@ -159,11 +177,12 @@ def _composed(body: dict, name: str) -> Composed | None:
 
 def _expression(body: dict, name: str) -> MetricExpression:
     _assert_base_standalone(body, name)
+    aggregate = _aggregate_value(body, name)
     if "base" in body:
         base = body.get("base")
         if not isinstance(base, str) or not base:
             raise ModelTypeInvalid(f"{name}: base — непустая строка")
-        return MetricExpression(base=base)
+        return MetricExpression(base=base, aggregate=aggregate)
     rate = None
     if "rate" in body:
         raw_rate = body.get("rate")
@@ -190,6 +209,7 @@ def _expression(body: dict, name: str) -> MetricExpression:
         one_of=frozenset(one_of),
         rate=rate,
         base=None,
+        aggregate=aggregate,
     )
 
 

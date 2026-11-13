@@ -75,6 +75,7 @@ class MetricExpression:
     one_of: frozenset[str] = field(default_factory=frozenset)
     rate: str | None = None
     base: str | None = None
+    aggregate: str | None = None
 
 
 @dataclass(frozen=True)

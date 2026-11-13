@@ -127,6 +127,11 @@ metrics:
   irr:
     definition: "IRR: ставка, обнуляющая NPV потока project_fcf. Степень дисконта - period_index, результат - отношение."
     numerator: [project_fcf]
+  debt_incl_off_balance:
+    aggregate: sum
+    numerator: {plus: [long_term_borrowings, short_term_borrowings, other_financial_debt, off_balance_third_party, off_balance_lease]}
+    window: period
+    definition: "Долг = строки 1410 и 1510 + кредитная доля строк 1450, 1520 и 1550 + непризнанные выданные обеспечения за третьих лиц + аренда, не признанная обязательством по ФСБУ 25. Строка 1530 входит только при заимствовании. Одно обязательство не прибавляется дважды."
   fcff:
     definition: "FCFF: корпоративный свободный поток для всех источников капитала, не project_fcf, не FCFE и не CFO. Число считает domain/free_cash_flow.py: operating_cash_flow + щит − capex. Щит — уплаченные проценты × (1 − income_tax_rate) только когда проценты уже вычтены из этого OCF. Запись ниже ставку не перемножает. Годовая сверка fcff_book_mismatch пишется только по цитатам вызывающего. Разбор коэффициентов цитату книги не ищет."
     numerator: {plus: [operating_cash_flow], minus: [capex]}

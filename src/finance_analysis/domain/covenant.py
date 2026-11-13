@@ -1350,6 +1350,18 @@ def select_ratio(
             profile=profile,
             marker_class=common["marker_class"],
         )
+    if metric == "debt_incl_off_balance":
+        from finance_analysis.domain.debt_incl_off_balance import debt_incl_off_balance
+
+        formula = composed.get(metric)
+        plus = formula.numerator.plus if formula is not None else ()
+        return debt_incl_off_balance(
+            components=plus,
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            absent=common["absent"],
+        )
     if metric in {"npv", "irr"}:
         return project_return(
             metric,

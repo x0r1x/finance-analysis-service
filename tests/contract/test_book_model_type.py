@@ -114,8 +114,9 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         hidden = sorted(
             item["metric"] for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"
         )
-        # Срез 2, FCFF и total_debt на project_finance не считаются. Вопросы и привязки из-за них не меняются.
+        # Срез 2, FCFF, total_debt и debt_incl_off_balance на project_finance не считаются.
         assert hidden == [
+            "debt_incl_off_balance",
             "escrow_blended_rate",
             "escrow_coverage",
             "fcff",

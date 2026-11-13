@@ -35,6 +35,41 @@
       "use": "not_applicable"
     }
   },
+  "debt_incl_off_balance": {
+    "bank_leasing": {
+      "use": "not_applicable"
+    },
+    "corporate": {
+      "use": "optional"
+    },
+    "dcf_valuation": {
+      "use": "not_applicable"
+    },
+    "development_escrow": {
+      "use": "not_applicable"
+    },
+    "investment_project": {
+      "use": "not_applicable"
+    },
+    "lbo_ma": {
+      "use": "not_applicable"
+    },
+    "other": {
+      "use": "not_applicable"
+    },
+    "ppp_concession": {
+      "use": "not_applicable"
+    },
+    "project_finance": {
+      "use": "not_applicable"
+    },
+    "real_estate_income": {
+      "use": "not_applicable"
+    },
+    "renewables_dpm": {
+      "use": "not_applicable"
+    }
+  },
   "dscr": {
     "bank_leasing": {
       "use": "not_applicable"

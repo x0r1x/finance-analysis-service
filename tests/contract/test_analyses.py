@@ -200,6 +200,7 @@ async def test_audit_arguments_and_async(app):
             "escrow_blended_rate",
             "npv",
             "irr",
+            "debt_incl_off_balance",
             "fcff",
             "ncf",
         ]
