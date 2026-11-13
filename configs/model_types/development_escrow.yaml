@@ -14,9 +14,14 @@ required_concepts:
   - escrow_disclosure
   - escrow_coverage
   - effective_rate
+  - cfo_statement
+  - cfi_statement
+  - financing_inflows
+  - senior_principal
+  - senior_interest_paid
 metrics:
   escrow_coverage: {use: required}
-  dscr: {use: optional, variant: pf}
+  dscr: {use: required, variant: housing}
   icr: {use: not_applicable}
   icr_ebit: {use: not_applicable}
   adscr: {use: not_applicable}

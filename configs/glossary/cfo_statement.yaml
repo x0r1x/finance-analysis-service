@@ -1,0 +1,10 @@
+concept: cfo_statement
+pref:
+  en: "Net cash from operating activities"
+  ru: "Сальдо денежных потоков от текущих операций"
+alt:
+  en: ["CFO statement balance"]
+  ru: ["4100"]
+definition:
+  en: "Cash-flow statement line 4100. Not the model operating cash flow before debt service."
+  ru: "Строка 4100 отчёта о движении денежных средств. Это сальдо формы, не операционный денежный поток модели до обслуживания долга."
