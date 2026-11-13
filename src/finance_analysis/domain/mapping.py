@@ -36,6 +36,10 @@ _MONEY = frozenset({"money", "price"})
 MODEL_LABEL = "model:"
 AGREE_SHARE = Decimal("0.8")
 _HUMAN = frozenset({"concept.set", "concept.confirmed"})
+_OPERATING_PROFIT_REVIEW = (
+    "needs review: привязка operating_profit сделана при прежнем смысле. "
+    "Она не переносится на прибыль от продаж и не переносится на операционную прибыль МСФО."
+)
 # Явная форма кода пояснений. Голое число соседней ячейки кодом не является.
 _MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
 
@@ -197,7 +201,15 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         concept = human[key]
         if concept in absent:
             return Assignment(concept, "unknown", "confirmed", False, None, "normal")
-        return Assignment(concept, "bound", "confirmed", True, None, "normal")
+        return Assignment(
+            concept,
+            "bound",
+            "confirmed",
+            True,
+            None,
+            "normal",
+            evidence=_operating_profit_review(row, concept, glossary),
+        )
     if row.get("excluded"):
         return Assignment(None, "not_applicable", "inferred", False, None, "normal")
     shared = _ambiguous_label(row, glossary)
@@ -256,6 +268,17 @@ def _ambiguous_label(row: dict, glossary: GlossaryPackage) -> Assignment | None:
     if not any(item["structure_pass"] for item in candidates):
         return Assignment(None, "unknown", "inferred", False, None, "peripheral", None, {**evidence, "nil": "structure_filtered"})
     return Assignment(None, "ambiguous", "inferred", False, None, "normal", None, evidence)
+
+
+def _operating_profit_review(row: dict, concept: str, glossary: GlossaryPackage) -> dict:
+    """Старая ручная привязка остаётся. Пометка появляется, если подпись уже чужая."""
+
+    if concept != "operating_profit":
+        return {}
+    found = glossary.resolve(str(row.get("label") or ""))
+    if found is None or found.concept == "operating_profit":
+        return {}
+    return {"needs_review": _OPERATING_PROFIT_REVIEW}
 
 
 def lexical_hit(row: dict, glossary: GlossaryPackage):

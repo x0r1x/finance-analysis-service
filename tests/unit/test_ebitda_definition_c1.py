@@ -154,6 +154,55 @@ def _blob(result: dict) -> str:
     return str(result)
 
 
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Прибыль (убыток) от реализации",
+        "Прибыль (убыток) от продаж",
+        "Операционная прибыль",
+        "Операционная прибыль (убыток)",
+    ],
+)
+def test_old_operating_profit_binding_is_kept_and_flagged(label: str):
+    """Ручная привязка прежнего смысла не переезжает на новое понятие и помечается."""
+
+    glossary = load_catalog()
+    assert glossary.display_label("operating_profit", "ru") == "Операционная прибыль модели"
+    row = _row("row", label)
+    events = [
+        {
+            "seq": 1,
+            "type": "concept.set",
+            "target": "row",
+            "binding_key": "row",
+            "value": "operating_profit",
+        }
+    ]
+    item = assign_rows([row], events, glossary)["row"]
+    assert item.concept == "operating_profit"
+    assert item.status == "bound"
+    assert item.source == "confirmed"
+    notice = item.evidence.get("needs_review")
+    assert isinstance(notice, str) and "needs review" in notice
+
+
+def test_current_operating_profit_binding_is_not_flagged():
+    glossary = load_catalog()
+    row = _row("row", "Операционная прибыль модели")
+    events = [
+        {
+            "seq": 1,
+            "type": "concept.set",
+            "target": "row",
+            "binding_key": "row",
+            "value": "operating_profit",
+        }
+    ]
+    item = assign_rows([row], events, glossary)["row"]
+    assert item.concept == "operating_profit"
+    assert "needs_review" not in item.evidence
+
+
 def test_ras_lines_bind_and_operating_profit_stays_apart():
     glossary = load_catalog()
     for label, concept in _BOUND.items():
