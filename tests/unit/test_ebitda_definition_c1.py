@@ -516,7 +516,7 @@ def test_project_finance_dscr_still_uses_cfads_when_the_recipe_is_requested():
 
 @pytest.mark.parametrize("value", [{"recipe": "ras"}, ["ras"], 1, True])
 def test_ebitda_definition_rejects_a_non_string(value):
-    assert ebitda_definition_error(value) == "ebitda_definition: book, ras или ifrs"
+    assert ebitda_definition_error(value) == "ebitda_definition: book, ras, ifrs или gaap"
     profile = {"ebitda_definition": value}
     assert ebitda_definition(profile) == "invalid"
     blocked = recipe_block(profile, [], metric="icr")

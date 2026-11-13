@@ -39,7 +39,7 @@ metrics:
     denominator: interest
     variants:
       bank:
-        definition: "Банковский ICR: EBITDA / проценты, окно LTM. Режим аренды, ноль знаменателя и нарастающий итог считает bank_icr. EBIT в числитель не входит."
+        definition: "Внутренний профиль icr.bank: EBITDA / проценты, окно LTM. Это не ICR по 6960-У и не ковенант договора. Состав знаменателя и окно считает bank_icr. EBIT в числитель не входит."
         numerator: {plus: [ebitda]}
         denominator: {plus: [interest]}
         window: LTM

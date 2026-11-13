@@ -44,13 +44,13 @@ def _year() -> dict:
 
 
 def _ytd_periods() -> list[dict]:
-    ends = [
-        ("2024Q1", 1, 2024, "2024-03-31"),
-        ("2024Q2", 2, 2024, "2024-06-30"),
-        ("2024Q3", 3, 2024, "2024-09-30"),
-        ("2024Q4", 4, 2024, "2024-12-31"),
-        ("2025Q1", 5, 2025, "2025-03-31"),
-        ("2025Q2", 6, 2025, "2025-06-30"),
+    spans = [
+        ("2024Q1", 1, 2024, "2024-01-01", "2024-03-31"),
+        ("2024Q2", 2, 2024, "2024-04-01", "2024-06-30"),
+        ("2024Q3", 3, 2024, "2024-07-01", "2024-09-30"),
+        ("2024Q4", 4, 2024, "2024-10-01", "2024-12-31"),
+        ("2025Q1", 5, 2025, "2025-01-01", "2025-03-31"),
+        ("2025Q2", 6, 2025, "2025-04-01", "2025-06-30"),
     ]
     return [
         {
@@ -60,9 +60,10 @@ def _ytd_periods() -> list[dict]:
             "grain": "quarter",
             "timeline_id": "t",
             "calendar_year": year,
+            "period_start": start,
             "period_end": end,
         }
-        for period_id, index, year, end in ends
+        for period_id, index, year, start, end in spans
     ]
 
 
@@ -88,11 +89,28 @@ def _flow_quarters() -> list[dict]:
     ]
 
 
-def _profile(mode: str | None = "in_interest") -> dict:
-    raw: dict = {"variant": "bank"}
+def _evidence(**extra) -> dict:
+    item = {
+        "source": "statement line",
+        "binding": "interest",
+        "period": "each",
+        "standard": "ifrs16",
+        "method": "interest_expense",
+    }
+    item.update(extra)
+    return item
+
+
+def _profile(mode: str | None = "in_interest", **extra) -> dict:
+    raw: dict = {"variant": "bank", "denominator": _evidence()}
     if mode is not None:
         raw["lease_mode"] = mode
+    raw.update(extra)
     return {"icr_definition": raw}
+
+
+def _lease(scope: str) -> dict:
+    return {"evidence_json": json.dumps({"lease_scope": scope})}
 
 
 def _ytd() -> dict:
@@ -276,7 +294,12 @@ def test_add_interest_subtracts_principal_only_when_both_rows_exist():
                 _fact("lease_payments", "Y1", "10"),
                 _fact("lease_principal", "Y1", "3"),
             ],
-            [_bind(name) for name in ("ebitda", "interest", "lease_payments", "lease_principal")],
+            [
+                _bind("ebitda"),
+                _bind("interest"),
+                _bind("lease_payments", **_lease("one")),
+                _bind("lease_principal", **_lease("one")),
+            ],
             [_year()],
         ),
         _profile("add_interest"),
@@ -305,7 +328,12 @@ def test_nominal_and_a_missing_lease_mode_ask_instead_of_guessing():
     assert nominal["needs_input"][0] == {"kind": "concept", "reason": "nominal", "subject": "lease_mode"}
     missing = _select("icr", common, _profile(None))
     assert missing["needs_input"][0]["reason"] == "missing"
-    typed = _select("icr", common, {"icr_definition": {"lease_mode": "in_interest"}}, variant="bank")
+    typed = _select(
+        "icr",
+        common,
+        {"icr_definition": {"lease_mode": "in_interest", "denominator": _evidence()}},
+        variant="bank",
+    )
     assert typed["rows"][0]["value"] == Decimal("2.0000000000")
     untyped = _select("icr", common, None, variant="bank")
     assert untyped["needs_input"][0]["subject"] == "lease_mode"
@@ -391,7 +419,9 @@ def test_zero_and_negative_denominator_and_a_negative_numerator():
         ),
         _profile(),
     )
-    assert zero["rows"][0]["status"] == "no_interest"
+    assert zero["status"] == "missing_input"
+    assert zero["rows"][0]["status"] == "missing_input"
+    assert zero["rows"][0]["reason"] == "no_interest"
     assert zero["rows"][0]["value"] is None
     assert zero["rows"][0]["ebitda_sign"] == "positive"
     negative_ebitda = _select(
@@ -434,58 +464,134 @@ def test_zero_and_negative_denominator_and_a_negative_numerator():
                 _fact("lease_payments", "Y1", "10"),
                 _fact("lease_principal", "Y1", "20"),
             ],
-            [_bind(name) for name in ("ebitda", "interest", "lease_payments", "lease_principal")],
+            [
+                _bind("ebitda"),
+                _bind("interest"),
+                _bind("lease_payments", **_lease("one")),
+                _bind("lease_principal", **_lease("one")),
+            ],
             [_year()],
         ),
         _profile("add_interest"),
     )
-    assert inverted["rows"][0]["status"] == "invalid_denominator"
+    assert inverted["status"] == "not_computed"
+    assert inverted["rows"][0]["status"] == "not_computed"
+    assert inverted["rows"][0]["reason"] == "invalid_denominator"
     assert inverted["rows"][0]["value"] is None
 
 
-def test_finance_costs_are_a_proxy_and_an_overstated_label_has_no_number():
-    clean = _select(
+def test_finance_costs_stay_unpublished_until_the_composition_is_confirmed():
+    common = _common(
+        [_fact("ebitda", "Y1", "12"), _fact("finance_costs", "Y1", "10"), _fact("other_expense", "Y1", "4")],
+        [
+            _bind("ebitda"),
+            _bind("finance_costs", label="Финансовые расходы и курсовые разницы"),
+            _bind("other_expense", label="Курсовые разницы"),
+        ],
+        [_year()],
+    )
+    held = _select("icr", common, _profile())
+    assert held["status"] == "not_computed"
+    assert held["rows"] == []
+    assert held["warnings"][0]["code"] == "finance_cost_proxy"
+    confirmed = _select(
+        "icr",
+        common,
+        _profile(
+            finance_costs_confirmed=True,
+            denominator=_evidence(binding="finance_costs"),
+        ),
+    )
+    assert confirmed["rows"][0]["value"] == Decimal("1.2000000000")
+    assert confirmed["warnings"][0]["code"] == "finance_cost_proxy"
+    assert "other_expense" not in confirmed["rows"][0]["inputs"]
+
+
+def test_in_interest_needs_denominator_evidence_and_keeps_the_methods_apart():
+    common = _common(
+        [_fact("ebitda", "Y1", "8"), _fact("interest", "Y1", "4"), _fact("lease_payments", "Y1", "20")],
+        [_bind("ebitda"), _bind("interest"), _bind("lease_payments")],
+        [_year()],
+    )
+    bare = {"icr_definition": {"variant": "bank", "lease_mode": "in_interest"}}
+    assert _select("icr", common, bare)["needs_input"][0]["subject"] == "denominator_evidence"
+    capitalised = _select("icr", common, _profile(denominator=_evidence(method="capitalised")))
+    assert capitalised["needs_input"][0]["subject"] == "capitalised"
+    paid = _select("icr", common, _profile(denominator=_evidence(method="interest_paid")))
+    assert paid["needs_input"][0]["subject"] == "interest_paid"
+    expense = _select("icr", common, _profile())
+    assert expense["rows"][0]["value"] == Decimal("2.0000000000")
+    assert "lease_payments" not in expense["rows"][0]["inputs"]
+
+
+def test_lease_split_needs_one_scope_on_both_rows():
+    facts = [
+        _fact("ebitda", "Y1", "16"),
+        _fact("interest", "Y1", "1"),
+        _fact("lease_payments", "Y1", "10"),
+        _fact("lease_principal", "Y1", "3"),
+    ]
+    split = _select(
         "icr",
         _common(
-            [_fact("ebitda", "Y1", "12"), _fact("finance_costs", "Y1", "10"), _fact("other_expense", "Y1", "4")],
+            facts,
             [
                 _bind("ebitda"),
-                _bind("finance_costs", label="Финансовые расходы"),
-                _bind("other_expense", label="Курсовые разницы"),
+                _bind("interest"),
+                _bind("lease_payments", **_lease("fleet")),
+                _bind("lease_principal", **_lease("building")),
             ],
             [_year()],
         ),
-        _profile(),
+        _profile("add_interest"),
     )
-    assert clean["rows"][0]["value"] == Decimal("2.0000000000")
-    assert clean["warnings"][0]["code"] == "finance_cost_proxy"
-    dirty = _select(
+    assert split["needs_input"][0]["subject"] == "lease_scope"
+    bare = _select(
         "icr",
         _common(
-            [_fact("ebitda", "Y1", "12"), _fact("finance_costs", "Y1", "10")],
-            [_bind("ebitda"), _bind("finance_costs", label="Финансовые расходы и курсовые разницы")],
+            facts,
+            [_bind("ebitda"), _bind("interest"), _bind("lease_payments"), _bind("lease_principal")],
             [_year()],
         ),
-        _profile(),
+        _profile("add_interest"),
     )
-    assert dirty["status"] == "denominator_overstated"
-    assert dirty["rows"] == []
-    assert dirty["message"] == "знаменатель завышен"
-    hidden = _select(
+    assert bare["needs_input"][0]["subject"] == "lease_scope"
+
+
+def test_gaap_is_not_the_ifrs_recipe():
+    from finance_analysis.domain.metrics import _recipe_message
+
+    got = _select(
         "icr",
         _common(
-            [_fact("ebitda", "Y1", "12"), _fact("finance_costs", "Y1", "10")],
-            [
-                _bind("ebitda"),
-                _bind("finance_costs", label="Финансовые расходы"),
-                _bind("other_expense", label="Переоценка производных"),
-            ],
+            [_fact("ebitda", "Y1", "30"), _fact("interest", "Y1", "10")],
+            [_bind("ebitda"), _bind("interest")],
             [_year()],
         ),
+        {"ebitda_definition": "gaap", **_profile()},
+    )
+    assert got["status"] == "not_computed"
+    assert got["rows"] == []
+    assert got["message"] == _recipe_message("gaap")
+    assert got["message"] != _recipe_message("ifrs")
+
+
+def test_ytd_identity_rejects_a_shifted_fiscal_year_end():
+    periods = _ytd_periods()
+    prior = next(item for item in periods if item["period_id"] == "2024Q4")
+    prior["period_end"] = "2024-03-31"
+    prior["period_start"] = "2024-01-01"
+    facts = [
+        *_series("ebitda", periods, ["10", "30", "60", "100", "12", "40"]),
+        *_series("interest", periods, ["1", "3", "6", "10", "2", "5"]),
+    ]
+    got = _select(
+        "icr",
+        _common(facts, [_bind("ebitda", **_ytd()), _bind("interest", **_ytd())], periods),
         _profile(),
     )
-    assert hidden["rows"][0]["status"] == "denominator_overstated"
-    assert hidden["rows"][0]["value"] is None
+    assert _at(got, "2025Q2")["status"] == "needs_input"
+    assert _at(got, "2025Q2")["value"] is None
 
 
 def test_profile_stores_icr_definition_and_rejects_a_number(tmp_path):
@@ -514,6 +620,27 @@ def test_profile_stores_icr_definition_and_rejects_a_number(tmp_path):
             )
 
     asyncio.run(run())
+
+
+def test_denominator_evidence_for_one_period_does_not_cover_the_next():
+    other = {**_year(), "period_id": "Y2", "period_index": 2, "calendar_year": 2025, "period_end": "2025-12-31"}
+    got = _select(
+        "icr",
+        _common(
+            [
+                _fact("ebitda", "Y1", "8"),
+                _fact("interest", "Y1", "4"),
+                _fact("ebitda", "Y2", "8"),
+                _fact("interest", "Y2", "4"),
+            ],
+            [_bind("ebitda"), _bind("interest")],
+            [_year(), other],
+        ),
+        _profile(denominator=_evidence(period="Y1")),
+    )
+    assert _at(got, "Y1")["value"] == Decimal("2.0000000000")
+    assert _at(got, "Y2")["status"] == "needs_input"
+    assert _at(got, "Y2")["reason"] == "denominator_period"
 
 
 def _series(row: str, periods: list[dict], values: list[str]) -> list[dict]:

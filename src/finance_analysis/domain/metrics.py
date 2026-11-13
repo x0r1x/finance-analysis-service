@@ -70,7 +70,7 @@ def interest_choice(
     return None, None
 
 
-_EBITDA_DEFINITION = frozenset({"book", "ras", "ifrs"})
+_EBITDA_DEFINITION = frozenset({"book", "ras", "ifrs", "gaap"})
 _RAS_UNPUBLISHED = (
     "Коэффициент не посчитан: выбрана EBITDA (РСБУ), а она ещё не собрана. "
     "Нужны прибыль от продаж и амортизация за тот же период. "
@@ -92,7 +92,7 @@ def ebitda_definition_error(value) -> str | None:
 
     if isinstance(value, str) and value in _EBITDA_DEFINITION:
         return None
-    return "ebitda_definition: book, ras или ifrs"
+    return "ebitda_definition: book, ras, ifrs или gaap"
 
 
 def ebitda_definition(profile: dict | None) -> str:
@@ -134,12 +134,20 @@ def recipe_block(
     }
 
 
+_GAAP_UNPUBLISHED = (
+    "Коэффициент не посчитан: выбрана отчётность GAAP, а отдельный рецепт ещё не утверждён. "
+    "Рецепт МСФО сюда не подставляется."
+)
+
+
 def _recipe_message(kind: str) -> str:
     if kind == "ras":
         return _RAS_UNPUBLISHED
     if kind == "ifrs":
         return _IFRS_UNPUBLISHED
-    return "Пометка определения: book, ras или ifrs."
+    if kind == "gaap":
+        return _GAAP_UNPUBLISHED
+    return "Пометка определения: book, ras, ifrs или gaap."
 
 
 def coverage_ratio(
