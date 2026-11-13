@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal, localcontext
 
 from finance_analysis.domain.mapping import debt_seniority, marked_line_code
@@ -21,11 +22,18 @@ _NUMERATOR = ("cfo_statement", "cfi_statement", "financing_inflows")
 _DEBT = frozenset({"senior_principal", "senior_interest_paid", "principal", "interest", "debt_service"})
 _CASH_INTEREST = frozenset({"4123", "4224"})
 _STATED = frozenset({"senior_principal", "senior_interest_paid"})
+_JUNIOR_MARKS = ("субордин", "акционер", "участник", "учредител", "shareholder", "subordinated")
+_TRANCHE = re.compile(r"(?:транш|tranche)\s*([0-9a-zа-я]+)")
+COMPOSITION = (
+    "cfo_statement + cfi_statement + financing_inflows / senior_principal + senior_interest_paid"
+)
 METHODOLOGY = (
+    "Вариант housing, не универсальный DSCR. "
     "DSCR интервала жилищного строительства: сальдо денежных потоков от текущих операций "
-    "плюс сальдо от инвестиционных операций плюс поступления по финансовой деятельности, "
-    "делённые на погашение основного долга и уплаченные проценты по несубординированным кредитам и займам. "
-    "Пустая ячейка не заменяется нулём."
+    "(cfo_statement) плюс сальдо от инвестиционных операций (cfi_statement) плюс поступления "
+    "по финансовой деятельности (financing_inflows), делённые на погашение основного долга "
+    "(senior_principal) и уплаченные проценты по несубординированным кредитам и займам "
+    "(senior_interest_paid). Пустая ячейка не заменяется нулём."
 )
 
 
@@ -66,6 +74,9 @@ def housing_dscr(
             "status": "not_computed",
             "message": "interest_addback: true или false",
             "definition_source": "housing",
+            "methodology": METHODOLOGY,
+            "composition": COMPOSITION,
+            "standard": "ОДДС",
         }
     aligned = aligned_keys(periods)
     rows = []
@@ -96,6 +107,8 @@ def housing_dscr(
         "warnings": warnings,
         "status": status,
         "definition_source": "housing",
+        "methodology": METHODOLOGY,
+        "composition": COMPOSITION,
     }
 
 
@@ -119,15 +132,23 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         cells.extend(found)
         if concept == "financing_inflows":
             notes.append("financing_inflows_included")
+    addback_reason = None
     if addback:
-        extra, extra_cells = _cash_interest(bindings, facts, key, aligned, convention, absent)
-        if extra is not None and "cfo_statement" not in missing and "cfi_statement" not in missing:
+        extra, extra_cells, addback_reason = _cash_interest(bindings, facts, key, aligned, convention, absent)
+        if (
+            addback_reason is None
+            and extra is not None
+            and "cfo_statement" not in missing
+            and "cfi_statement" not in missing
+        ):
             numerator += extra
             components["interest_addback"] = format(extra, "f")
             cells.extend(extra_cells)
     if _cash_interest_rows(bindings):
         notes.append("interest_inside_numerator")
-    denominator, denom_missing, blocked, denom_cells = _denominator(
+    if addback_reason:
+        notes.append(addback_reason)
+    denominator, denom_missing, denom_reason, denom_cells = _denominator(
         bindings, facts, key, aligned, convention, absent
     )
     missing.extend(denom_missing)
@@ -139,8 +160,10 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
     numerator_ready = not any(concept in missing for concept in _NUMERATOR)
     if missing:
         status, reason, value = "not_computed", "missing_component", None
-    elif blocked or denominator is None:
-        status, reason, value = "not_computed", "seniority_unknown", None
+    elif addback_reason:
+        status, reason, value = "not_computed", addback_reason, None
+    elif denom_reason or denominator is None:
+        status, reason, value = "not_computed", denom_reason or "seniority_unknown", None
     elif denominator == 0:
         status, reason, value = "no_debt_service", "zero_denominator", None
     else:
@@ -172,6 +195,7 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         "reason": reason,
         "missing": missing,
         "methodology": METHODOLOGY,
+        "composition": COMPOSITION,
         "standard": "ОДДС",
         "components": components,
         "inputs": [*_NUMERATOR, "senior_principal", "senior_interest_paid"],
@@ -182,7 +206,13 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
 
 def _denominator(bindings, facts, key, aligned, convention, absent):
     debt = [row for concept in _DEBT for row in _bound(bindings, concept, absent)]
-    senior = [row for row in debt if _seniority(row) == "senior" and _role(row)]
+    caps = [row for row in debt if _is_cap(row) and _seniority(row) == "senior" and not _mixed(row)]
+    senior = [
+        row
+        for row in debt
+        if _seniority(row) == "senior" and _role(row) and not _is_cap(row) and not _mixed(row)
+    ]
+    mixed = [row for row in debt if _mixed(row) and _role(row) and not _is_cap(row)]
     parts = [row for row in senior if _role(row) in {"principal", "interest"}]
     totals = [row for row in senior if _role(row) == "total"]
     if parts:
@@ -191,31 +221,119 @@ def _denominator(bindings, facts, key, aligned, convention, absent):
         missing = []
         cells: list[str] = []
         principal, principal_cells, principal_hole = _sum_rows(principal_rows, facts, key, aligned, True, convention)
-        interest, interest_cells, interest_hole = _sum_rows(interest_rows, facts, key, aligned, True, convention)
         cells.extend(principal_cells)
-        cells.extend(interest_cells)
         if not principal_rows or principal_hole or principal is None:
             missing.append("senior_principal")
-        if not interest_rows or interest_hole or interest is None:
-            if _capitalized(debt):
-                interest = Decimal(0)
-            else:
-                missing.append("senior_interest_paid")
-        if missing:
-            return None, missing, False, cells
-        return principal + interest, [], False, cells
+            principal = None
+        interest, interest_cells, interest_missing = _resolve_interest(
+            principal_rows, interest_rows, caps, facts, key, aligned, convention
+        )
+        cells.extend(interest_cells)
+        if interest_missing:
+            if not interest_rows and mixed and "senior_principal" not in missing:
+                return None, [], "seniority_unsplit", cells
+            missing.append("senior_interest_paid")
+        if missing or principal is None or interest is None:
+            return None, missing or ["senior_interest_paid"], None, cells
+        return principal + interest, [], None, cells
+    if mixed and not totals:
+        return None, [], "seniority_unsplit", []
     if totals:
         amount, cells, hole = _sum_rows(totals, facts, key, aligned, True, convention)
         if hole or amount is None:
-            return None, ["senior_principal", "senior_interest_paid"], False, cells
-        return amount, [], False, cells
+            return None, ["senior_principal", "senior_interest_paid"], None, cells
+        return amount, [], None, cells
     if debt:
-        return None, [], True, []
-    return None, ["senior_principal", "senior_interest_paid"], False, []
+        return None, [], "seniority_unknown", []
+    return None, ["senior_principal", "senior_interest_paid"], None, []
 
 
-def _capitalized(rows: list[dict]) -> bool:
-    return any("капитализ" in _text(row) and _seniority(row) == "senior" for row in rows)
+def _resolve_interest(principal_rows, interest_rows, caps, facts, key, aligned, convention):
+    """Ноль процентов подтверждается только у своего транша и только в этом периоде."""
+
+    if not principal_rows:
+        if not interest_rows:
+            return None, [], True
+        amount, cells, hole = _sum_rows(interest_rows, facts, key, aligned, True, convention)
+        return amount, cells, hole or amount is None
+
+    def capped(principal) -> bool:
+        for cap in caps:
+            if not _same_tranche(cap, principal, principal_rows):
+                continue
+            amount, _cells, hole = _amount(facts, cap, key, aligned)
+            if not hole and amount is not None:
+                return True
+        return False
+
+    total = Decimal(0)
+    cells: list[str] = []
+    unresolved = False
+    specific_any = False
+    shared = [row for row in interest_rows if _token(row) is None]
+    for principal in principal_rows:
+        token = _token(principal)
+        specific = [row for row in interest_rows if token is not None and _token(row) == token]
+        if specific:
+            specific_any = True
+            amount, row_cells, hole = _sum_rows(specific, facts, key, aligned, True, convention)
+            if not hole and amount is not None:
+                total += amount
+                cells.extend(row_cells)
+                continue
+            if capped(principal):
+                continue
+            unresolved = True
+            continue
+        if capped(principal):
+            continue
+        if not shared:
+            unresolved = True
+
+    def is_dependent(principal) -> bool:
+        token = _token(principal)
+        own = token is not None and any(_token(row) == token for row in interest_rows)
+        return not own and not capped(principal)
+
+    dependents = [principal for principal in principal_rows if is_dependent(principal)]
+    if shared and (dependents or not specific_any):
+        amount, row_cells, hole = _sum_rows(shared, facts, key, aligned, True, convention)
+        if dependents and (hole or amount is None):
+            unresolved = True
+        elif not hole and amount is not None:
+            total += amount
+            cells.extend(row_cells)
+    if unresolved:
+        return None, cells, True
+    return total, cells, False
+
+
+def _same_tranche(row, principal, principals) -> bool:
+    row_token = _token(row)
+    principal_token = _token(principal)
+    if row_token is not None and principal_token is not None:
+        return row_token == principal_token
+    # Строка без имени транша подтверждает ноль только единственному кредиту.
+    return row_token is None and len(principals) == 1
+
+
+def _token(row: dict) -> str | None:
+    found = _TRANCHE.search(_text(row))
+    return found.group(1) if found else None
+
+
+def _is_cap(row: dict) -> bool:
+    return "капитализ" in _text(row)
+
+
+def _mixed(row: dict) -> bool:
+    """Старший и младший долг в одной строке. «Несубординированный» само по себе не смесь."""
+
+    text = _text(row)
+    if not any(mark in text for mark in ("несубордин", "старш", "senior")):
+        return False
+    stripped = text.replace("несубординированн", " ").replace("несубордин", " ")
+    return any(mark in stripped for mark in _JUNIOR_MARKS)
 
 
 def _seniority(row: dict) -> str:
@@ -328,6 +446,12 @@ def _cash_interest_rows(bindings) -> list[dict]:
 
 
 def _cash_interest(bindings, facts, key, aligned, convention, absent):
+    """Вернуть только основную строку с подтверждённым старшим процентом.
+
+    Смешанная или безымянная строка 4123/4224 целиком не прибавляется. Если разбивки нет,
+    причина `interest_addback_unattributed`: число с таким флагом не выпускается.
+    """
+
     rows = []
     seen = set()
     for row in _cash_interest_rows(bindings):
@@ -338,21 +462,27 @@ def _cash_interest(bindings, facts, key, aligned, convention, absent):
             continue
         seen.add(identity)
         rows.append(row)
-    if not rows:
-        return None, []
-    total = Decimal(0)
-    cells = []
-    any_number = False
+    clean = []
+    blocked = False
     for row in rows:
-        amount, found, hole = _amount(facts, row, key, aligned)
-        if hole or amount is None:
+        if _senior_cash(row):
+            clean.append(row)
             continue
-        any_number = True
-        total += _payment(amount, convention)
-        cells.extend(found)
-    if not any_number:
-        return None, cells
-    return total, cells
+        if _seniority(row) == "subordinated" and not _mixed(row):
+            continue
+        blocked = True
+    if blocked and not clean:
+        return None, [], "interest_addback_unattributed"
+    if not clean:
+        return None, [], None
+    amount, cells, hole = _sum_rows(clean, facts, key, aligned, True, convention)
+    if hole or amount is None:
+        return None, cells, "interest_addback_unattributed"
+    return amount, cells, None
+
+
+def _senior_cash(row: dict) -> bool:
+    return bool(row.get("is_primary")) and _seniority(row) == "senior" and not _mixed(row) and not _is_cap(row)
 
 
 def _draw_and_repay(bindings, facts, key, aligned, absent, denominator) -> bool:
