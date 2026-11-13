@@ -1,0 +1,7 @@
+concept: borrowings_total
+pref:
+  en: "Borrowings total"
+  ru: "Итого заемные средства"
+definition:
+  en: "A single borrowings total when lines 1410 and 1510 are both absent. Dropped when either line is present."
+  ru: "Одна строка итога заемных средств, если строк 1410 и 1510 нет. Если найдена любая из них, итог в сумму не входит."

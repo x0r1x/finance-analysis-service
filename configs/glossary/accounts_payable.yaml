@@ -1,0 +1,11 @@
+concept: accounts_payable
+pref:
+  en: "Trade payables"
+  ru: "Краткосрочная кредиторская задолженность"
+alt:
+  ru:
+    - "Кредиторская задолженность"
+    - "1520"
+definition:
+  en: "Line 1520. Trade payables. Not a lease liability."
+  ru: "Строка 1520. Кредиторская задолженность. Обязательством по аренде не является."
