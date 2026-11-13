@@ -1,0 +1,13 @@
+concept: depreciation_notes
+pref:
+  en: "Depreciation in the annual notes"
+  ru: "Амортизация в пояснениях"
+alt:
+  ru:
+    - "5640"
+    - "ф.5 (740)"
+    - "Амортизация на конец года (заполняется только 4 кв.)"
+    - "Амортизация за соответствующий последний отчетный год"
+definition:
+  en: "Annual depreciation in the notes, line 5640 or form 5 line 740. Not a quarterly flow. This release does not add it."
+  ru: "Годовая амортизация пояснений, строка 5640 или ф.5 (740). Не поток квартала. В этом релизе не прибавляется."

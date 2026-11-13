@@ -73,6 +73,13 @@ _IDS = frozenset(
         "gross_profit",
         "selling_expenses",
         "operating_profit",
+        "profit_from_sales",
+        "ifrs_operating_profit",
+        "other_income",
+        "other_expense",
+        "depreciation_notes",
+        "ebitda_ras",
+        "ebitda_ifrs",
         "ebt",
         "income_tax",
         "net_income",
@@ -310,7 +317,7 @@ def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
         events = await journal.read_all(job)
         kinds = {event["type"] for event in fold(events).values()}
         assert {"sign.set", "concept.set", "unit.set", "concept.absent", "profile.set"} <= kinds
-        _human, _ignored, absent = _decisions(events)
+        _human, _ignored, absent, _accepted = _decisions(events)
         assert "capex" in absent
 
         gloss = GlossaryStore(store)

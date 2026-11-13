@@ -1,0 +1,7 @@
+concept: ebitda_ifrs
+pref:
+  en: "EBITDA (IFRS)"
+  ru: "EBITDA (МСФО)"
+definition:
+  en: "The company's operating profit plus depreciation for the same period. Asset sales, revaluations, foreign-exchange differences and income from other entities are removed only when they sit inside that operating profit and have been marked by hand. IFRS does not define EBITDA, and this is not the operating-profit subtotal from the new presentation standard. The figure is not calculated yet, and the model's own EBITDA line is not used in its place."
+  ru: "Операционная прибыль компании плюс амортизация за тот же период. Продажу активов, переоценку, курсовые разницы и доход от участия в других организациях убирают только если они сидят внутри этой операционной прибыли и их отметил человек. МСФО сам EBITDA не задаёт, и это не новый стандартный подытог «операционная прибыль до амортизации». Пока показатель не считается, и строка EBITDA из модели на его место не ставится."

@@ -126,6 +126,7 @@ def project(
                 "formula": row.formula,
                 "formula_exceptions_json": __import__("json").dumps(_exceptions(row), ensure_ascii=False),
                 "formula_exceptions_truncated": _exceptions_truncated(row),
+                "line_code": row.line_code,
             }
         )
         series_list = list(row.series)
@@ -302,7 +303,7 @@ def _links(snapshot: WorkbookSnapshot, model_id: str, build: str) -> list[dict]:
 def _decision_maps(events: list[dict]) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
     phases: dict[tuple[str, str], str] = {}
     concepts: dict[str, str] = {}
-    for event in fold(events).values():
+    for event in sorted(fold(events).values(), key=lambda item: int(item["seq"])):
         kind = event.get("type")
         target = str(event.get("target") or "")
         if kind == "phase.set":

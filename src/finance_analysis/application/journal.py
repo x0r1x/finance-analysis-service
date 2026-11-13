@@ -9,11 +9,18 @@ from datetime import UTC, datetime
 from finance_analysis.application.keys import log_key
 from finance_analysis.domain.book import Actor
 from finance_analysis.domain.errors import AlreadyExists, BindingConflict, NotFound
+from finance_analysis.domain.mapping import operating_profit_stamp
 from finance_analysis.domain.state import fold
 
 
 def _slot(event_type: str, target: str) -> str:
     return f"{event_type}\x1f{target}"
+
+
+def _same_meaning(found: dict, meaning: str | None) -> bool:
+    if meaning is None:
+        return True
+    return found.get("meaning") == meaning
 
 
 class Journal:
@@ -88,14 +95,19 @@ class Journal:
         event_type: str,
         value,
         request_id: str,
+        meaning: str | None = None,
     ) -> dict | None:
         if request_id and request_id in self._requests.get(job_id, {}):
-            return self._requests[job_id][request_id]
+            found = self._requests[job_id][request_id]
+            if _same_meaning(found, meaning):
+                return found
         canon = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
         found = self._values.get(job_id, {}).get((target, event_type, canon))
         if found is None:
             return None
         if self._keys.get(job_id, {}).get(_slot(event_type, target)) != found.get("seq"):
+            return None
+        if not _same_meaning(found, meaning):
             return None
         return found
 
@@ -116,6 +128,7 @@ class Journal:
                 event_type=event_type,
                 value=value,
                 request_id=request_id,
+                meaning=operating_profit_stamp(event_type, value),
             )
 
     async def read_all(self, job_id: str) -> list[dict]:
@@ -145,12 +158,14 @@ class Journal:
         async with self._lock(job_id):
             while True:
                 await self._sync(job_id)
+                meaning = operating_profit_stamp(event_type, value)
                 existing = self._duplicate_locked(
                     job_id,
                     target=target,
                     event_type=event_type,
                     value=value,
                     request_id=request_id,
+                    meaning=meaning,
                 )
                 if existing is not None:
                     return existing, True
@@ -167,6 +182,7 @@ class Journal:
                         binding_key=binding_key,
                         supersedes=supersedes,
                         question_id=question_id,
+                        meaning=meaning,
                     )
                 except AlreadyExists:
                     self._last[job_id] = 0
@@ -188,6 +204,7 @@ class Journal:
         binding_key: str | None = None,
         supersedes: dict | None = None,
         question_id: str | None = None,
+        meaning: str | None = None,
     ) -> dict:
         actual = self._keys.get(job_id, {}).get(_slot(event_type, target))
         if actual != expected_seq:
@@ -214,6 +231,8 @@ class Journal:
             event["supersedes"] = supersedes
         if question_id:
             event["question_id"] = question_id
+        if meaning:
+            event["meaning"] = meaning
         await self.store.put_if_absent(
             log_key(job_id, seq),
             json.dumps(event, ensure_ascii=False).encode(),

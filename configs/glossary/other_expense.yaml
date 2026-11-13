@@ -1,0 +1,11 @@
+concept: other_expense
+pref:
+  en: "RAS other expenses line 2350"
+  ru: "Прочие расходы"
+alt:
+  ru:
+    - "2350"
+    - "100"
+definition:
+  en: "Other expenses, line 2350 or old line 100. This release does not strip exclusions and does not publish the sum."
+  ru: "Прочие расходы, строка 2350 или старый код 100. В этом релизе исключения не вычитаются и сумма не публикуется."

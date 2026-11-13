@@ -3,5 +3,5 @@ pref:
   en: "EBITDA"
   ru: "EBITDA"
 definition:
-  en: "Earnings before interest, tax, depreciation and amortisation"
-  ru: "Прибыль до процентов, налога и амортизации"
+  en: "The model's own line labelled EBITDA. Earnings before interest, tax, depreciation and amortisation, as the author of the model defined that line. It is not EBITDA (RAS) and not EBITDA (IFRS), and it may include other income and expenses in full."
+  ru: "Строка модели, которую автор уже назвал EBITDA. Прибыль до процентов, налога и амортизации в том составе, который заложил автор модели. Это не EBITDA (РСБУ) и не EBITDA (МСФО): в строке могут целиком сидеть прочие доходы и расходы."

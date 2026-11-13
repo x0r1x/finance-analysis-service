@@ -70,6 +70,78 @@ def interest_choice(
     return None, None
 
 
+_EBITDA_DEFINITION = frozenset({"book", "ras", "ifrs"})
+_RAS_UNPUBLISHED = (
+    "Коэффициент не посчитан: выбрана EBITDA (РСБУ), а она ещё не собрана. "
+    "Нужны прибыль от продаж и амортизация за тот же период. "
+    "Прочие доходы и расходы входят только после удаления курсовых разниц, резервов, "
+    "продажи и переоценки имущества, штрафов и других статей не обычной работы. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
+_IFRS_UNPUBLISHED = (
+    "Коэффициент не посчитан: выбрана EBITDA (МСФО), а она ещё не собрана. "
+    "Нужны операционная прибыль и амортизация за тот же период. "
+    "Продажу активов, переоценку, курсовые разницы и участие в других организациях убирают "
+    "только если они внутри этой операционной прибыли и человек их отметил. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
+
+
+def ebitda_definition_error(value) -> str | None:
+    """None — значение можно сохранить. Чисел и свободной формулы нет."""
+
+    if isinstance(value, str) and value in _EBITDA_DEFINITION:
+        return None
+    return "ebitda_definition: book, ras или ifrs"
+
+
+def ebitda_definition(profile: dict | None) -> str:
+    """Пустая пометка равна book. Чужое значение не читается как книжная строка."""
+
+    raw = (profile or {}).get("ebitda_definition")
+    if raw in (None, ""):
+        return "book"
+    if isinstance(raw, str) and raw in _EBITDA_DEFINITION:
+        return raw
+    return "invalid"
+
+
+def recipe_block(
+    profile: dict | None,
+    bindings: list[dict],
+    *,
+    metric: str,
+    names: tuple[str, ...] | None = None,
+) -> dict | None:
+    """ras и ifrs не подставляют книжную EBITDA. В этом срезе число рецепта не выпускается."""
+
+    kind = ebitda_definition(profile)
+    if kind == "book":
+        return None
+    if names is not None and "ebitda" not in names and "ebit" not in names:
+        return None
+    # Одна фраза на ICR, чистый долг к EBITDA и корпоративный DSCR. Найденные строки её не меняют.
+    del bindings
+    message = _recipe_message(kind)
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [],
+        "missing_inputs": [],
+        "warnings": [{"code": "ebitda_recipe_unpublished", "params": {"message": message}}],
+        "status": "not_computed",
+        "message": message,
+    }
+
+
+def _recipe_message(kind: str) -> str:
+    if kind == "ras":
+        return _RAS_UNPUBLISHED
+    if kind == "ifrs":
+        return _IFRS_UNPUBLISHED
+    return "Пометка определения: book, ras или ifrs."
+
+
 def coverage_ratio(
     *,
     metric: str,
@@ -83,6 +155,7 @@ def coverage_ratio(
     absent: frozenset[str] = frozenset(),
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
+    profile: dict | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -92,6 +165,10 @@ def coverage_ratio(
 
     from finance_analysis.domain.coverage import is_coverage_test_period
 
+    if metric == "icr":
+        blocked = recipe_block(profile, bindings, metric=metric)
+        if blocked:
+            return blocked
     primaries = _primaries(bindings, absent)
     order = interest_order or {}
     warnings: list[dict] = []

@@ -22,6 +22,7 @@ from finance_analysis.domain.book import (
     WorkbookSnapshot,
 )
 from finance_analysis.domain.errors import UnsupportedBuilderShape
+from finance_analysis.domain.mapping import marked_line_code
 
 
 class _In(BaseModel):
@@ -58,12 +59,19 @@ class SeriesIn(_In):
     formula_exceptions: list[Any] | None = None
 
 
+class CellIn(_In):
+    col: int
+    cached_value: Any = None
+    role: str | None = None
+
+
 class RowIn(_In):
     row_key: str
     sheet: str
     row: int
     label: str
     kind: str
+    cells: list[CellIn] | None = None
     label_path: list[Any] | None = None
     parent_label: str | None = None
     unit: str | None = None
@@ -85,6 +93,7 @@ class BlockIn(_In):
     sheet: str
     kind: str
     rows: list[Any]
+    label_col: int | None = None
     periods: list[Any] | None = None
 
 
@@ -412,7 +421,21 @@ def _read_row(
         block_id=block.block_id,
         block_kind=block.kind,
         formula_exceptions=tuple(_strings(parsed.formula_exceptions)),
+        line_code=_line_code(parsed, block),
     )
+
+
+def _line_code(row: RowIn, block: BlockIn) -> str | None:
+    """Код строки — явная форма в столбце справа от подписи, не голое число."""
+
+    if block.label_col is None:
+        return None
+    wanted = block.label_col + 1
+    for cell in row.cells or []:
+        if cell.col != wanted or cell.cached_value is None:
+            continue
+        return marked_line_code(cell.cached_value)
+    return None
 
 
 def parse_links(payload: dict | None) -> tuple[GraphLink, ...]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
@@ -35,6 +36,24 @@ _MONEY = frozenset({"money", "price"})
 MODEL_LABEL = "model:"
 AGREE_SHARE = Decimal("0.8")
 _HUMAN = frozenset({"concept.set", "concept.confirmed"})
+OPERATING_PROFIT_MEANING = "model"
+_OPERATING_PROFIT_REVIEW = (
+    "needs review: привязка operating_profit сделана при прежнем смысле. "
+    "Она сохраняется и не переносится на другое понятие. "
+    "Подтверждение текущего смысла снимает пометку."
+)
+# Явная форма кода пояснений. Голое число соседней ячейки кодом не является.
+_MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
+
+
+def marked_line_code(value: object) -> str | None:
+    """Код строки только в форме «Ф. 5 (740)». Иначе код для сопоставления не определён."""
+
+    if not isinstance(value, str):
+        return None
+    if not _MARKED_LINE_CODE.match(value.strip()):
+        return None
+    return "ф.5 (740)"
 
 
 @dataclass(frozen=True)
@@ -74,13 +93,13 @@ def assign_rows(
     facts: list[dict] | None = None,
 ) -> dict[str, Assignment]:
     apply_block_titles(rows)
-    human, ignored, absent = _decisions(events)
+    human, ignored, absent, accepted = _decisions(events)
     draft: list[tuple[dict, Assignment]] = []
     filtered: dict[str, list[dict]] = {}
     for row in rows:
         if row.get("kind") != "fact":
             continue
-        item = _one(row, human, ignored, absent, glossary)
+        item = _one(row, human, ignored, absent, glossary, accepted)
         missed = _statement_filtered(row, glossary, roles)
         if missed:
             filtered.setdefault(missed, []).append(row)
@@ -176,7 +195,7 @@ def decide(
     return Assignment(top.concept, status, "inferred", True, matched, "normal", top_p, evidence)
 
 
-def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
+def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[str, str]) -> Assignment:
     key = row["binding_key"]
     if key in ignored:
         return Assignment(None, "ignored", "confirmed", False, None, "normal")
@@ -184,7 +203,15 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         concept = human[key]
         if concept in absent:
             return Assignment(concept, "unknown", "confirmed", False, None, "normal")
-        return Assignment(concept, "bound", "confirmed", True, None, "normal")
+        return Assignment(
+            concept,
+            "bound",
+            "confirmed",
+            True,
+            None,
+            "normal",
+            evidence=_operating_profit_review(concept, accepted.get(key)),
+        )
     if row.get("excluded"):
         return Assignment(None, "not_applicable", "inferred", False, None, "normal")
     shared = _ambiguous_label(row, glossary)
@@ -201,6 +228,9 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         "label": {"id": label_id(hit.concept, hit.kind, hit.text), "kind": hit.kind, "text": hit.text},
         "match_strength": strength,
     }
+    code = marked_line_code(row.get("line_code"))
+    if code:
+        evidence["line_code"] = code
     if strength == "section_heading":
         evidence["match_provenance"] = "section_heading"
         evidence["section_heading"] = _nearest_heading(row)
@@ -242,6 +272,22 @@ def _ambiguous_label(row: dict, glossary: GlossaryPackage) -> Assignment | None:
     return Assignment(None, "ambiguous", "inferred", False, None, "normal", None, evidence)
 
 
+def operating_profit_stamp(event_type: str, value) -> str | None:
+    """Новая запись текущего смысла. У старых записей этого поля нет."""
+
+    if event_type in _HUMAN and value == "operating_profit":
+        return OPERATING_PROFIT_MEANING
+    return None
+
+
+def _operating_profit_review(concept: str, meaning: str | None) -> dict:
+    """Старая ручная привязка остаётся. Пометка — только у записи без текущего смысла."""
+
+    if concept != "operating_profit" or meaning == OPERATING_PROFIT_MEANING:
+        return {}
+    return {"needs_review": _OPERATING_PROFIT_REVIEW}
+
+
 def lexical_hit(row: dict, glossary: GlossaryPackage):
     """Стадия 1: точная метка глоссария, если её не отсеяли % и отрицательные метки.
 
@@ -257,6 +303,13 @@ def lexical_hit(row: dict, glossary: GlossaryPackage):
         if not structure_pass(row, glossary.concepts[hit.concept], label=label):
             return None
         return found
+    code = marked_line_code(row.get("line_code"))
+    if code and code != label:
+        coded = glossary.resolve_match(code)
+        if coded is not None:
+            hit, _strength = coded
+            if structure_pass(row, glossary.concepts[hit.concept], label=label):
+                return coded
     return _heading_hit(row, glossary, label)
 
 
@@ -1075,20 +1128,25 @@ def absent_in_journal(events: list[dict]) -> frozenset[str]:
     return frozenset(_decisions(events)[2])
 
 
-def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str]]:
+def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str], dict[str, str]]:
     from finance_analysis.domain.state import fold
 
     human: dict[str, str] = {}
     ignored: set[str] = set()
     absent: set[str] = set()
-    for _target, event in fold(events).items():
+    accepted: dict[str, str] = {}
+    for event in sorted(fold(events).values(), key=lambda item: int(item["seq"])):
         kind = event.get("type")
-        binding = str(event.get("binding_key") or _target)
+        binding = str(event.get("binding_key") or event.get("target") or "")
         value = event.get("value")
         if kind in _HUMAN and isinstance(value, str) and binding != "book":
             human[binding] = value
+            if event.get("meaning") == OPERATING_PROFIT_MEANING and value == "operating_profit":
+                accepted[binding] = OPERATING_PROFIT_MEANING
+            else:
+                accepted.pop(binding, None)
         elif kind == "concept.ignored":
             ignored.add(binding)
         elif kind == "concept.absent" and isinstance(value, str):
             absent.add(value)
-    return human, ignored, absent
+    return human, ignored, absent, accepted

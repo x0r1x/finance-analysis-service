@@ -393,8 +393,12 @@ class GlossaryPackage:
         ambiguous у нескольких понятий, сюда не попадает.
         """
 
+        surface = label_surface(text)
         peeled = _peel(text)
         body = _fold(peeled.body)
+        direct = self._by_norm.get(surface)
+        if direct is not None and label_surface(direct.text) == surface and surface != body:
+            return direct, "exact"
         if body and body in self._ambiguous:
             return None
         found: list[tuple[LabelHit, str]] = []
@@ -657,6 +661,66 @@ def _labels(raw, name: str) -> list[tuple[str, bool]]:
     return out
 
 
+def _owns_bare(group: list[tuple[LabelHit, bool]], name: str, key: str) -> bool:
+    """Тело уже занято подписью без скобки-аббревиатуры."""
+
+    return any(hit.concept != name and label_surface(hit.text) == key for hit, _flag in group)
+
+
+def _abbrev_claims(group: list[tuple[LabelHit, bool]], key: str) -> bool:
+    """Все чужие записи этого ключа — подписи с аббревиатурой в скобках."""
+
+    return bool(group) and all(_peel(hit.text).abbrevs and label_surface(hit.text) != key for hit, _flag in group)
+
+
+def _yield_body(slots: dict[str, list[tuple[LabelHit, bool]]], claims: list[tuple[LabelHit, bool]]) -> None:
+    """Отдаёт голое тело короткой подписи. Длинная остаётся по полному тексту."""
+
+    for hit, flag in claims:
+        for slot_key, bucket in list(slots.items()):
+            kept = [item for item in bucket if item[0] != hit]
+            if kept:
+                slots[slot_key] = kept
+            else:
+                del slots[slot_key]
+        slots.setdefault(label_surface(hit.text), []).append((hit, flag))
+
+
+def _place(
+    slots: dict[str, list[tuple[LabelHit, bool]]],
+    norm: str,
+    hit: LabelHit,
+    *,
+    ambiguous: bool,
+    text: str,
+    body: str,
+    yield_body: bool,
+) -> None:
+    group = slots.setdefault(norm, [])
+    surface = label_surface(hit.text)
+    exact = next(
+        (
+            item
+            for item in group
+            if item[0].concept == hit.concept and item[0].kind == hit.kind and label_surface(item[0].text) == surface
+        ),
+        None,
+    )
+    if exact is not None:
+        if not ambiguous and exact[1]:
+            group[group.index(exact)] = (exact[0], False)
+        return
+    others = [item for item in group if item[0].concept != hit.concept or item[0].kind != hit.kind]
+    if others and (not ambiguous or any(not flag for _found, flag in others)):
+        if yield_body and norm == body and _abbrev_claims(others, norm):
+            _yield_body(slots, others)
+            group = slots.setdefault(norm, [])
+            others = [item for item in group if item[0].concept != hit.concept or item[0].kind != hit.kind]
+        if others and (not ambiguous or any(not flag for _found, flag in others)):
+            raise GlossaryInvalid([others[0][0].text, text])
+    group.append((hit, ambiguous))
+
+
 def _take(
     slots: dict[str, list[tuple[LabelHit, bool]]],
     name: str,
@@ -674,24 +738,16 @@ def _take(
                 raise GlossaryInvalid([text])
             hit = LabelHit(name, kind, text)
             surface = label_surface(text)
+            peeled = _peel(text)
+            body = _fold(peeled.body) if peeled.body else ""
+            skipped_body = False
             for norm in keys:
-                group = slots.setdefault(norm, [])
-                exact = next(
-                    (
-                        item
-                        for item in group
-                        if item[0].concept == name and item[0].kind == kind and label_surface(item[0].text) == surface
-                    ),
-                    None,
-                )
-                if exact is not None:
-                    if not ambiguous and exact[1]:
-                        group[group.index(exact)] = (exact[0], False)
+                if peeled.abbrevs and body and _owns_bare(slots.get(body, []), name, body) and norm != surface:
+                    skipped_body = True
                     continue
-                others = [item for item in group if item[0].concept != name or item[0].kind != kind]
-                if others and (not ambiguous or any(not flag for _hit, flag in others)):
-                    raise GlossaryInvalid([others[0][0].text, text])
-                group.append((hit, ambiguous))
+                _place(slots, norm, hit, ambiguous=ambiguous, text=text, body=body, yield_body=not peeled.abbrevs)
+            if skipped_body:
+                _place(slots, surface, hit, ambiguous=ambiguous, text=text, body=body, yield_body=False)
 
 
 def _publish(
