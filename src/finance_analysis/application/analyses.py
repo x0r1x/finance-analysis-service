@@ -85,15 +85,20 @@ ANALYSIS_TYPES = ("audit", "ratios", "impact", "full")
 RATIO_METRICS = (
     "dscr",
     "icr",
+    "icr_lease",
     "adscr",
     "dscr_min",
     "dscr_avg",
     "llcr",
     "plcr",
     "net_debt_ebitda",
+    "total_debt_ebitda",
+    "debt_off_balance_ebitda",
     "escrow_coverage",
     "npv",
     "irr",
+    "fcf_identity",
+    "ncf",
 )
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs")
@@ -106,7 +111,11 @@ TRACE_DEPTH = 8
 TRACE_DEPTH_MAX = 32
 
 
-def _dscr_variant(catalog, verdict) -> str | None:
+def _dscr_variant(catalog, verdict, profile: dict | None = None) -> str | None:
+    """Тип модели задаёт pf или corporate_covenant. Профиль называет только cash_covenant."""
+
+    if (profile or {}).get("dscr_variant") == "cash_covenant":
+        return "cash_covenant"
     return confirmed_variants(catalog, verdict).get("dscr")
 
 
@@ -573,6 +582,7 @@ class Analyses:
 
         catalog = load_dimensions()
         pricing, billing = await self.service.glossary.concept_price_facts(target.head.versions.get("glossary"))
+        profile = await self._profile(target.head)
         return AuditInput(
             rows=dim_rows,
             periods=periods,
@@ -590,10 +600,10 @@ class Analyses:
             dimension_pricing=dict(catalog.pricing_basis),
             unit_currency=dict(catalog.unit_currency),
             unit_billing=dict(catalog.unit_billing_period),
-            profile=await self._profile(target.head),
+            profile=profile,
             absent=await self._absent(job_id, target),
             applicable_metrics=live,
-            dscr_variant=_dscr_variant(self.service.model_types, verdict),
+            dscr_variant=_dscr_variant(self.service.model_types, verdict, profile),
             statement_sheets=frozenset(load_sheet_roles().statement),
             actuals_end=await self._actuals_end(job_id, target),
         )
@@ -813,7 +823,7 @@ class Analyses:
             else:
                 result = select_ratio(
                     metric,
-                    variant_of.get(metric),
+                    _dscr_variant(svc.model_types, verdict, body) if metric == "dscr" else variant_of.get(metric),
                     common,
                     profile=body,
                     profile_ref=profile_ref if isinstance(profile_ref, str) else None,
@@ -823,7 +833,10 @@ class Analyses:
                     interest_order=svc.model_types.interest_order,
                     row_fallbacks=svc.model_types.row_fallbacks,
                 )
-            if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
+            overlap = any(
+                item.get("reason") == "lease_interest_overlap" for item in result.get("needs_input") or []
+            )
+            if use == "optional" and result["status"] in {"needs_input", "missing_input"} and not overlap:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
                 warnings.append({"code": "input_absent", "params": _absent_params(metric, result)})
                 continue
@@ -1097,7 +1110,7 @@ class Analyses:
             profile=profile or {},
             absent=absent,
             applicable_metrics=live,
-            dscr_variant=_dscr_variant(self.service.model_types, verdict),
+            dscr_variant=_dscr_variant(self.service.model_types, verdict, profile),
             statement_sheets=frozenset(load_sheet_roles().statement),
         )
         found = run_rules(rules, data)

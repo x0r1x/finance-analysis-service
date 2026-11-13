@@ -46,8 +46,17 @@ HEAD = "glossary/_head.json"
 PROPOSALS = "glossary/proposals.json"
 INDEX = "glossary/_label_index.json"
 _PROFILE_FIELDS = frozenset(
-    {"sign_convention", "marker_class", "model_type_default", "dscr_definition", "actuals_end", "sheet_class"}
+    {
+        "sign_convention",
+        "marker_class",
+        "model_type_default",
+        "dscr_definition",
+        "dscr_variant",
+        "actuals_end",
+        "sheet_class",
+    }
 )
+_DSCR_VARIANTS = frozenset({"cash_covenant"})
 _SHEET_CLASS = {"reporting": "reporting", "отчетность": "reporting", "assumptions": "assumptions", "предпосылки": "assumptions"}
 _SIGNS = frozenset({"outflow_negative", "outflow_positive"})
 _MARKERS = frozenset({None, "actual", "plan"})
@@ -476,7 +485,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, actuals_end и sheet_class",
+                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, dscr_variant, actuals_end и sheet_class",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -501,6 +510,8 @@ class GlossaryStore:
             problem = dscr_definition_error(body["dscr_definition"], concepts=package.ids, money=money)
             if problem:
                 raise InvalidArgument(problem)
+        if "dscr_variant" in body and body["dscr_variant"] is not None and body["dscr_variant"] not in _DSCR_VARIANTS:
+            raise InvalidArgument("dscr_variant: cash_covenant")
         if "sign_convention" in body and body["sign_convention"] not in _SIGNS:
             raise InvalidArgument("sign_convention: outflow_negative или outflow_positive")
         if "marker_class" in body and body["marker_class"] not in _MARKERS:
@@ -522,6 +533,8 @@ class GlossaryStore:
                     saved["model_type_default"] = body["model_type_default"]
                 if "dscr_definition" in body:
                     saved["dscr_definition"] = body["dscr_definition"]
+                if body.get("dscr_variant"):
+                    saved["dscr_variant"] = body["dscr_variant"]
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]
                 if body.get("sheet_class"):
@@ -543,6 +556,11 @@ class GlossaryStore:
                 saved["dscr_definition"] = body["dscr_definition"]
             elif "dscr_definition" in current["body"]:
                 saved["dscr_definition"] = current["body"]["dscr_definition"]
+            if "dscr_variant" in body:
+                if body.get("dscr_variant"):
+                    saved["dscr_variant"] = body["dscr_variant"]
+            elif current["body"].get("dscr_variant"):
+                saved["dscr_variant"] = current["body"]["dscr_variant"]
             if "actuals_end" in body:
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]

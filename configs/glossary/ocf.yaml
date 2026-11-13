@@ -1,0 +1,12 @@
+concept: ocf
+pref:
+  en: "Operating cash flow"
+  ru: "Сальдо денежных потоков от текущих операций"
+alt:
+  en: ["OCF", "CFO"]
+  ru: ["денежный поток от операционной деятельности", "операционный денежный поток"]
+hidden:
+  ru: ["4100", "стр. 4100"]
+definition:
+  en: "Net cash from operating activities, statement line 4100. Not the cash balance."
+  ru: "Сальдо текущих операций, код 4100. Это не остаток денежных средств."

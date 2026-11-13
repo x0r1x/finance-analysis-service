@@ -181,6 +181,20 @@ def test_ras_ifrs_labels_resolve(concept, label):
     assert load_catalog().resolve(label).concept == concept
 
 
+def test_cash_dscr_codes_bind_and_balance_totals_do_not():
+    package = load_catalog()
+    assert package.resolve("4100").concept == "ocf"
+    assert package.resolve("стр. 4100").concept == "ocf"
+    assert package.resolve("4100").concept != "cash"
+    assert package.resolve("4123").concept == "interest_paid"
+    assert package.resolve("2330").concept == "interest"
+    assert package.resolve("4221").concept == "capex"
+    assert package.resolve("4224") is None
+    for code in ("1520", "1530", "1550", "1450", "4200", "4125", "4329"):
+        hit = package.resolve(code)
+        assert hit is None or hit.concept != "other_financial_debt_service"
+
+
 def test_interest_form_codes_bind_and_a_stray_number_does_not():
     package = load_catalog()
     assert package.resolve("070").concept == "interest"

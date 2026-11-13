@@ -1,0 +1,10 @@
+concept: net_interest
+pref:
+  en: "Net interest"
+  ru: "Чистые проценты"
+alt:
+  en: ["net interest paid"]
+  ru: ["проценты уплаченные минус полученные", "чистые процентные платежи"]
+definition:
+  en: "Tax-deductible interest paid minus interest received, including the interest portion of a lease. Principal and the non-interest part of a lease payment are not this row."
+  ru: "Процентная часть, уплаченная минус полученная, включая процентную часть лизинга. Тело долга и основная часть лизингового платежа в эту строку не входят."

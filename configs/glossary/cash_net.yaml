@@ -1,0 +1,10 @@
+concept: cash_net
+pref:
+  en: "Change in cash"
+  ru: "Сальдо денежных потоков за отчетный период"
+alt:
+  en:
+    - "Net change in cash"
+definition:
+  en: "Net change in cash for the period, or line 4400. This release checks the roll-forward and does not replace the book line."
+  ru: "Сальдо потоков за период, строка 4400. В этом релизе проверяется тождество, строка книги не подменяется."

@@ -22,7 +22,21 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  interest_paid:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  ocf:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
   principal:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  other_financial_debt_service:
     semantic_role: measure
     dimension: money
     temporal_nature: flow
@@ -74,12 +88,39 @@ concepts:
     semantic_role: measure
     dimension: ratio
     temporal_nature: rate
+  icr_lease:
+    semantic_role: measure
+    dimension: ratio
+    temporal_nature: rate
+  lease_payment:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  lease_principal:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  lease_interest:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
   cash_taxes:
     semantic_role: measure
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
   net_debt:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  total_debt:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  off_balance_obligations:
     semantic_role: measure
     dimension: money
     temporal_nature: stock
@@ -129,6 +170,16 @@ concepts:
     semantic_role: measure
     dimension: money
     temporal_nature: flow
+  tax_rate:
+    semantic_role: assumption
+    dimension: ratio
+    temporal_nature: rate
+    validation:
+      range: ["0", "1"]
+  net_interest:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
   npv:
     semantic_role: measure
     dimension: money
@@ -174,6 +225,34 @@ concepts:
     dimension: money
     temporal_nature: point_in_time
   noi:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  effective_gross_income:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  operating_expenses:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  capital_reserve:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  property_management:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  land_tax:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  land_rent:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  depreciation:
     semantic_role: measure
     dimension: money
     temporal_nature: flow
@@ -308,6 +387,32 @@ concepts:
     semantic_role: measure
     dimension: money
     temporal_nature: stock
+  cash_inflow:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: inflow
+  cash_outflow:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  ncf:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  cash_opening:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  cash_net:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  fx_on_cash:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
   share_capital:
     semantic_role: measure
     dimension: money

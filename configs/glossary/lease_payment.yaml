@@ -1,0 +1,7 @@
+concept: lease_payment
+pref:
+  en: "Lease payments"
+  ru: "Лизинговые платежи"
+definition:
+  en: "Lease payment for the period, including the principal repaid inside it."
+  ru: "Лизинговый платёж за период, включая погашение основного долга внутри него."

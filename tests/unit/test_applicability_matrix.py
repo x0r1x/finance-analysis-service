@@ -24,10 +24,11 @@ from finance_analysis.domain.validation.model_types import (
 )
 
 # Типы без показателей покрытия из текущего каталога: все cover/NPV = not_applicable.
-# Полноценные типы моделей; будущие метрики не запрещены. Renewables / RE — DSCR optional.
-_NO_COVER_METRICS = ("lbo_ma", "dcf_valuation", "bank_leasing")
-_OPTIONAL_DSCR = frozenset({"dscr", "dscr_min", "dscr_avg"})
-_DSCR_VARIANT_TYPES = ("renewables_dpm", "real_estate_income")
+# DCF и доходная недвижимость считают NPV и IRR, когда процитирован project_fcf.
+_NO_COVER_METRICS = ("lbo_ma", "bank_leasing")
+_OPTIONAL_DSCR = frozenset({"dscr", "dscr_min", "dscr_avg", "ncf"})
+_DSCR_VARIANT_TYPES = ("renewables_dpm",)
+_PROJECT_RETURN = frozenset({"npv", "irr", "fcf_identity"})
 
 
 def _catalog():
@@ -117,6 +118,16 @@ def test_no_cover_metrics_and_dscr_optional_types_match_intended_cells():
             else:
                 assert use == "not_applicable", (type_id, metric)
         assert catalog.types[type_id].variants["dscr"] == "pf"
+    for metric in RATIO_METRICS:
+        use = applicability(catalog, ("dcf_valuation",), metric)
+        expect = "optional" if metric in _PROJECT_RETURN else "not_applicable"
+        assert use == expect, (metric, use)
+    for metric in RATIO_METRICS:
+        use = applicability(catalog, ("real_estate_income",), metric)
+        expect = "optional" if metric in _OPTIONAL_DSCR | _PROJECT_RETURN else "not_applicable"
+        assert use == expect, (metric, use)
+        if metric == "dscr":
+            assert catalog.types["real_estate_income"].variants["dscr"] == "pf"
 
 
 def test_matrix_file_path_is_under_model_types():

@@ -34,7 +34,7 @@
 - `one_of` — достаточно одного из перечисленных;  
 - `input_concepts` — удобный плоский список, **не** заменяет семантику `all_of`/`one_of`.
 
-`row_fallbacks` (например `interest_paid`) **не** входят во входы формулы; они живут только в `interest_order` (решение 40).
+`row_fallbacks` не входят во входы формулы и не являются concept_id. `interest_paid` — понятие таксономии и кандидат `interest_order` для pf, ICR и `corporate_covenant`.
 
 ### `formula`
 
@@ -55,7 +55,10 @@
 | `numerator.plus` / `minus` | Слагаемые числителя |
 | `denominator.plus` / `minus` | Слагаемые знаменателя |
 | `one_of` | Альтернативные числители (как у ICR: `ebitda` \| `ebit`) |
-| `rate` | Ставка дисконтирования / параметр (`discount_rate` у NPV/LLCR/PLCR) |
+| `rate` | Ставка дисконтирования: одна строка или список приоритета (`[wacc, discount_rate]` у NPV; `discount_rate` у LLCR/PLCR) |
+| `terminal` | Необязательная терминальная стоимость, одно понятие (`terminal_value` у NPV и IRR) |
+| `compare_with` | Строка книги, с которой сверяется показатель (`project_fcf` у `fcf_identity`) |
+| `add_back` | Добавка `{concept, tax_complement}`: чистые проценты × (1 − ставка). Только у названного варианта |
 | `base` | Полное наследование формулы другого показателя (`adscr` → `dscr`) |
 
 `base` — **самостоятельный** режим: рядом с ним нельзя указывать `numerator`, `denominator` или `rate` (иначе ошибка загрузки). Объект `plus`/`minus` должен содержать хотя бы одно слагаемое суммарно — пустые `{}` / `{plus: []}` / `{minus: []}` отклоняются.
@@ -85,7 +88,7 @@
 | размерности входов | таксономия `configs/concepts/` + `configs/dimensions.yaml` |
 | `unit` результата | вывод из формулы (частное → `ratio`; NPV-подобные → размерность числителя) |
 | `model_types` + `variant` | `configs/model_types/*.yaml` → явные `metrics` (+ снимок `matrix.json`); `default_use` / `"*"` — только запас |
-| `row_fallbacks` | тот же YAML; **не** входы формул и **не** concept_id |
+| `row_fallbacks` | тот же YAML; не входы формул и не concept_id. Список может быть пустым |
 
 Связи таксономии (`composed_of` и др.) **не** считают и **не** подставляют формулу показателя.
 
@@ -98,7 +101,7 @@
   "version": "<16 hex>",
   "stamp": "<отпечаток configs/metrics>",
   "indicators": { "<id>": { "...": "§1" } },
-  "row_fallbacks": ["interest_paid"]
+  "row_fallbacks": []
 }
 ```
 
@@ -124,11 +127,11 @@
 `validate_catalog_integrity` / `fas check-config` / `load_model_types`:
 
 1. Входы метрик и вариантов ⊆ понятия таксономии.  
-2. `row_fallbacks` **нельзя** указать как вход формулы (только в `interest_order`).  
+2. `row_fallbacks` нельзя указать как вход формулы. Имена `interest_order` — понятие `interest`, понятие `interest_paid` или row_fallback с canonical `interest`.  
 3. Единицы слагаемых совместимы; частное безразмерно (кроме явных rate-метрик).  
 4. Нет циклов `base`; ключи coverage/fallback известны.  
 5. Некорректные типы `definition` / `status` / `window` в YAML — явная ошибка загрузки, без тихого default.  
-6. `numerator` / `denominator` — только строка, список строк или непустой `plus`/`minus`; `base`/`rate` — непустые строки; вложенные `variants` запрещены; `base` без `numerator`/`denominator`/`rate`.  
+6. `numerator` / `denominator` — только строка, список строк или непустой `plus`/`minus`; `base` — непустая строка; `rate` — непустая строка или список приоритета без повторов; `terminal` и `compare_with` — непустые строки; `add_back` — ровно `concept` и `tax_complement`. Вложенные `variants` запрещены; `base` без остальных полей формулы.  
 7. Публичный снимок проходит JSON Schema, `version == hash(indicators)` и межполевые инварианты до публикации.
 
 Тихий drift «concept vs metric input» и «формально валидная, но урезанная формула» запрещены: сервис с расхождением не стартует.

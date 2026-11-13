@@ -11,6 +11,8 @@ required_concepts: [project_fcf, discount_rate]
 metrics:
   npv: {use: required}
   irr: {use: required}
+  fcf_identity: {use: optional}
+  ncf: {use: optional}
   dscr: {use: not_applicable}
   dscr_min: {use: not_applicable}
   adscr: {use: not_applicable}
@@ -18,5 +20,8 @@ metrics:
   llcr: {use: not_applicable}
   plcr: {use: not_applicable}
   icr: {use: not_applicable}
+  icr_lease: {use: not_applicable}
   escrow_coverage: {use: not_applicable}
   net_debt_ebitda: {use: not_applicable}
+  total_debt_ebitda: {use: not_applicable}
+  debt_off_balance_ebitda: {use: not_applicable}

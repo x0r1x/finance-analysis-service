@@ -1013,17 +1013,22 @@ def test_citation_stays_out_of_the_ratio_matrix_and_an_empty_list_adds_no_key():
     for concepts in CITED_BY_TYPE.values():
         assert set(concepts).isdisjoint(RATIO_METRICS)
         assert set(concepts).isdisjoint(_HELD_OUT)
-    for type_id in ("bank_leasing", "dcf_valuation"):
-        for metric in RATIO_METRICS:
-            assert applicability(catalog, (type_id,), metric) == "not_applicable", (
-                type_id,
-                metric,
-            )
-    optional_dscr = frozenset({"dscr", "dscr_min", "dscr_avg"})
-    for type_id in ("real_estate_income", "renewables_dpm"):
+    for metric in RATIO_METRICS:
+        assert applicability(catalog, ("bank_leasing",), metric) == "not_applicable", metric
+    dcf_optional = frozenset({"npv", "irr", "fcf_identity"})
+    for metric in RATIO_METRICS:
+        use = applicability(catalog, ("dcf_valuation",), metric)
+        expect = "optional" if metric in dcf_optional else "not_applicable"
+        assert use == expect, (metric, use)
+    optional_dscr = frozenset({"dscr", "dscr_min", "dscr_avg", "ncf"})
+    estate_optional = optional_dscr | {"npv", "irr", "fcf_identity"}
+    for type_id, optional in (
+        ("real_estate_income", estate_optional),
+        ("renewables_dpm", optional_dscr),
+    ):
         for metric in RATIO_METRICS:
             use = applicability(catalog, (type_id,), metric)
-            if metric in optional_dscr:
+            if metric in optional:
                 assert use == "optional", (type_id, metric)
             else:
                 assert use == "not_applicable", (type_id, metric)

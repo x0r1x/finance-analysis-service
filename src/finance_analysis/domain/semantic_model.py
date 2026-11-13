@@ -71,8 +71,9 @@ def semantic_model_components(
     dimensions_stamp: str,
     rules_stamp_value: str,
     schema_version: str = FAS_SCHEMA_VERSION,
+    cash_corkscrew_stamp: str = "",
 ) -> dict:
-    return {
+    components = {
         "taxonomy": {"id": taxonomy_id, "stamp": taxonomy_stamp},
         "glossary": glossary_version or "none",
         "metrics": {"version": metrics_version, "stamp": metrics_stamp},
@@ -81,6 +82,10 @@ def semantic_model_components(
         "rules": rules_stamp_value,
         "schema": schema_version,
     }
+    # Пишем только новые манифесты. Старый манифест без ключа остаётся годным.
+    if cash_corkscrew_stamp:
+        components["cash_corkscrew"] = cash_corkscrew_stamp
+    return components
 
 
 def semantic_model_version_for(components: Mapping) -> str:
@@ -164,6 +169,10 @@ def validate_manifest(body: Mapping) -> dict:
         value = components.get(name)
         if value in (None, ""):
             raise ValueError(f"компонент SMV {name} пуст")
+    if "cash_corkscrew" in components:
+        corkscrew = components.get("cash_corkscrew")
+        if not isinstance(corkscrew, str) or len(corkscrew) != 16 or set(corkscrew) - _HEX16:
+            raise ValueError("cash_corkscrew манифеста SMV: нужен 16-hex stamp")
     expected = semantic_model_version_for(components)
     if version != expected:
         raise ValueError(f"version манифеста SMV {version} != hash(components) {expected}")
@@ -194,6 +203,7 @@ def live_components(
         dimensions_stamp=stamp_path(configs, "configs/dimensions.yaml")[:16],
         rules_stamp_value=rules_stamp(rules_versions)[:16],
         schema_version=schema_version,
+        cash_corkscrew_stamp=stamp_path(configs, "configs/identities/cash_corkscrew.yaml")[:16],
     )
 
 

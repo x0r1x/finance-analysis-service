@@ -56,13 +56,11 @@ def _repo_payload():
 
 def test_repo_catalogs_pass_and_matching_fields_are_declarative():
     catalog = load_model_types()
-    paid = catalog.row_fallbacks["interest_paid"]
-    assert "interest_paid" not in catalog.concepts
-    assert paid.canonical == "interest"
-    assert paid.binding_key == "interest_paid"
-    assert paid.matching_rule in MATCHING_RULES
-    # Выбор B: lookup по id порядка, не по binding_key / matching.rule.
-    assert catalog.interest_order["icr"][1] == paid.id
+    assert "interest_paid" in catalog.concepts
+    assert "interest_paid" not in catalog.row_fallbacks
+    assert catalog.interest_order["icr"] == ("interest", "interest_paid")
+    assert catalog.interest_order["pf"] == ("interest_paid", "interest")
+    assert "interest_basis_paid" in MATCHING_RULES
     validate_catalog_integrity(**_repo_payload())
 
 
@@ -105,7 +103,7 @@ def test_row_fallback_must_not_shadow_a_concept():
 def test_unknown_matching_rule_is_rejected():
     payload = _repo_payload()
     payload["row_fallbacks"] = {
-        "interest_paid": RowFallback("interest_paid", "interest", "interest_paid", "not_a_rule"),
+        "extra_paid": RowFallback("extra_paid", "interest", "extra_paid", "not_a_rule"),
     }
     with pytest.raises(CatalogIntegrityError, match="неизвестный matching.rule"):
         validate_catalog_integrity(**payload)
@@ -113,9 +111,12 @@ def test_unknown_matching_rule_is_rejected():
 
 def test_metric_input_cannot_be_only_a_fallback():
     payload = _repo_payload()
+    payload["row_fallbacks"] = {
+        "extra_paid": RowFallback("extra_paid", "interest", "extra_paid", "interest_basis_paid"),
+    }
     payload["metric_inputs"] = {
         **payload["metric_inputs"],
-        "icr": MetricInputs(frozenset({"interest_paid"}), frozenset({"ebitda"})),
+        "icr": MetricInputs(frozenset({"extra_paid"}), frozenset({"ebitda"})),
     }
     with pytest.raises(CatalogIntegrityError, match="row_fallback"):
         validate_catalog_integrity(**payload)

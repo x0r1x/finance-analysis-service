@@ -382,6 +382,11 @@ def _one_primary(
                     continue
                 row, item = draft[index]
                 draft[index] = (row, _drop_primary(item, ambiguous=True))
+            concept = draft[exact[0]][1].concept
+            # Три итога разделов одной подписи — вход NCF, не ничья одной строки.
+            if concept in {"cash_inflow", "cash_outflow"}:
+                _keep(draft, exact, exact[0], "ncf_aggregate")
+                continue
             marks = {
                 str(draft[index][0].get("row_key")): {
                     "role": draft[index][1].evidence.get("role"),

@@ -42,19 +42,24 @@ async def test_capabilities_health_metrics(app):
     assert ready.json()["storage"]["conditional_writes"] == "flock"
     assert ready.json()["builder"] == "closed"
     assert caps.json()["storage"]["backend"] == "local"
-    # Порядок — ключи configs/metrics/coverage.yaml. dscr.corporate_covenant — вариант dscr, не отдельный id запроса.
+    # Порядок — ключи configs/metrics: coverage.yaml, затем остальные файлы по имени.
     assert list(load_metric_inputs()) == list(RATIO_METRICS) == [
         "dscr",
         "icr",
+        "icr_lease",
         "adscr",
         "dscr_min",
         "dscr_avg",
         "llcr",
         "plcr",
         "net_debt_ebitda",
+        "total_debt_ebitda",
+        "debt_off_balance_ebitda",
         "escrow_coverage",
         "npv",
         "irr",
+        "fcf_identity",
+        "ncf",
     ]
     assert caps.json()["metrics"] == list(RATIO_METRICS)
     assert any(tool["name"] == "get_series" for tool in caps.json()["tools"])

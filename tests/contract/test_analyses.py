@@ -188,15 +188,20 @@ async def test_audit_arguments_and_async(app):
         assert ratios.json()["supported"] == list(load_metric_inputs()) == list(RATIO_METRICS) == [
             "dscr",
             "icr",
+            "icr_lease",
             "adscr",
             "dscr_min",
             "dscr_avg",
             "llcr",
             "plcr",
             "net_debt_ebitda",
+            "total_debt_ebitda",
+            "debt_off_balance_ebitda",
             "escrow_coverage",
             "npv",
             "irr",
+            "fcf_identity",
+            "ncf",
         ]
         unknown = await client.post(f"/v1/books/{JOB}/analyses", headers=HEADERS, json={"type": "audit", "rules": ["nope"]})
         assert unknown.status_code == 400

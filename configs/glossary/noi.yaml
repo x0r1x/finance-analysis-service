@@ -3,7 +3,8 @@ pref:
   en: "Net operating income of the property"
   ru: "Чистый операционный доход объекта"
 alt:
-  en: ["Net operating income", "Year 1 net operating income"]
+  en: ["Net operating income", "Year 1 net operating income", "NOI"]
+  ru: ["ЧОД", "Чистый операционный доход", "Чистая операционная прибыль"]
 definition:
-  en: "Book row used to classify the model. This slice does not calculate it."
-  ru: "Строка книги для классификации модели. В этом срезе не считается."
+  en: "Net operating income of the property, not NOPAT. The book cell is cited and is not replaced. Check: effective gross income minus operating expenses excluding the replacement reserve minus the capital reserve. Debt service, income tax and depreciation stay out."
+  ru: "Чистый операционный доход объекта, не NOPAT. Ячейка книги цитируется и не подменяется. Сверка: действительный валовой доход минус операционные расходы без резерва на замещение минус капитальный резерв. Обслуживание долга, налог на прибыль и амортизация не вычитаются."

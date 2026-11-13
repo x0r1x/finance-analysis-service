@@ -14,6 +14,8 @@
 
 `ratios` requires a non-empty `metrics` list. The allowed names are the `metrics` array in `GET /v1/capabilities`.
 
+`ncf` is period net cash flow: inflows minus outflows. It is not a cash balance and it does not replace `project_fcf`. The note is [ncf.md](../ncf.md).
+
 `impact` traces one target. Pass `target` as a `cell_id`, a `row_key`, or a `concept`. `direction` is `precedents` or `dependents`. `depth` defaults when it is omitted.
 
 `full` runs ratios, then audit, then impact when `target` is present.

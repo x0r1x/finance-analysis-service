@@ -1,12 +1,8 @@
 # DSCR и ICR. Частное считает Python Decimal, не SQL.
-# interest_paid — не понятие таксономии, а row_fallback (решение 40).
-# binding_key / matching.rule — декларативные метаданные; lookup по id в interest_order.
-row_fallbacks:
-  interest_paid:
-    canonical: interest
-    binding_key: interest_paid
-    matching:
-      rule: interest_basis_paid
+# interest_paid — понятие таксономии (касса, код 4123).
+# В interest_order оно остаётся кандидатом pf, ICR и corporate_covenant.
+# Выбор этого кандидата там даёт interest_basis_fallback. cash_covenant предупреждение не ставит.
+row_fallbacks: {}
 interest_order:
   icr: [interest, interest_paid]
   corporate_covenant: [interest, interest_paid]
@@ -24,9 +20,20 @@ metrics:
         numerator: {plus: [ebitda], minus: [cash_taxes, capex]}
         denominator: {plus: [interest, principal]}
         window: LTM
+      cash_covenant:
+        numerator: {plus: [ocf, interest_paid], minus: [capex]}
+        denominator: {plus: [principal, interest_paid, other_financial_debt_service]}
+        window: period
+        definition: "Кассовый DSCR года i. Числитель: знак OCF плюс модуль процентов, уплаченных внутри OCF (РСБУ 4123), минус модуль кассовых капзатрат (4221, без вычета НДС). Знаменатель: модуль выплат тела по кредитам плюс модуль тех же процентов плюс модуль выплат по прочей финансовой задолженности. Прочая финансовая задолженность — не итоги строк 1520, 1530 и 1550. Источник надбавки процентов: ПБУ 23/2011. Это не SF_2.24_V1 (начисление 2330, окно четырёх кварталов и новые кредиты), не постановление № 158 и не DSCR Forvis Mazars (CFADS / плановое обслуживание)."
   icr:
     numerator: [ebitda, ebit]
     denominator: interest
+  # Числитель — объект plus, чтобы каталог видел частное money/money.
+  # Считает lease_interest_coverage, не composed_ratio: пара «платёж − долг» и запрет двойного счёта.
+  icr_lease:
+    numerator: {plus: [ebitda]}
+    denominator: {plus: [interest, lease_interest]}
+    window: period
   adscr:
     base: dscr
   dscr_min:
@@ -42,7 +49,15 @@ metrics:
     denominator: debt_outstanding
     rate: discount_rate
   net_debt_ebitda:
-    numerator: {plus: [net_debt]}
+    numerator: {plus: [total_debt], minus: [cash]}
+    denominator: {plus: [ebitda]}
+    window: LTM
+  total_debt_ebitda:
+    numerator: {plus: [total_debt]}
+    denominator: {plus: [ebitda]}
+    window: LTM
+  debt_off_balance_ebitda:
+    numerator: {plus: [total_debt, off_balance_obligations]}
     denominator: {plus: [ebitda]}
     window: LTM
   escrow_coverage:
@@ -51,7 +66,25 @@ metrics:
     window: period
   npv:
     numerator: [project_fcf]
-    rate: discount_rate
+    rate: [wacc, discount_rate]
+    terminal: terminal_value
+    definition: "ЧДД процитированного project_fcf. Степень — годы от конца интервала приведения. Ставка: wacc, иначе discount_rate. Ряд ставок по интервалам — произведение (1+d_k)^Δ_k. Одна строка terminal_value на последнем интервале входит в сумму один раз."
   irr:
     numerator: [project_fcf]
+    terminal: terminal_value
+    definition: "Неотрицательный корень того же ЧДД. Накопленный поток, включая terminal_value на последнем интервале, начинается с отрицательного числа и меняет знак один раз. Иначе irr_not_unique. Нет корня на [0, 20] — irr_undefined."
+  fcf_identity:
+    numerator: {plus: [ocf], minus: [capex]}
+    compare_with: project_fcf
+    definition: "Сверка строки project_fcf. Без названного варианта не считается. vk477 — операционный поток минус капзатраты. fcff_after_interest добавляет чистые проценты, умноженные на (1 − ставка налога)."
+    variants:
+      vk477:
+        numerator: {plus: [ocf], minus: [capex]}
+        compare_with: project_fcf
+      fcff_after_interest:
+        numerator: {plus: [ocf], minus: [capex]}
+        compare_with: project_fcf
+        add_back:
+          concept: net_interest
+          tax_complement: tax_rate
 tolerance: "0.005"

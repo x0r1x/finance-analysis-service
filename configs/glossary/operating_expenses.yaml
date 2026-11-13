@@ -1,0 +1,10 @@
+concept: operating_expenses
+pref:
+  en: "Operating expenses"
+  ru: "Операционные расходы"
+alt:
+  en: ["Property operating expenses"]
+  ru: ["Операционные расходы по объекту"]
+definition:
+  en: "Fixed and variable expenses borne by the landlord, without the replacement reserve. Land tax and land rent are alternatives. Utilities are the landlord share."
+  ru: "Постоянные и переменные расходы арендодателя без резерва на замещение. Налог на землю и арендная плата за землю — альтернативы. Коммунальные платежи — доля арендодателя."

@@ -1,0 +1,10 @@
+concept: other_financial_debt_service
+pref:
+  en: "Other financial debt service"
+  ru: "Выплаты по прочей финансовой задолженности"
+alt:
+  en: ["payments on other financial debt"]
+  ru: ["прочая финансовая задолженность"]
+definition:
+  en: "Cash paid in the year on other financial debt: finance leases, derivatives, repo and other borrowing in substance, indemnities, sureties and guarantees. Not the totals of balance-sheet lines 1520, 1530, 1550 or 1450, and not lease cash codes glued in automatically."
+  ru: "Выплаты за год по прочей финансовой задолженности: финансовый лизинг, ПФИ, репо и иное заимствование по экономической сути, поручительства, гарантии и возмещение гаранту. Итоги строк 1520, 1530, 1550 и 1450 сюда не привязываются. Коды 4123, 4125, 4324–4328 и 4329 сами в это понятие не склеиваются: проценты лизинга, уже попавшие в уплаченные проценты, второй раз из валового платежа не вычитаются."

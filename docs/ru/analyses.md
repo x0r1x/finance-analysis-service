@@ -14,6 +14,8 @@
 
 `ratios` требует непустой список `metrics`. Допустимые имена — массив `metrics` в `GET /v1/capabilities`.
 
+`ncf` — чистый денежный поток за период: приток минус отток. Это не остаток денег и не `project_fcf`. Методика — [ncf.md](../ncf.md).
+
 `impact` строит трассу одной цели. `target` — это `cell_id`, `row_key` или `concept`. `direction` — `precedents` или `dependents`. Пропущенный `depth` берёт значение по умолчанию.
 
 `full` считает коэффициенты, затем аудит, затем impact, если передан `target`.

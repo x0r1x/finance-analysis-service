@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -223,13 +224,24 @@ def test_port_npv_and_irr_match_the_book():
     assert abs(irr["rows"][0]["value"] - Decimal(book["project_irr"])) <= _IRR_TOL
 
 
-def test_toll_road_npv_and_irr_use_the_year_index():
+def test_toll_road_npv_brings_the_first_filled_year_to_exponent_zero():
+    """Шкала книги начинается с года 1. Интервал приведения получает степень 0.
+
+    Опубликованный NPV дисконтировал годом как степенью. IRR от сдвига не меняется.
+    """
+
     book = _load("toll_road.json")
     book = {**book, "discount_rate": book["wacc"]}
     npv, irr = _returns(book, field="fcff", book_npv=book["npv"], book_irr=book["project_irr"])
-    assert npv["warnings"] == []
+    rate = Decimal(book["wacc"])
+    low = min(int(item["year"]) for item in book["years"])
+    expected = sum(
+        (Decimal(str(item["fcff"])) / (Decimal(1) + rate) ** (int(item["year"]) - low) for item in book["years"]),
+        Decimal(0),
+    )
+    assert npv["rows"][0]["value"] == expected.quantize(Decimal("0.000001"))
+    assert npv["warnings"][0]["code"] == "npv_book_mismatch"
     assert irr["warnings"] == []
-    assert abs(npv["rows"][0]["value"] - Decimal(book["npv"])) <= _NPV_TOL
     assert abs(irr["rows"][0]["value"] - Decimal(book["project_irr"])) <= _IRR_TOL
 
 
@@ -317,3 +329,349 @@ def test_book_row_that_disagrees_is_a_warning():
     assert irr["warnings"][0]["code"] == "irr_book_mismatch"
     assert npv["rows"][0]["status"] == "computed"
     assert irr["rows"][0]["status"] == "computed"
+
+
+_TABLE_21 = (
+    "-100",
+    "-48.40",
+    "49.33",
+    "49.66",
+    "-25.61",
+    "80.70",
+    "81.15",
+    "66.00",
+    "-80",
+)
+
+
+def _metric(metric: str, flows, **kwargs):
+    got = _quote(flows, **kwargs) if metric == "npv" else None
+    if metric == "npv":
+        return got
+    catalog = _catalog()
+    facts, periods, bindings = [], [], [_bind("project_fcf")]
+    for index, value in flows:
+        period = f"Y{index}"
+        periods.append(_period(period, index))
+        facts.append(_fact("project_fcf", period, value) if value is not None else {
+            "row_key": "project_fcf",
+            "axis_id": "a",
+            "period_id": period,
+            "normalized_value": value,
+            "cell_id": f"a!{period}",
+        })
+    return select_ratio(
+        metric,
+        kwargs.get("variant"),
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+
+
+def test_vk477_table_2_1_npv_uses_powers_of_one_tenth_and_irr_is_published():
+    flows = [(index, value) for index, value in enumerate(_TABLE_21)]
+    npv = _quote(flows, rate="0.10")
+    expected = sum((Decimal(value) / Decimal("1.10") ** index for index, value in enumerate(_TABLE_21)), Decimal(0))
+    assert npv["status"] == "succeeded"
+    assert npv["rows"][0]["value"] == expected.quantize(Decimal("0.000001"))
+    assert npv["warnings"] == []
+    irr = _metric("irr", flows)
+    assert irr["status"] == "succeeded"
+    assert abs(irr["rows"][0]["value"] - Decimal("0.1192")) <= Decimal("0.0001")
+
+
+def test_quarter_dates_use_the_year_fraction_not_the_index():
+    origin = date(2024, 3, 31)
+    spans = (0, 91, 182, 273)
+    flows = [(0, "-100"), (1, "0"), (2, "0"), (3, "110")]
+    catalog = _catalog()
+    facts, periods = [], []
+    bindings = [_bind("project_fcf"), _bind("discount_rate")]
+    for index, value in flows:
+        period = f"Q{index}"
+        end = origin + timedelta(days=spans[index])
+        periods.append(
+            {
+                "axis_id": "a",
+                "period_id": period,
+                "period_index": index,
+                "grain": "quarter",
+                "timeline_id": "t",
+                "period_start": end - timedelta(days=90),
+                "period_end": end,
+            }
+        )
+        facts.append(_fact("project_fcf", period, value))
+    facts.append(_fact("discount_rate", "rate", "0.10", axis="p"))
+    periods.append(_period("rate", None, axis="p"))
+    got = select_ratio(
+        "npv",
+        None,
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    manual = sum(
+        (
+            Decimal(value) / Decimal("1.10") ** (Decimal(spans[index]) / Decimal(365))
+            for index, value in flows
+        ),
+        Decimal(0),
+    )
+    by_index = sum((Decimal(value) / Decimal("1.10") ** index for index, value in flows), Decimal(0))
+    assert got["status"] == "succeeded"
+    assert got["rows"][0]["value"] == manual.quantize(Decimal("0.000001"))
+    assert got["rows"][0]["value"] != by_index.quantize(Decimal("0.000001"))
+
+
+def test_subyear_grain_without_dates_is_not_computed():
+    catalog = _catalog()
+    facts, periods = [], []
+    bindings = [_bind("project_fcf"), _bind("discount_rate")]
+    for index, value in ((0, "-100"), (1, "60")):
+        period = f"Q{index}"
+        periods.append({**_period(period, index), "grain": "quarter"})
+        facts.append(_fact("project_fcf", period, value))
+    facts.append(_fact("discount_rate", "rate", "0.10", axis="p"))
+    periods.append(_period("rate", None, axis="p"))
+    got = select_ratio(
+        "npv",
+        None,
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    assert got["status"] == "not_computed"
+    assert got["warnings"][0]["code"] == "npv_subyear_without_dates"
+
+
+def test_terminal_value_is_added_once_on_the_last_interval():
+    catalog = _catalog()
+    facts, periods = [], []
+    bindings = [_bind("project_fcf"), _bind("discount_rate"), _bind("terminal_value")]
+    for index, value in ((0, "-100"), (1, "60")):
+        period = f"Y{index}"
+        periods.append(_period(period, index))
+        facts.append(_fact("project_fcf", period, value))
+    facts.append(_fact("terminal_value", "Y1", "10"))
+    facts.append(_fact("discount_rate", "rate", "0.10", axis="p"))
+    periods.append(_period("rate", None, axis="p"))
+    got = select_ratio(
+        "npv",
+        None,
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    # −100 + 70 / 1.10
+    assert got["rows"][0]["value"] == Decimal("-36.363636")
+    assert "terminal_value" in got["rows"][0]["inputs"]
+
+
+def test_two_terminal_values_are_not_summed():
+    catalog = _catalog()
+    facts, periods = [], []
+    bindings = [_bind("project_fcf"), _bind("discount_rate"), _bind("terminal_value")]
+    periods.append(_period("Y0", 0))
+    facts.append(_fact("project_fcf", "Y0", "-100"))
+    facts.append(_fact("project_fcf", "Y1", "60"))
+    periods.append(_period("Y1", 1))
+    facts.append(_fact("terminal_value", "Y1", "10"))
+    facts.append(_fact("terminal_value", "Y1b", "12", axis="b"))
+    periods.append(_period("Y1b", 1, axis="b"))
+    facts.append(_fact("discount_rate", "rate", "0.10", axis="p"))
+    periods.append(_period("rate", None, axis="p"))
+    got = select_ratio(
+        "npv",
+        None,
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    assert got["status"] == "not_computed"
+    assert got["warnings"][0]["code"] == "terminal_value_not_unique"
+    assert applicability(_catalog(), ("dcf_valuation",), "npv") == "optional"
+
+
+def test_variable_rate_is_the_product_of_one_step_factors():
+    catalog = _catalog()
+    facts, periods = [], []
+    bindings = [_bind("project_fcf"), _bind("discount_rate")]
+    for index, value in ((0, "-100"), (1, "0"), (2, "121")):
+        period = f"Y{index}"
+        periods.append(_period(period, index))
+        facts.append(_fact("project_fcf", period, value))
+        if index:
+            facts.append(_fact("discount_rate", period, "0.10" if index == 1 else "0.20"))
+    got = select_ratio(
+        "npv",
+        None,
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    # α0 = 1, α2 = 1 / (1.10 × 1.20)
+    expected = Decimal("-100") + Decimal("121") / (Decimal("1.10") * Decimal("1.20"))
+    assert got["rows"][0]["value"] == expected.quantize(Decimal("0.000001"))
+
+
+def test_wacc_beats_discount_rate():
+    catalog = _catalog()
+    facts, periods = [], []
+    bindings = [_bind("project_fcf"), _bind("wacc"), _bind("discount_rate")]
+    periods.append(_period("Y0", 0))
+    periods.append(_period("Y1", 1))
+    facts.append(_fact("project_fcf", "Y0", "-100"))
+    facts.append(_fact("project_fcf", "Y1", "60"))
+    facts.append(_fact("wacc", "w", "0.20", axis="p"))
+    facts.append(_fact("discount_rate", "d", "0.10", axis="p"))
+    periods.append(_period("w", None, axis="p"))
+    periods.append(_period("d", None, axis="p"))
+    got = select_ratio(
+        "npv",
+        None,
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    assert got["rows"][0]["value"] == (Decimal("-100") + Decimal("60") / Decimal("1.20")).quantize(Decimal("0.000001"))
+    assert got["rows"][0]["inputs"][1] == "wacc"
+
+
+def test_two_cumulative_sign_changes_refuse_irr_but_table_21_does_not():
+    refused = _metric("irr", [(0, "-100"), (1, "150"), (2, "-70")])
+    assert refused["status"] == "not_computed"
+    assert refused["warnings"][0]["code"] == "irr_not_unique"
+    npv = _quote([(0, "-100"), (1, "150"), (2, "-70")])
+    assert npv["status"] == "succeeded"
+    kept = _metric("irr", [(index, value) for index, value in enumerate(_TABLE_21)])
+    assert kept["status"] == "succeeded"
+
+
+def test_a_step_longer_than_a_year_warns_and_still_discounts_at_the_step_end():
+    origin = date(2024, 12, 31)
+    catalog = _catalog()
+    facts, periods = [], []
+    bindings = [_bind("project_fcf"), _bind("discount_rate")]
+    for index, days, value in ((0, 0, "-100"), (1, 730, "121")):
+        period = f"Y{index}"
+        end = origin + timedelta(days=days)
+        periods.append(
+            {
+                "axis_id": "a",
+                "period_id": period,
+                "period_index": index,
+                "grain": "year",
+                "period_start": end,
+                "period_end": end,
+            }
+        )
+        facts.append(_fact("project_fcf", period, value))
+    facts.append(_fact("discount_rate", "rate", "0.10", axis="p"))
+    periods.append(_period("rate", None, axis="p"))
+    got = select_ratio(
+        "npv",
+        None,
+        _common(facts, bindings, periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    expected = Decimal("-100") + Decimal("121") / Decimal("1.10") ** (Decimal(730) / Decimal(365))
+    assert got["rows"][0]["value"] == expected.quantize(Decimal("0.000001"))
+    assert got["warnings"][0]["code"] == "intra_step_timing"
+
+
+def _identity(variant, rows, *, convention="outflow_negative"):
+    catalog = _catalog()
+    facts, periods, bindings = [], [], []
+    concepts = {name for row in rows for name in row}
+    for concept in concepts:
+        bindings.append(_bind(concept))
+    for index, row in enumerate(rows):
+        period = f"Y{index}"
+        periods.append(_period(period, index))
+        for concept, value in row.items():
+            facts.append(_fact(concept, period, value))
+    return select_ratio(
+        "fcf_identity",
+        variant,
+        _common(facts, bindings, periods) | {"sign_convention": convention},
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+
+
+def test_vk477_identity_normalizes_a_negative_capex_and_skips_interest():
+    got = _identity(
+        "vk477",
+        [{"ocf": "100", "capex": "-30", "project_fcf": "70", "net_interest": "10"}],
+    )
+    assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+
+
+def test_fcff_identity_matches_interest_after_tax_and_a_shift_warns_without_replacing_npv():
+    row = {"ocf": "100", "capex": "30", "net_interest": "10", "tax_rate": "0.20", "project_fcf": "78"}
+    assert _identity("fcff_after_interest", [row])["warnings"] == []
+    shifted = {**row, "net_interest": "11"}
+    warned = _identity("fcff_after_interest", [shifted])
+    assert warned["warnings"][0]["code"] == "fcf_identity_mismatch"
+    assert warned["rows"] == []
+    catalog = _catalog()
+    facts = [_fact("project_fcf", "Y0", "78"), _fact("project_fcf", "Y1", "0"), _fact("discount_rate", "rate", "0.10", axis="p")]
+    periods = [_period("Y0", 0), _period("Y1", 1), _period("rate", None, axis="p")]
+    npv = select_ratio(
+        "npv",
+        None,
+        _common(facts, [_bind("project_fcf"), _bind("discount_rate")], periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    assert npv["rows"][0]["inputs"] == ["project_fcf", "discount_rate"]
+    assert "ocf" not in npv["rows"][0]["inputs"]
+
+
+def test_unnamed_identity_variant_does_not_warn():
+    got = _identity(None, [{"ocf": "100", "capex": "30", "project_fcf": "0"}])
+    assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+    assert got["rows"] == []
+
+
+def test_full_lease_payment_does_not_match_the_interest_portion():
+    # Строка собрана по процентной части 10. В сверку подставлен весь лизинговый платёж 40.
+    built = {"ocf": "100", "capex": "30", "net_interest": "40", "tax_rate": "0.20", "project_fcf": "78"}
+    got = _identity("fcff_after_interest", [built])
+    assert got["warnings"][0]["code"] == "fcf_identity_mismatch"
+    assert got["warnings"][0]["params"]["cells"]

@@ -469,6 +469,7 @@ _CITED = {
     "llcr": ("cfads",),
     "plcr": ("cfads",),
     "icr": ("ebitda", "ebit", "interest"),
+    "icr_lease": ("ebitda", "interest", "lease_interest", "lease_payment", "lease_principal"),
 }
 
 

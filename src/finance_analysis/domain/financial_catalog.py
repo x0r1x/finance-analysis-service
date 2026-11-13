@@ -50,7 +50,10 @@ class IndicatorFormula:
     numerator: FormulaSide | None = None
     denominator: FormulaSide | None = None
     one_of: frozenset[str] = field(default_factory=frozenset)
-    rate: str | None = None
+    rate: str | tuple[str, ...] | None = None
+    terminal: str | None = None
+    compare_with: str | None = None
+    add_back: tuple[str, str] | None = None
     base: str | None = None
 
     def as_dict(self) -> dict:
@@ -63,8 +66,16 @@ class IndicatorFormula:
             body["denominator"] = self.denominator.as_dict()
         if self.one_of:
             body["one_of"] = sorted(self.one_of)
-        if self.rate is not None:
+        if isinstance(self.rate, tuple):
+            body["rate"] = list(self.rate) if len(self.rate) > 1 else self.rate[0]
+        elif self.rate is not None:
             body["rate"] = self.rate
+        if self.terminal is not None:
+            body["terminal"] = self.terminal
+        if self.compare_with is not None:
+            body["compare_with"] = self.compare_with
+        if self.add_back is not None:
+            body["add_back"] = {"concept": self.add_back[0], "tax_complement": self.add_back[1]}
         return body
 
 
@@ -253,14 +264,17 @@ def formula_from_expression(expr: MetricExpression) -> IndicatorFormula:
     """Переносит декларативную структуру MetricExpression в публичную формулу."""
 
     if expr.base and not _own_terms(expr):
-        return IndicatorFormula(base=expr.base, rate=expr.rate)
+        return IndicatorFormula(base=expr.base, rate=expr.rates if len(expr.rates) > 1 else expr.rate)
     numerator = FormulaSide(expr.numerator_plus, expr.numerator_minus)
     denominator = FormulaSide(expr.denominator_plus, expr.denominator_minus)
     return IndicatorFormula(
         numerator=None if numerator.empty() else numerator,
         denominator=None if denominator.empty() else denominator,
         one_of=frozenset(expr.one_of),
-        rate=expr.rate,
+        rate=expr.rates if len(expr.rates) > 1 else expr.rate,
+        terminal=expr.terminal,
+        compare_with=expr.compare_with,
+        add_back=expr.add_back,
         base=expr.base,
     )
 
@@ -283,6 +297,11 @@ def result_unit(
     if resolved.rate and num and not den:
         # NPV-подобные: результат в размерности числителя (обычно money).
         return _dim(name, num[0], concept_dimensions)
+    if resolved.compare_with and num and not den:
+        return _dim(name, num[0], concept_dimensions)
+    if resolved.numerator_plus and resolved.numerator_minus and not den and resolved.rate is None:
+        # Разность одной размерности без знаменателя и ставки (NCF) — не коэффициент.
+        return _dim(name, resolved.numerator_plus[0], concept_dimensions)
     if num and not den:
         # IRR и сходные потоковые показатели без знаменателя → ratio.
         return "ratio"
@@ -306,12 +325,16 @@ def _resolve(
 
 def _own_terms(expr: MetricExpression) -> bool:
     return bool(
-        expr.numerator_plus
+        expr.terminal
+        or expr.compare_with
+        or expr.add_back
+        or expr.numerator_plus
         or expr.numerator_minus
         or expr.denominator_plus
         or expr.denominator_minus
         or expr.one_of
         or expr.rate
+        or expr.rates
     )
 
 

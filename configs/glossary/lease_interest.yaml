@@ -1,0 +1,7 @@
+concept: lease_interest
+pref:
+  en: "Interest within the lease payment"
+  ru: "Проценты в составе лизингового платежа"
+definition:
+  en: "Interest portion of a lease payment. Not lessor interest income and not line 2330."
+  ru: "Процентная часть лизингового платежа. Не процентный доход лизингодателя и не строка 2330."

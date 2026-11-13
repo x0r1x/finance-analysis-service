@@ -5,5 +5,5 @@ pref:
 alt:
   en: ["Terminal value"]
 definition:
-  en: "Book row used to classify the model. This slice does not calculate it."
-  ru: "Строка книги для классификации модели. В этом срезе не считается."
+  en: "Cited value at the end of the forecast. One primary row on the last filled interval is added once inside NPV and IRR. Gordon growth and cap rate are not applied."
+  ru: "Цитируется и входит в NPV и IRR одним слагаемым, если основная строка лежит на последнем заполненном интервале. Модель Гордона и ставка капитализации не применяются."

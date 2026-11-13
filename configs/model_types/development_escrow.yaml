@@ -18,11 +18,16 @@ metrics:
   escrow_coverage: {use: required}
   dscr: {use: optional, variant: pf}
   icr: {use: not_applicable}
+  icr_lease: {use: not_applicable}
   adscr: {use: not_applicable}
   dscr_min: {use: not_applicable}
   dscr_avg: {use: not_applicable}
   llcr: {use: not_applicable}
   plcr: {use: not_applicable}
   net_debt_ebitda: {use: not_applicable}
+  total_debt_ebitda: {use: not_applicable}
+  debt_off_balance_ebitda: {use: not_applicable}
   npv: {use: not_applicable}
   irr: {use: not_applicable}
+  fcf_identity: {use: not_applicable}
+  ncf: {use: optional}

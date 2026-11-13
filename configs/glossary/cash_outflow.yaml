@@ -1,0 +1,12 @@
+concept: cash_outflow
+pref:
+  ru: "Отток денежных средств"
+  en: "Cash outflows"
+alt:
+  ru:
+    - "Выбытие денежных средств за период"
+    - "Платежи — всего"
+    - "Платежи - всего"
+definition:
+  ru: "Совокупный отток за период или итог платежей раздела. Не остаток и не строка расшифровки."
+  en: "Period cash outflow, or a section payments total. Not a cash balance and not a detail line."

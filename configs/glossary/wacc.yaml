@@ -5,5 +5,5 @@ pref:
 alt:
   en: ["WACC"]
 definition:
-  en: "Book row used to classify the model. This slice does not calculate it."
-  ru: "Строка книги для классификации модели. В этом срезе не считается."
+  en: "Cited as the discount rate of free cash flow to all investors. Not calculated from book capital-structure weights."
+  ru: "Цитируется как ставка дисконта свободного денежного потока. Из балансовых весов капитала не считается."

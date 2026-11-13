@@ -15,7 +15,12 @@ metrics:
   llcr: {use: optional}
   plcr: {use: optional}
   icr: {use: optional}
+  icr_lease: {use: not_applicable}
   net_debt_ebitda: {use: not_applicable}
+  total_debt_ebitda: {use: not_applicable}
+  debt_off_balance_ebitda: {use: not_applicable}
   escrow_coverage: {use: not_applicable}
   npv: {use: not_applicable}
   irr: {use: not_applicable}
+  fcf_identity: {use: not_applicable}
+  ncf: {use: optional}

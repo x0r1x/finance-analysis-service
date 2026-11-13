@@ -1,0 +1,7 @@
+concept: lease_principal
+pref:
+  en: "Principal within the lease payment"
+  ru: "Погашение основного долга в составе лизингового платежа"
+definition:
+  en: "Principal repaid inside the lease payment. Not the principal of a loan."
+  ru: "Основной долг, погашенный внутри лизингового платежа. Не основной долг кредита."

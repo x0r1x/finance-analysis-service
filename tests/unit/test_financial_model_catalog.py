@@ -140,8 +140,21 @@ def test_dscr_preserves_model_type_variant_and_formula():
     assert base_formula["numerator"]["plus"] == ["cfads"]
     assert base_formula["denominator"]["plus"] == ["debt_service"]
     assert catalog.indicators["npv"].unit == "money"
-    assert catalog.indicators["npv"].formula.rate == "discount_rate"
-    assert "interest_paid" in catalog.row_fallback_ids
+    assert catalog.indicators["npv"].formula.as_dict()["rate"] == ["wacc", "discount_rate"]
+    assert catalog.indicators["npv"].formula.terminal == "terminal_value"
+    assert catalog.indicators["irr"].formula.terminal == "terminal_value"
+    identity = catalog.indicators["fcf_identity"]
+    assert identity.unit == "money"
+    assert "vk477" in identity.variants
+    assert identity.variants["fcff_after_interest"].formula.add_back == ("net_interest", "tax_rate")
+    assert "interest_paid" not in catalog.row_fallback_ids
+    assert "cash_covenant" in dscr.variants
+    assert dscr.variants["cash_covenant"].window == "period"
+    assert "ocf" in dscr.variants["cash_covenant"].inputs.concepts
+    assert dscr.model_types["corporate"].variant == "corporate_covenant"
+    assert dscr.model_types["project_finance"].variant == "pf"
+    assert all(item.variant != "cash_covenant" for item in dscr.model_types.values())
+    assert "ПБУ 23/2011" in (dscr.variants["cash_covenant"].definition or "")
 
 
 def test_inputs_preserve_all_of_and_one_of():
