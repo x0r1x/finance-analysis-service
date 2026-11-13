@@ -200,8 +200,9 @@ def _dash_period(
         and fact.get("axis_id") == period.get("axis_id")
         and fact.get("period_id") == period.get("period_id")
     ]
+    # Нет ячейки на этом периоде — дыра, не прочерк чужой оси.
     if not matched:
-        return True
+        return False
     return all(_blank_fact(fact) for fact in matched)
 
 

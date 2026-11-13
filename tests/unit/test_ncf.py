@@ -93,6 +93,26 @@ def test_dash_on_a_cited_cfi_line_is_zero_and_the_trace_says_so():
     validate_metric_trace_document(trace.as_dict())
 
 
+def test_missing_fact_on_another_axis_is_not_a_dash():
+    bindings, facts, periods = _flows()
+    facts.extend(
+        [
+            _fact("cfo", "Y1", "10", "P!A1", axis="plan"),
+            _fact("cff", "Y1", "5", "P!C1", axis="plan"),
+        ]
+    )
+    periods.append(_period("Y1", 1, axis="plan", timeline="plan"))
+    got = _run((bindings, facts, periods))
+    form = next(row for row in got["rows"] if row["axis_id"] == "a")
+    other = next(row for row in got["rows"] if row["axis_id"] == "plan")
+    assert form["value"] == Decimal(75).quantize(_MONEY)
+    assert form["status"] == "computed"
+    assert other["value"] is None
+    assert other["status"] == "not_computed"
+    assert other["reason"] == "missing_input"
+    assert not any(note["code"] == "ncf_dashed_line" for note in got["warnings"])
+
+
 def test_book_4400_does_not_replace_the_sum_and_allows_one_scale_unit():
     bindings, facts, periods = _flows(scale="1000")
     same = _run((bindings, facts, periods), book=[{"value": "74", "cell_id": "F!D1"}])
@@ -285,10 +305,10 @@ def _bind(
     return item
 
 
-def _fact(row, period, value, cell, *, raw=None, scale=None):
+def _fact(row, period, value, cell, *, raw=None, scale=None, axis="a"):
     item = {
         "row_key": row,
-        "axis_id": "a",
+        "axis_id": axis,
         "period_id": period,
         "cell_id": cell,
     }
@@ -301,12 +321,19 @@ def _fact(row, period, value, cell, *, raw=None, scale=None):
     return item
 
 
-def _period(pid: str, index: int, year: int | None = None) -> dict:
+def _period(
+    pid: str,
+    index: int,
+    year: int | None = None,
+    *,
+    axis: str = "a",
+    timeline: str = "t",
+) -> dict:
     item = {
-        "axis_id": "a",
+        "axis_id": axis,
         "period_id": pid,
         "period_index": index,
-        "timeline_id": "t",
+        "timeline_id": timeline,
         "grain": "quarter",
     }
     if year is not None:
