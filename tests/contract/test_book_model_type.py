@@ -114,8 +114,8 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         hidden = sorted(
             item["metric"] for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"
         )
-        # Новые метрики среза 2 на project_finance не считаются. Вопросы и привязки из-за них не меняются.
-        assert hidden == ["escrow_coverage", "irr", "net_debt_ebitda", "npv"], alias
+        # Срез 2 и total_debt на project_finance не считаются. Вопросы и привязки из-за них не меняются.
+        assert hidden == ["escrow_coverage", "irr", "net_debt_ebitda", "npv", "total_debt"], alias
         assert ratios["model_type"]["primary"] == "project_finance"
         assert "book_rows" not in ratios["result_data"], alias
         assert ratios["versions"]["model_types"] == local_service.model_types.version
