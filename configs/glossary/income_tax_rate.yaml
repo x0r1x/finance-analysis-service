@@ -1,0 +1,7 @@
+concept: income_tax_rate
+pref:
+  en: "Income tax rate"
+  ru: "Ставка налога на прибыль"
+definition:
+  en: "Rate the book applies to profit for the interest tax shield, as a share from 0 to 1. Not the tax amount, not the discount rate, not tax divided by profit, and not a rate that already includes reliefs, a tax loss, or an interest-deduction limit."
+  ru: "Ставка, которой книга облагает прибыль для налогового щита, доля от 0 до 1. Не сумма налога, не ставка дисконтирования, не частное налога и прибыли и не ставка, в которой уже сидят льготы, убыток или лимит вычета процентов."
