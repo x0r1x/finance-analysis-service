@@ -90,9 +90,9 @@ _IFRS_UNPUBLISHED = (
 def ebitda_definition_error(value) -> str | None:
     """None — значение можно сохранить. Чисел и свободной формулы нет."""
 
-    if value not in _EBITDA_DEFINITION:
-        return "ebitda_definition: book, ras или ifrs"
-    return None
+    if isinstance(value, str) and value in _EBITDA_DEFINITION:
+        return None
+    return "ebitda_definition: book, ras или ifrs"
 
 
 def ebitda_definition(profile: dict | None) -> str:
@@ -101,7 +101,7 @@ def ebitda_definition(profile: dict | None) -> str:
     raw = (profile or {}).get("ebitda_definition")
     if raw in (None, ""):
         return "book"
-    if raw in _EBITDA_DEFINITION:
+    if isinstance(raw, str) and raw in _EBITDA_DEFINITION:
         return raw
     return "invalid"
 

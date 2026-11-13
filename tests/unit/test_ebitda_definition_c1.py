@@ -11,7 +11,12 @@ from finance_analysis.application.catalog import load_catalog
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.mapping import assign_rows
-from finance_analysis.domain.metrics import coverage_ratio
+from finance_analysis.domain.metrics import (
+    coverage_ratio,
+    ebitda_definition,
+    ebitda_definition_error,
+    recipe_block,
+)
 
 _RAS_SKIP = (
     "Коэффициент не посчитан: выбрана EBITDA (РСБУ), а она ещё не собрана. "
@@ -256,6 +261,50 @@ def test_project_finance_dscr_still_uses_cfads_when_the_recipe_is_requested():
     )
     got = _select("dscr", "pf", common, {"ebitda_definition": "ras"})
     assert got["rows"][0]["value"] == Decimal("2.0000000000")
+
+
+@pytest.mark.parametrize("value", [{"recipe": "ras"}, ["ras"], 1, True])
+def test_ebitda_definition_rejects_a_non_string(value):
+    assert ebitda_definition_error(value) == "ebitda_definition: book, ras или ifrs"
+    profile = {"ebitda_definition": value}
+    assert ebitda_definition(profile) == "invalid"
+    blocked = recipe_block(profile, [], metric="icr")
+    assert blocked["status"] == "not_computed"
+
+
+def test_stored_profile_reads_a_non_string_ebitda_definition_as_invalid(tmp_path):
+    import json
+
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.glossary_store import GlossaryStore
+    from finance_analysis.domain.errors import InvalidArgument
+
+    async def run():
+        store = LocalStore(tmp_path)
+        gloss = GlossaryStore(store)
+        for value in ({"recipe": "ras"}, ["ras"], 1, True):
+            with pytest.raises(InvalidArgument):
+                await gloss.put_profile(
+                    "bank",
+                    {"sign_convention": "outflow_negative", "ebitda_definition": value},
+                    if_match=None,
+                    if_none_match="*",
+                )
+            saved = {
+                "id": "bank",
+                "seq": 1,
+                "etag": "p-1",
+                "body": {
+                    "sign_convention": "outflow_negative",
+                    "marker_class": None,
+                    "ebitda_definition": value,
+                },
+            }
+            await store.put("profiles/bank/_head.json", json.dumps(saved).encode())
+            loaded = await gloss.profile_body("bank")
+            assert ebitda_definition(loaded) == "invalid"
+
+    asyncio.run(run())
 
 
 def test_profile_stores_only_book_ras_or_ifrs(tmp_path):
