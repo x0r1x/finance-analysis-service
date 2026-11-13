@@ -1,0 +1,10 @@
+concept: long_term_borrowings
+pref:
+  en: "Long-term borrowings"
+  ru: "Долгосрочные заемные средства"
+alt:
+  ru:
+    - "Строка 1410"
+definition:
+  en: "RAS balance line 1410. A component of debt including off-balance obligations."
+  ru: "Строка 1410 бухгалтерского баланса. Слагаемое долга с учетом забалансовых обязательств."

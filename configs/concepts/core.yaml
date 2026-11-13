@@ -31,6 +31,26 @@ concepts:
     semantic_role: measure
     dimension: money
     temporal_nature: stock
+  long_term_borrowings:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  short_term_borrowings:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  other_financial_debt:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  off_balance_third_party:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  off_balance_lease:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
   ebitda:
     semantic_role: measure
     dimension: money
