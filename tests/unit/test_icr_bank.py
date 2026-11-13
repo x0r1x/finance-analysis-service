@@ -1100,3 +1100,145 @@ def test_capital_lease_ebitda_cannot_add_lease_interest_again():
     assert kept["rows"][0]["value"] == Decimal("10.0000000000")
     assert "lease_interest" not in kept["rows"][0]["inputs"]
     assert kept["warnings"][0]["code"] == "lease_interest_double_count"
+
+
+def _includes_rou() -> dict:
+    return {"evidence_json": json.dumps({"includes_rou": True})}
+
+
+def _ras_profile(**extra) -> dict:
+    return {"ebitda_definition": "ras", **_profile(denominator=_evidence(standard="fsbu25"), **extra)}
+
+
+def _ifrs_profile(**extra) -> dict:
+    return {"ebitda_definition": "ifrs", **_profile(denominator=_evidence(standard="ifrs16"), **extra)}
+
+
+def test_the_same_depreciation_total_keeps_rou_out_of_ras_and_inside_ifrs():
+    """Одна и та же амортизация: 25 по ОС и НМА и 15 по праву пользования, итог 40.
+
+    РСБУ берёт только ФСБУ 6 и ФСБУ 14. МСФО берёт итог вместе с IFRS 16.
+    Общая строка, из которой право пользования не вычитается, для РСБУ не считается.
+    """
+
+    split = [
+        _fact("ebitda", "Y1", "999"),
+        _fact("sales", "Y1", "100"),
+        _fact("profit", "Y1", "80"),
+        _fact("ppe", "Y1", "25"),
+        _fact("rou", "Y1", "15"),
+        _fact("interest", "Y1", "20"),
+    ]
+    ras = _select(
+        "icr",
+        _common(
+            split,
+            [
+                _bind("ebitda"),
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "ppe"),
+                _bind("depreciation_rou", "rou"),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
+            [_year()],
+        ),
+        _ras_profile(),
+    )
+    ifrs = _select(
+        "icr",
+        _common(
+            split,
+            [
+                _bind("ebitda"),
+                _bind("ifrs_operating_profit", "profit"),
+                _bind("depreciation_notes", "ppe"),
+                _bind("depreciation_rou", "rou"),
+                _bind("interest"),
+            ],
+            [_year()],
+        ),
+        _ifrs_profile(),
+    )
+    assert ras["rows"][0]["value"] == quantize_ratio(Decimal(125) / Decimal(20))
+    assert "depreciation_rou" not in ras["rows"][0]["inputs"]
+    assert ifrs["rows"][0]["value"] == quantize_ratio(Decimal(120) / Decimal(20))
+    assert "depreciation_rou" in ifrs["rows"][0]["inputs"]
+    assert ras["profile"] == "icr.bank"
+    assert ras["regulatory_6960u"] is False
+    assert "6960-У" in ras["profile_note"]
+    mixed = [
+        _fact("sales", "Y1", "100"),
+        _fact("profit", "Y1", "80"),
+        _fact("dep", "Y1", "40"),
+        _fact("rou", "Y1", "15"),
+        _fact("interest", "Y1", "20"),
+    ]
+    ras_split = _select(
+        "icr",
+        _common(
+            mixed,
+            [
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep", **_includes_rou()),
+                _bind("depreciation_rou", "rou"),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
+            [_year()],
+        ),
+        _ras_profile(),
+    )
+    ifrs_total = _select(
+        "icr",
+        _common(
+            mixed,
+            [
+                _bind("ifrs_operating_profit", "profit"),
+                _bind("depreciation_notes", "dep", **_includes_rou()),
+                _bind("depreciation_rou", "rou"),
+                _bind("interest"),
+            ],
+            [_year()],
+        ),
+        _ifrs_profile(),
+    )
+    assert ras_split["rows"][0]["value"] == quantize_ratio(Decimal(125) / Decimal(20))
+    assert ifrs_total["rows"][0]["value"] == quantize_ratio(Decimal(120) / Decimal(20))
+    assert "depreciation_rou" not in ifrs_total["rows"][0]["inputs"]
+    held = _select(
+        "icr",
+        _common(
+            [
+                _fact("sales", "Y1", "100"),
+                _fact("dep", "Y1", "40"),
+                _fact("interest", "Y1", "20"),
+            ],
+            [
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep", **_includes_rou()),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
+            [_year()],
+        ),
+        _ras_profile(),
+    )
+    assert held["status"] == "not_computed"
+    assert held["reason"] == "depreciation_rou_unseparated"
+    assert held["rows"] == []
+    allowed = _select(
+        "icr",
+        _common(
+            [
+                _fact("sales", "Y1", "100"),
+                _fact("dep", "Y1", "40"),
+                _fact("interest", "Y1", "20"),
+            ],
+            [
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep", **_includes_rou()),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
+            [_year()],
+        ),
+        _ras_profile(include_rou_depreciation=True),
+    )
+    assert allowed["rows"][0]["value"] == quantize_ratio(Decimal(140) / Decimal(20))

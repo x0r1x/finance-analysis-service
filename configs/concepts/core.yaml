@@ -321,6 +321,11 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  depreciation_rou:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
   ebitda_ras:
     semantic_role: measure
     dimension: money

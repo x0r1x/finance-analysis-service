@@ -39,7 +39,7 @@ metrics:
     denominator: interest
     variants:
       bank:
-        definition: "Внутренний профиль icr.bank: EBITDA / проценты, окно LTM. Это не ICR по 6960-У и не ковенант договора. Состав знаменателя и окно считает bank_icr. EBIT в числитель не входит. При ebitda_definition ras или ifrs числитель — прибыль отчётности плюс амортизация пояснений. Строка EBITDA модели не подставляется. GAAP остаётся not_computed."
+        definition: "Внутренний профиль icr.bank: EBITDA / проценты, окно LTM. Это не ICR по 6960-У и не ковенант договора. Результат bank_icr несёт profile=icr.bank, regulatory_6960u=false и profile_note. EBIT в числитель не входит. При ras числитель — прибыль от продаж плюс амортизация ОС и НМА; право пользования не входит без include_rou_depreciation. При ifrs к операционной прибыли добавляется и амортизация права пользования (IFRS 16). Строка EBITDA модели не подставляется. GAAP остаётся not_computed."
         numerator: {plus: [ebitda]}
         denominator: {plus: [interest]}
         window: LTM

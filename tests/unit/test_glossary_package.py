@@ -82,6 +82,7 @@ _IDS = frozenset(
         "other_income",
         "other_expense",
         "depreciation_notes",
+        "depreciation_rou",
         "ebitda_ras",
         "ebitda_ifrs",
         "ebt",
