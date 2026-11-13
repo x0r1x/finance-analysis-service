@@ -42,18 +42,24 @@ _OPERATING_PROFIT_REVIEW = (
     "Она сохраняется и не переносится на другое понятие. "
     "Подтверждение текущего смысла снимает пометку."
 )
-# Явная форма кода пояснений. Голое число соседней ячейки кодом не является.
-_MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
+# Явная форма «Ф. N (код)». Голое число соседней ячейки кодом не является.
+_MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*(\d+)\s*\(\s*(\d+)\s*\)$")
+_MARKED_LINE_CODES = {
+    ("5", "740"): "ф.5 (740)",
+    ("2", "2330"): "ф.2 (2330)",
+    ("2", "070"): "ф.2 (070)",
+}
 
 
 def marked_line_code(value: object) -> str | None:
-    """Код строки только в форме «Ф. 5 (740)». Иначе код для сопоставления не определён."""
+    """Код строки только из белого списка форм. Иначе код для сопоставления не определён."""
 
     if not isinstance(value, str):
         return None
-    if not _MARKED_LINE_CODE.match(value.strip()):
+    match = _MARKED_LINE_CODE.match(value.strip())
+    if match is None:
         return None
-    return "ф.5 (740)"
+    return _MARKED_LINE_CODES.get((match.group(1), match.group(2)))
 
 
 @dataclass(frozen=True)

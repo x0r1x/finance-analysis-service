@@ -42,7 +42,8 @@ _DSCR_FAMILY = ("dscr", "adscr", "dscr_min", "dscr_avg", "llcr", "plcr")
 METRIC_INPUTS = {
     "cfads": _DSCR_FAMILY,
     "debt_service": _DSCR_FAMILY,
-    "interest": ("icr",),
+    "interest": ("icr", "icr_ebit"),
+    "ebit": ("icr_ebit",),
     "debt_outstanding": LOAN_LIFE,
     "discount_rate": LOAN_LIFE,
 }
@@ -469,6 +470,7 @@ _CITED = {
     "llcr": ("cfads",),
     "plcr": ("cfads",),
     "icr": ("ebitda", "ebit", "interest"),
+    "icr_ebit": ("ebit", "interest"),
 }
 
 

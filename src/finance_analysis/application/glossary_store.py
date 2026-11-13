@@ -52,6 +52,7 @@ _PROFILE_FIELDS = frozenset(
         "model_type_default",
         "dscr_definition",
         "ebitda_definition",
+        "icr_definition",
         "actuals_end",
         "sheet_class",
     }
@@ -522,7 +523,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, actuals_end и sheet_class",
+                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, icr_definition, actuals_end и sheet_class",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -553,6 +554,12 @@ class GlossaryStore:
             )
             if problem:
                 raise InvalidArgument(problem)
+        if "icr_definition" in body and body["icr_definition"] is not None:
+            from finance_analysis.domain.covenant import icr_definition_error
+
+            problem = icr_definition_error(body["icr_definition"])
+            if problem:
+                raise InvalidArgument(problem)
         if "ebitda_definition" in body and body["ebitda_definition"] is not None:
             from finance_analysis.domain.metrics import ebitda_definition_error
 
@@ -580,6 +587,8 @@ class GlossaryStore:
                     saved["model_type_default"] = body["model_type_default"]
                 if "dscr_definition" in body:
                     saved["dscr_definition"] = body["dscr_definition"]
+                if body.get("icr_definition"):
+                    saved["icr_definition"] = body["icr_definition"]
                 if body.get("ebitda_definition"):
                     saved["ebitda_definition"] = body["ebitda_definition"]
                 if body.get("actuals_end"):
@@ -603,6 +612,11 @@ class GlossaryStore:
                 saved["dscr_definition"] = body["dscr_definition"]
             elif "dscr_definition" in current["body"]:
                 saved["dscr_definition"] = current["body"]["dscr_definition"]
+            if "icr_definition" in body:
+                if body.get("icr_definition"):
+                    saved["icr_definition"] = body["icr_definition"]
+            elif current["body"].get("icr_definition"):
+                saved["icr_definition"] = current["body"]["icr_definition"]
             if "ebitda_definition" in body:
                 if body.get("ebitda_definition"):
                     saved["ebitda_definition"] = body["ebitda_definition"]

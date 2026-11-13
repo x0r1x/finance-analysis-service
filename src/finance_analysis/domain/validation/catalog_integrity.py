@@ -16,7 +16,7 @@ from finance_analysis.domain.validation.model_types import (
 )
 
 # Слоты, которые реально читает код (metrics.py / covenant.py).
-INTEREST_ORDER_SLOTS = frozenset({"icr", "corporate_covenant", "ocf_covenant", "pf"})
+INTEREST_ORDER_SLOTS = frozenset({"icr", "icr_ebit", "corporate_covenant", "ocf_covenant", "pf"})
 INTEREST_CANONICAL = "interest"
 # Декларативные rule id. Рантайм по ним не диспатчит (выбор B).
 MATCHING_RULES = frozenset({"interest_basis_paid"})

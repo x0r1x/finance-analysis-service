@@ -165,7 +165,7 @@ def coverage_ratio(
 
     from finance_analysis.domain.coverage import is_coverage_test_period
 
-    if metric == "icr":
+    if metric in {"icr", "icr_ebit"}:
         blocked = recipe_block(profile, bindings, metric=metric)
         if blocked:
             return blocked
@@ -194,9 +194,10 @@ def coverage_ratio(
                 fallback_parts = (chosen, "principal")
                 if warning:
                     warnings.append(warning)
-    elif metric == "icr":
+    elif metric in {"icr", "icr_ebit"}:
+        slot = "icr_ebit" if metric == "icr_ebit" else "icr"
         chosen, warning = interest_choice(
-            primaries, order.get("icr", ("interest",)), row_fallbacks=row_fallbacks
+            primaries, order.get(slot, ("interest",)), row_fallbacks=row_fallbacks
         )
         needed = (chosen or "interest",)
         denominator_name = chosen or "interest"
@@ -206,7 +207,12 @@ def coverage_ratio(
         return {"metric": metric, "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"}
     missing = [name for name in needed if name not in primaries]
     numerator_name = None
-    if metric == "icr":
+    if metric == "icr_ebit":
+        if "ebit" in primaries:
+            numerator_name = "ebit"
+        else:
+            missing.append("ebit")
+    elif metric == "icr":
         if "ebitda" in primaries and "ebit" in primaries:
             numerator_name = "ebitda"
             warnings.append({"code": "icr_numerator", "params": {"concept": "ebitda"}})
@@ -267,7 +273,7 @@ def coverage_ratio(
         return _explained(metric, periods, "basis_mismatch", MIXED_BASIS, warnings)
     if numerator_basis != denominator_basis and not (numerator_basis == "ltm" and denominator_basis == "period"):
         message = MIXED_BASIS
-        if metric == "icr":
+        if metric in {"icr", "icr_ebit"}:
             message = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name]) or MIXED_BASIS
         return _explained(metric, periods, "basis_mismatch", message, warnings)
     sheet = _assume_sheet_units(facts, list(named.values()), warnings)
@@ -304,7 +310,7 @@ def coverage_ratio(
             for key in paid.keys() & repaid.keys()
         }
         home = _axes_of(facts, primaries[fallback_parts[0]]) | _axes_of(facts, primaries["principal"])
-    if metric == "icr" and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
+    if metric in {"icr", "icr_ebit"} and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
         raw = _sums(facts, primaries[numerator_name], aligned, None, sheet=sheet)
         if not _numerator_misses_axis(raw, denominator, periods, aligned, home):
             message = (

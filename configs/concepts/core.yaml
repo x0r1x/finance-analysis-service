@@ -22,6 +22,28 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  lease_payments:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+    relations:
+      composed_of: [lease_principal, lease_interest]
+  lease_principal:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  lease_interest:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  finance_costs:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
   principal:
     semantic_role: measure
     dimension: money

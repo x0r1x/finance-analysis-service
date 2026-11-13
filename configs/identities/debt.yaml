@@ -2,3 +2,4 @@
 # Знаменатель dscr.corporate_covenant — те же interest + principal. Числитель — разность, это тождество её не собирает.
 identities:
   debt_service: [interest, principal]
+  lease_payments: [lease_principal, lease_interest]

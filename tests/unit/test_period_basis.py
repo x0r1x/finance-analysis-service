@@ -1022,12 +1022,10 @@ def test_parenthetical_finance_costs_stay_exact_and_do_not_replace_the_period_ro
         ),
     ]
     got = _assigned(rows)
-    assert got["stem"].concept == "interest"
+    assert got["stem"].concept == "finance_costs"
     assert got["stem"].evidence["match_strength"] == "exact"
-    assert got["stem"].evidence["period_basis"] == "ytd"
-    assert got["stem"].is_primary is False
+    assert got["flow"].concept == "interest"
     assert got["flow"].is_primary
-    assert got["flow"].evidence["selection"] == "period_basis"
 
 
 def test_finance_costs_alias_does_not_replace_the_cascade_primary():
@@ -1041,11 +1039,10 @@ def test_finance_costs_alias_does_not_replace_the_cascade_primary():
         ),
     ]
     got = _assigned(rows)
-    assert got["alias"].concept == "interest"
+    assert got["alias"].concept == "finance_costs"
     assert got["alias"].evidence["period_basis"] == "ytd"
+    assert got["flow"].concept == "interest"
     assert got["flow"].is_primary
-    assert got["flow"].evidence["selection"] == "period_basis"
-    assert got["alias"].is_primary is False
 
 
 def test_quarterly_component_interest_beats_the_cumulative_income_statement():
