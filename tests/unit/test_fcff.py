@@ -7,6 +7,7 @@ from decimal import Decimal
 from finance_analysis.application.financial_catalog import load_financial_catalog
 from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.free_cash_flow import free_cash_flow
+from finance_analysis.domain.graphs import trace_metric, validate_metric_trace_document
 
 _MONEY = Decimal("0.000001")
 
@@ -18,6 +19,7 @@ def test_fcff_shield_follows_basis_rate_and_capex_sign():
     assert item.formula.rate == "income_tax_rate"
     assert item.formula.denominator is None
     assert "не перемножает" in (item.definition or "")
+    assert "цитат" in (item.definition or "")
     assert item.inputs.concepts == {"operating_cash_flow", "capex", "income_tax_rate"}
     assert item.model_types["corporate"].use == "optional"
     assert item.model_types["project_finance"].use == "not_applicable"
@@ -112,9 +114,32 @@ def test_fcff_shield_follows_basis_rate_and_capex_sign():
             periods=(("Y1", "0.2"), ("Y2", None)),
         )
     )
-    assert [row["value"] for row in spread["rows"]] == [
+    assert spread["rows"][0]["value"] == Decimal(78).quantize(_MONEY)
+    assert spread["rows"][1]["reason"] == "missing_tax_rate"
+    assert spread["rows"][1]["value"] is None
+
+    book_rate_bindings, book_rate_facts, book_rate_periods = _case(
+        code_ocf="стр. 4100",
+        code_interest="стр. 4123",
+        periods=(("Y1", None), ("Y2", None)),
+    )
+    book_rate_bindings.append(_bind("income_tax_rate", "rate"))
+    book_rate_facts.append(_fact("rate", "book", "0.2", "S!D9", axis="assumptions"))
+    book_rate = _run((book_rate_bindings, book_rate_facts, book_rate_periods))
+    assert [row["value"] for row in book_rate["rows"]] == [
         Decimal(78).quantize(_MONEY)
     ] * 2
+
+    off_form = _run(
+        _case(
+            code_ocf="стр. 4100",
+            code_interest="стр. 4123",
+            rate="0.2",
+            on_statement=False,
+        )
+    )
+    assert off_form["rows"][0]["reason"] == "ocf_basis_unknown"
+    assert off_form["rows"][0]["value"] is None
 
     flipped = _run(_case(section="Финансовая деятельность", capex="30"))
     assert flipped["rows"][0]["value"] == Decimal(70).quantize(_MONEY)
@@ -137,7 +162,7 @@ def test_fcff_shield_follows_basis_rate_and_capex_sign():
 def test_ytd_flows_are_restated_before_the_shield_and_ltm_keeps_its_end():
     periods = [_period(f"Q{index}", index, 2025) for index in range(1, 5)]
     bindings = [
-        _bind("operating_cash_flow", "ocf", code="стр. 4100", basis="ytd"),
+        _bind("operating_cash_flow", "ocf", code="стр. 4100", basis="ytd", sheet="ОДДС"),
         _bind("capex", "capex", basis="ytd"),
         _bind("interest", "paid", code="стр. 4123", basis="ytd"),
         _bind("income_tax_rate", "rate"),
@@ -161,6 +186,7 @@ def test_ytd_flows_are_restated_before_the_shield_and_ltm_keeps_its_end():
         bindings=bindings,
         periods=periods,
         book=[{"cell_id": "Book!A1", "value": "478", "calendar_year": 2025}],
+        statement_sheets=frozenset({"ОДДС"}),
     )
     assert [row["value"] for row in restated["rows"]] == [
         Decimal(value).quantize(_MONEY) for value in (78, 146, 118, 136)
@@ -309,6 +335,7 @@ def _run(bindings_and_facts: tuple[list[dict], list[dict], list[dict]] | list) -
             "periods": periods,
             "sign_convention": "outflow_negative",
             "absent": frozenset(),
+            "statement_sheets": frozenset({"ОДДС"}),
         },
         profile=None,
         profile_ref=None,
@@ -330,9 +357,16 @@ def _case(
     accrued: str | None = None,
     paid: str = "-10",
     periods: tuple[tuple[str, str | None], ...] = (("Y1", None),),
+    on_statement: bool = True,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     bindings = [
-        _bind("operating_cash_flow", "ocf", code=code_ocf, formula=formula),
+        _bind(
+            "operating_cash_flow",
+            "ocf",
+            code=code_ocf,
+            formula=formula,
+            sheet="ОДДС" if code_ocf and on_statement else None,
+        ),
         _bind("capex", "capex"),
     ]
     if code_interest or section or sheet:
@@ -414,10 +448,11 @@ def _fact(
     *,
     raw: str | None = None,
     scale: str | None = None,
+    axis: str = "a",
 ) -> dict:
     item = {
         "row_key": row,
-        "axis_id": "a",
+        "axis_id": axis,
         "period_id": period,
         "normalized_value": value,
         "cell_id": cell,
@@ -427,6 +462,28 @@ def _fact(
     if scale is not None:
         item["scale_factor"] = scale
     return item
+
+
+def test_fcff_trace_cites_the_paid_interest_cell():
+    trace = trace_metric(
+        "fcff",
+        inputs={
+            "all_of": ["operating_cash_flow", "capex", "income_tax_rate"],
+            "one_of": [],
+        },
+        bindings=[
+            _bind("operating_cash_flow", "ocf", sheet="ОДДС"),
+            _bind("interest", "accrued"),
+            _bind("interest", "paid", primary=False, code="стр. 4123"),
+            _bind("capex", "capex"),
+        ],
+        facts=[{"row_key": "paid", "cell_id": "S!C1"}],
+    )
+    paid = next(step for step in trace.steps if step.concept == "interest")
+    assert paid.row_key == "paid"
+    assert paid.cell_ids == ("S!C1",)
+    assert paid.metric_edge_id == "metric:in:fcff:all_of:interest"
+    validate_metric_trace_document(trace.as_dict())
 
 
 def _period(pid: str, index: int, year: int | None = None) -> dict:

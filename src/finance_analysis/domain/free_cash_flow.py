@@ -4,7 +4,8 @@ fcff = operating_cash_flow + shield − capex.
 Щит есть только когда проценты уже вычтены из выбранной строки OCF:
 величина уплаченных процентов × (1 − ставка этого периода).
 Нет строки OCF — из прибыли и амортизации её не собирать. Ставку 20% не подставлять.
-Сверка пишет fcff_book_mismatch. Ячейка книги входом не является.
+Сверка пишет fcff_book_mismatch только по цитатам аргумента book.
+Разбор коэффициентов цитату не ищет. Ячейка книги входом не является.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from finance_analysis.domain.metrics import (
     confirm_paid_interest,
     unconfirmed_scale,
 )
+from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import basis_of, keys_for_basis
 
 _EXCLUDED = (
@@ -51,6 +53,7 @@ def free_cash_flow(
     absent: frozenset[str] = frozenset(),
     links: list[dict] | None = None,
     book: list[dict] | None = None,
+    statement_sheets: frozenset[str] = frozenset(),
 ) -> dict:
     primaries = _primaries(bindings, absent)
     clash = _ambiguous_primary(bindings, absent)
@@ -91,14 +94,22 @@ def free_cash_flow(
             periods,
             book,
         )
-    basis = _basis(ocf, bindings, absent, facts, links or [])
+    statement = frozenset(sheet_name_key(name) for name in statement_sheets)
+    basis = _basis(ocf, bindings, absent, facts, links or [], statement)
     rate_row = primaries.get("income_tax_rate")
     aligned = aligned_keys(periods)
     ocf_flow = _flow(facts, ocf, aligned, periods)
     capex_flow = _flow(facts, capex, aligned, periods)
     paid_flow = _flow(facts, paid, aligned, periods) if paid is not None else {}
     accrued_flow = _flow(facts, accrued, aligned, periods) if accrued is not None else {}
-    table, rate_periods = _rates(facts, rate_row, aligned) if rate_row else ({}, [])
+    ocf_axes = {
+        fact.get("axis_id")
+        for fact in facts
+        if fact.get("row_key") == ocf.get("row_key")
+    }
+    table, rate_periods = (
+        _rates(facts, rate_row, aligned, ocf_axes) if rate_row else ({}, [])
+    )
     warnings: list[dict] = []
     seen: set[str] = set()
     rows: list[dict] = []
@@ -163,7 +174,6 @@ def free_cash_flow(
         inputs = ["operating_cash_flow", "capex"]
         if used_paid:
             inputs.extend(("income_tax_rate", "interest_paid"))
-        # shortcut: след каталога не знает interest_paid. Ячейки уплаченных процентов лежат в components. Поднять, когда след принимает привязку без concept_id.
         row = _blank(period, None)
         row["value"] = _money(ocf_value + shield - capex_mag)
         row["status"] = "computed"
@@ -204,10 +214,11 @@ def _basis(
     absent: frozenset[str],
     facts: list[dict],
     links: list[dict],
+    statement: frozenset[str],
 ) -> str:
     rows = _interest_rows(bindings, absent)
     coded = [row for row in rows if _stated_digits(row) == "4123"]
-    if _stated_digits(ocf) == "4100" and coded:
+    if _on_statement(ocf, statement) and _stated_digits(ocf) == "4100" and coded:
         return "interest_included"
     if rows and not coded and all(_financing(row) for row in rows):
         return "interest_excluded"
@@ -230,6 +241,16 @@ def _interest_rows(bindings: list[dict], absent: frozenset[str]) -> list[dict]:
             continue
         found.append(row)
     return found
+
+
+def _on_statement(row: dict, statement: frozenset[str]) -> bool:
+    if not statement:
+        return False
+    sheet = row.get("sheet")
+    if not isinstance(sheet, str) or not sheet.strip():
+        key = row.get("row_key")
+        sheet = key.split("|", 1)[0] if isinstance(key, str) and "|" in key else ""
+    return bool(sheet) and sheet_name_key(str(sheet)) in statement
 
 
 def _financing(row: dict) -> bool:
@@ -336,9 +357,16 @@ def _candidate_block(accrued_flow, paid_flow, accrued, paid, period, aligned) ->
     return None
 
 
-def _rates(facts: list[dict], binding: dict, aligned: dict) -> tuple[dict, list[dict]]:
+def _rates(
+    facts: list[dict],
+    binding: dict,
+    aligned: dict,
+    ocf_axes: set,
+) -> tuple[dict, list[dict]]:
     by_key: dict = {}
     sources: list[dict] = []
+    # Ключ шкалы — (timeline, index), не ось. Общую ставку даёт только факт вне оси OCF.
+    rate_on_ocf = False
     for fact in facts:
         if fact.get("row_key") != binding.get("row_key"):
             continue
@@ -348,6 +376,8 @@ def _rates(facts: list[dict], binding: dict, aligned: dict) -> tuple[dict, list[
         if number < 0 or number > 1:
             number = None
         axis, pid = fact.get("axis_id"), fact.get("period_id")
+        if axis in ocf_axes:
+            rate_on_ocf = True
         key = aligned.get((axis, pid), (axis, pid))
         previous = by_key.get(key, number)
         if key in by_key and (
@@ -359,7 +389,8 @@ def _rates(facts: list[dict], binding: dict, aligned: dict) -> tuple[dict, list[
         sources.append({"axis_id": axis, "period_id": pid})
     usable = [value for value in by_key.values() if value is not None]
     if (
-        usable
+        not rate_on_ocf
+        and usable
         and len(usable) == len(by_key)
         and all(_close(item, usable[0]) for item in usable)
     ):

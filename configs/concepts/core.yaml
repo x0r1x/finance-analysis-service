@@ -316,6 +316,7 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  # Ставка щита FCFF: доля, которой книга облагает прибыль. Не налог/прибыль и не ставка с уже вычтенным лимитом.
   income_tax_rate:
     semantic_role: measure
     dimension: ratio

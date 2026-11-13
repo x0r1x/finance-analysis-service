@@ -73,7 +73,7 @@ metrics:
     definition: "IRR: ставка, обнуляющая NPV потока project_fcf. Степень дисконта - period_index, результат - отношение."
     numerator: [project_fcf]
   fcff:
-    definition: "FCFF: корпоративный свободный поток для всех источников капитала, не project_fcf, не FCFE и не CFO. Число считает domain/free_cash_flow.py: operating_cash_flow + щит − capex. Щит — уплаченные проценты × (1 − income_tax_rate) только когда проценты уже вычтены из этого OCF. Запись ниже ставку не перемножает."
+    definition: "FCFF: корпоративный свободный поток для всех источников капитала, не project_fcf, не FCFE и не CFO. Число считает domain/free_cash_flow.py: operating_cash_flow + щит − capex. Щит — уплаченные проценты × (1 − income_tax_rate) только когда проценты уже вычтены из этого OCF. Запись ниже ставку не перемножает. Годовая сверка fcff_book_mismatch пишется только по цитатам вызывающего. Разбор коэффициентов цитату книги не ищет."
     numerator: {plus: [operating_cash_flow], minus: [capex]}
     rate: income_tax_rate
 tolerance: "0.005"

@@ -841,6 +841,7 @@ class Analyses:
             "sign_convention": body.get("sign_convention") or "outflow_negative",
             "marker_class": body.get("marker_class"),
             "absent": await self._absent(job_id, target),
+            "statement_sheets": frozenset(load_sheet_roles().statement),
         }
         verdict = await svc.resolve_model_type(job_id, target.head)
         labels = decision_labels(verdict)

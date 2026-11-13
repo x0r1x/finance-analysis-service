@@ -33,6 +33,8 @@ _U18 = "=U11+(1-0.2)*('Фин отчетность РСБУ'!K33)-Outputs!U15"
 def test_compute_metrics_passes_graph_links():
     source = inspect.getsource(Analyses.compute_metrics)
     assert '"graph_links"' in source
+    assert '"statement_sheets"' in source
+    assert "book_fcff" not in source
 
 
 def test_bare_70_is_not_paid_interest():
@@ -315,6 +317,7 @@ def _run(bindings, facts, periods, links=(), book=()):
             "absent": frozenset(),
             "graph_links": list(links),
             "book_fcff": list(book),
+            "statement_sheets": frozenset({"ОДДС", "Денежные потоки"}),
         },
         profile=None,
         profile_ref=None,
@@ -326,7 +329,7 @@ def _run(bindings, facts, periods, links=(), book=()):
 
 def _included(periods):
     bindings = [
-        _bind("operating_cash_flow", "ocf", code="стр. 4100"),
+        _bind("operating_cash_flow", "ocf", code="стр. 4100", sheet="ОДДС"),
         _bind("capex", "capex"),
         _bind("interest", "paid", code="стр. 4123"),
         _bind("income_tax_rate", "rate"),
@@ -359,7 +362,7 @@ def _label(key: str, label: str, sheet: str, number: int, **extra) -> dict:
     }
 
 
-def _bind(concept, row_key, *, primary=True, code=None, formula=None):
+def _bind(concept, row_key, *, primary=True, code=None, formula=None, sheet=None):
     item = {
         "effective_concept": concept,
         "row_key": row_key,
@@ -372,6 +375,8 @@ def _bind(concept, row_key, *, primary=True, code=None, formula=None):
         item["line_code"] = code
     if formula:
         item["formula"] = formula
+    if sheet:
+        item["sheet"] = sheet
     return item
 
 

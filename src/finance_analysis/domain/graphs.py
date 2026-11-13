@@ -18,6 +18,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from finance_analysis.domain.metrics import _paid_interest_row
+
 _SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "meta_layer_graphs.json"
 
 _BOUND = frozenset({"bound", "bound_with_warning"})
@@ -196,6 +198,7 @@ def trace_metric(
     scoped_bindings = _same_build(bindings, resolved_build)
     scoped_rows = _same_build(rows, resolved_build)
     row_by_binding = _row_keys(scoped_rows, scoped_bindings)
+    paid_interest = _fcff_paid_row(metric_id, scoped_bindings)
 
     # Сначала привязки → row_key, затем факты/ссылки только по нужным строкам.
     needed_rows: set[str] = set()
@@ -209,6 +212,10 @@ def trace_metric(
             row_key = str(primary.get("row_key") or row_by_binding.get(str(primary["binding_key"])) or "")
             if row_key:
                 needed_rows.add(row_key)
+    if paid_interest is not None:
+        paid_key = str(paid_interest.get("row_key") or "")
+        if paid_key:
+            needed_rows.add(paid_key)
 
     scoped_facts = [
         row
@@ -242,6 +249,16 @@ def trace_metric(
         )
         steps.append(step)
         source_findings.extend(findings)
+    if paid_interest is not None:
+        steps.append(
+            _paid_interest_step(
+                paid_interest,
+                cells_by_row=cells_by_row,
+                graph_links=scoped_links,
+                model_id=resolved_model or "",
+                build_key=resolved_build or "",
+            )
+        )
 
     dto_findings = validate_metric_traces(
         [
@@ -366,6 +383,45 @@ def validate_metric_trace_document(body: Mapping[str, Any]) -> None:
     errors = sorted(_trace_validator().iter_errors(dict(body)), key=lambda err: list(err.path))
     if errors:
         raise GraphTraceError(errors[0].message)
+
+
+def _fcff_paid_row(metric_id: str, bindings: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """Единственная строка interest с кодом 4123. Это не понятие каталога."""
+
+    if metric_id != "fcff":
+        return None
+    paid = [row for row in bindings if _paid_interest_row(row, frozenset())]
+    if len(paid) != 1:
+        return None
+    return paid[0]
+
+
+def _paid_interest_step(
+    row: Mapping[str, Any],
+    *,
+    cells_by_row: Mapping[str, tuple[str, ...]],
+    graph_links: Sequence[Mapping[str, Any]],
+    model_id: str,
+    build_key: str,
+) -> TraceStep:
+    binding_key = str(row.get("binding_key") or "")
+    row_key = str(row.get("row_key") or "") or None
+    cell_ids = cells_by_row.get(row_key or "", ())
+    return TraceStep(
+        concept="interest",
+        role="all_of",
+        metric_edge_id=metric_input_edge_id("fcff", "all_of", "interest"),
+        binding_key=binding_key or None,
+        binding_edge_id=(
+            semantic_binding_edge_id(model_id, build_key, binding_key) if binding_key else None
+        ),
+        row_key=row_key,
+        cell_ids=cell_ids,
+        missing_trace=None if cell_ids else MISSING_NO_CELL,
+        excel_links=_excel_links_for_cells(
+            graph_links, cell_ids, model_id=model_id, build_key=build_key
+        ),
+    )
 
 
 def _step_for_concept(

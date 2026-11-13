@@ -3,5 +3,5 @@ pref:
   en: "Income tax rate"
   ru: "Ставка налога на прибыль"
 definition:
-  en: "Income tax as a share from 0 to 1 for one period. Not the tax amount and not the discount rate."
-  ru: "Налог на прибыль долей от 0 до 1 за период. Не сумма налога и не ставка дисконтирования."
+  en: "Rate the book applies to profit for the interest tax shield, as a share from 0 to 1. Not the tax amount, not the discount rate, not tax divided by profit, and not a rate that already includes reliefs, a tax loss, or an interest-deduction limit."
+  ru: "Ставка, которой книга облагает прибыль для налогового щита, доля от 0 до 1. Не сумма налога, не ставка дисконтирования, не частное налога и прибыли и не ставка, в которой уже сидят льготы, убыток или лимит вычета процентов."
