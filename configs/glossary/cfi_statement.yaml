@@ -1,0 +1,10 @@
+concept: cfi_statement
+pref:
+  en: "Net cash from investing activities"
+  ru: "Сальдо денежных потоков от инвестиционных операций"
+alt:
+  en: ["CFI statement balance"]
+  ru: ["4200"]
+definition:
+  en: "Cash-flow statement line 4200, the investing balance."
+  ru: "Строка 4200 отчёта о движении денежных средств: сальдо инвестиционных операций."

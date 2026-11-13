@@ -1,0 +1,10 @@
+concept: financing_inflows
+pref:
+  en: "Financing inflows"
+  ru: "Поступления по финансовой деятельности"
+alt:
+  en: ["Gross financing inflows"]
+  ru: ["4310"]
+definition:
+  en: "Cash-flow statement line 4310. Not the net financing balance 4300 and not the payment lines 4320."
+  ru: "Строка 4310: валовые поступления по финансовой деятельности. Сальдо 4300 и платежи 4320 сюда не входят. Если итога 4310 нет, складываются строки 4311, 4312, 4313, 4314 и 4319."

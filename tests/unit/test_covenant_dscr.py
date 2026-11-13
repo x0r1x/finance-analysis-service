@@ -410,7 +410,7 @@ def test_hybrid_of_escrow_and_project_finance_keeps_both_labels():
     assert got.primary == "development_escrow"
     assert applicability(catalog, got.labels, "dscr") == "required"
     assert applicability(catalog, got.labels, "escrow_coverage") == "required"
-    assert catalog.types["development_escrow"].variants["dscr"] == "pf"
+    assert catalog.types["development_escrow"].variants["dscr"] == "housing"
     assert catalog.types["corporate"].variants["dscr"] == "corporate_covenant"
 
 
