@@ -208,19 +208,58 @@ def test_sum_on_one_date_uses_one_lease_level():
     assert both["rows"][0]["value"] == Decimal(150)
 
 
-def test_one_c_subaccounts_use_the_present_value_hypothesis():
-    got = _debt(
-        [
+def test_one_c_hypothesis_requires_every_subaccount_and_keeps_an_explicit_zero():
+    """Нет субсчёта — нет числа. Ноль и прочерк в существующей ячейке входят в формулу."""
+
+    labels = {
+        "1": "76.07.1 Арендные обязательства",
+        "2": "76.07.2 Арендные платежи",
+        "5": "76.07.5 Проценты по аренде",
+        "9": "76.07.9 НДС по аренде",
+    }
+    numbers = {"1": "1920", "2": "0", "5": "93", "9": "0"}
+
+    def run(include: dict[str, str | None], dashes: frozenset[str] = frozenset()):
+        bindings = [
             _bind("borrowings_lt", "lt", "1410", evidence={"line_code": "1410"}),
             _bind("borrowings_st", "st", "1510", evidence={"line_code": "1510"}),
-            _bind("lease_liability", "n", "76.07.1", label_path_text="76.07.1 Арендные обязательства"),
-            _bind("lease_liability", "p", "76.07.5", label_path_text="76.07.5 Проценты по аренде", is_primary=False),
-        ],
-        [_fact("lt", "Y", "0"), _fact("st", "Y", "0"), _fact("n", "Y", "1920"), _fact("p", "Y", "93")],
-        [_period("Y")],
-    )
-    assert got["rows"][0]["value"] == Decimal(1827)
-    assert got["rows"][0]["lease_measurement"] == "pv_hypothesis"
+        ]
+        facts = [_fact("lt", "Y", "0"), _fact("st", "Y", "0")]
+        for key, raw in include.items():
+            bindings.append(_bind("lease_liability", key, labels[key], is_primary=key == "1"))
+            if key in dashes:
+                blank = _fact(key, "Y", "0")
+                blank["normalized_value"] = None
+                blank["display"] = "—"
+                facts.append(blank)
+            elif raw is not None:
+                facts.append(_fact(key, "Y", raw))
+        return _debt(bindings, facts, [_period("Y")])["rows"][0]
+
+    partial = run({"1": "1920", "5": "93"})
+    assert partial["value"] is None
+    assert partial["status"] == "not_computed"
+    assert partial["reason"] == "missing_subaccount"
+    assert partial["missing_inputs"] == ["76.07.2", "76.07.9"]
+    assert partial["lease_measurement"] == "pv_hypothesis"
+    for absent in ("1", "2", "5", "9"):
+        got = run({key: numbers[key] for key in numbers if key != absent})
+        assert got["value"] is None, absent
+        assert got["reason"] == "missing_subaccount", absent
+        assert got["missing_inputs"] == [f"76.07.{absent}"], absent
+    blank = run({"1": "1920", "2": None, "5": "93", "9": "0"})
+    assert blank["value"] is None
+    assert blank["missing_inputs"] == ["76.07.2"]
+    complete = run(numbers)
+    assert complete["value"] == Decimal(1827)
+    assert complete["status"] == "computed"
+    assert complete["lease_measurement"] == "pv_hypothesis"
+    dashed = run(numbers, dashes=frozenset({"9"}))
+    assert dashed["value"] == Decimal(1827)
+    assert dashed["status"] == "computed"
+    zeros = run({"1": "0", "2": "0", "5": "0", "9": "0"})
+    assert zeros["value"] == Decimal(0)
+    assert zeros["status"] == "computed"
 
 
 def test_missing_lease_is_not_a_partial_debt_and_confirmed_zero_is():
@@ -421,6 +460,51 @@ def test_gaap_includes_operating_lease_by_default_and_reports_parts():
     )
     assert ras["rows"][0]["value"] == Decimal(22)
     assert "ФСБУ 4/2023" in ras["rows"][0]["methodology"]
+
+
+def test_excluded_operating_lease_does_not_change_status_or_sign():
+    bindings = [
+        _bind("borrowings_lt", "lt", "Long-term borrowings"),
+        _bind("borrowings_st", "st", "Short-term borrowings"),
+        _bind("finance_lease_liability", "f", "Finance lease liability"),
+        _bind("operating_lease_liability", "oq", "Operating lease liability"),
+        _bind("operating_lease_liability", "oy", "Operating lease liability", is_primary=False),
+    ]
+    facts = [
+        _fact("lt", "Y", "10"),
+        _fact("st", "Y", "5"),
+        _fact("f", "Y", "7"),
+        _fact("oq", "Y", "-3", display="(3)"),
+        _fact("oy", "Y", "9"),
+    ]
+    periods = [_period("Y")]
+    off = _debt(bindings, facts, periods, {"debt_standard": "gaap", "include_operating_lease_liability": False})
+    row = off["rows"][0]
+    assert row["status"] == "computed"
+    assert row["value"] == Decimal(22)
+    assert row["sign_anomaly"] is False
+    operating = next(item for item in row["components"] if item["role"] == "operating_lease_liability")
+    assert operating["included"] is False
+    scaled = [
+        _bind("borrowings_lt", "lt", "Long-term borrowings"),
+        _bind("borrowings_st", "st", "Short-term borrowings"),
+        _bind("finance_lease_liability", "f", "Finance lease liability"),
+        _bind("operating_lease_liability", "o", "Operating lease liability", unit="тыс. руб."),
+    ]
+    quiet = _debt(
+        scaled,
+        [_fact("lt", "Y", "10"), _fact("st", "Y", "5"), _fact("f", "Y", "7"), _fact("o", "Y", "3")],
+        periods,
+        {"debt_standard": "gaap", "include_operating_lease_liability": False},
+    )
+    assert quiet["rows"][0]["status"] == "computed"
+    assert quiet["rows"][0]["value"] == Decimal(22)
+    on = _debt(bindings, facts, periods, {"debt_standard": "gaap", "include_operating_lease_liability": True})
+    blocked = on["rows"][0]
+    assert blocked["value"] is None
+    assert blocked["status"] == "not_computed"
+    assert blocked["reason"] == "source_conflict"
+    assert blocked["sign_anomaly"] is True
 
 
 def test_total_borrowings_row_is_used_only_without_the_lines():

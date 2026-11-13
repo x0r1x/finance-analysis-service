@@ -19,6 +19,9 @@ _METHODOLOGY = {
 }
 _FORM_CODES = frozenset({"1400", "1410", "1500", "1510", "1520", "510", "610"})
 _BOUND = frozenset({"bound", "bound_with_warning"})
+# Гипотеза 1С требует все четыре субсчёта. Отсутствующий не заменяется нулём: .2 и .9 тоже обязательны.
+_REQUIRED_SUBACCOUNTS = ("1", "2", "5", "9")
+_DASH = frozenset({"-", "—", "–", "−"})
 
 
 def debt_standard_error(value) -> str | None:
@@ -128,9 +131,13 @@ def _one_period(period: dict, periods: list[dict], facts: list[dict], bindings: 
     if lease_part.get("parts"):
         components.extend(lease_part["parts"])
     elif lease_part:
-        components.append({key: value for key, value in lease_part.items() if key != "conflict"})
+        components.append(
+            {key: value for key, value in lease_part.items() if key not in {"conflict", "missing_subaccounts"}}
+        )
 
     engaged = form or any(item.get("value") is not None for item in components) or inferred
+    if lease_part.get("missing_subaccounts"):
+        return _row(period, None, "not_computed", "missing_subaccount", missing, standard, flag, components, inferred, anomaly, lease_part)
     if _mixed_units(components):
         return _row(period, None, "not_computed", "unit_unknown", missing, standard, flag, components, inferred, anomaly, lease_part)
     if conflict:
@@ -170,6 +177,8 @@ def _row(period, value, status, reason, missing, standard, flag, components, inf
 def _message(status: str, reason: str | None, missing: list[str]) -> str:
     if reason == "source_conflict":
         return "На одну дату квартал и год дают разные числа. Долг не выпущен."
+    if reason == "missing_subaccount":
+        return "Нет субсчетов гипотезы 1С: " + ", ".join(missing) + ". Отсутствие в книге не считается нулём."
     if missing:
         return "Не хватает компонента: " + ", ".join(missing)
     return status
@@ -259,7 +268,17 @@ def _lease(period, periods, facts, bindings, standard: str, flag: bool):
             part = {"role": "lease_liability", "value": "0", "source": "confirmed_zero", "measurement": None, "cells": [], "scaled": False}
             return Decimal(0), [], False, part
         return None, ["lease_liability"], False, {}
-    value, measurement, source, anomaly, conflict, cells = _lease_amount(period, periods, facts, rows)
+    value, measurement, source, anomaly, conflict, cells, missing_subs = _lease_amount(period, periods, facts, rows)
+    if missing_subs:
+        return None, missing_subs, anomaly, {
+            "role": "lease_liability",
+            "value": None,
+            "source": source,
+            "measurement": measurement,
+            "cells": cells,
+            "scaled": False,
+            "missing_subaccounts": missing_subs,
+        }
     if conflict:
         return None, [], anomaly, {"role": "lease_liability", "value": None, "source": source, "conflict": True, "cells": cells}
     if value is None:
@@ -276,30 +295,23 @@ def _lease(period, periods, facts, bindings, standard: str, flag: bool):
 
 
 def _gaap_lease(period, periods, facts, bindings, flag: bool):
-    finance, fin_problem, fin_flag, fin_cells = _stock(period, periods, facts, _bound(bindings, "finance_lease_liability"))
-    operating, op_problem, op_flag, op_cells = _stock(period, periods, facts, _bound(bindings, "operating_lease_liability"))
+    finance_rows = _bound(bindings, "finance_lease_liability")
+    operating_rows = _bound(bindings, "operating_lease_liability")
+    finance, fin_problem, fin_flag, fin_cells = _stock(period, periods, facts, finance_rows)
+    operating, op_problem, op_flag, op_cells = _stock(period, periods, facts, operating_rows)
     missing = []
     if finance is None:
         missing.append("finance_lease_liability")
-    if flag and operating is None:
+    # Выключенная операционная аренда остаётся в разборе и не меняет статус, конфликт и знак.
+    if flag and op_problem != "conflict" and operating is None:
         missing.append("operating_lease_liability")
-    conflict = fin_problem == "conflict" or op_problem == "conflict"
+    conflict = fin_problem == "conflict" or (flag and op_problem == "conflict")
+    anomaly = fin_flag or (flag and op_flag)
     amount = None
-    if not missing and not conflict:
-        amount = finance if finance is not None else Decimal(0)
+    if not missing and not conflict and finance is not None:
+        amount = finance
         if flag and operating is not None:
             amount += operating
-    part = {
-        "role": "lease_gaap",
-        "value": None if amount is None else _text(amount),
-        "source": "asc_842",
-        "measurement": None,
-        "cells": [*fin_cells, *op_cells],
-        "conflict": conflict,
-    }
-    components_note = part
-    # Отдельные части кладёт вызывающий через components только одной записью.
-    # Финансовая и операционная строки добавляются рядом в components ниже.
     extra = []
     if finance is not None:
         extra.append(
@@ -308,22 +320,30 @@ def _gaap_lease(period, periods, facts, bindings, flag: bool):
                 "value": _text(finance),
                 "source": "asc_842",
                 "cells": fin_cells,
-                "scaled": _scaled(_bound(bindings, "finance_lease_liability")),
+                "scaled": _scaled(finance_rows),
             }
         )
-    if operating is not None:
+    if operating_rows:
         extra.append(
             {
                 "role": "operating_lease_liability",
-                "value": _text(operating),
+                "value": None if operating is None else _text(operating),
                 "source": "asc_842",
                 "cells": op_cells,
                 "included": flag,
-                "scaled": _scaled(_bound(bindings, "operating_lease_liability")),
+                "scaled": _scaled(operating_rows),
             }
         )
-    components_note["parts"] = extra
-    return amount, missing, fin_flag or op_flag, components_note
+    part = {
+        "role": "lease_gaap",
+        "value": None if amount is None else _text(amount),
+        "source": "asc_842",
+        "measurement": None,
+        "cells": [*fin_cells, *op_cells] if flag else fin_cells,
+        "conflict": conflict,
+        "parts": extra,
+    }
+    return amount, missing, anomaly, part
 
 
 def _lease_amount(period, periods, facts, rows):
@@ -350,28 +370,59 @@ def _lease_amount(period, periods, facts, rows):
             return None, flagged, cells, False
         return sum(values, Decimal(0)), flagged, cells, False
 
-    if any(grouped[key] for key in ("1", "2", "5", "9")):
-        # shortcut: дебет 76.07.5 и 76.07.9 вычитается по модулю, живую книгу сверяет E1
+    if any(grouped[key] for key in _REQUIRED_SUBACCOUNTS):
+        # shortcut: дебет 76.07.5 и 76.07.9 вычитается по модулю, живую книгу сверяет E1.
+        # Все четыре субсчёта обязательны. Нет строки или нет числа — не ноль.
         pieces = {}
         cells = []
         conflict = False
-        for key in ("1", "2", "5", "9"):
+        missing = []
+        for key in _REQUIRED_SUBACCOUNTS:
+            code = f"76.07.{key}"
+            if not grouped[key]:
+                missing.append(code)
+                continue
             value, flagged, row_cells, row_conflict = take(key)
             anomaly = anomaly or flagged
             cells.extend(row_cells)
-            if row_conflict or (value is None and grouped[key]):
+            if row_conflict:
                 conflict = True
-            pieces[key] = value or Decimal(0)
+                continue
+            if value is None and _dash_zero(grouped[key], period, periods, facts):
+                value = Decimal(0)
+            if value is None:
+                missing.append(code)
+                continue
+            pieces[key] = value
+        if missing:
+            return None, "pv_hypothesis", "76", anomaly, False, cells, missing
         if conflict:
-            return None, "pv_hypothesis", "76", anomaly, True, cells
+            return None, "pv_hypothesis", "76", anomaly, True, cells, []
         amount = pieces["1"] + pieces["2"] - abs(pieces["5"]) - abs(pieces["9"])
-        return amount, "pv_hypothesis", "76", anomaly, False, cells
+        return amount, "pv_hypothesis", "76", anomaly, False, cells, []
     if grouped["total"] and grouped["part"]:
         value, flagged, cells, row_conflict = take("total")
-        return value, "as_reported", _lease_source(rows), anomaly or flagged, row_conflict, cells
+        return value, "as_reported", _lease_source(rows), anomaly or flagged, row_conflict, cells, []
     bucket = "part" if grouped["part"] else "total"
     value, flagged, cells, row_conflict = take(bucket)
-    return value, "as_reported", _lease_source(rows), anomaly or flagged, row_conflict, cells
+    return value, "as_reported", _lease_source(rows), anomaly or flagged, row_conflict, cells, []
+
+
+def _dash_zero(rows: list[dict], period: dict, periods: list[dict], facts: list[dict]) -> bool:
+    """Прочерк в существующей ячейке — подтверждённый ноль, не пропуск строки."""
+
+    end = period.get("period_end")
+    for row in rows:
+        for fact in facts:
+            if fact.get("row_key") != row.get("row_key"):
+                continue
+            if not _same_date(fact, period, periods, end):
+                continue
+            if _figure(fact) is not None:
+                continue
+            if str(fact.get("display") or "").strip() in _DASH:
+                return True
+    return False
 
 
 def _lease_kind(row: dict) -> str:
@@ -449,7 +500,7 @@ def _mixed_units(components: list[dict]) -> bool:
     flags = [
         part["scaled"]
         for part in components
-        if "scaled" in part and part.get("source") not in {"inferred_zero", "confirmed_zero"}
+        if "scaled" in part and part.get("included", True) is not False and part.get("source") not in {"inferred_zero", "confirmed_zero"}
     ]
     return bool(flags) and any(flags) and not all(flags)
 
