@@ -829,7 +829,15 @@ def _lease_terms(primaries: dict) -> tuple[list[str], list[str], dict | None]:
 
 _STATEMENT = frozenset({"ras", "ifrs"})
 _RAS_INTEREST = frozenset({"ф.2 (2330)", "ф.2 (070)"})
+_LEASE_STANDARD = {
+    "ifrs16": "ifrs16",
+    "ifrs_16": "ifrs16",
+    "fsbu25": "fsbu25",
+    "fsbu_25": "fsbu25",
+    "operating": "operating",
+}
 _CAPITAL_LEASE = frozenset({"ifrs16", "fsbu25"})
+_VALUE_BASIS = frozenset({"period", "ytd", "annual"})
 _DEPRECIATION_MISSING = (
     "Коэффициент не посчитан: нет амортизации из пояснений за тот же период. "
     "Строка EBITDA из модели сюда не подставляется."
@@ -851,7 +859,19 @@ _ROU_MIXED = (
     "Коэффициент не посчитан: амортизация пояснений включает право пользования, "
     "а отделить эту часть нельзя. В EBITDA по РСБУ она не входит."
 )
-_INTERNAL_ICR_NOTE = "Внутренний профиль icr.bank. Не ICR по Указанию Банка России № 6960-У."
+_ROU_UNKNOWN = (
+    "Коэффициент не посчитан: для МСФО не подтверждено, входит ли амортизация права пользования "
+    "в сумму пояснений. Нужна строка depreciation_rou или пометка includes_rou."
+)
+_ROU_MARK = "Коэффициент не посчитан: пометка includes_rou должна быть да или нет и с источником подтверждения."
+_DEP_BASIS = (
+    "Коэффициент не посчитан: у амортизации нет подтверждённой базы суммы "
+    "(value_basis: period, ytd или annual). Зерно периода книги её не заменяет."
+)
+_INTERNAL_ICR_NOTE = (
+    "Внутренний профиль icr.bank. Не ICR по Указанию Банка России № 6960-У. "
+    "Числитель — утверждённая формула этого профиля, не универсальная EBITDA по РСБУ."
+)
 
 
 def _held(reason: str, message: str) -> dict:
@@ -883,18 +903,16 @@ def _basis_conflict(kind: str, denominator: str, primaries: dict) -> bool:
     return not (denominator == "finance_costs" or (denominator == "interest" and not ras_line))
 
 
-def _standard_token(profile: dict | None) -> str:
+def _standard_token(profile: dict | None) -> str | None:
+    """Стандарт учёта аренды. База отчётности — это ebitda_definition, не это поле."""
+
     evidence = _denominator(profile) or {}
     raw = evidence.get("standard")
     if not isinstance(raw, str):
-        return ""
+        return None
     token = "".join(raw.casefold().replace("ё", "е").split()).replace("-", "_")
     token = token.replace("фсбу", "fsbu")
-    if token in {"ifrs_16", "ifrs16"}:
-        return "ifrs16"
-    if token in {"fsbu_25", "fsbu25"}:
-        return "fsbu25"
-    return token
+    return _LEASE_STANDARD.get(token)
 
 
 def _lease_double_counts(mode: str, profile: dict | None) -> bool:
@@ -902,8 +920,7 @@ def _lease_double_counts(mode: str, profile: dict | None) -> bool:
 
     if mode != "add_interest":
         return False
-    token = _standard_token(profile)
-    return token in _CAPITAL_LEASE or not token
+    return _standard_token(profile) in _CAPITAL_LEASE
 
 
 def _reported_grains(facts: list[dict], row: dict, periods: list[dict]) -> set[int]:
@@ -928,8 +945,28 @@ def _include_rou(profile: dict | None) -> bool:
     return isinstance(raw, dict) and raw.get("include_rou_depreciation") is True
 
 
-def _notes_include_rou(row: dict) -> bool:
-    return _evidence_of(row).get("includes_rou") is True
+def _notes_include_rou(row: dict) -> bool | None:
+    """True, False или None, если пометка есть, но она не bool или без источника."""
+
+    evidence = _evidence_of(row)
+    if "includes_rou" not in evidence:
+        return False
+    mark = evidence.get("includes_rou")
+    if not isinstance(mark, bool):
+        return None
+    source = evidence.get("includes_rou_source")
+    if mark and (not isinstance(source, str) or not source.strip()):
+        return None
+    return mark
+
+
+def _value_basis(row: dict) -> str | None:
+    raw = _evidence_of(row).get("value_basis")
+    if raw not in _VALUE_BASIS:
+        return None
+    if raw == "ytd" and basis_of(row)[0] != "ytd":
+        return None
+    return raw
 
 
 def _statement_terms(kind: str, primaries: dict, profile: dict | None):
@@ -937,7 +974,7 @@ def _statement_terms(kind: str, primaries: dict, profile: dict | None):
 
     Общая строка с пометкой includes_rou для РСБУ годится, только если рядом есть
     отдельная сумма depreciation_rou и её можно вычесть. Иначе отказ.
-    МСФО эту общую строку берёт целиком, а отдельную строку прибавляет, когда итог её не содержит.
+    МСФО считает, только если право пользования отдельно или итог явно помечен includes_rou.
     """
 
     profit = "profit_from_sales" if kind == "ras" else "ifrs_operating_profit"
@@ -946,8 +983,12 @@ def _statement_terms(kind: str, primaries: dict, profile: dict | None):
     if "depreciation_notes" not in primaries:
         return None, _held("depreciation_missing", _DEPRECIATION_MISSING)
     mixed = _notes_include_rou(primaries["depreciation_notes"])
+    if mixed is None:
+        return None, _held("includes_rou_invalid", _ROU_MARK)
     separate = "depreciation_rou" in primaries
     allow = _include_rou(profile)
+    if kind == "ifrs" and not separate and not mixed:
+        return None, _held("depreciation_rou_completeness_unknown", _ROU_UNKNOWN)
     if kind == "ras" and mixed and not allow and not separate:
         return None, _held("depreciation_rou_unseparated", _ROU_MIXED)
     plus = [profit, "depreciation_notes"]
@@ -1030,6 +1071,8 @@ def _bank_icr(
         return _ask("icr", "lease_mode", "nominal")
     if mode not in _LEASE_MODES:
         return _ask("icr", "lease_mode", "missing")
+    if _denominator(profile) is not None and _standard_token(profile) is None:
+        return _ask("icr", "lease_standard", "unknown")
     primaries = _primaries(bindings, absent)
     terms = None
     if stated:
@@ -1051,13 +1094,20 @@ def _bank_icr(
         if _lease_double_counts(mode, profile):
             return _held("lease_ebitda_double_count", _LEASE_DOUBLE)
         dep_names = [name for name in (*plus, *minus) if name.startswith("depreciation_")]
-        dep_grains = [_reported_grains(facts, primaries[name], periods) for name in dep_names]
-        for name, grains in zip(dep_names, dep_grains, strict=True):
-            if grains:
+        dep_grains = []
+        for name in dep_names:
+            basis = _value_basis(primaries[name])
+            if basis is None:
+                return _held("depreciation_basis_unknown", _DEP_BASIS)
+            if basis == "annual":
+                dep_grains.append({12})
                 continue
-            if name == "depreciation_rou":
-                return _held("depreciation_rou_unseparated", _ROU_MIXED)
-            return _held("depreciation_missing", _DEPRECIATION_MISSING)
+            grains = _reported_grains(facts, primaries[name], periods)
+            if not grains:
+                if name == "depreciation_rou":
+                    return _held("depreciation_rou_unseparated", _ROU_MIXED)
+                return _held("depreciation_missing", _DEPRECIATION_MISSING)
+            dep_grains.append(grains)
     if mode == "in_interest":
         blocked_mode = _require_interest_expense(profile, primaries, periods, formula.denominator.plus[0])
         if blocked_mode:

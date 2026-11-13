@@ -7,8 +7,14 @@ import json
 from datetime import UTC, datetime
 
 from finance_analysis.application.keys import log_key
+from finance_analysis.domain.binding_evidence import depreciation_evidence_error
 from finance_analysis.domain.book import Actor
-from finance_analysis.domain.errors import AlreadyExists, BindingConflict, NotFound
+from finance_analysis.domain.errors import (
+    AlreadyExists,
+    BindingConflict,
+    InvalidArgument,
+    NotFound,
+)
 from finance_analysis.domain.mapping import operating_profit_stamp
 from finance_analysis.domain.state import fold
 
@@ -96,12 +102,14 @@ class Journal:
         value,
         request_id: str,
         meaning: str | None = None,
+        evidence: dict | None = None,
     ) -> dict | None:
         if request_id and request_id in self._requests.get(job_id, {}):
             found = self._requests[job_id][request_id]
             if _same_meaning(found, meaning):
                 return found
-        canon = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        body = value if evidence is None else {"value": value, "evidence": evidence}
+        canon = json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
         found = self._values.get(job_id, {}).get((target, event_type, canon))
         if found is None:
             return None
@@ -152,6 +160,7 @@ class Journal:
         binding_key: str | None = None,
         supersedes: dict | None = None,
         question_id: str | None = None,
+        evidence: dict | None = None,
     ) -> tuple[dict, bool]:
         """Проверка дубля и запись под одним замком. Второй элемент — duplicate."""
 
@@ -159,6 +168,10 @@ class Journal:
             while True:
                 await self._sync(job_id)
                 meaning = operating_profit_stamp(event_type, value)
+                if evidence is not None and event_type in {"concept.set", "concept.confirmed"} and isinstance(value, str):
+                    problem = depreciation_evidence_error(value, evidence)
+                    if problem:
+                        raise InvalidArgument(problem)
                 existing = self._duplicate_locked(
                     job_id,
                     target=target,
@@ -166,6 +179,7 @@ class Journal:
                     value=value,
                     request_id=request_id,
                     meaning=meaning,
+                    evidence=evidence,
                 )
                 if existing is not None:
                     return existing, True
@@ -183,6 +197,7 @@ class Journal:
                         supersedes=supersedes,
                         question_id=question_id,
                         meaning=meaning,
+                        evidence=evidence,
                     )
                 except AlreadyExists:
                     self._last[job_id] = 0
@@ -205,6 +220,7 @@ class Journal:
         supersedes: dict | None = None,
         question_id: str | None = None,
         meaning: str | None = None,
+        evidence: dict | None = None,
     ) -> dict:
         actual = self._keys.get(job_id, {}).get(_slot(event_type, target))
         if actual != expected_seq:
@@ -233,6 +249,8 @@ class Journal:
             event["question_id"] = question_id
         if meaning:
             event["meaning"] = meaning
+        if evidence is not None:
+            event["evidence"] = evidence
         await self.store.put_if_absent(
             log_key(job_id, seq),
             json.dumps(event, ensure_ascii=False).encode(),

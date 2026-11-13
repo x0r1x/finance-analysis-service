@@ -1,7 +1,7 @@
 concept: depreciation_notes
 pref:
-  en: "Depreciation in the annual notes"
-  ru: "Амортизация в пояснениях"
+  en: "Depreciation and amortisation of PPE and intangibles"
+  ru: "Амортизация основных средств и НМА"
 alt:
   ru:
     - "5640"
@@ -9,5 +9,5 @@ alt:
     - "Амортизация на конец года (заполняется только 4 кв.)"
     - "Амортизация за соответствующий последний отчетный год"
 definition:
-  en: "Depreciation of PPE and intangibles from the notes, line 5640 or form 5 line 740, under FSBU 6/2020 and FSBU 14/2022. Right-of-use depreciation is depreciation_rou, not this line. A total that also contains it is marked includes_rou on the binding. icr.bank adds the amount as reported when its period grain matches the EBITDA window. An annual figure is not spread across quarters."
-  ru: "Амортизация основных средств и НМА из пояснений, строка 5640 или ф.5 (740), по ФСБУ 6/2020 и ФСБУ 14/2022. Амортизация права пользования — это depreciation_rou, не эта строка. Итог, который её тоже содержит, помечается includes_rou на привязке. Профиль icr.bank прибавляет сумму как в книге, когда зерно периода совпадает с окном EBITDA. Годовое значение на кварталы не раскладывается."
+  en: "Depreciation and amortisation of PPE and intangibles under FSBU 6/2020 and FSBU 14/2022. The notes, line 5640 or form 5 line 740, are where it is disclosed. The amount's own basis is value_basis on the binding (period, ytd or annual), not the book period grain. includes_rou says whether the amount also contains right-of-use depreciation. icr.bank does not spread an annual amount across quarters."
+  ru: "Амортизация основных средств и НМА по ФСБУ 6/2020 и ФСБУ 14/2022. Пояснения, строка 5640 или ф.5 (740), — это источник раскрытия, не период суммы. Своя база суммы — value_basis на привязке (period, ytd или annual), не зерно периода книги. includes_rou говорит, входит ли в сумму амортизация права пользования. Профиль icr.bank годовое значение на кварталы не раскладывает."
