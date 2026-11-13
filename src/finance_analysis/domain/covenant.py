@@ -1373,6 +1373,17 @@ def select_ratio(
             ),
         )
     named = _named_variant(profile)
+    if metric == "dscr" and (named or variant) == "housing":
+        from finance_analysis.domain.housing_dscr import housing_dscr
+
+        return housing_dscr(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common.get("sign_convention") or "outflow_negative",
+            absent=common.get("absent") or frozenset(),
+            profile=profile,
+        )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         return covenant_dscr(
             facts=common["facts"],

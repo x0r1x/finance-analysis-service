@@ -46,8 +46,8 @@
       "use": "not_applicable"
     },
     "development_escrow": {
-      "use": "optional",
-      "variant": "pf"
+      "use": "required",
+      "variant": "housing"
     },
     "investment_project": {
       "use": "not_applicable"

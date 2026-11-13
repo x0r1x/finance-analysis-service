@@ -33,6 +33,11 @@ metrics:
         numerator: {plus: [operating_cash_flow, interest], minus: [capex]}
         denominator: {plus: [interest, principal]}
         window: LTM
+      housing:
+        definition: "Жилищное строительство: (сальдо текущих + сальдо инвестиционных + поступления по финансовой деятельности) / (погашение и уплаченные проценты несубординированных кредитов) за интервал. Пустая ячейка не заменяется нулём. Вариант pf этот состав не использует."
+        numerator: {plus: [cfo_statement, cfi_statement, financing_inflows]}
+        denominator: {plus: [senior_principal, senior_interest_paid]}
+        window: period
   icr:
     definition: "ICR: EBITDA или EBIT, делённые на проценты. Если в книге один числитель, частное считается по нему. Если оба, Python берёт EBITDA и ставит предупреждение icr_numerator."
     numerator: [ebitda, ebit]

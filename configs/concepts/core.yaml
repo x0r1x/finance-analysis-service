@@ -49,6 +49,29 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  cfo_statement:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  cfi_statement:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  financing_inflows:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: inflow
+  senior_principal:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  senior_interest_paid:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
   debt_outstanding:
     semantic_role: measure
     dimension: money

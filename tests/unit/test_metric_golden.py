@@ -37,7 +37,7 @@ DSCR_USE = {
     "bank_leasing": ("not_applicable", None),
     "corporate": ("optional", "corporate_covenant"),
     "dcf_valuation": ("not_applicable", None),
-    "development_escrow": ("optional", "pf"),
+    "development_escrow": ("required", "housing"),
     "investment_project": ("not_applicable", None),
     "lbo_ma": ("not_applicable", None),
     "other": ("optional", None),

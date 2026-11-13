@@ -1,0 +1,14 @@
+concept: senior_principal
+pref:
+  en: "Senior principal repayment"
+  ru: "Погашение основного долга по несубординированным кредитам"
+negative:
+  - "субординированный"
+  - "заем акционера"
+  - "заем участника"
+  - "займ учредителя"
+  - "subordinated"
+  - "shareholder loan"
+definition:
+  en: "Cash principal repaid on unsubordinated loans. A shareholder loan is not this row."
+  ru: "Денежное погашение основного долга по несубординированным кредитам и займам. Заём участника, акционера или учредителя не входит."

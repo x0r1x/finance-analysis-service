@@ -59,6 +59,10 @@ def render_markdown(result: dict) -> str:
             if not row.get("methodology"):
                 continue
             lines.append(f"- methodology: {_show(row.get('methodology'))}")
+            if row.get("variant"):
+                lines.append(f"- variant: {_show(row.get('variant'))}")
+            if row.get("composition"):
+                lines.append(f"- composition: {_show(row.get('composition'))}")
             lines.append(f"- standard: {_show(row.get('standard'))}")
             lines.append(f"- lease_source: {_show(row.get('lease_source'))}")
             if row.get("components"):
