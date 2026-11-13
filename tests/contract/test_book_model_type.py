@@ -25,8 +25,8 @@ RVI = job_id("rvi")
 # forecast_energy_tariff с разной основой цены. Обе строки bound, ни одна не основная.
 # Mid case, Low case и Applied (real terms) под заголовком
 # Electricity price forecast (real terms) связаны по заголовку и тоже не основные.
-# Было 5/8/216. Стало 10 связанных, 6 неоднозначных и 213 неизвестных.
-# Числа сверены с живой книгой и ждут подтверждения.
+# Ожидаемый инвариант: Packt 9/2/82, RVI 10/6/213.
+# 5/6/218 — счёт RVI на main после решения 42, не текущий инвариант.
 _COUNTS = {
     "packt": {"bound": 9, "ambiguous": 2, "unknown": 82, "not_applicable": 4},
     "rvi": {"bound": 10, "ambiguous": 6, "unknown": 213, "not_applicable": 9},
