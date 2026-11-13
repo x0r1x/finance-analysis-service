@@ -55,6 +55,7 @@ async def test_capabilities_health_metrics(app):
         "net_debt_ebitda",
         "total_debt",
         "escrow_coverage",
+        "escrow_blended_rate",
         "npv",
         "irr",
         "fcff",

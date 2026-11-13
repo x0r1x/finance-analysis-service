@@ -1,0 +1,10 @@
+concept: guaranteed_funds
+pref:
+  en: "Other money guaranteed for the target loan"
+  ru: "Иные деньги, гарантированно доступные для целевого кредита"
+negative:
+  - "эскроу"
+  - "escrow"
+definition:
+  en: "Other money guaranteed to be available for the target loan under Bank of Russia Regulation 590-P, appendix 5. An escrow balance is not this stock."
+  ru: "Иные деньги, гарантированно доступные для обслуживания целевого кредита, по приложению 5 к 590-П. Остаток эскроу этим запасом не является."

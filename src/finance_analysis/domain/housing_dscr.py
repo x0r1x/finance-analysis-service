@@ -43,6 +43,23 @@ def interest_addback_error(value) -> str | None:
     return "interest_addback: true или false"
 
 
+def profile_flag_error(name: str, value) -> str | None:
+    if value is True or value is False:
+        return None
+    return f"{name}: true или false"
+
+
+def _named_flag(profile: dict | None, name: str) -> bool | None:
+    """Выключен, когда поля нет. Чужое значение не читается как ложь."""
+
+    if profile is None or name not in profile or profile.get(name) is None:
+        return False
+    raw = profile.get(name)
+    if raw is True or raw is False:
+        return raw
+    return None
+
+
 def interest_addback(profile: dict | None) -> bool | None:
     """Выключен, когда поля нет. Чужое значение не читается как ложь."""
 
@@ -64,7 +81,16 @@ def housing_dscr(
     profile: dict | None = None,
 ) -> dict:
     flag = interest_addback(profile)
+    fees = _named_flag(profile, "include_senior_fees")
+    swaps = _named_flag(profile, "include_senior_swaps")
+    broken = None
     if flag is None:
+        broken = "interest_addback: true или false"
+    elif fees is None:
+        broken = "include_senior_fees: true или false"
+    elif swaps is None:
+        broken = "include_senior_swaps: true или false"
+    if broken:
         return {
             "metric": "dscr",
             "variant": "housing",
@@ -72,7 +98,7 @@ def housing_dscr(
             "needs_input": [],
             "warnings": [],
             "status": "not_computed",
-            "message": "interest_addback: true или false",
+            "message": broken,
             "definition_source": "housing",
             "methodology": METHODOLOGY,
             "composition": COMPOSITION,
@@ -90,6 +116,8 @@ def housing_dscr(
             sign_convention,
             absent,
             flag,
+            fees is True,
+            swaps is True,
         )
         rows.append(row)
         warnings.extend(notes)
@@ -112,7 +140,7 @@ def housing_dscr(
     }
 
 
-def _period_row(period, facts, bindings, aligned, convention, absent, addback: bool):
+def _period_row(period, facts, bindings, aligned, convention, absent, addback: bool, fees: bool = False, swaps: bool = False):
     own = (period.get("axis_id"), period.get("period_id"))
     key = aligned.get(own, own)
     missing: list[str] = []
@@ -148,11 +176,26 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         notes.append("interest_inside_numerator")
     if addback_reason:
         notes.append(addback_reason)
+    split: dict = {}
     denominator, denom_missing, denom_reason, denom_cells = _denominator(
-        bindings, facts, key, aligned, convention, absent
+        bindings, facts, key, aligned, convention, absent, split
     )
     missing.extend(denom_missing)
     cells.extend(denom_cells)
+    for concept, enabled in (("senior_fees", fees), ("senior_swaps", swaps)):
+        if not enabled:
+            continue
+        extra, problem, extra_cells = _attributed_cash(
+            bindings, facts, key, aligned, convention, absent, concept
+        )
+        cells.extend(extra_cells)
+        if problem == "missing":
+            missing.append(concept)
+        elif problem:
+            denom_reason = denom_reason or problem
+        elif extra is not None and denominator is not None:
+            denominator += extra
+            components[concept] = format(extra, "f")
     if _draw_and_repay(bindings, facts, key, aligned, absent, denominator):
         notes.append("same_interval_draw_and_repay")
     if _escrow_outside(bindings, facts, key, aligned, absent, components.get("cfo_statement")):
@@ -174,6 +217,16 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         status, reason = "computed", None
     if denominator is not None:
         components["denominator"] = format(denominator, "f")
+    for name, amount in split.items():
+        components[name] = format(amount, "f")
+    den_names = ["senior_principal", "senior_interest_paid"]
+    if fees:
+        den_names.append("senior_fees")
+    if swaps:
+        den_names.append("senior_swaps")
+    composition = COMPOSITION
+    if fees or swaps:
+        composition = "cfo_statement + cfi_statement + financing_inflows / " + " + ".join(den_names)
     components["cells"] = cells
     _compare_book(
         notes,
@@ -195,7 +248,7 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         "reason": reason,
         "missing": missing,
         "methodology": METHODOLOGY,
-        "composition": COMPOSITION,
+        "composition": composition,
         "standard": "ОДДС",
         "components": components,
         "inputs": [*_NUMERATOR, "senior_principal", "senior_interest_paid"],
@@ -204,7 +257,7 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
     return row, [{"code": code, "params": {"period_id": period.get("period_id")}} for code in notes]
 
 
-def _denominator(bindings, facts, key, aligned, convention, absent):
+def _denominator(bindings, facts, key, aligned, convention, absent, split=None):
     debt = [row for concept in _DEBT for row in _bound(bindings, concept, absent)]
     caps = [row for row in debt if _is_cap(row) and _seniority(row) == "senior" and not _mixed(row)]
     senior = [
@@ -235,6 +288,9 @@ def _denominator(bindings, facts, key, aligned, convention, absent):
             missing.append("senior_interest_paid")
         if missing or principal is None or interest is None:
             return None, missing or ["senior_interest_paid"], None, cells
+        if split is not None:
+            split["senior_principal"] = principal
+            split["senior_interest_paid"] = interest
         return principal + interest, [], None, cells
     if mixed and not totals:
         return None, [], "seniority_unsplit", []
@@ -483,6 +539,21 @@ def _cash_interest(bindings, facts, key, aligned, convention, absent):
 
 def _senior_cash(row: dict) -> bool:
     return bool(row.get("is_primary")) and _seniority(row) == "senior" and not _mixed(row) and not _is_cap(row)
+
+
+def _attributed_cash(bindings, facts, key, aligned, convention, absent, concept):
+    """Старшая кассовая сумма. Младшая строка не доказывает, что старшей суммы нет."""
+
+    rows = _bound(bindings, concept, absent)
+    if any(_mixed(row) for row in rows):
+        return None, "seniority_unsplit", []
+    senior = [row for row in rows if _seniority(row) == "senior"]
+    if not senior:
+        return None, "missing", []
+    amount, cells, hole = _sum_rows(senior, facts, key, aligned, True, convention)
+    if hole or amount is None:
+        return None, "missing", cells
+    return amount, None, cells
 
 
 def _draw_and_repay(bindings, facts, key, aligned, absent, denominator) -> bool:

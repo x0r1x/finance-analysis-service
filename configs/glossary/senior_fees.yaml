@@ -1,0 +1,14 @@
+concept: senior_fees
+pref:
+  en: "Senior loan fees paid"
+  ru: "Комиссии по несубординированным кредитам"
+negative:
+  - "субординированный"
+  - "заем акционера"
+  - "заем участника"
+  - "займ учредителя"
+  - "subordinated"
+  - "shareholder loan"
+definition:
+  en: "Cash fees on unsubordinated loans. A missing cell is not zero, and a junior fee does not prove the senior fee."
+  ru: "Комиссии, уплаченные деньгами по несубординированным кредитам. Пустая ячейка не ноль. Комиссия младшего долга не доказывает сумму старшей."

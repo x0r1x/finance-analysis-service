@@ -276,7 +276,7 @@ Markdown и json показывают формулу строки, три сла
 
 ## Бэклог
 
-В эту доработку не входит.
+В эту доработку не входит. Продолжение: `docs/analysis/dscr-backlog-plan.ru.md` и `docs/analysis/dscr-backlog-methodology.ru.md`.
 
 - LLCR по приложению 5 к 590-П и по стандарту ДОМ.РФ. В сервисе LLCR другой: дисконт CFADS на остаток долга, и для `development_escrow` он `not_applicable`.
 - Шкала ставки от покрытия эскроу. Эффективная ставка остаётся строкой книги.

@@ -419,7 +419,7 @@ def test_lease_portfolio_and_signal_scores_only_the_full_set():
 
     Причина unknown, метки пустые. Проценты с основным долгом сами тип не дают.
     Пять понятий держат score 1.0 только у bank_leasing. Вариантов нет.
-    Четырнадцать метрик каталога неприменимы, открытых вопросов нет.
+    Пятнадцать метрик каталога неприменимы, открытых вопросов нет.
     При нулевом score лидер остаётся bank_leasing: равенство режется по id.
     """
 
@@ -434,7 +434,7 @@ def test_lease_portfolio_and_signal_scores_only_the_full_set():
     assert item.groups == ()
     assert catalog.types["bank_leasing"].variants == {}
     metrics = catalog.types["bank_leasing"].metrics
-    assert len(RATIO_METRICS) == 14
+    assert len(RATIO_METRICS) == 15
     assert set(metrics) == set(RATIO_METRICS)
     assert set(metrics.values()) == {"not_applicable"}
     for metric in RATIO_METRICS:

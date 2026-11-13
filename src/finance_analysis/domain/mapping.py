@@ -70,7 +70,16 @@ _STATEMENT_CODE = {
 _SENIOR_CASH_CODE = {"4224": "senior_interest_paid", "4123": "senior_interest_paid", "4323": "senior_principal"}
 _SENIOR_MARKS = ("несубордин", "старш", "senior")
 _JUNIOR_MARKS = ("субордин", "акционер", "участник", "учредител", "shareholder", "subordinated")
-_MULTI_PRIMARY = frozenset({"lease_liability", "financing_inflows", "senior_principal", "senior_interest_paid"})
+_MULTI_PRIMARY = frozenset(
+    {
+        "lease_liability",
+        "financing_inflows",
+        "senior_principal",
+        "senior_interest_paid",
+        "senior_fees",
+        "senior_swaps",
+    }
+)
 
 
 def marked_line_code(value: object) -> str | None:
