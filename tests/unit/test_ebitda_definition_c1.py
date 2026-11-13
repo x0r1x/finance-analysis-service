@@ -335,6 +335,50 @@ def test_changing_the_operating_profit_binding_clears_the_review():
     assert events[0]["value"] == "operating_profit"
 
 
+def test_later_concept_set_beats_an_earlier_confirm():
+    """seq3 set не должен проигрывать confirm на seq2 из-за порядка ключей fold."""
+
+    from finance_analysis.application.project import _decision_maps
+
+    glossary = load_catalog()
+    events = [
+        _old_operating_profit("row"),
+        {**_old_operating_profit("row"), "seq": 2, "type": "concept.confirmed", "request_id": "confirm"},
+        {
+            **_old_operating_profit("row"),
+            "seq": 3,
+            "type": "concept.set",
+            "value": "profit_from_sales",
+            "request_id": "change",
+        },
+    ]
+    item = assign_rows([_row("row", "Строка без метки")], events, glossary)["row"]
+    assert item.concept == "profit_from_sales"
+    assert "needs_review" not in item.evidence
+    assert _decision_maps(events)[1]["row"] == "profit_from_sales"
+
+
+def test_later_confirm_beats_an_earlier_concept_set():
+    from finance_analysis.application.project import _decision_maps
+
+    glossary = load_catalog()
+    events = [
+        _old_operating_profit("row"),
+        {**_old_operating_profit("row"), "seq": 2, "value": "profit_from_sales", "request_id": "change"},
+        {
+            **_old_operating_profit("row"),
+            "seq": 3,
+            "type": "concept.confirmed",
+            "value": "profit_from_sales",
+            "request_id": "confirm-other",
+        },
+    ]
+    item = assign_rows([_row("row", "Строка без метки")], events, glossary)["row"]
+    assert item.concept == "profit_from_sales"
+    assert "needs_review" not in item.evidence
+    assert _decision_maps(events)[1]["row"] == "profit_from_sales"
+
+
 def test_new_operating_profit_binding_is_not_flagged(tmp_path):
     from finance_analysis.adapters.storage.store import LocalStore
     from finance_analysis.application.journal import Journal

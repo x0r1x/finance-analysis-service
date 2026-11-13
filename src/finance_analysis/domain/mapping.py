@@ -1135,9 +1135,9 @@ def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str], 
     ignored: set[str] = set()
     absent: set[str] = set()
     accepted: dict[str, str] = {}
-    for _target, event in fold(events).items():
+    for event in sorted(fold(events).values(), key=lambda item: int(item["seq"])):
         kind = event.get("type")
-        binding = str(event.get("binding_key") or _target)
+        binding = str(event.get("binding_key") or event.get("target") or "")
         value = event.get("value")
         if kind in _HUMAN and isinstance(value, str) and binding != "book":
             human[binding] = value
