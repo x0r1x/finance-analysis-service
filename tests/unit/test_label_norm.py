@@ -149,7 +149,7 @@ def test_profile_does_not_take_another_concepts_key():
     ("concept", "label"),
     [
         ("interest", "Проценты к уплате"),
-        ("interest", "Финансовые расходы"),
+        ("finance_costs", "Финансовые расходы"),
         ("interest", "Процентные расходы"),
         ("interest", "Debt interest"),
         ("principal", "Погашение кредитов и займов"),
@@ -198,10 +198,12 @@ def test_instruction_and_parenthetical_tail_match_more_weakly():
     package = load_catalog()
     raw = "Финансовые расходы (процентные расходы), укажите с '+'"
     hit, strength = package.resolve_match(raw)
-    assert hit.concept == "interest"
+    assert hit.concept == "finance_costs"
     assert strength == "exact"
-    assert package.resolve_match("Финансовые расходы")[1] == "exact"
-    assert package.resolve_match("Финансовые расходы, введите сумму")[1] == "exact"
+    hit, strength = package.resolve_match("Финансовые расходы")
+    assert hit.concept == "finance_costs" and strength == "exact"
+    hit, strength = package.resolve_match("Финансовые расходы, введите сумму")
+    assert hit.concept == "finance_costs" and strength == "exact"
     assert package.resolve_match("Операционная прибыль (убыток)")[1] == "exact"
 
 

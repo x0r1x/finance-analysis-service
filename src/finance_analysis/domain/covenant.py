@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from finance_analysis.domain.cover_metrics import (
@@ -16,6 +18,7 @@ from finance_analysis.domain.cover_metrics import (
     grain_months,
 )
 from finance_analysis.domain.free_cash_flow import free_cash_flow
+from finance_analysis.domain.mapping import marked_line_code
 from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
@@ -30,13 +33,14 @@ from finance_analysis.domain.metrics import (
     aligned_keys,
     confirm_paid_interest,
     coverage_ratio,
+    ebitda_definition,
     interest_choice,
-    recipe_block,
+    methodology_block,
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
 from finance_analysis.domain.net_cash_flow import net_cash_flow
-from finance_analysis.domain.period_basis import basis_of
+from finance_analysis.domain.period_basis import _as_date, basis_of
 from finance_analysis.domain.returns import project_return
 
 DEFAULT_DEFINITION_TEXT = "определение по умолчанию, не из договора"
@@ -235,7 +239,7 @@ def composed_ratio(
     absent: frozenset[str] = frozenset(),
     profile: dict | None = None,
 ) -> dict:
-    blocked = recipe_block(
+    blocked = methodology_block(
         profile,
         bindings,
         metric=metric,
@@ -388,6 +392,934 @@ def _rolls(primaries: dict, formula: Composed) -> bool:
     return all(_flow_basis(primaries[name]) == "period" for name in denominator)
 
 
+_LEASE_MODES = frozenset({"in_interest", "add_interest", "nominal"})
+_DENOMINATOR_FIELDS = ("source", "binding", "axis", "period", "standard", "method")
+_DENOMINATOR_METHODS = frozenset({"interest_expense", "capitalised", "interest_paid"})
+_QUARTER_LABEL = "за квартал, справочно"
+
+
+def icr_definition_error(value) -> str | None:
+    """None — профиль можно сохранить. Чисел и чужих полей нет."""
+
+    if not isinstance(value, dict) or _number(value):
+        return "icr_definition: variant и lease_mode, без чисел"
+    if set(value) - {"variant", "lease_mode", "denominator", "finance_costs_confirmed", "include_rou_depreciation"}:
+        return "icr_definition: только variant, lease_mode, denominator, finance_costs_confirmed и include_rou_depreciation"
+    if "variant" in value and value.get("variant") != "bank":
+        return "icr_definition: variant bank"
+    mode = value.get("lease_mode")
+    if mode is not None and mode not in _LEASE_MODES:
+        return "icr_definition: lease_mode in_interest, add_interest или nominal"
+    if "finance_costs_confirmed" in value and not isinstance(value.get("finance_costs_confirmed"), bool):
+        return "icr_definition: finance_costs_confirmed — да или нет"
+    if "include_rou_depreciation" in value and not isinstance(value.get("include_rou_depreciation"), bool):
+        return "icr_definition: include_rou_depreciation — да или нет"
+    if "denominator" in value:
+        return _denominator_error(value.get("denominator"))
+    return None
+
+
+def _denominator_error(value) -> str | None:
+    if not isinstance(value, dict) or set(value) != set(_DENOMINATOR_FIELDS):
+        return "icr_definition: denominator — source, binding, axis, period, standard, method"
+    for key in ("source", "binding", "axis", "period", "standard"):
+        item = value.get(key)
+        if not isinstance(item, str) or not item.strip():
+            return "icr_definition: denominator — непустые source, binding, axis, period, standard"
+    if value.get("method") not in _DENOMINATOR_METHODS:
+        return "icr_definition: method interest_expense, capitalised или interest_paid"
+    return None
+
+
+def bank_requested(variant: str | None, profile: dict | None) -> bool:
+    """Внутренний профиль icr.bank. Сам по себе он не считается."""
+
+    raw = (profile or {}).get("icr_definition")
+    if isinstance(raw, dict) and raw.get("variant") == "bank":
+        return True
+    return variant == "bank"
+
+
+def _icr_mode(profile: dict | None) -> str | None:
+    raw = (profile or {}).get("icr_definition")
+    if not isinstance(raw, dict):
+        return None
+    mode = raw.get("lease_mode")
+    return mode if isinstance(mode, str) else None
+
+
+def _ask(metric: str, subject: str, reason: str) -> dict:
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [{"kind": "concept", "reason": reason, "subject": subject}],
+        "warnings": [],
+        "status": "needs_input",
+        "missing_inputs": [subject],
+    }
+
+
+def _sign_name(value: Decimal) -> str:
+    if value > 0:
+        return "positive"
+    if value < 0:
+        return "negative"
+    return "zero"
+
+
+_FISCAL_REASONS = frozenset({"fiscal_calendar_unknown", "fiscal_calendar_mismatch"})
+
+
+def _quarter_of(period: dict, year_end_month: int) -> int | None:
+    """Квартал финансового года: 4-й кончается в месяц закрытия, не в декабре."""
+
+    end = _as_date(period.get("period_end"))
+    if end is None:
+        return None
+    return {0: 4, 3: 1, 6: 2, 9: 3}.get((end.month - year_end_month) % 12)
+
+
+def _fiscal_year_of(period: dict, month: int, day: int) -> int | None:
+    """Год, в котором финансовый год заканчивается."""
+
+    end = _as_date(period.get("period_end"))
+    if end is None:
+        return None
+    if (end.month, end.day) <= (month, day):
+        return end.year
+    return end.year + 1
+
+
+def _same_slot(ordered: list[dict], year: int, quarter: int, month: int, day: int) -> dict | None:
+    for item in ordered:
+        if _fiscal_year_of(item, month, day) == year and _quarter_of(item, month) == quarter:
+            return item
+    return None
+
+
+def _aligned_key(period: dict, aligned: dict):
+    own = (period.get("axis_id"), period.get("period_id"))
+    return aligned.get(own, own)
+
+
+def _ytd_ltm(series: dict, period: dict, ordered: list[dict], aligned: dict):
+    """LTM = YTD + прошлый финансовый год − YTD того же квартала прошлого года.
+
+    Полный год (4-й квартал финансового года или зерно от 12 месяцев) уже равен LTM.
+    Нет конца года — причина fiscal_calendar_unknown или fiscal_calendar_mismatch.
+    """
+
+    current = series.get(_aligned_key(period, aligned))
+    if current is None:
+        return None, "needs_input"
+    calendar = _fiscal_calendar(ordered)
+    if isinstance(calendar, str):
+        return None, calendar
+    month, day = calendar
+    months = grain_months(period.get("grain"))
+    if months is not None and months >= 12:
+        return current, None
+    year = _fiscal_year_of(period, month, day)
+    quarter = _quarter_of(period, month)
+    if year is None or quarter is None:
+        return None, "fiscal_calendar_mismatch"
+    if quarter == 4:
+        return current, None
+    prior_end = _same_slot(ordered, year - 1, 4, month, day)
+    prior_same = _same_slot(ordered, year - 1, quarter, month, day)
+    if prior_end is None or prior_same is None:
+        return None, "needs_input"
+    problem = _ytd_comparable(period, prior_same, prior_end, month)
+    if problem:
+        return None, problem
+    full_year = series.get(_aligned_key(prior_end, aligned))
+    prior = series.get(_aligned_key(prior_same, aligned))
+    if full_year is None or prior is None:
+        return None, "needs_input"
+    return current + full_year - prior, None
+
+
+def _span_days(period: dict) -> int | None:
+    start = _as_date(period.get("period_start"))
+    end = _as_date(period.get("period_end"))
+    if start is None or end is None or end < start:
+        return None
+    return (end - start).days
+
+
+def _fiscal_quarter_month(year_end_month: int, quarter: int) -> int:
+    month = (year_end_month + 3 * (quarter - 4)) % 12
+    return 12 if month == 0 else month
+
+
+def _dated_quarter(period: dict):
+    months = grain_months(period.get("grain"))
+    if months != 3:
+        return None
+    start = _as_date(period.get("period_start"))
+    end = _as_date(period.get("period_end"))
+    if start is None or end is None or end < start:
+        return None
+    return start, end
+
+
+def _fiscal_calendar(ordered: list[dict]) -> tuple[int, int] | str:
+    """(месяц, день) конца финансового года либо причина, почему его нет.
+
+    Годовой период задаёт конец, если такие концы совпадают. Иначе конец — закрытие
+    четырёх смежных кварталов от самого раннего period_start на оси. Первый квартал
+    оси при этом читается как Q1: серия с середины года без годового периода от Q1
+    не отличается.
+    """
+
+    annuals = []
+    quarters = []
+    for item in ordered:
+        end = _as_date(item.get("period_end"))
+        months = grain_months(item.get("grain"))
+        if end is None or months is None:
+            continue
+        if months >= 12:
+            annuals.append((end.month, end.day))
+        elif _dated_quarter(item) is not None:
+            quarters.append(item)
+    annual_end = None
+    if annuals:
+        if len(set(annuals)) != 1:
+            return "fiscal_calendar_mismatch"
+        annual_end = annuals[0]
+    quarter_end = _quarter_year_end(quarters)
+    if isinstance(quarter_end, str):
+        return quarter_end
+    if annual_end is not None and quarter_end is not None and annual_end != quarter_end:
+        return "fiscal_calendar_mismatch"
+    found = annual_end or quarter_end
+    if found is None:
+        return "fiscal_calendar_unknown"
+    if not _quarters_on_grid(quarters, found[0]):
+        return "fiscal_calendar_mismatch"
+    return found
+
+
+def _quarter_year_end(quarters: list[dict]) -> tuple[int, int] | str | None:
+    dated = []
+    for item in quarters:
+        pair = _dated_quarter(item)
+        if pair is None:
+            return "fiscal_calendar_mismatch"
+        dated.append(pair)
+    if len(dated) < 4:
+        return None
+    dated.sort(key=lambda row: row[1])
+    anchor = min(start for start, _end in dated)
+    anchor_key = (anchor.month, anchor.day)
+    closings = []
+    for index in range(len(dated) - 3):
+        block = dated[index : index + 4]
+        if not _contiguous(block):
+            continue
+        if (block[0][0].month, block[0][0].day) != anchor_key:
+            continue
+        rolled = block[-1][1] + timedelta(days=1)
+        if (rolled.month, rolled.day) != anchor_key:
+            continue
+        closings.append((block[-1][1].month, block[-1][1].day))
+    if not closings:
+        return None
+    if len(set(closings)) != 1:
+        return "fiscal_calendar_mismatch"
+    return closings[0]
+
+
+def _contiguous(block: list[tuple]) -> bool:
+    for index in range(len(block) - 1):
+        if block[index][1] + timedelta(days=1) != block[index + 1][0]:
+            return False
+    return True
+
+
+def _quarters_on_grid(quarters: list[dict], year_end_month: int) -> bool:
+    for item in quarters:
+        if _quarter_of(item, year_end_month) is None:
+            return False
+    return True
+
+
+def _ytd_comparable(current: dict, prior_same: dict, prior_end: dict, year_end_month: int) -> str | None:
+    """None — кварталы одного финансового года сравнимы. Иначе причина needs_input.
+
+    Консолидация и учётная база в метаданных периода не лежат: их проверяет договор
+    вызова, не эта функция.
+    """
+
+    if grain_months(current.get("grain")) != grain_months(prior_same.get("grain")):
+        return "needs_input"
+    if grain_months(prior_end.get("grain")) != grain_months(current.get("grain")):
+        return "needs_input"
+    current_len = _span_days(current)
+    prior_len = _span_days(prior_same)
+    if current_len is None or prior_len is None or current_len != prior_len or _span_days(prior_end) is None:
+        return "needs_input"
+    current_end = _as_date(current.get("period_end"))
+    prior_end_date = _as_date(prior_same.get("period_end"))
+    year_end = _as_date(prior_end.get("period_end"))
+    quarter = _quarter_of(current, year_end_month)
+    if current_end is None or prior_end_date is None or year_end is None or quarter is None:
+        return "fiscal_calendar_mismatch"
+    if (current_end.month, current_end.day) != (prior_end_date.month, prior_end_date.day):
+        return "needs_input"
+    if year_end.month != year_end_month:
+        return "fiscal_calendar_mismatch"
+    if _fiscal_quarter_month(year_end_month, quarter) != current_end.month:
+        return "fiscal_calendar_mismatch"
+    return None
+
+
+def _ytd_step(series: dict, period: dict, ordered: list[dict], aligned: dict):
+    """Приращение нарастающего итога за один финансовый квартал. На 4 не умножается."""
+
+    current = series.get(_aligned_key(period, aligned))
+    calendar = _fiscal_calendar(ordered)
+    if current is None or isinstance(calendar, str):
+        return None
+    month, day = calendar
+    quarter = _quarter_of(period, month)
+    year = _fiscal_year_of(period, month, day)
+    if quarter is None or year is None:
+        return None
+    if quarter == 1:
+        return current
+    previous = _same_slot(ordered, year, quarter - 1, month, day)
+    if previous is None:
+        return None
+    prior = series.get(_aligned_key(previous, aligned))
+    if prior is None:
+        return None
+    return current - prior
+
+
+def _evidence_of(row: dict) -> dict:
+    evidence = row.get("evidence")
+    if isinstance(evidence, dict):
+        return evidence
+    raw = row.get("evidence_json")
+    if isinstance(raw, str) and raw:
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            loaded = {}
+        if isinstance(loaded, dict):
+            return loaded
+    return {}
+
+
+def _lease_scope(row: dict) -> str:
+    scope = _evidence_of(row).get("lease_scope")
+    return scope.strip() if isinstance(scope, str) else ""
+
+
+def _finance_confirmed(profile: dict | None) -> bool:
+    raw = (profile or {}).get("icr_definition")
+    return isinstance(raw, dict) and raw.get("finance_costs_confirmed") is True
+
+
+def _denominator(profile: dict | None) -> dict | None:
+    raw = (profile or {}).get("icr_definition")
+    if not isinstance(raw, dict):
+        return None
+    item = raw.get("denominator")
+    return item if isinstance(item, dict) else None
+
+
+def _require_interest_expense(profile, primaries, periods, binding_name: str) -> dict | None:
+    """Режим in_interest без состава знаменателя число не выпускает.
+
+    Процентный расход, капитализированные затраты и уплаченные проценты — три разных
+    знаменателя. Полный лизинговый платёж сюда не подставляется.
+    """
+
+    evidence = _denominator(profile)
+    if evidence is None or _denominator_error(evidence):
+        return _ask("icr", "denominator_evidence", "missing")
+    method = evidence.get("method")
+    if method == "capitalised":
+        return _ask("icr", "capitalised", "capitalised")
+    if method == "interest_paid":
+        return _ask("icr", "interest_paid", "interest_paid")
+    if method != "interest_expense":
+        return _ask("icr", "denominator_method", "missing")
+    if evidence.get("binding") != binding_name or binding_name not in primaries:
+        return _ask("icr", "denominator_evidence", "binding")
+    axis = str(evidence.get("axis") or "").strip()
+    period = str(evidence.get("period") or "").strip()
+    if axis == "each":
+        if period != "each":
+            return _ask("icr", "denominator_evidence", "axis")
+        return None
+    pairs = {(item.get("axis_id"), item.get("period_id")) for item in periods}
+    if axis not in {item[0] for item in pairs}:
+        return _ask("icr", "denominator_evidence", "axis")
+    if period != "each" and (axis, period) not in pairs:
+        return _ask("icr", "denominator_evidence", "period")
+    return None
+
+
+def _unconfirmed_proxy() -> dict:
+    warning = {"code": "finance_cost_proxy", "params": {"concept": "finance_costs"}}
+    return {
+        "metric": "icr",
+        "rows": [],
+        "needs_input": [],
+        "warnings": [warning],
+        "status": "not_computed",
+        "message": "состав финансовых расходов не подтверждён",
+    }
+
+
+def _bank_formula(primaries: dict, mode: str, profile: dict | None) -> tuple[Composed | None, list[dict], dict | None]:
+    """Знаменатель по режиму аренды. EBIT в формулу не входит. Подписи строки не вычитаются."""
+
+    warnings: list[dict] = []
+    if "interest" in primaries:
+        plus = ["interest"]
+    elif "finance_costs" in primaries:
+        if not _finance_confirmed(profile):
+            return None, [], _unconfirmed_proxy()
+        plus = ["finance_costs"]
+        warnings.append({"code": "finance_cost_proxy", "params": {"concept": "finance_costs"}})
+        minus: list[str] = []
+        if mode == "in_interest" and "lease_interest" in primaries:
+            warnings.append({"code": "lease_interest_double_count", "params": {"concept": "lease_interest"}})
+        if mode == "add_interest":
+            extra_plus, extra_minus, problem = _lease_terms(primaries)
+            if problem:
+                return None, [], problem
+            plus = [*plus, *extra_plus]
+            minus = extra_minus
+        return (
+            Composed(Side(("ebitda",), ()), Side(tuple(plus), tuple(minus)), "LTM"),
+            warnings,
+            None,
+        )
+    else:
+        return None, [], _ask("icr", "interest", "concept_unknown")
+    minus = []
+    if mode == "in_interest" and "lease_interest" in primaries:
+        warnings.append({"code": "lease_interest_double_count", "params": {"concept": "lease_interest"}})
+    if mode == "add_interest":
+        extra_plus, extra_minus, problem = _lease_terms(primaries)
+        if problem:
+            return None, [], problem
+        plus = [*plus, *extra_plus]
+        minus = extra_minus
+    return Composed(Side(("ebitda",), ()), Side(tuple(plus), tuple(minus)), "LTM"), warnings, None
+
+
+def _lease_terms(primaries: dict) -> tuple[list[str], list[str], dict | None]:
+    if "lease_interest" in primaries:
+        return ["lease_interest"], [], None
+    payments = primaries.get("lease_payments")
+    principal = primaries.get("lease_principal")
+    if payments is not None and principal is not None:
+        scope = _lease_scope(payments)
+        if not scope or scope != _lease_scope(principal):
+            return [], [], _ask("icr", "lease_scope", "scope_mismatch")
+        return ["lease_payments"], ["lease_principal"], None
+    return [], [], _ask("icr", "lease_interest", "concept_unknown")
+
+
+_STATEMENT = frozenset({"ras", "ifrs"})
+_RAS_INTEREST = frozenset({"ф.2 (2330)", "ф.2 (070)"})
+_LEASE_STANDARD = {
+    "ifrs16": "ifrs16",
+    "ifrs_16": "ifrs16",
+    "fsbu25": "fsbu25",
+    "fsbu_25": "fsbu25",
+    "operating": "operating",
+}
+_CAPITAL_LEASE = frozenset({"ifrs16", "fsbu25"})
+_VALUE_BASIS = frozenset({"period", "ytd", "annual"})
+_DEPRECIATION_MISSING = (
+    "Коэффициент не посчитан: нет амортизации из пояснений за тот же период. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
+_STATEMENT_LINE_MISSING = (
+    "Коэффициент не посчитан: нет строки прибыли отчётности для выбранной методики расчёта EBITDA. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
+_BASIS_MISMATCH = (
+    "Коэффициент не посчитан: база EBITDA не совпадает с базой знаменателя. "
+    "РСБУ ждёт строку 2330 или 070, МСФО — финансовые расходы или проценты без этих кодов."
+)
+_LEASE_DOUBLE = (
+    "Коэффициент не посчитан: методика EBITDA по IFRS 16 или ФСБУ 25 не сочетается с режимом add_interest. "
+    "Проценты по аренде уже входят в знаменатель."
+)
+_DEP_PERIOD = "Амортизация пояснений другого зерна. Годовое значение на квартальный LTM не раскладывается."
+_ROU_MIXED = (
+    "Коэффициент не посчитан: амортизация пояснений включает право пользования, "
+    "а отделить эту часть нельзя. В EBITDA по РСБУ она не входит."
+)
+_ROU_UNKNOWN = (
+    "Коэффициент не посчитан: для МСФО не подтверждено, входит ли амортизация права пользования "
+    "в сумму пояснений. Нужна строка depreciation_rou или пометка includes_rou."
+)
+_ROU_MARK = "Коэффициент не посчитан: пометка includes_rou должна быть да или нет и с источником подтверждения."
+_DEP_BASIS = (
+    "Коэффициент не посчитан: у амортизации нет подтверждённой базы суммы "
+    "(value_basis: period, ytd или annual). Зерно периода книги её не заменяет."
+)
+_INTERNAL_ICR_NOTE = (
+    "Внутренний профиль icr.bank. Не ICR по Указанию Банка России № 6960-У. "
+    "Числитель — утверждённая формула этого профиля, не универсальная EBITDA по РСБУ."
+)
+
+
+def _held(reason: str, message: str) -> dict:
+    return {
+        "metric": "icr",
+        "rows": [],
+        "needs_input": [],
+        "missing_inputs": [],
+        "warnings": [{"code": reason, "params": {"message": message}}],
+        "status": "not_computed",
+        "reason": reason,
+        "message": message,
+    }
+
+
+def _form_code(row: dict) -> str | None:
+    raw = row.get("line_code")
+    if not isinstance(raw, str) or not raw:
+        raw = _evidence_of(row).get("line_code")
+    return marked_line_code(raw)
+
+
+def _basis_conflict(kind: str, denominator: str, primaries: dict) -> bool:
+    """РСБУ — строка 2330 или 070. МСФО — финансовые расходы или проценты без этих кодов."""
+
+    ras_line = _form_code(primaries[denominator]) in _RAS_INTEREST
+    if kind == "ras":
+        return denominator != "interest" or not ras_line
+    return not (denominator == "finance_costs" or (denominator == "interest" and not ras_line))
+
+
+def _standard_token(profile: dict | None) -> str | None:
+    """Стандарт учёта аренды. База отчётности — это ebitda_definition, не это поле."""
+
+    evidence = _denominator(profile) or {}
+    raw = evidence.get("standard")
+    if not isinstance(raw, str):
+        return None
+    token = "".join(raw.casefold().replace("ё", "е").split()).replace("-", "_")
+    token = token.replace("фсбу", "fsbu")
+    return _LEASE_STANDARD.get(token)
+
+
+def _lease_double_counts(mode: str, profile: dict | None) -> bool:
+    """IFRS 16 и ФСБУ 25 уже держат проценты аренды в знаменателе. add_interest задваивает их."""
+
+    if mode != "add_interest":
+        return False
+    return _standard_token(profile) in _CAPITAL_LEASE
+
+
+def _reported_grains(facts: list[dict], row: dict, periods: list[dict]) -> set[int]:
+    row_key = row.get("row_key")
+    present = {
+        (fact.get("axis_id"), fact.get("period_id"))
+        for fact in facts
+        if fact.get("row_key") == row_key and fact.get("normalized_value") not in (None, "")
+    }
+    grains: set[int] = set()
+    for item in periods:
+        if (item.get("axis_id"), item.get("period_id")) not in present:
+            continue
+        months = grain_months(item.get("grain"))
+        if months is not None:
+            grains.add(months)
+    return grains
+
+
+def _include_rou(profile: dict | None) -> bool:
+    raw = (profile or {}).get("icr_definition")
+    return isinstance(raw, dict) and raw.get("include_rou_depreciation") is True
+
+
+def _notes_include_rou(row: dict) -> bool | None:
+    """True, False или None, если пометка есть, но она не bool или без источника."""
+
+    evidence = _evidence_of(row)
+    if "includes_rou" not in evidence:
+        return False
+    mark = evidence.get("includes_rou")
+    if not isinstance(mark, bool):
+        return None
+    source = evidence.get("includes_rou_source")
+    if mark and (not isinstance(source, str) or not source.strip()):
+        return None
+    return mark
+
+
+def _value_basis(row: dict) -> str | None:
+    raw = _evidence_of(row).get("value_basis")
+    if raw not in _VALUE_BASIS:
+        return None
+    if raw == "ytd" and basis_of(row)[0] != "ytd":
+        return None
+    return raw
+
+
+def _statement_terms(kind: str, primaries: dict, profile: dict | None):
+    """Плюс и минус числителя. Право пользования в РСБУ не входит без явного флага.
+
+    Общая строка с пометкой includes_rou для РСБУ годится, только если рядом есть
+    отдельная сумма depreciation_rou и её можно вычесть. Иначе отказ.
+    МСФО считает, только если право пользования отдельно или итог явно помечен includes_rou.
+    """
+
+    profit = "profit_from_sales" if kind == "ras" else "ifrs_operating_profit"
+    if profit not in primaries:
+        return None, _held("statement_line_missing", _STATEMENT_LINE_MISSING)
+    if "depreciation_notes" not in primaries:
+        return None, _held("depreciation_missing", _DEPRECIATION_MISSING)
+    mixed = _notes_include_rou(primaries["depreciation_notes"])
+    if mixed is None:
+        return None, _held("includes_rou_invalid", _ROU_MARK)
+    separate = "depreciation_rou" in primaries
+    allow = _include_rou(profile)
+    if kind == "ifrs" and not separate and not mixed:
+        return None, _held("depreciation_rou_completeness_unknown", _ROU_UNKNOWN)
+    if kind == "ras" and mixed and not allow and not separate:
+        return None, _held("depreciation_rou_unseparated", _ROU_MIXED)
+    plus = [profit, "depreciation_notes"]
+    minus: list[str] = []
+    if kind == "ifrs" and separate and not mixed:
+        plus.append("depreciation_rou")
+    elif kind == "ras" and mixed and not allow:
+        minus.append("depreciation_rou")
+    elif kind == "ras" and separate and allow and not mixed:
+        plus.append("depreciation_rou")
+    return (tuple(plus), tuple(minus)), None
+
+
+def _depreciation_grain_mismatch(grains: set[int], period: dict) -> bool:
+    """Год не заполняет квартальный LTM. Чужое зерно не переводится и не делится."""
+
+    months = grain_months(period.get("grain"))
+    if months is None or not grains:
+        return True
+    if months >= 12:
+        return not any(grain >= 12 for grain in grains)
+    return months not in grains
+
+
+def bank_icr(
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    profile: dict | None = None,
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+) -> dict:
+    """Внутренний профиль icr.bank. Поле regulatory_6960u всегда ложь."""
+
+    result = _bank_icr(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        profile=profile,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        absent=absent,
+    )
+    return {
+        **result,
+        "profile": "icr.bank",
+        "regulatory_6960u": False,
+        "profile_note": _INTERNAL_ICR_NOTE,
+    }
+
+
+def _bank_icr(
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    profile: dict | None = None,
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+) -> dict:
+    """Внутренний профиль icr.bank. Не ICR по 6960-У и не ковенант договора.
+
+    EBIT не подставляется. Окно LTM, квартал — только справочная строка.
+    При пометке ras числитель — прибыль от продаж плюс амортизация ОС и НМА.
+    Право пользования входит только по флагу include_rou_depreciation.
+    При пометке ifrs к операционной прибыли добавляется и амортизация права пользования.
+    """
+
+    kind = ebitda_definition(profile)
+    stated = kind in _STATEMENT
+    if not stated:
+        blocked = methodology_block(profile, bindings, metric="icr", names=("ebitda",))
+        if blocked:
+            return blocked
+    mode = _icr_mode(profile)
+    if mode == "nominal":
+        return _ask("icr", "lease_mode", "nominal")
+    if mode not in _LEASE_MODES:
+        return _ask("icr", "lease_mode", "missing")
+    if _denominator(profile) is not None and _standard_token(profile) is None:
+        return _ask("icr", "lease_standard", "unknown")
+    primaries = _primaries(bindings, absent)
+    terms = None
+    if stated:
+        terms, blocked = _statement_terms(kind, primaries, profile)
+        if blocked:
+            return blocked
+    elif "ebitda" not in primaries:
+        return _ask("icr", "ebitda", "concept_unknown")
+    formula, warnings, problem = _bank_formula(primaries, mode, profile)
+    if problem:
+        return problem
+    assert formula is not None
+    dep_grains: list[set[int]] | None = None
+    if terms:
+        plus, minus = terms
+        formula = Composed(Side(plus, minus), formula.denominator, formula.window)
+        if _basis_conflict(kind, formula.denominator.plus[0], primaries):
+            return _held("statement_basis_mismatch", _BASIS_MISMATCH)
+        if _lease_double_counts(mode, profile):
+            return _held("lease_ebitda_double_count", _LEASE_DOUBLE)
+        dep_names = [name for name in (*plus, *minus) if name.startswith("depreciation_")]
+        dep_grains = []
+        for name in dep_names:
+            basis = _value_basis(primaries[name])
+            if basis is None:
+                return _held("depreciation_basis_unknown", _DEP_BASIS)
+            if basis == "annual":
+                dep_grains.append({12})
+                continue
+            grains = _reported_grains(facts, primaries[name], periods)
+            if not grains:
+                if name == "depreciation_rou":
+                    return _held("depreciation_rou_unseparated", _ROU_MIXED)
+                return _held("depreciation_missing", _DEPRECIATION_MISSING)
+            dep_grains.append(grains)
+    if mode == "in_interest":
+        blocked_mode = _require_interest_expense(profile, primaries, periods, formula.denominator.plus[0])
+        if blocked_mode:
+            return blocked_mode
+    names = [
+        *formula.numerator.plus,
+        *formula.numerator.minus,
+        *formula.denominator.plus,
+        *formula.denominator.minus,
+    ]
+    bases = {basis_of(primaries[name])[0] for name in names}
+    if len(bases) != 1:
+        return _ask("icr", "period_basis", "basis_mismatch")
+    basis = bases.pop()
+    if basis == "unknown":
+        return _ask("icr", "period_basis", "basis_mismatch")
+    aligned = aligned_keys(periods)
+    raw = basis in {"ytd", "ltm"}
+    series = {
+        name: _sums(facts, primaries[name], aligned, None if raw else periods)
+        for name in dict.fromkeys(names)
+    }
+    home_name = formula.denominator.plus[0]
+    attested_axis = None
+    attested_period = None
+    if mode == "in_interest":
+        evidence = _denominator(profile) or {}
+        axis_name = str(evidence.get("axis") or "").strip()
+        period_name = str(evidence.get("period") or "").strip()
+        if axis_name != "each":
+            attested_axis = axis_name
+        if period_name != "each":
+            attested_period = period_name
+    rows = []
+    for axis in sorted(_axes_of(facts, primaries[home_name])):
+        ordered = _ordered(periods, axis)
+        for period in ordered:
+            marker = period.get("marker_class")
+            if marker_class and marker and marker != marker_class:
+                continue
+            if attested_axis is not None and period.get("axis_id") != attested_axis:
+                rows.append(
+                    _line(
+                        "icr",
+                        period,
+                        None,
+                        "needs_input",
+                        "denominator_axis",
+                        names,
+                        "LTM",
+                        variant="bank",
+                    )
+                )
+                continue
+            if attested_period is not None and period.get("period_id") != attested_period:
+                rows.append(
+                    _line(
+                        "icr",
+                        period,
+                        None,
+                        "needs_input",
+                        "denominator_period",
+                        names,
+                        "LTM",
+                        variant="bank",
+                    )
+                )
+                continue
+            if dep_grains is not None and any(
+                _depreciation_grain_mismatch(grains, period) for grains in dep_grains
+            ):
+                rows.append(
+                    _line(
+                        "icr",
+                        period,
+                        None,
+                        "not_computed",
+                        "depreciation_period_mismatch",
+                        names,
+                        "LTM",
+                        variant="bank",
+                        message=_DEP_PERIOD,
+                    )
+                )
+                continue
+            number, den, reason = _bank_pair(formula, series, period, ordered, aligned, basis, sign_convention)
+            if reason == "partial_window" and basis != "ytd":
+                rows.append(
+                    _line("icr", period, None, "not_computed", "partial_window", names, "LTM", variant="bank")
+                )
+                continue
+            if number is None or den is None:
+                published = reason if reason in _FISCAL_REASONS else "needs_input"
+                rows.append(_line("icr", period, None, "needs_input", published, names, "LTM", variant="bank"))
+                continue
+            if den == 0:
+                rows.append(
+                    _line(
+                        "icr",
+                        period,
+                        None,
+                        "missing_input",
+                        "no_interest",
+                        names,
+                        "LTM",
+                        variant="bank",
+                        ebitda_sign=_sign_name(number),
+                    )
+                )
+                continue
+            if den < 0:
+                rows.append(
+                    _line(
+                        "icr",
+                        period,
+                        None,
+                        "not_computed",
+                        "invalid_denominator",
+                        names,
+                        "LTM",
+                        variant="bank",
+                    )
+                )
+                continue
+            value = _ratio(number, den)
+            row = _line("icr", period, value, "computed", None, names, "LTM", variant="bank")
+            if number <= 0:
+                warnings.append(
+                    {
+                        "code": "negative_numerator",
+                        "params": {"period_id": period["period_id"], "ebitda_sign": _sign_name(number)},
+                    }
+                )
+            rows.append(row)
+            step = _bank_pair(formula, series, period, ordered, aligned, basis, sign_convention, quarter=True)
+            if (
+                grain_months(period.get("grain")) == 3
+                and basis != "ltm"
+                and step[0] is not None
+                and step[1] not in (None, 0)
+                and step[1] > 0
+            ):
+                rows.append(
+                    _line(
+                        "icr",
+                        period,
+                        _ratio(step[0], step[1]),
+                        "computed",
+                        None,
+                        names,
+                        "period",
+                        variant="quarter_reference",
+                        message=_QUARTER_LABEL,
+                    )
+                )
+    ltm = [row for row in rows if row.get("variant") == "bank"]
+    status = "succeeded"
+    if ltm and not any(row["status"] == "computed" for row in ltm):
+        if any(row["status"] == "needs_input" for row in ltm):
+            status = "needs_input"
+        elif any(row.get("reason") == "no_interest" for row in ltm):
+            status = "missing_input"
+        elif any(row.get("reason") in {"invalid_denominator", "depreciation_period_mismatch"} for row in ltm):
+            status = "not_computed"
+        elif any(row.get("reason") == "partial_window" for row in ltm):
+            status = "partial_window"
+    return {"metric": "icr", "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
+
+
+def _bank_pair(formula, series, period, ordered, aligned, basis, sign, *, quarter: bool = False):
+    parts = {}
+    names = (*formula.numerator.plus, *formula.numerator.minus, *formula.denominator.plus, *formula.denominator.minus)
+    for name in dict.fromkeys(names):
+        value, problem = _concept_amount(name, series, period, ordered, aligned, basis, quarter)
+        if value is None:
+            if problem in _FISCAL_REASONS:
+                return None, None, problem
+            return None, None, "partial_window" if basis != "ytd" and not quarter else "needs_input"
+        parts[name] = value
+    number = Decimal(0)
+    for name in formula.numerator.plus:
+        number += parts[name]
+    for name in formula.numerator.minus:
+        number -= parts[name]
+    den = Decimal(0)
+    for name in formula.denominator.plus:
+        den += _payment(parts[name], sign)
+    for name in formula.denominator.minus:
+        den -= _payment(parts[name], sign)
+    return number, den, None
+
+
+def _concept_amount(name, series, period, ordered, aligned, basis, quarter: bool):
+    column = series[name]
+    if basis == "ytd":
+        if quarter:
+            return _ytd_step(column, period, ordered, aligned), None
+        return _ytd_ltm(column, period, ordered, aligned)
+    if basis == "ltm" or quarter:
+        return column.get(_aligned_key(period, aligned)), None
+    keys, _window, problem = _span("LTM", ordered, period, aligned, period["axis_id"])
+    if problem or not keys:
+        return None, None
+    total = Decimal(0)
+    for key in keys:
+        if key not in column:
+            return None, None
+        total += column[key]
+    return total, None
+
+
 def select_ratio(
     metric: str,
     variant: str | None,
@@ -408,6 +1340,16 @@ def select_ratio(
     Без имени корпоративный тип остаётся на `corporate_covenant`, остальные — на своей формуле.
     """
 
+    if metric == "total_debt":
+        from finance_analysis.domain.total_debt import total_debt_result
+
+        return total_debt_result(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            profile=profile,
+            marker_class=common["marker_class"],
+        )
     if metric in {"npv", "irr"}:
         return project_return(
             metric,
@@ -445,6 +1387,17 @@ def select_ratio(
             ),
         )
     named = _named_variant(profile)
+    if metric == "dscr" and (named or variant) == "housing":
+        from finance_analysis.domain.housing_dscr import housing_dscr
+
+        return housing_dscr(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common.get("sign_convention") or "outflow_negative",
+            absent=common.get("absent") or frozenset(),
+            profile=profile,
+        )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         return covenant_dscr(
             facts=common["facts"],
@@ -461,6 +1414,16 @@ def select_ratio(
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
             composed=composed,
+        )
+    if metric == "icr" and bank_requested(variant, profile):
+        return bank_icr(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            profile=profile,
+            sign_convention=common["sign_convention"],
+            marker_class=common["marker_class"],
+            absent=common["absent"],
         )
     formula = composed.get(metric)
     if formula is not None:
@@ -656,7 +1619,7 @@ def _refused(metric: str, periods: list[dict], status: str, message: str, inputs
     return {"metric": metric, "rows": [row], "needs_input": [], "warnings": [], "status": status, "message": message}
 
 
-def _line(metric, period, value, status, reason, inputs, window, message: str | None = None) -> dict:
+def _line(metric, period, value, status, reason, inputs, window, message: str | None = None, **extra) -> dict:
     row = {
         "metric": metric,
         "axis_id": period["axis_id"],
@@ -671,6 +1634,7 @@ def _line(metric, period, value, status, reason, inputs, window, message: str | 
     }
     if message:
         row["message"] = message
+    row.update(extra)
     return row
 
 

@@ -10,7 +10,8 @@
       "use": "not_applicable"
     },
     "development_escrow": {
-      "use": "not_applicable"
+      "use": "optional",
+      "variant": "housing"
     },
     "investment_project": {
       "use": "not_applicable"
@@ -46,8 +47,8 @@
       "use": "not_applicable"
     },
     "development_escrow": {
-      "use": "optional",
-      "variant": "pf"
+      "use": "required",
+      "variant": "housing"
     },
     "investment_project": {
       "use": "not_applicable"
@@ -86,7 +87,8 @@
       "use": "not_applicable"
     },
     "development_escrow": {
-      "use": "not_applicable"
+      "use": "optional",
+      "variant": "housing"
     },
     "investment_project": {
       "use": "not_applicable"
@@ -121,7 +123,8 @@
       "use": "not_applicable"
     },
     "development_escrow": {
-      "use": "not_applicable"
+      "use": "optional",
+      "variant": "housing"
     },
     "investment_project": {
       "use": "not_applicable"
@@ -143,6 +146,41 @@
     },
     "renewables_dpm": {
       "use": "optional"
+    }
+  },
+  "escrow_blended_rate": {
+    "bank_leasing": {
+      "use": "not_applicable"
+    },
+    "corporate": {
+      "use": "not_applicable"
+    },
+    "dcf_valuation": {
+      "use": "not_applicable"
+    },
+    "development_escrow": {
+      "use": "optional"
+    },
+    "investment_project": {
+      "use": "not_applicable"
+    },
+    "lbo_ma": {
+      "use": "not_applicable"
+    },
+    "other": {
+      "use": "optional"
+    },
+    "ppp_concession": {
+      "use": "not_applicable"
+    },
+    "project_finance": {
+      "use": "not_applicable"
+    },
+    "real_estate_income": {
+      "use": "not_applicable"
+    },
+    "renewables_dpm": {
+      "use": "not_applicable"
     }
   },
   "escrow_coverage": {
@@ -250,6 +288,41 @@
       "use": "not_applicable"
     }
   },
+  "icr_ebit": {
+    "bank_leasing": {
+      "use": "not_applicable"
+    },
+    "corporate": {
+      "use": "optional"
+    },
+    "dcf_valuation": {
+      "use": "not_applicable"
+    },
+    "development_escrow": {
+      "use": "not_applicable"
+    },
+    "investment_project": {
+      "use": "not_applicable"
+    },
+    "lbo_ma": {
+      "use": "not_applicable"
+    },
+    "other": {
+      "use": "optional"
+    },
+    "ppp_concession": {
+      "use": "optional"
+    },
+    "project_finance": {
+      "use": "optional"
+    },
+    "real_estate_income": {
+      "use": "not_applicable"
+    },
+    "renewables_dpm": {
+      "use": "not_applicable"
+    }
+  },
   "irr": {
     "bank_leasing": {
       "use": "not_applicable"
@@ -296,7 +369,8 @@
       "use": "not_applicable"
     },
     "development_escrow": {
-      "use": "not_applicable"
+      "use": "optional",
+      "variant": "cbr590"
     },
     "investment_project": {
       "use": "not_applicable"
@@ -452,6 +526,41 @@
     },
     "project_finance": {
       "use": "optional"
+    },
+    "real_estate_income": {
+      "use": "not_applicable"
+    },
+    "renewables_dpm": {
+      "use": "not_applicable"
+    }
+  },
+  "total_debt": {
+    "bank_leasing": {
+      "use": "not_applicable"
+    },
+    "corporate": {
+      "use": "optional"
+    },
+    "dcf_valuation": {
+      "use": "not_applicable"
+    },
+    "development_escrow": {
+      "use": "not_applicable"
+    },
+    "investment_project": {
+      "use": "not_applicable"
+    },
+    "lbo_ma": {
+      "use": "not_applicable"
+    },
+    "other": {
+      "use": "optional"
+    },
+    "ppp_concession": {
+      "use": "not_applicable"
+    },
+    "project_finance": {
+      "use": "not_applicable"
     },
     "real_estate_income": {
       "use": "not_applicable"

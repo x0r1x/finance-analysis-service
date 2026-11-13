@@ -12,6 +12,7 @@ signals:
 required_concepts: [ebitda, interest]
 metrics:
   icr: {use: required}
+  icr_ebit: {use: optional}
   dscr: {use: optional, variant: corporate_covenant}
   net_debt_ebitda: {use: optional}
   adscr: {use: not_applicable}
@@ -22,5 +23,7 @@ metrics:
   escrow_coverage: {use: not_applicable}
   npv: {use: not_applicable}
   irr: {use: not_applicable}
+  total_debt: {use: optional}
   fcff: {use: optional}
   ncf: {use: optional}
+  escrow_blended_rate: {use: not_applicable}

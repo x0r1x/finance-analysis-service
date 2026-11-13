@@ -40,7 +40,6 @@ _QUARTER = re.compile(r"(?i)\d\s*кв")
 _YEAR = re.compile(r"^(?:19|20)\d{2}$")
 _NUMBER = re.compile(r"^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$")
 _INTEREST = "Проценты к уплате"
-_IFRS_INTEREST = "Финансовые расходы (процентные расходы), укажите с '+'"
 _CAPEX = "Капитальные затраты без учета приобретений с учетом НДС за кв."
 _QUOTE = (
     "Денежный поток от операционной деятельности на i-ом интервале планирования (CFO)"
@@ -52,10 +51,9 @@ _BOUND = (
     ("Фин отчетность РСБУ", 33, "- Проценты к уплате", "interest", False, "bound"),
     ("Фин отчетность РСБУ", 76, "Денежные средства", "cash", False, "bound"),
     ("Фин отчетность РСБУ", 136, _INTEREST, "interest", False, "bound"),
-    ("Фин отчетность МСФО", 20, _IFRS_INTEREST, "interest", False, "bound"),
+    # «Финансовые расходы (процентные расходы)» резолвится в finance_costs, не в interest.
     ("Фин отчетность МСФО", 20, "Interest expense", "interest", False, "bound"),
     ("Фин отчетность МСФО", 42, "Cash and cash equivalents", "cash", False, "bound"),
-    ("Фин отчетность МСФО", 73, _IFRS_INTEREST, "interest", False, "bound"),
     ("Фин отчетность МСФО", 73, "Interest expense", "interest", False, "bound"),
     *[
         ("Предпосылки", row, _INTEREST, "interest", False, "bound")

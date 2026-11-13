@@ -1,0 +1,14 @@
+concept: senior_interest_paid
+pref:
+  en: "Senior interest paid"
+  ru: "Уплаченные проценты по несубординированным кредитам"
+negative:
+  - "субординированный"
+  - "заем акционера"
+  - "заем участника"
+  - "займ учредителя"
+  - "subordinated"
+  - "shareholder loan"
+definition:
+  en: "Cash interest paid on unsubordinated loans, lines 4123 or 4224. Accrued line 2330 is not cash interest."
+  ru: "Проценты, уплаченные деньгами по несубординированным кредитам и займам: строки 4123 или 4224. Начисление 2330 денежной уплатой не является."

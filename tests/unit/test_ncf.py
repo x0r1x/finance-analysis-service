@@ -267,12 +267,13 @@ def test_three_coded_dashes_publish_zero():
     assert empty["rows"] == []
 
 
-def test_bare_4200_is_not_a_code_and_4223_does_not_replace_the_total():
-    assert marked_line_code("4200") is None
-    assert marked_line_code(4200) is None
+def test_bare_4200_is_the_statement_balance_and_4223_does_not_replace_the_total():
+    # Голые 4100 и 4200 — сальдо отчёта с main, не итог раздела investing_cash_flow.
+    assert marked_line_code("4200") == "4200"
+    assert marked_line_code(4200) == "4200"
     glossary = load_catalog()
     bare = assign_rows([_row("b", "4200", line_code="4200")], [], glossary)["b"]
-    assert bare.concept is None
+    assert bare.concept == "cfi_statement"
     detail = assign_rows(
         [_row("d", "Приобретение основных средств", line_code="стр. 4223")],
         [],

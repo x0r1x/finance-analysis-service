@@ -136,7 +136,7 @@ def _stated_digits(row: dict) -> str | None:
     return digits if digits.isdigit() else None
 
 
-_EBITDA_DEFINITION = frozenset({"book", "ras", "ifrs"})
+_EBITDA_DEFINITION = frozenset({"book", "ras", "ifrs", "gaap"})
 _RAS_UNPUBLISHED = (
     "Коэффициент не посчитан: выбрана EBITDA (РСБУ), а она ещё не собрана. "
     "Нужны прибыль от продаж и амортизация за тот же период. "
@@ -158,7 +158,7 @@ def ebitda_definition_error(value) -> str | None:
 
     if isinstance(value, str) and value in _EBITDA_DEFINITION:
         return None
-    return "ebitda_definition: book, ras или ifrs"
+    return "ebitda_definition: book, ras, ifrs или gaap"
 
 
 def ebitda_definition(profile: dict | None) -> str:
@@ -172,14 +172,18 @@ def ebitda_definition(profile: dict | None) -> str:
     return "invalid"
 
 
-def recipe_block(
+def methodology_block(
     profile: dict | None,
     bindings: list[dict],
     *,
     metric: str,
     names: tuple[str, ...] | None = None,
 ) -> dict | None:
-    """ras и ifrs не подставляют книжную EBITDA. В этом срезе число рецепта не выпускается."""
+    """Книжная EBITDA остаётся у пометки book. Остальные пометки эту строку не подставляют.
+
+    EBITDA по отчётности считает только профиль icr.bank. Для прочих коэффициентов
+    методика расчёта не выпускается.
+    """
 
     kind = ebitda_definition(profile)
     if kind == "book":
@@ -188,24 +192,32 @@ def recipe_block(
         return None
     # Одна фраза на ICR, чистый долг к EBITDA и корпоративный DSCR. Найденные строки её не меняют.
     del bindings
-    message = _recipe_message(kind)
+    message = _methodology_message(kind)
     return {
         "metric": metric,
         "rows": [],
         "needs_input": [],
         "missing_inputs": [],
-        "warnings": [{"code": "ebitda_recipe_unpublished", "params": {"message": message}}],
+        "warnings": [{"code": "ebitda_methodology_unpublished", "params": {"message": message}}],
         "status": "not_computed",
         "message": message,
     }
 
 
-def _recipe_message(kind: str) -> str:
+_GAAP_UNPUBLISHED = (
+    "Коэффициент не посчитан: выбрана отчётность GAAP, а отдельная методика расчёта EBITDA ещё не утверждена. "
+    "Методика МСФО сюда не подставляется."
+)
+
+
+def _methodology_message(kind: str) -> str:
     if kind == "ras":
         return _RAS_UNPUBLISHED
     if kind == "ifrs":
         return _IFRS_UNPUBLISHED
-    return "Пометка определения: book, ras или ifrs."
+    if kind == "gaap":
+        return _GAAP_UNPUBLISHED
+    return "Пометка определения: book, ras, ifrs или gaap."
 
 
 def coverage_ratio(
@@ -231,8 +243,8 @@ def coverage_ratio(
 
     from finance_analysis.domain.coverage import is_coverage_test_period
 
-    if metric == "icr":
-        blocked = recipe_block(profile, bindings, metric=metric)
+    if metric in {"icr", "icr_ebit"}:
+        blocked = methodology_block(profile, bindings, metric=metric)
         if blocked:
             return blocked
     primaries = _primaries(bindings, absent)
@@ -261,9 +273,10 @@ def coverage_ratio(
                 fallback_parts = (chosen, "principal")
                 if warning:
                     warnings.append(warning)
-    elif metric == "icr":
+    elif metric in {"icr", "icr_ebit"}:
+        slot = "icr_ebit" if metric == "icr_ebit" else "icr"
         chosen, warning = interest_choice(
-            primaries, order.get("icr", ("interest",)), row_fallbacks=row_fallbacks
+            primaries, order.get(slot, ("interest",)), row_fallbacks=row_fallbacks
         )
         needed = (chosen or "interest",)
         denominator_name = chosen or "interest"
@@ -273,7 +286,12 @@ def coverage_ratio(
         return {"metric": metric, "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"}
     missing = [name for name in needed if name not in primaries]
     numerator_name = None
-    if metric == "icr":
+    if metric == "icr_ebit":
+        if "ebit" in primaries:
+            numerator_name = "ebit"
+        else:
+            missing.append("ebit")
+    elif metric == "icr":
         if "ebitda" in primaries and "ebit" in primaries:
             numerator_name = "ebitda"
             warnings.append({"code": "icr_numerator", "params": {"concept": "ebitda"}})
@@ -334,7 +352,7 @@ def coverage_ratio(
         return _explained(metric, periods, "basis_mismatch", MIXED_BASIS, warnings)
     if numerator_basis != denominator_basis and not (numerator_basis == "ltm" and denominator_basis == "period"):
         message = MIXED_BASIS
-        if metric == "icr":
+        if metric in {"icr", "icr_ebit"}:
             message = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name]) or MIXED_BASIS
         return _explained(metric, periods, "basis_mismatch", message, warnings)
     sheet = _assume_sheet_units(facts, list(named.values()), warnings)
@@ -371,7 +389,7 @@ def coverage_ratio(
             for key in paid.keys() & repaid.keys()
         }
         home = _axes_of(facts, primaries[fallback_parts[0]]) | _axes_of(facts, primaries["principal"])
-    if metric == "icr" and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
+    if metric in {"icr", "icr_ebit"} and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
         raw = _sums(facts, primaries[numerator_name], aligned, None, sheet=sheet)
         if not _numerator_misses_axis(raw, denominator, periods, aligned, home):
             message = (

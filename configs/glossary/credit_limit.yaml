@@ -1,0 +1,10 @@
+concept: credit_limit
+pref:
+  en: "Project finance credit limit"
+  ru: "Лимит кредита проектного финансирования"
+negative:
+  - "остаток долга"
+  - "выбранн"
+definition:
+  en: "The credit limit for the whole term. Outstanding debt is not a substitute."
+  ru: "Лимит кредита на весь срок. Остаток выбранного долга лимит не заменяет."

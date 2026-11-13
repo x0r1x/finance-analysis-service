@@ -1,0 +1,9 @@
+concept: finance_costs
+pref:
+  en: "Finance costs"
+  ru: "Финансовые расходы"
+alt:
+  en: ["Finance cost"]
+definition:
+  en: "Finance costs. Not interest unless a ratio takes them as a flagged proxy."
+  ru: "Финансовые расходы. Процентами не являются, пока коэффициент не взял их как замену с флагом."

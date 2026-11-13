@@ -1,0 +1,20 @@
+concept: borrowings_lt
+pref:
+  en: "Long-term borrowings"
+  ru: "Долгосрочные заемные средства"
+alt:
+  en:
+    - "Non-current borrowings"
+  ru:
+    - text: "Заемные средства"
+      ambiguous: true
+    - text: "Займы и кредиты"
+      ambiguous: true
+    - "1410"
+    - "510"
+definition:
+  en: "Section IV, line 1410. Credit balance of account 67 due after 12 months. Interest payable, bonds and notes on accounts 66 and 67 are included. Accounts 60, 62 and 68 are not."
+  ru: "Раздел IV, строка 1410. Кредитовое сальдо счета 67 со сроком погашения больше 12 месяцев. Проценты к уплате входят. Облигации и векселя на счетах 66 и 67 входят. Счета 60, 62 и 68 не входят."
+xref:
+  ifrs: "Borrowings, non-current"
+  gaap: "Long-term debt"

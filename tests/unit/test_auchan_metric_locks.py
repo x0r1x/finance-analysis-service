@@ -11,6 +11,7 @@ _OFF = (
     "llcr",
     "plcr",
     "escrow_coverage",
+    "escrow_blended_rate",
     "npv",
     "irr",
 )
@@ -23,6 +24,7 @@ def test_corporate_leaves_project_metrics_not_applicable():
         assert applicability(catalog, labels, metric) == "not_applicable"
     assert applicability(catalog, labels, "dscr") == "optional"
     assert applicability(catalog, labels, "icr") == "required"
+    assert applicability(catalog, labels, "icr_ebit") == "optional"
     assert catalog.types["corporate"].variants["dscr"] == "corporate_covenant"
 
 

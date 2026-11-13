@@ -7,7 +7,6 @@ alt:
   ru:
     - "Денежный поток от операционной деятельности"
     - "ИТОГО - Операционный денежный поток"
-    - "Сальдо денежных потоков от текущих операций"
     - "стр. 4100"
 definition:
   en: "Cash from operations before debt service and before adding back interest or subtracting capex"

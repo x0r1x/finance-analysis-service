@@ -16,7 +16,7 @@ from finance_analysis.domain.metrics import (
     coverage_ratio,
     ebitda_definition,
     ebitda_definition_error,
-    recipe_block,
+    methodology_block,
 )
 
 _RAS_SKIP = (
@@ -422,8 +422,8 @@ def test_ras_lines_bind_and_operating_profit_stays_apart():
     assert glossary.display_label("ebitda_ifrs", "ru") == "EBITDA (МСФО)"
     assert "не EBITDA (РСБУ)" in glossary.concepts["ebitda"].definition["ru"]
     assert "ещё не собрана" not in glossary.concepts["ebitda"].definition["ru"]
-    assert "Пока показатель не считается" in glossary.concepts["ebitda_ras"].definition["ru"]
-    assert "Пока показатель не считается" in glossary.concepts["ebitda_ifrs"].definition["ru"]
+    assert "профиле icr.bank" in glossary.concepts["ebitda_ras"].definition["ru"]
+    assert "профиле icr.bank" in glossary.concepts["ebitda_ifrs"].definition["ru"]
     assert "finance-lease" in glossary.concepts["ebitda_ras"].definition["en"]
     assert "does not define EBITDA" in glossary.concepts["ebitda_ifrs"].definition["en"]
     notes = _assign(glossary, "Амортизация на конец года (заполняется только 4 кв.)")
@@ -505,7 +505,7 @@ def test_ras_and_ifrs_skip_the_three_ratios_without_the_dirty_sum():
             assert expected in [item.get("params", {}).get("message") for item in got["warnings"]]
 
 
-def test_project_finance_dscr_still_uses_cfads_when_the_recipe_is_requested():
+def test_project_finance_dscr_still_uses_cfads_when_the_methodology_is_selected():
     common = _common(
         [_fact("c", "Y1", "10"), _fact("d", "Y1", "5"), _fact("e", "Y1", "20385911")],
         [_bind("cfads", "c"), _bind("debt_service", "d"), _bind("ebitda", "e")],
@@ -514,12 +514,12 @@ def test_project_finance_dscr_still_uses_cfads_when_the_recipe_is_requested():
     assert got["rows"][0]["value"] == Decimal("2.0000000000")
 
 
-@pytest.mark.parametrize("value", [{"recipe": "ras"}, ["ras"], 1, True])
+@pytest.mark.parametrize("value", [{"draft": "ras"}, ["ras"], 1, True])
 def test_ebitda_definition_rejects_a_non_string(value):
-    assert ebitda_definition_error(value) == "ebitda_definition: book, ras или ifrs"
+    assert ebitda_definition_error(value) == "ebitda_definition: book, ras, ifrs или gaap"
     profile = {"ebitda_definition": value}
     assert ebitda_definition(profile) == "invalid"
-    blocked = recipe_block(profile, [], metric="icr")
+    blocked = methodology_block(profile, [], metric="icr")
     assert blocked["status"] == "not_computed"
 
 
@@ -533,7 +533,7 @@ def test_stored_profile_reads_a_non_string_ebitda_definition_as_invalid(tmp_path
     async def run():
         store = LocalStore(tmp_path)
         gloss = GlossaryStore(store)
-        for value in ({"recipe": "ras"}, ["ras"], 1, True):
+        for value in ({"draft": "ras"}, ["ras"], 1, True):
             with pytest.raises(InvalidArgument):
                 await gloss.put_profile(
                     "bank",

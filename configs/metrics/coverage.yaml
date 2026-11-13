@@ -9,6 +9,7 @@ row_fallbacks:
       rule: interest_basis_paid
 interest_order:
   icr: [interest, interest_paid]
+  icr_ebit: [interest, interest_paid]
   corporate_covenant: [interest, interest_paid]
   ocf_covenant: [interest, interest_paid]
   pf: [interest_paid, interest]
@@ -32,24 +33,68 @@ metrics:
         numerator: {plus: [operating_cash_flow, interest], minus: [capex]}
         denominator: {plus: [interest, principal]}
         window: LTM
+      housing:
+        definition: "Жилищное строительство: (сальдо текущих + сальдо инвестиционных + поступления по финансовой деятельности) / (погашение и уплаченные проценты несубординированных кредитов) за интервал. Пустая ячейка не заменяется нулём. Вариант pf этот состав не использует."
+        numerator: {plus: [cfo_statement, cfi_statement, financing_inflows]}
+        denominator: {plus: [senior_principal, senior_interest_paid]}
+        window: period
   icr:
     definition: "ICR: EBITDA или EBIT, делённые на проценты. Если в книге один числитель, частное считается по нему. Если оба, Python берёт EBITDA и ставит предупреждение icr_numerator."
     numerator: [ebitda, ebit]
     denominator: interest
+    variants:
+      bank:
+        definition: "Внутренний профиль icr.bank: EBITDA / проценты, окно LTM. Это не ICR по 6960-У и не универсальная EBITDA по РСБУ. Результат bank_icr несёт profile=icr.bank, regulatory_6960u=false и profile_note. EBIT в числитель не входит. При ras числитель — прибыль от продаж плюс амортизация ОС и НМА; право пользования не входит без include_rou_depreciation. При ifrs право пользования входит, только если есть depreciation_rou или includes_rou. База суммы амортизации — value_basis, не зерно периода книги. Строка EBITDA модели не подставляется. GAAP остаётся not_computed."
+        numerator: {plus: [ebitda]}
+        denominator: {plus: [interest]}
+        window: LTM
+  icr_ebit:
+    definition: "EBIT / проценты за период. В банковский ICR не подставляется и лизинг к знаменателю не прибавляет."
+    numerator: [ebit]
+    denominator: interest
   adscr:
     definition: "ADSCR наследует входы DSCR, CFADS и обслуживание долга, и считает сумму CFADS к сумме обслуживания долга за 12 месяцев lookback. На годе код отвечает adscr_not_applicable. Неполное окно FAS не досчитывает доли периода."
     base: dscr
+    variants:
+      housing:
+        definition: "ADSCR housing: сумма числителей housing к сумме знаменателей housing за 12 месяцев. Не универсальный DSCR и не ADSCR варианта pf. Неполное окно и интервал без числа не досчитываются."
+        numerator: {plus: [cfo_statement, cfi_statement, financing_inflows]}
+        denominator: {plus: [senior_principal, senior_interest_paid]}
+        window: period
   dscr_min:
     definition: "Минимум посчитанных DSCR. Входы те же, что у базового DSCR."
     base: dscr
+    variants:
+      housing:
+        definition: "Минимум посчитанных интервалов housing. Интервал без числа блокирует минимум. Интервал без обслуживания долга в минимум не входит как ноль."
+        numerator: {plus: [cfo_statement, cfi_statement, financing_inflows]}
+        denominator: {plus: [senior_principal, senior_interest_paid]}
+        window: period
   dscr_avg:
     definition: "Среднее DSCR двумя методиками, mean_of_ratios и ratio_of_sums. Код отдаёт обе, а не выбирает одну молча."
     base: dscr
+    variants:
+      housing:
+        definition: "Среднее интервалов housing двумя способами: mean_of_ratios и ratio_of_sums. Обе строки подписаны housing и не являются универсальным DSCR."
+        numerator: {plus: [cfo_statement, cfi_statement, financing_inflows]}
+        denominator: {plus: [senior_principal, senior_interest_paid]}
+        window: period
   llcr:
     definition: "LLCR: дисконт CFADS по дням/365, делённый на остаток долга. DSRA в числитель не входит. basis period_end берёт поток со следующего периода. period_start читает остаток как открывающий."
     numerator: [cfads]
     denominator: debt_outstanding
     rate: discount_rate
+    variants:
+      cbr590:
+        definition: "Номинальный LLCR по критерию приложения 5 к 590-П: сумма проектного потока и иных гарантированных денег к сумме номинальных обязательств по телу и процентам. Это не дисконтированный LLCR сервиса."
+        numerator: {plus: [cfo_statement, cfi_statement, financing_inflows, guaranteed_funds]}
+        denominator: {plus: [senior_principal, senior_interest_paid]}
+        window: period
+      domrf:
+        definition: "Номинальный LLCR по странице гарантии ДОМ.РФ: поток, доступный для обслуживания долга, к лимиту кредита и процентам за весь срок. Числитель сервиса — состав housing, не неопубликованная расшифровка ДОМ.РФ. Остаток долга лимит не заменяет."
+        numerator: {plus: [cfo_statement, cfi_statement, financing_inflows]}
+        denominator: {plus: [credit_limit, senior_interest_paid]}
+        window: period
   plcr:
     definition: "PLCR: дисконт CFADS по дням/365 до конца шкалы, делённый на остаток долга. basis period_end считает по умолчанию. period_start сдвигает окно на текущий период."
     numerator: [cfads]
@@ -60,8 +105,18 @@ metrics:
     numerator: {plus: [net_debt]}
     denominator: {plus: [ebitda]}
     window: LTM
+  total_debt:
+    definition: "Долг на дату: долгосрочные и краткосрочные заемные средства плюс обязательство по аренде. Знаменателя нет, частное не считается."
+    numerator: {plus: [borrowings_lt, borrowings_st, lease_liability]}
+    window: period
+    aggregation: stock
   escrow_coverage:
     definition: "Покрытие счетов эскроу: остаток эскроу / остаток долга за период. Это покрытие, не ставка."
+    numerator: {plus: [escrow_balance]}
+    denominator: {plus: [debt_outstanding]}
+    window: period
+  escrow_blended_rate:
+    definition: "Смешанная ставка от покрытия эскроу: покрытая часть долга по специальной ставке или ступени профиля, непокрытая по базовой, частное делится на выбранный долг. Проценты лестницы в код не зашиты. Это не DSCR."
     numerator: {plus: [escrow_balance]}
     denominator: {plus: [debt_outstanding]}
     window: period

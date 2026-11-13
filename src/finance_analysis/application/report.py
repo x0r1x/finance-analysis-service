@@ -55,6 +55,20 @@ def render_markdown(result: dict) -> str:
             lines.append(
                 f"| {_show(row.get('metric'))} | {_show(row.get('period_id'))} | {_show(row.get('value'))} | {_show(row.get('status'))} |"
             )
+        for row in ratios:
+            if not row.get("methodology"):
+                continue
+            lines.append(f"- methodology: {_show(row.get('methodology'))}")
+            if row.get("definition"):
+                lines.append(f"- definition: {_show(row.get('definition'))}")
+            if row.get("variant"):
+                lines.append(f"- variant: {_show(row.get('variant'))}")
+            if row.get("composition"):
+                lines.append(f"- composition: {_show(row.get('composition'))}")
+            lines.append(f"- standard: {_show(row.get('standard'))}")
+            lines.append(f"- lease_source: {_show(row.get('lease_source'))}")
+            if row.get("components"):
+                lines.append(f"- components: {_show(row.get('components'))}")
     findings = data.get("findings") or []
     if findings:
         lines.extend(["", "## findings"])

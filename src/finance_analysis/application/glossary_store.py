@@ -52,6 +52,15 @@ _PROFILE_FIELDS = frozenset(
         "model_type_default",
         "dscr_definition",
         "ebitda_definition",
+        "icr_definition",
+        "debt_standard",
+        "include_operating_lease_liability",
+        "interest_addback",
+        "include_senior_fees",
+        "include_senior_swaps",
+        "guaranteed_funds_none",
+        "escrow_rate_scale",
+        "llcr_definition",
         "actuals_end",
         "sheet_class",
     }
@@ -522,7 +531,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, actuals_end и sheet_class",
+                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, icr_definition, debt_standard, include_operating_lease_liability, interest_addback, include_senior_fees, include_senior_swaps, guaranteed_funds_none, escrow_rate_scale, llcr_definition, actuals_end и sheet_class",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -553,10 +562,53 @@ class GlossaryStore:
             )
             if problem:
                 raise InvalidArgument(problem)
+        if "icr_definition" in body and body["icr_definition"] is not None:
+            from finance_analysis.domain.covenant import icr_definition_error
+
+            problem = icr_definition_error(body["icr_definition"])
+            if problem:
+                raise InvalidArgument(problem)
         if "ebitda_definition" in body and body["ebitda_definition"] is not None:
             from finance_analysis.domain.metrics import ebitda_definition_error
 
             problem = ebitda_definition_error(body["ebitda_definition"])
+            if problem:
+                raise InvalidArgument(problem)
+        if "debt_standard" in body and body["debt_standard"] is not None:
+            from finance_analysis.domain.total_debt import debt_standard_error
+
+            problem = debt_standard_error(body["debt_standard"])
+            if problem:
+                raise InvalidArgument(problem)
+        if "include_operating_lease_liability" in body and body["include_operating_lease_liability"] is not None:
+            from finance_analysis.domain.total_debt import operating_lease_flag_error
+
+            problem = operating_lease_flag_error(body["include_operating_lease_liability"])
+            if problem:
+                raise InvalidArgument(problem)
+        if "interest_addback" in body and body["interest_addback"] is not None:
+            from finance_analysis.domain.housing_dscr import interest_addback_error
+
+            problem = interest_addback_error(body["interest_addback"])
+            if problem:
+                raise InvalidArgument(problem)
+        for flag in ("include_senior_fees", "include_senior_swaps", "guaranteed_funds_none"):
+            if flag in body and body[flag] is not None:
+                from finance_analysis.domain.housing_dscr import profile_flag_error
+
+                problem = profile_flag_error(flag, body[flag])
+                if problem:
+                    raise InvalidArgument(problem)
+        if "escrow_rate_scale" in body and body["escrow_rate_scale"] is not None:
+            from finance_analysis.domain.housing_cover import scale_error
+
+            problem = scale_error(body["escrow_rate_scale"])
+            if problem:
+                raise InvalidArgument(problem)
+        if "llcr_definition" in body and body["llcr_definition"] is not None:
+            from finance_analysis.domain.housing_cover import llcr_definition_error
+
+            problem = llcr_definition_error(body["llcr_definition"])
             if problem:
                 raise InvalidArgument(problem)
         if "sign_convention" in body and body["sign_convention"] not in _SIGNS:
@@ -580,8 +632,19 @@ class GlossaryStore:
                     saved["model_type_default"] = body["model_type_default"]
                 if "dscr_definition" in body:
                     saved["dscr_definition"] = body["dscr_definition"]
+                if body.get("icr_definition"):
+                    saved["icr_definition"] = body["icr_definition"]
                 if body.get("ebitda_definition"):
                     saved["ebitda_definition"] = body["ebitda_definition"]
+                if body.get("debt_standard"):
+                    saved["debt_standard"] = body["debt_standard"]
+                if "include_operating_lease_liability" in body:
+                    saved["include_operating_lease_liability"] = body["include_operating_lease_liability"]
+                if "interest_addback" in body:
+                    saved["interest_addback"] = body["interest_addback"]
+                for flag in ("include_senior_fees", "include_senior_swaps", "guaranteed_funds_none", "escrow_rate_scale", "llcr_definition"):
+                    if flag in body:
+                        saved[flag] = body[flag]
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]
                 if body.get("sheet_class"):
@@ -603,11 +666,34 @@ class GlossaryStore:
                 saved["dscr_definition"] = body["dscr_definition"]
             elif "dscr_definition" in current["body"]:
                 saved["dscr_definition"] = current["body"]["dscr_definition"]
+            if "icr_definition" in body:
+                if body.get("icr_definition"):
+                    saved["icr_definition"] = body["icr_definition"]
+            elif current["body"].get("icr_definition"):
+                saved["icr_definition"] = current["body"]["icr_definition"]
             if "ebitda_definition" in body:
                 if body.get("ebitda_definition"):
                     saved["ebitda_definition"] = body["ebitda_definition"]
             elif current["body"].get("ebitda_definition"):
                 saved["ebitda_definition"] = current["body"]["ebitda_definition"]
+            if "debt_standard" in body:
+                if body.get("debt_standard"):
+                    saved["debt_standard"] = body["debt_standard"]
+            elif current["body"].get("debt_standard"):
+                saved["debt_standard"] = current["body"]["debt_standard"]
+            if "include_operating_lease_liability" in body:
+                saved["include_operating_lease_liability"] = body["include_operating_lease_liability"]
+            elif "include_operating_lease_liability" in current["body"]:
+                saved["include_operating_lease_liability"] = current["body"]["include_operating_lease_liability"]
+            if "interest_addback" in body:
+                saved["interest_addback"] = body["interest_addback"]
+            elif "interest_addback" in current["body"]:
+                saved["interest_addback"] = current["body"]["interest_addback"]
+            for flag in ("include_senior_fees", "include_senior_swaps", "guaranteed_funds_none", "escrow_rate_scale", "llcr_definition"):
+                if flag in body:
+                    saved[flag] = body[flag]
+                elif flag in current["body"]:
+                    saved[flag] = current["body"][flag]
             if "actuals_end" in body:
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]

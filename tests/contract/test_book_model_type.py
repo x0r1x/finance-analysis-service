@@ -36,7 +36,7 @@ _OPEN = {"packt": 84, "rvi": 216}
 # У Packt interest уже основная строка. У RVI три неоднозначные строки interest остаются.
 _DROPPED = {"packt": (0, []), "rvi": (3, ["interest"])}
 # У Packt interest связан, поэтому ICR считается. LLCR и PLCR по-прежнему пропущены.
-_SKIPPED = {"packt": ["llcr", "plcr", "ncf"], "rvi": ["icr", "llcr", "plcr", "ncf"]}
+_SKIPPED = {"packt": ["llcr", "plcr", "ncf"], "rvi": ["icr", "icr_ebit", "llcr", "plcr", "ncf"]}
 
 
 @pytest.fixture
@@ -114,8 +114,16 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         hidden = sorted(
             item["metric"] for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"
         )
-        # Новые метрики среза 2 и FCFF на project_finance не считаются. Вопросы и привязки из-за них не меняются.
-        assert hidden == ["escrow_coverage", "fcff", "irr", "net_debt_ebitda", "npv"], alias
+        # Срез 2, FCFF и total_debt на project_finance не считаются. Вопросы и привязки из-за них не меняются.
+        assert hidden == [
+            "escrow_blended_rate",
+            "escrow_coverage",
+            "fcff",
+            "irr",
+            "net_debt_ebitda",
+            "npv",
+            "total_debt",
+        ], alias
         assert ratios["model_type"]["primary"] == "project_finance"
         assert "book_rows" not in ratios["result_data"], alias
         assert ratios["versions"]["model_types"] == local_service.model_types.version

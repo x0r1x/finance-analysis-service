@@ -69,6 +69,7 @@ class SemanticWriteGuard:
         binding_key: str | None = None,
         supersedes: dict | None = None,
         question_id: str | None = None,
+        evidence: dict | None = None,
     ) -> WriteResult:
         verdict = check_event(
             event_type=event_type,
@@ -91,6 +92,7 @@ class SemanticWriteGuard:
             binding_key=binding_key,
             supersedes=supersedes,
             question_id=question_id,
+            evidence=evidence,
         )
         return WriteResult(True, duplicate=duplicate, event=event)
 
@@ -111,6 +113,7 @@ class SemanticWriteGuard:
         binding_key: str | None = None,
         supersedes: dict | None = None,
         question_id: str | None = None,
+        evidence: dict | None = None,
     ) -> WriteResult:
         if event_type == "model_type.set":
             problem = assignment_error(value, known=self._model_types, max_labels=self._max_labels)
@@ -139,6 +142,7 @@ class SemanticWriteGuard:
             binding_key=binding_key,
             supersedes=supersedes,
             question_id=question_id,
+            evidence=evidence,
         )
 
     def review_derived(self, tables: dict, *, row_keys: frozenset[str]) -> Verdict:

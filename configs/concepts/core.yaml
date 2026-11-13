@@ -22,11 +22,74 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  lease_payments:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+    relations:
+      composed_of: [lease_principal, lease_interest]
+  lease_principal:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  lease_interest:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  finance_costs:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
   principal:
     semantic_role: measure
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  cfo_statement:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  cfi_statement:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+  financing_inflows:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: inflow
+  senior_principal:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  senior_interest_paid:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  senior_fees:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  senior_swaps:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  credit_limit:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  guaranteed_funds:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
   debt_outstanding:
     semantic_role: measure
     dimension: money
@@ -307,6 +370,11 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  depreciation_rou:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
   ebitda_ras:
     semantic_role: measure
     dimension: money
@@ -376,6 +444,42 @@ concepts:
     dimension: money
     temporal_nature: stock
   deferred_tax_liability:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  borrowings_lt:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  borrowings_st:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  borrowings_total:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  lease_liability:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  finance_lease_liability:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  operating_lease_liability:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  accounts_payable:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  section_lt_total:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  section_st_total:
     semantic_role: measure
     dimension: money
     temporal_nature: stock

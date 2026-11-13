@@ -14,17 +14,25 @@ required_concepts:
   - escrow_disclosure
   - escrow_coverage
   - effective_rate
+  - cfo_statement
+  - cfi_statement
+  - financing_inflows
+  - senior_principal
+  - senior_interest_paid
 metrics:
   escrow_coverage: {use: required}
-  dscr: {use: optional, variant: pf}
+  dscr: {use: required, variant: housing}
   icr: {use: not_applicable}
-  adscr: {use: not_applicable}
-  dscr_min: {use: not_applicable}
-  dscr_avg: {use: not_applicable}
-  llcr: {use: not_applicable}
+  icr_ebit: {use: not_applicable}
+  adscr: {use: optional, variant: housing}
+  dscr_min: {use: optional, variant: housing}
+  dscr_avg: {use: optional, variant: housing}
+  llcr: {use: optional, variant: cbr590}
   plcr: {use: not_applicable}
   net_debt_ebitda: {use: not_applicable}
   npv: {use: not_applicable}
   irr: {use: not_applicable}
+  total_debt: {use: not_applicable}
   fcff: {use: not_applicable}
   ncf: {use: optional}
+  escrow_blended_rate: {use: optional}

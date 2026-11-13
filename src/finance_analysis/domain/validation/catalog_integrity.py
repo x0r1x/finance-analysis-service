@@ -16,7 +16,7 @@ from finance_analysis.domain.validation.model_types import (
 )
 
 # Слоты, которые реально читает код (metrics.py / covenant.py).
-INTEREST_ORDER_SLOTS = frozenset({"icr", "corporate_covenant", "ocf_covenant", "pf"})
+INTEREST_ORDER_SLOTS = frozenset({"icr", "icr_ebit", "corporate_covenant", "ocf_covenant", "pf"})
 INTEREST_CANONICAL = "interest"
 # Декларативные rule id. Рантайм по ним не диспатчит (выбор B).
 MATCHING_RULES = frozenset({"interest_basis_paid"})
@@ -25,7 +25,7 @@ _COVERAGE_KEYS = frozenset({"row_fallbacks", "interest_order", "metrics", "toler
 _FALLBACK_KEYS = frozenset({"canonical", "binding_key", "matching"})
 _MATCHING_KEYS = frozenset({"rule"})
 _METRIC_KEYS = frozenset(
-    {"numerator", "denominator", "variants", "base", "rate", "window", "definition", "status"}
+    {"numerator", "denominator", "variants", "base", "rate", "window", "definition", "status", "aggregation"}
 )
 _SIDE_KEYS = frozenset({"plus", "minus"})
 
@@ -118,6 +118,10 @@ def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -
     for side_name in ("numerator", "denominator"):
         if side_name in body:
             _formula_term(name, side_name, body.get(side_name))
+    if "aggregation" in body and body.get("aggregation") != "stock":
+        raise CatalogIntegrityError(f"{name}: aggregation — stock")
+    if body.get("aggregation") == "stock" and "denominator" in body:
+        raise CatalogIntegrityError(f"{name}: сумма запаса без знаменателя")
     if "rate" in body:
         rate = body.get("rate")
         if not isinstance(rate, str) or not rate:

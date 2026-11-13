@@ -5,7 +5,6 @@ pref:
 alt:
   en: ["CFI"]
   ru:
-    - "Сальдо денежных потоков от инвестиционных операций"
     - "стр. 4200"
 definition:
   en: "Section total of investing cash flow. Not capital expenditure and not a detail line."

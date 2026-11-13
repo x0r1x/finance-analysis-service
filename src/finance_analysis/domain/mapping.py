@@ -7,6 +7,10 @@ import re
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
+from finance_analysis.domain.binding_evidence import (
+    depreciation_evidence_error,
+    stamped_depreciation_evidence,
+)
 from finance_analysis.domain.calibration import (
     Calibrator,
     Thresholds,
@@ -16,6 +20,9 @@ from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.components import component_records, scenario_of
 from finance_analysis.domain.glossary import (
     GlossaryPackage,
+    LabelHit,
+    _fold,
+    _peel,
     generic_case_label,
     label_scan,
     label_surface,
@@ -42,24 +49,125 @@ _OPERATING_PROFIT_REVIEW = (
     "Она сохраняется и не переносится на другое понятие. "
     "Подтверждение текущего смысла снимает пометку."
 )
-# Явная форма. Голое число соседней ячейки кодом не является: 50, 90 и 100 — метки глоссария.
-_MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
+# Белый список форм, коды баланса из каталога и подпись «стр. NNNN». Голое число вне каталога кодом не является.
+_MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*(\d+)\s*\(\s*(\d+)\s*\)$")
+_MARKED_LINE_CODES = {
+    ("5", "740"): "ф.5 (740)",
+    ("2", "2330"): "ф.2 (2330)",
+    ("2", "070"): "ф.2 (070)",
+}
 _STATED_LINE_CODE = re.compile(r"(?i)^(?:стр\.?|код|строка)\s*(\d{3,4})$")
+_BALANCE_LINE_CODES = frozenset({"1400", "1410", "1500", "1510", "1520", "510", "610"})
+# Коды сальдо и поступлений ОДДС. Голые 4123, 4224 и 4323 кодом не становятся:
+# их узнаёт только явная подпись «стр. NNNN». Сальдо 4300 и платежи 4320 в каталог не входят.
+_CASHFLOW_LINE_CODES = frozenset({"4100", "4200", "4310", "4311", "4312", "4313", "4314", "4319"})
+_STATEMENT_CODE = {
+    "4100": ("cfo_statement", "total"),
+    "4200": ("cfi_statement", "total"),
+    "4310": ("financing_inflows", "total"),
+    "4311": ("financing_inflows", "part"),
+    "4312": ("financing_inflows", "part"),
+    "4313": ("financing_inflows", "part"),
+    "4314": ("financing_inflows", "part"),
+    "4319": ("financing_inflows", "part"),
+}
+_SENIOR_CASH_CODE = {"4224": "senior_interest_paid", "4123": "senior_interest_paid", "4323": "senior_principal"}
+_SENIOR_MARKS = ("несубордин", "старш", "senior")
+_JUNIOR_MARKS = ("субордин", "акционер", "участник", "учредител", "shareholder", "subordinated")
+_MULTI_PRIMARY = frozenset(
+    {
+        "lease_liability",
+        "financing_inflows",
+        "senior_principal",
+        "senior_interest_paid",
+        "senior_fees",
+        "senior_swaps",
+    }
+)
 
 
 def marked_line_code(value: object) -> str | None:
-    """Явная форма кода. Голое число соседней ячейки кодом не является."""
+    """Код из белого списка форм, подписи «стр. NNNN» или кода баланса из каталога.
 
-    if not isinstance(value, str):
+    Форма вне белого списка — не код, даже если число совпало с балансом.
+    Голое число вне каталога кодом не является. Канон «стр. NNNN» снова проходит эту функцию.
+    """
+
+    if isinstance(value, bool) or value is None:
         return None
-    text = value.strip()
-    if _MARKED_LINE_CODE.match(text):
-        return "ф.5 (740)"
+    if isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        return None
+    match = _MARKED_LINE_CODE.match(text)
+    if match is not None:
+        return _MARKED_LINE_CODES.get((match.group(1), match.group(2)))
     stated = _STATED_LINE_CODE.match(text)
-    if stated is None:
+    if stated is not None:
+        return f"стр. {stated.group(1)}"
+    if text in _BALANCE_LINE_CODES or text in _CASHFLOW_LINE_CODES:
+        return text
+    return None
+
+
+def debt_seniority(row: dict) -> str:
+    """Старший долг читается раньше субординированного: «несубординированный» содержит тот же корень."""
+
+    text = _blob(row)
+    if any(mark in text for mark in _SENIOR_MARKS):
+        return "senior"
+    if any(mark in text for mark in _JUNIOR_MARKS):
+        return "subordinated"
+    return "unknown"
+
+
+def _stated_digits(code: str | None) -> str | None:
+    if not code:
         return None
-    # Канон снова проходит эту функцию. Голый «4123» второй проход отбрасывает.
-    return f"стр. {stated.group(1)}"
+    if code.startswith("стр. "):
+        digits = code.removeprefix("стр. ")
+        return digits if digits.isdigit() else None
+    return code if code.isdigit() else None
+
+
+def _line_code_assignment(row: dict, glossary: GlossaryPackage) -> Assignment | None:
+    """Код формы выбирает роль ОДДС. 4323 и 4224 без признака старшинства роль не получают.
+
+    Голые 4100 и 4200 остаются сальдо отчёта. Явная подпись «стр.», «код» или
+    «строка» этой таблицей не забирается: её читает глоссарий раздела.
+    """
+
+    raw = row.get("line_code")
+    code = marked_line_code(raw)
+    digits = _stated_digits(code)
+    stated = isinstance(raw, str) and _STATED_LINE_CODE.match(raw.strip()) is not None
+    if digits in _STATEMENT_CODE and not stated:
+        concept, role = _STATEMENT_CODE[digits]
+        return _coded_assignment(row, glossary, concept, code or digits, role)
+    if digits in _SENIOR_CASH_CODE and debt_seniority(row) == "senior":
+        return _coded_assignment(row, glossary, _SENIOR_CASH_CODE[digits], code or digits, "part")
+    return None
+
+
+def _coded_assignment(row: dict, glossary: GlossaryPackage, concept: str, code: str, role: str) -> Assignment | None:
+    spec = glossary.concepts.get(concept)
+    if spec is None:
+        return None
+    label = str(row.get("label") or "")
+    if not structure_pass(row, spec, label=label or code):
+        return None
+    return Assignment(
+        concept,
+        "bound",
+        "inferred",
+        True,
+        label or code,
+        "normal",
+        None,
+        {"line_code": code, "flow_role": role, "match_strength": "line_code"},
+    )
 
 
 @dataclass(frozen=True)
@@ -99,13 +207,27 @@ def assign_rows(
     facts: list[dict] | None = None,
 ) -> dict[str, Assignment]:
     apply_block_titles(rows)
-    human, ignored, absent, accepted = _decisions(events)
+    human, ignored, absent, accepted, marks = _decisions(events)
+    sheet_codes: dict[str, set[str]] = {}
+    for row in rows:
+        code = marked_line_code(row.get("line_code"))
+        if code:
+            sheet_codes.setdefault(str(row.get("sheet") or ""), set()).add(code)
     draft: list[tuple[dict, Assignment]] = []
     filtered: dict[str, list[dict]] = {}
     for row in rows:
         if row.get("kind") != "fact":
             continue
-        item = _one(row, human, ignored, absent, glossary, accepted)
+        item = _one(
+            row,
+            human,
+            ignored,
+            absent,
+            glossary,
+            accepted,
+            sheet_codes.get(str(row.get("sheet") or ""), set()),
+            marks,
+        )
         missed = _statement_filtered(row, glossary, roles)
         if missed:
             filtered.setdefault(missed, []).append(row)
@@ -201,7 +323,16 @@ def decide(
     return Assignment(top.concept, status, "inferred", True, matched, "normal", top_p, evidence)
 
 
-def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[str, str]) -> Assignment:
+def _one(
+    row,
+    human,
+    ignored,
+    absent,
+    glossary: GlossaryPackage,
+    accepted: dict[str, str],
+    sheet_codes: set[str] | None = None,
+    marks: dict[str, dict] | None = None,
+) -> Assignment:
     key = row["binding_key"]
     if key in ignored:
         return Assignment(None, "ignored", "confirmed", False, None, "normal")
@@ -209,6 +340,10 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[
         concept = human[key]
         if concept in absent:
             return Assignment(concept, "unknown", "confirmed", False, None, "normal")
+        evidence = _operating_profit_review(concept, accepted.get(key))
+        mark = (marks or {}).get(key)
+        if mark:
+            evidence = {**evidence, **mark}
         return Assignment(
             concept,
             "bound",
@@ -216,11 +351,14 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[
             True,
             None,
             "normal",
-            evidence=_operating_profit_review(concept, accepted.get(key)),
+            evidence=evidence,
         )
     if row.get("excluded"):
         return Assignment(None, "not_applicable", "inferred", False, None, "normal")
-    shared = _ambiguous_label(row, glossary)
+    coded = _line_code_assignment(row, glossary)
+    if coded is not None:
+        return coded
+    shared = _ambiguous_label(row, glossary, sheet_codes or set())
     if shared is not None:
         return shared
     found = lexical_hit(row, glossary)
@@ -237,6 +375,8 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[
     code = marked_line_code(row.get("line_code"))
     if code:
         evidence["line_code"] = code
+    if hit.concept == "borrowings_total":
+        evidence["granularity"] = "total"
     if strength == "section_heading":
         evidence["match_provenance"] = "section_heading"
         evidence["section_heading"] = _nearest_heading(row)
@@ -247,13 +387,91 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[
     return Assignment(hit.concept, status, "inferred", True, hit.text, "normal", None, evidence)
 
 
-def _ambiguous_label(row: dict, glossary: GlossaryPackage) -> Assignment | None:
-    """Метка нескольких понятий не выбирает одно. Кандидаты остаются в evidence."""
+def _blob(row: dict) -> str:
+    parts = [str(row.get("label") or ""), str(row.get("parent_label") or ""), str(row.get("label_path_text") or "")]
+    path = row.get("label_path")
+    if isinstance(path, (list, tuple)):
+        parts.extend(str(item) for item in path)
+    return " ".join(parts).casefold().replace("ё", "е")
+
+
+def _mentions(blob: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in blob for needle in needles)
+
+
+def _debt_context(row: dict, sheet_codes: set[str]) -> str | None:
+    """Код, раздел или лист модели выбирают одно понятие общей подписи."""
+
+    label = str(row.get("label") or "")
+    peeled = _peel(label)
+    folded = _fold(peeled.body)
+    if folded not in {"заемные средства", "займы и кредиты"}:
+        return None
+    surface = label.casefold().replace("ё", "е")
+    blob = _blob(row)
+    long_term = _mentions(blob, ("раздел iv", "iv. долгосроч", "долгосрочные обязательства", "non-current", "long-term"))
+    short_term = _mentions(blob, ("раздел v", "v. краткосроч", "краткосрочные обязательства", "short-term"))
+    codes = [marked_line_code(row.get("line_code"))]
+    codes.extend(peeled.codes)
+    legacy = not ({"1410", "1510"} & sheet_codes)
+    for code in codes:
+        if code in {"1410"} or (code == "510" and legacy):
+            return "borrowings_lt"
+        if code in {"1510"} or (code == "610" and legacy):
+            return "borrowings_st"
+    if long_term and not short_term:
+        return "borrowings_lt"
+    if short_term and not long_term:
+        return "borrowings_st"
+    if "итого" in surface:
+        return "borrowings_total"
+    sheet = str(row.get("sheet") or "").casefold().replace("ё", "е")
+    if folded == "займы и кредиты" and ("модель долга" in sheet or "debt model" in sheet):
+        return "debt_outstanding"
+    return None
+
+
+def _lease_breakdown(row: dict) -> bool:
+    """Субсчет аренды: код 76.07 или счет 76 вместе с «Арендные обязательства»."""
+
+    blob = _blob(row)
+    if re.search(r"76\s*\.\s*07", blob):
+        return True
+    return "арендные обязательства" in blob and re.search(r"(?<!\d)76(?!\d)", blob) is not None
+
+
+def _drop_borrowings_total(draft: list[tuple[dict, Assignment]]) -> None:
+    """Итог заемных средств не входит в сумму, если на листе уже есть 1410 или 1510."""
+
+    lined: set[str] = set()
+    for row, item in draft:
+        if item.concept in {"borrowings_lt", "borrowings_st"} and item.is_primary and item.status in {"bound", "bound_with_warning"}:
+            lined.add(str(row.get("sheet") or ""))
+    for index, (row, item) in enumerate(draft):
+        if item.concept == "borrowings_total" and str(row.get("sheet") or "") in lined:
+            draft[index] = (row, _drop_primary(item))
+
+
+def _ambiguous_label(row: dict, glossary: GlossaryPackage, sheet_codes: set[str] | None = None) -> Assignment | None:
+    """Метка нескольких понятий не выбирает одно. Кандидаты остаются в evidence.
+
+    «Заемные средства» и «Займы и кредиты» разрешаются по коду строки, заголовку
+    раздела или листу модели. Без этого контекста победителя нет.
+    """
 
     label = str(row.get("label") or "")
     hits = glossary.ambiguous_hits(label)
     if len(hits) < 2:
         return None
+    chosen = _debt_context(row, sheet_codes or set())
+    if chosen is not None:
+        evidence = {"match_strength": "exact", "label": {"kind": "alt", "text": label}}
+        code = marked_line_code(row.get("line_code"))
+        if code:
+            evidence["line_code"] = code
+        if chosen == "borrowings_total":
+            evidence["granularity"] = "total"
+        return Assignment(chosen, "bound", "inferred", True, label, "normal", None, evidence)
     candidates = []
     for hit in hits:
         concept = glossary.concepts.get(hit.concept)
@@ -302,6 +520,8 @@ def lexical_hit(row: dict, glossary: GlossaryPackage):
     """
 
     label = str(row.get("label") or "")
+    if _lease_breakdown(row) and glossary.concepts.get("lease_liability") is not None:
+        return LabelHit("lease_liability", "alt", label), "exact"
     found = glossary.resolve_match(label)
     if found is not None:
         hit, _strength = found
@@ -399,7 +619,9 @@ def _one_primary(
         if item.is_primary and item.concept and item.status in {"bound", "bound_with_warning"}:
             # Разная основа цены — не одна величина. Пул основной строки у каждой свой.
             owners.setdefault((item.concept, _terms_key(item)), []).append(index)
-    for indexes in list(owners.values()):
+    for key, indexes in list(owners.items()):
+        if key[0] in _MULTI_PRIMARY:
+            continue
         headed = [index for index in indexes if _via_heading(draft[index][1])]
         labeled = [index for index in indexes if index not in headed]
         if labeled and headed:
@@ -470,6 +692,7 @@ def _one_primary(
         for index in drop:
             row, item = draft[index]
             draft[index] = (row, _drop_primary(item, ambiguous=True))
+    _drop_borrowings_total(draft)
     _release_split_terms(draft)
 
 
@@ -1134,19 +1357,25 @@ def absent_in_journal(events: list[dict]) -> frozenset[str]:
     return frozenset(_decisions(events)[2])
 
 
-def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str], dict[str, str]]:
+def _decisions(events: list[dict]):
     from finance_analysis.domain.state import fold
 
     human: dict[str, str] = {}
     ignored: set[str] = set()
     absent: set[str] = set()
     accepted: dict[str, str] = {}
+    marks: dict[str, dict] = {}
     for event in sorted(fold(events).values(), key=lambda item: int(item["seq"])):
         kind = event.get("type")
         binding = str(event.get("binding_key") or event.get("target") or "")
         value = event.get("value")
         if kind in _HUMAN and isinstance(value, str) and binding != "book":
             human[binding] = value
+            raw = event.get("evidence")
+            if isinstance(raw, dict) and depreciation_evidence_error(value, raw) is None:
+                marks[binding] = stamped_depreciation_evidence(raw, event)
+            else:
+                marks.pop(binding, None)
             if event.get("meaning") == OPERATING_PROFIT_MEANING and value == "operating_profit":
                 accepted[binding] = OPERATING_PROFIT_MEANING
             else:
@@ -1155,4 +1384,4 @@ def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str], 
             ignored.add(binding)
         elif kind == "concept.absent" and isinstance(value, str):
             absent.add(value)
-    return human, ignored, absent, accepted
+    return human, ignored, absent, accepted, marks
