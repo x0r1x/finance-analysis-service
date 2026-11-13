@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
@@ -35,6 +36,18 @@ _MONEY = frozenset({"money", "price"})
 MODEL_LABEL = "model:"
 AGREE_SHARE = Decimal("0.8")
 _HUMAN = frozenset({"concept.set", "concept.confirmed"})
+# Явная форма кода пояснений. Голое число соседней ячейки кодом не является.
+_MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
+
+
+def marked_line_code(value: object) -> str | None:
+    """Код строки только в форме «Ф. 5 (740)». Иначе код для сопоставления не определён."""
+
+    if not isinstance(value, str):
+        return None
+    if not _MARKED_LINE_CODE.match(value.strip()):
+        return None
+    return "ф.5 (740)"
 
 
 @dataclass(frozen=True)
@@ -201,9 +214,9 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage) -> Assignment:
         "label": {"id": label_id(hit.concept, hit.kind, hit.text), "kind": hit.kind, "text": hit.text},
         "match_strength": strength,
     }
-    code = row.get("line_code")
-    if isinstance(code, str) and code.strip():
-        evidence["line_code"] = code.strip()
+    code = marked_line_code(row.get("line_code"))
+    if code:
+        evidence["line_code"] = code
     if strength == "section_heading":
         evidence["match_provenance"] = "section_heading"
         evidence["section_heading"] = _nearest_heading(row)
@@ -260,7 +273,7 @@ def lexical_hit(row: dict, glossary: GlossaryPackage):
         if not structure_pass(row, glossary.concepts[hit.concept], label=label):
             return None
         return found
-    code = str(row.get("line_code") or "").strip()
+    code = marked_line_code(row.get("line_code"))
     if code and code != label:
         coded = glossary.resolve_match(code)
         if coded is not None:

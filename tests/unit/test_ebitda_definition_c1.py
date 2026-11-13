@@ -291,7 +291,10 @@ def test_profile_stores_only_book_ras_or_ifrs(tmp_path):
 
 
 def test_code_column_beside_the_label_reaches_the_binding():
-    """Столбец D книги, не текст подписи. Код 50 и ф.5 (740) живут в ячейке справа от заголовка."""
+    """Явная форма «Ф. 5 (740)» в соседней ячейке — код. Голое 50 с ролью value — нет.
+
+    Билдер помечает числовую ячейку ролью value. Роли code у него нет.
+    """
 
     from finance_analysis.adapters.builder.acl import parse_context
     from finance_analysis.application.project import derive_rows, project
@@ -314,8 +317,8 @@ def test_code_column_beside_the_label_reaches_the_binding():
                     "kind": "timeline",
                     "label_col": 3,
                     "rows": [
-                        _sheet_row(30, "Прибыль (убыток) от реализации", "50"),
-                        _sheet_row(43, "Амортизация на конец года (заполняется только 4 кв.)", "ф.5 (740)"),
+                        _sheet_row(30, "Прибыль (убыток) от реализации", 50),
+                        _sheet_row(43, "Амортизация на конец года (заполняется только 4 кв.)", "Ф. 5 (740)"),
                     ],
                 }
             ],
@@ -324,7 +327,7 @@ def test_code_column_beside_the_label_reaches_the_binding():
     assert isinstance(snapshot, WorkbookSnapshot)
     projected, _warnings = project(snapshot, model_id="m", build="b")
     by_num = {row["row_num"]: row for row in projected["dim_row"]}
-    assert by_num[30]["line_code"] == "50"
+    assert by_num[30]["line_code"] is None
     assert by_num[43]["line_code"] == "ф.5 (740)"
     assert "50" not in by_num[30]["label"]
     assert "ф.5" not in by_num[43]["label_path_text"]
@@ -334,12 +337,62 @@ def test_code_column_beside_the_label_reaches_the_binding():
     notes = rows["Фин отчетность РСБУ|43|Фин отчетность РСБУ!r1"]
     assert sales["concept"] == "profit_from_sales"
     assert notes["concept"] == "depreciation_notes"
-    assert '"line_code": "50"' in sales["evidence_json"] or '"line_code":"50"' in sales["evidence_json"].replace(" ", "")
+    assert "line_code" not in sales["evidence_json"]
     assert "ф.5 (740)" in notes["evidence_json"]
     assert "ф.5" not in notes["label_path_text"]
 
 
-def _sheet_row(number: int, label: str, code: str) -> dict:
+@pytest.mark.parametrize("value", [50, 90, 100])
+def test_numeric_neighbour_does_not_bind_profit_from_sales(value: int):
+    """Неизвестная подпись и соседнее число с ролью value не становятся кодом строки."""
+
+    from finance_analysis.adapters.builder.acl import parse_context
+    from finance_analysis.application.project import derive_rows, project
+
+    snapshot = parse_context(
+        {
+            "axes": [
+                {
+                    "id": "ax",
+                    "sheet": "Фин отчетность РСБУ",
+                    "kind": "time",
+                    "periods": [{"col": 6, "period_key": "Y1", "index": 1, "text": "2024"}],
+                }
+            ],
+            "blocks": [
+                {
+                    "block_id": "Фин отчетность РСБУ!r1",
+                    "sheet": "Фин отчетность РСБУ",
+                    "kind": "timeline",
+                    "label_col": 3,
+                    "rows": [_sheet_row(12, "Прочая строка без кода", value)],
+                }
+            ],
+        }
+    )
+    projected, _warnings = project(snapshot, model_id="m", build="b")
+    assert projected["dim_row"][0]["line_code"] is None
+    derived = derive_rows(projected, state_seq=1, derive="d", versions={"glossary": "g"}, glossary=load_catalog())
+    binding = derived["bindings"][0]
+    assert binding["concept"] != "profit_from_sales"
+    assert binding["status"] == "unknown"
+    assert binding["concept"] is None
+
+
+@pytest.mark.parametrize("code", ["50", "90", "100"])
+def test_bare_line_code_is_not_a_semantic_match(code: str):
+    """Даже если код уже лежит на строке, голое число понятие не выбирает."""
+
+    row = _row("row", "Прочая строка без кода")
+    row["line_code"] = code
+    item = assign_rows([row], [], load_catalog())["row"]
+    assert item.concept != "profit_from_sales"
+    assert item.status == "unknown"
+    assert item.concept is None
+    assert "line_code" not in item.evidence
+
+
+def _sheet_row(number: int, label: str, code: object) -> dict:
     return {
         "row_key": f"Фин отчетность РСБУ|{number}|Фин отчетность РСБУ!r1",
         "sheet": "Фин отчетность РСБУ",
@@ -347,5 +400,5 @@ def _sheet_row(number: int, label: str, code: str) -> dict:
         "label": label,
         "kind": "fact",
         "unit": "money",
-        "cells": [{"col": 4, "cached_value": code, "role": "code"}],
+        "cells": [{"col": 4, "cached_value": code, "role": "value"}],
     }

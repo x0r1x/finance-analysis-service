@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import date
 from typing import Any
 
@@ -23,6 +22,7 @@ from finance_analysis.domain.book import (
     WorkbookSnapshot,
 )
 from finance_analysis.domain.errors import UnsupportedBuilderShape
+from finance_analysis.domain.mapping import marked_line_code
 
 
 class _In(BaseModel):
@@ -425,11 +425,8 @@ def _read_row(
     )
 
 
-_LINE_CODE = re.compile(r"^(?:ф\.\s*5\s*\(\s*740\s*\)|\d{2,4})$", re.IGNORECASE)
-
-
 def _line_code(row: RowIn, block: BlockIn) -> str | None:
-    """Код строки стоит в столбце сразу справа от подписи, не в тексте заголовка."""
+    """Код строки — явная форма в столбце справа от подписи, не голое число."""
 
     if block.label_col is None:
         return None
@@ -437,12 +434,7 @@ def _line_code(row: RowIn, block: BlockIn) -> str | None:
     for cell in row.cells or []:
         if cell.col != wanted or cell.cached_value is None:
             continue
-        text = str(cell.cached_value).strip()
-        if not _LINE_CODE.match(text):
-            return None
-        if text[:1].isdigit():
-            return text
-        return "ф.5 (740)"
+        return marked_line_code(cell.cached_value)
     return None
 
 
