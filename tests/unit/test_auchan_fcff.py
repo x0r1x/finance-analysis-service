@@ -237,6 +237,20 @@ def test_annual_book_check_sums_quarters_and_does_not_read_the_book_cell():
     assert gap["params"]["book"] == Decimal(234)
     assert "не посчитан" in gap["params"]["message"]
 
+    absent_ocf = [
+        item
+        for item in facts
+        if not (item["row_key"] == "ocf" and item["period_id"] == "2016Q4")
+    ]
+    dropped = _run(
+        bindings,
+        absent_ocf,
+        periods,
+        book=[{"cell_id": "Outputs!V18", "value": "234", "calendar_year": 2016}],
+    )
+    [hole] = [item for item in dropped["warnings"] if item["code"] == "fcff_book_mismatch"]
+    assert hole["params"]["fas"] is None
+
 
 def test_outputs_row_18_literal_is_point_two():
     key = "Outputs|18|Outputs!r1"

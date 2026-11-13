@@ -471,18 +471,6 @@ def _book_mismatch(rows: list[dict], periods: list[dict], book: list[dict]) -> l
 
     if not book:
         return []
-    year_of: dict[tuple, int] = {}
-    for period in periods:
-        year = _year(period.get("calendar_year"))
-        if year is None:
-            continue
-        year_of[(period.get("axis_id"), period.get("period_id"))] = year
-    grouped: dict[int, list[dict]] = {}
-    for row in rows:
-        year = year_of.get((row.get("axis_id"), row.get("period_id")))
-        if year is None:
-            continue
-        grouped.setdefault(year, []).append(row)
     notes = []
     for item in book:
         if not isinstance(item, dict):
@@ -491,13 +479,7 @@ def _book_mismatch(rows: list[dict], periods: list[dict], book: list[dict]) -> l
         if book_value is None:
             continue
         year = _year(item.get("calendar_year"))
-        members = grouped.get(year, []) if year is not None else []
-        fas = None
-        if members and all(
-            row.get("status") == "computed" and isinstance(row.get("value"), Decimal)
-            for row in members
-        ):
-            fas = _money(sum((row["value"] for row in members), Decimal(0)))
+        fas = _fas_for_year(rows, periods, year) if year is not None else None
         if fas is not None and _close(fas, book_value):
             continue
         cell = item.get("cell_id") or item.get("cell")
@@ -514,6 +496,43 @@ def _book_mismatch(rows: list[dict], periods: list[dict], book: list[dict]) -> l
             }
         )
     return notes
+
+
+def _fas_for_year(rows: list[dict], periods: list[dict], year: int) -> Decimal | None:
+    """Одна ось и одно зерно. Нет периода этой оси — годового числа нет."""
+
+    period_of = {
+        (period.get("axis_id"), period.get("period_id")): period for period in periods
+    }
+    located: list[tuple[dict, dict]] = []
+    for row in rows:
+        period = period_of.get((row.get("axis_id"), row.get("period_id")))
+        if period is None or _year(period.get("calendar_year")) != year:
+            continue
+        located.append((period, row))
+    scopes = {(period.get("axis_id"), period.get("grain")) for period, _row in located}
+    if len(scopes) != 1:
+        return None
+    axis_id, grain = next(iter(scopes))
+    needed: set[tuple] = set()
+    for period in periods:
+        if period.get("axis_id") != axis_id or period.get("grain") != grain:
+            continue
+        if _year(period.get("calendar_year")) != year:
+            continue
+        needed.add((axis_id, period.get("period_id")))
+    got = {(period.get("axis_id"), period.get("period_id")) for period, _row in located}
+    if got != needed or not needed:
+        return None
+    values: list[Decimal] = []
+    for _period, row in located:
+        value = row.get("value")
+        if row.get("status") != "computed" or not isinstance(value, Decimal):
+            return None
+        values.append(value)
+    if len(values) != len(needed):
+        return None
+    return _money(sum(values, Decimal(0)))
 
 
 def _year(value) -> int | None:
