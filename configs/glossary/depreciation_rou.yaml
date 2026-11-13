@@ -1,0 +1,12 @@
+concept: depreciation_rou
+pref:
+  en: "Right-of-use depreciation"
+  ru: "Амортизация права пользования"
+alt:
+  en:
+    - "Depreciation of right-of-use assets"
+  ru:
+    - "Амортизация актива в форме права пользования"
+definition:
+  en: "Depreciation of a right-of-use asset, IFRS 16 or FSBU 25. Not depreciation of PPE or intangibles. icr.bank adds it under ebitda_definition ifrs. Under ras it is excluded unless include_rou_depreciation is set, or subtracted when a notes total is marked includes_rou and this amount is known."
+  ru: "Амортизация актива в форме права пользования, IFRS 16 или ФСБУ 25. Не амортизация основных средств и НМА. Профиль icr.bank прибавляет её при ebitda_definition ifrs. При ras она не входит, пока не задан include_rou_depreciation, либо вычитается, когда итог пояснений помечен includes_rou и эта сумма известна."

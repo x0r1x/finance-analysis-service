@@ -18,6 +18,7 @@ from finance_analysis.domain.cover_metrics import (
     grain_months,
 )
 from finance_analysis.domain.free_cash_flow import free_cash_flow
+from finance_analysis.domain.mapping import marked_line_code
 from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
@@ -32,8 +33,9 @@ from finance_analysis.domain.metrics import (
     aligned_keys,
     confirm_paid_interest,
     coverage_ratio,
+    ebitda_definition,
     interest_choice,
-    recipe_block,
+    methodology_block,
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
@@ -236,7 +238,7 @@ def composed_ratio(
     absent: frozenset[str] = frozenset(),
     profile: dict | None = None,
 ) -> dict:
-    blocked = recipe_block(
+    blocked = methodology_block(
         profile,
         bindings,
         metric=metric,
@@ -400,8 +402,8 @@ def icr_definition_error(value) -> str | None:
 
     if not isinstance(value, dict) or _number(value):
         return "icr_definition: variant и lease_mode, без чисел"
-    if set(value) - {"variant", "lease_mode", "denominator", "finance_costs_confirmed"}:
-        return "icr_definition: только variant, lease_mode, denominator и finance_costs_confirmed"
+    if set(value) - {"variant", "lease_mode", "denominator", "finance_costs_confirmed", "include_rou_depreciation"}:
+        return "icr_definition: только variant, lease_mode, denominator, finance_costs_confirmed и include_rou_depreciation"
     if "variant" in value and value.get("variant") != "bank":
         return "icr_definition: variant bank"
     mode = value.get("lease_mode")
@@ -409,6 +411,8 @@ def icr_definition_error(value) -> str | None:
         return "icr_definition: lease_mode in_interest, add_interest или nominal"
     if "finance_costs_confirmed" in value and not isinstance(value.get("finance_costs_confirmed"), bool):
         return "icr_definition: finance_costs_confirmed — да или нет"
+    if "include_rou_depreciation" in value and not isinstance(value.get("include_rou_depreciation"), bool):
+        return "icr_definition: include_rou_depreciation — да или нет"
     if "denominator" in value:
         return _denominator_error(value.get("denominator"))
     return None
@@ -823,7 +827,222 @@ def _lease_terms(primaries: dict) -> tuple[list[str], list[str], dict | None]:
     return [], [], _ask("icr", "lease_interest", "concept_unknown")
 
 
+_STATEMENT = frozenset({"ras", "ifrs"})
+_RAS_INTEREST = frozenset({"ф.2 (2330)", "ф.2 (070)"})
+_LEASE_STANDARD = {
+    "ifrs16": "ifrs16",
+    "ifrs_16": "ifrs16",
+    "fsbu25": "fsbu25",
+    "fsbu_25": "fsbu25",
+    "operating": "operating",
+}
+_CAPITAL_LEASE = frozenset({"ifrs16", "fsbu25"})
+_VALUE_BASIS = frozenset({"period", "ytd", "annual"})
+_DEPRECIATION_MISSING = (
+    "Коэффициент не посчитан: нет амортизации из пояснений за тот же период. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
+_STATEMENT_LINE_MISSING = (
+    "Коэффициент не посчитан: нет строки прибыли отчётности для выбранной методики расчёта EBITDA. "
+    "Строка EBITDA из модели сюда не подставляется."
+)
+_BASIS_MISMATCH = (
+    "Коэффициент не посчитан: база EBITDA не совпадает с базой знаменателя. "
+    "РСБУ ждёт строку 2330 или 070, МСФО — финансовые расходы или проценты без этих кодов."
+)
+_LEASE_DOUBLE = (
+    "Коэффициент не посчитан: методика EBITDA по IFRS 16 или ФСБУ 25 не сочетается с режимом add_interest. "
+    "Проценты по аренде уже входят в знаменатель."
+)
+_DEP_PERIOD = "Амортизация пояснений другого зерна. Годовое значение на квартальный LTM не раскладывается."
+_ROU_MIXED = (
+    "Коэффициент не посчитан: амортизация пояснений включает право пользования, "
+    "а отделить эту часть нельзя. В EBITDA по РСБУ она не входит."
+)
+_ROU_UNKNOWN = (
+    "Коэффициент не посчитан: для МСФО не подтверждено, входит ли амортизация права пользования "
+    "в сумму пояснений. Нужна строка depreciation_rou или пометка includes_rou."
+)
+_ROU_MARK = "Коэффициент не посчитан: пометка includes_rou должна быть да или нет и с источником подтверждения."
+_DEP_BASIS = (
+    "Коэффициент не посчитан: у амортизации нет подтверждённой базы суммы "
+    "(value_basis: period, ytd или annual). Зерно периода книги её не заменяет."
+)
+_INTERNAL_ICR_NOTE = (
+    "Внутренний профиль icr.bank. Не ICR по Указанию Банка России № 6960-У. "
+    "Числитель — утверждённая формула этого профиля, не универсальная EBITDA по РСБУ."
+)
+
+
+def _held(reason: str, message: str) -> dict:
+    return {
+        "metric": "icr",
+        "rows": [],
+        "needs_input": [],
+        "missing_inputs": [],
+        "warnings": [{"code": reason, "params": {"message": message}}],
+        "status": "not_computed",
+        "reason": reason,
+        "message": message,
+    }
+
+
+def _form_code(row: dict) -> str | None:
+    raw = row.get("line_code")
+    if not isinstance(raw, str) or not raw:
+        raw = _evidence_of(row).get("line_code")
+    return marked_line_code(raw)
+
+
+def _basis_conflict(kind: str, denominator: str, primaries: dict) -> bool:
+    """РСБУ — строка 2330 или 070. МСФО — финансовые расходы или проценты без этих кодов."""
+
+    ras_line = _form_code(primaries[denominator]) in _RAS_INTEREST
+    if kind == "ras":
+        return denominator != "interest" or not ras_line
+    return not (denominator == "finance_costs" or (denominator == "interest" and not ras_line))
+
+
+def _standard_token(profile: dict | None) -> str | None:
+    """Стандарт учёта аренды. База отчётности — это ebitda_definition, не это поле."""
+
+    evidence = _denominator(profile) or {}
+    raw = evidence.get("standard")
+    if not isinstance(raw, str):
+        return None
+    token = "".join(raw.casefold().replace("ё", "е").split()).replace("-", "_")
+    token = token.replace("фсбу", "fsbu")
+    return _LEASE_STANDARD.get(token)
+
+
+def _lease_double_counts(mode: str, profile: dict | None) -> bool:
+    """IFRS 16 и ФСБУ 25 уже держат проценты аренды в знаменателе. add_interest задваивает их."""
+
+    if mode != "add_interest":
+        return False
+    return _standard_token(profile) in _CAPITAL_LEASE
+
+
+def _reported_grains(facts: list[dict], row: dict, periods: list[dict]) -> set[int]:
+    row_key = row.get("row_key")
+    present = {
+        (fact.get("axis_id"), fact.get("period_id"))
+        for fact in facts
+        if fact.get("row_key") == row_key and fact.get("normalized_value") not in (None, "")
+    }
+    grains: set[int] = set()
+    for item in periods:
+        if (item.get("axis_id"), item.get("period_id")) not in present:
+            continue
+        months = grain_months(item.get("grain"))
+        if months is not None:
+            grains.add(months)
+    return grains
+
+
+def _include_rou(profile: dict | None) -> bool:
+    raw = (profile or {}).get("icr_definition")
+    return isinstance(raw, dict) and raw.get("include_rou_depreciation") is True
+
+
+def _notes_include_rou(row: dict) -> bool | None:
+    """True, False или None, если пометка есть, но она не bool или без источника."""
+
+    evidence = _evidence_of(row)
+    if "includes_rou" not in evidence:
+        return False
+    mark = evidence.get("includes_rou")
+    if not isinstance(mark, bool):
+        return None
+    source = evidence.get("includes_rou_source")
+    if mark and (not isinstance(source, str) or not source.strip()):
+        return None
+    return mark
+
+
+def _value_basis(row: dict) -> str | None:
+    raw = _evidence_of(row).get("value_basis")
+    if raw not in _VALUE_BASIS:
+        return None
+    if raw == "ytd" and basis_of(row)[0] != "ytd":
+        return None
+    return raw
+
+
+def _statement_terms(kind: str, primaries: dict, profile: dict | None):
+    """Плюс и минус числителя. Право пользования в РСБУ не входит без явного флага.
+
+    Общая строка с пометкой includes_rou для РСБУ годится, только если рядом есть
+    отдельная сумма depreciation_rou и её можно вычесть. Иначе отказ.
+    МСФО считает, только если право пользования отдельно или итог явно помечен includes_rou.
+    """
+
+    profit = "profit_from_sales" if kind == "ras" else "ifrs_operating_profit"
+    if profit not in primaries:
+        return None, _held("statement_line_missing", _STATEMENT_LINE_MISSING)
+    if "depreciation_notes" not in primaries:
+        return None, _held("depreciation_missing", _DEPRECIATION_MISSING)
+    mixed = _notes_include_rou(primaries["depreciation_notes"])
+    if mixed is None:
+        return None, _held("includes_rou_invalid", _ROU_MARK)
+    separate = "depreciation_rou" in primaries
+    allow = _include_rou(profile)
+    if kind == "ifrs" and not separate and not mixed:
+        return None, _held("depreciation_rou_completeness_unknown", _ROU_UNKNOWN)
+    if kind == "ras" and mixed and not allow and not separate:
+        return None, _held("depreciation_rou_unseparated", _ROU_MIXED)
+    plus = [profit, "depreciation_notes"]
+    minus: list[str] = []
+    if kind == "ifrs" and separate and not mixed:
+        plus.append("depreciation_rou")
+    elif kind == "ras" and mixed and not allow:
+        minus.append("depreciation_rou")
+    elif kind == "ras" and separate and allow and not mixed:
+        plus.append("depreciation_rou")
+    return (tuple(plus), tuple(minus)), None
+
+
+def _depreciation_grain_mismatch(grains: set[int], period: dict) -> bool:
+    """Год не заполняет квартальный LTM. Чужое зерно не переводится и не делится."""
+
+    months = grain_months(period.get("grain"))
+    if months is None or not grains:
+        return True
+    if months >= 12:
+        return not any(grain >= 12 for grain in grains)
+    return months not in grains
+
+
 def bank_icr(
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    profile: dict | None = None,
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+) -> dict:
+    """Внутренний профиль icr.bank. Поле regulatory_6960u всегда ложь."""
+
+    result = _bank_icr(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        profile=profile,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        absent=absent,
+    )
+    return {
+        **result,
+        "profile": "icr.bank",
+        "regulatory_6960u": False,
+        "profile_note": _INTERNAL_ICR_NOTE,
+    }
+
+
+def _bank_icr(
     *,
     facts: list[dict],
     bindings: list[dict],
@@ -836,23 +1055,59 @@ def bank_icr(
     """Внутренний профиль icr.bank. Не ICR по 6960-У и не ковенант договора.
 
     EBIT не подставляется. Окно LTM, квартал — только справочная строка.
+    При пометке ras числитель — прибыль от продаж плюс амортизация ОС и НМА.
+    Право пользования входит только по флагу include_rou_depreciation.
+    При пометке ifrs к операционной прибыли добавляется и амортизация права пользования.
     """
 
-    blocked = recipe_block(profile, bindings, metric="icr", names=("ebitda",))
-    if blocked:
-        return blocked
+    kind = ebitda_definition(profile)
+    stated = kind in _STATEMENT
+    if not stated:
+        blocked = methodology_block(profile, bindings, metric="icr", names=("ebitda",))
+        if blocked:
+            return blocked
     mode = _icr_mode(profile)
     if mode == "nominal":
         return _ask("icr", "lease_mode", "nominal")
     if mode not in _LEASE_MODES:
         return _ask("icr", "lease_mode", "missing")
+    if _denominator(profile) is not None and _standard_token(profile) is None:
+        return _ask("icr", "lease_standard", "unknown")
     primaries = _primaries(bindings, absent)
-    if "ebitda" not in primaries:
+    terms = None
+    if stated:
+        terms, blocked = _statement_terms(kind, primaries, profile)
+        if blocked:
+            return blocked
+    elif "ebitda" not in primaries:
         return _ask("icr", "ebitda", "concept_unknown")
     formula, warnings, problem = _bank_formula(primaries, mode, profile)
     if problem:
         return problem
     assert formula is not None
+    dep_grains: list[set[int]] | None = None
+    if terms:
+        plus, minus = terms
+        formula = Composed(Side(plus, minus), formula.denominator, formula.window)
+        if _basis_conflict(kind, formula.denominator.plus[0], primaries):
+            return _held("statement_basis_mismatch", _BASIS_MISMATCH)
+        if _lease_double_counts(mode, profile):
+            return _held("lease_ebitda_double_count", _LEASE_DOUBLE)
+        dep_names = [name for name in (*plus, *minus) if name.startswith("depreciation_")]
+        dep_grains = []
+        for name in dep_names:
+            basis = _value_basis(primaries[name])
+            if basis is None:
+                return _held("depreciation_basis_unknown", _DEP_BASIS)
+            if basis == "annual":
+                dep_grains.append({12})
+                continue
+            grains = _reported_grains(facts, primaries[name], periods)
+            if not grains:
+                if name == "depreciation_rou":
+                    return _held("depreciation_rou_unseparated", _ROU_MIXED)
+                return _held("depreciation_missing", _DEPRECIATION_MISSING)
+            dep_grains.append(grains)
     if mode == "in_interest":
         blocked_mode = _require_interest_expense(profile, primaries, periods, formula.denominator.plus[0])
         if blocked_mode:
@@ -918,6 +1173,23 @@ def bank_icr(
                         names,
                         "LTM",
                         variant="bank",
+                    )
+                )
+                continue
+            if dep_grains is not None and any(
+                _depreciation_grain_mismatch(grains, period) for grains in dep_grains
+            ):
+                rows.append(
+                    _line(
+                        "icr",
+                        period,
+                        None,
+                        "not_computed",
+                        "depreciation_period_mismatch",
+                        names,
+                        "LTM",
+                        variant="bank",
+                        message=_DEP_PERIOD,
                     )
                 )
                 continue
@@ -998,7 +1270,7 @@ def bank_icr(
             status = "needs_input"
         elif any(row.get("reason") == "no_interest" for row in ltm):
             status = "missing_input"
-        elif any(row.get("reason") == "invalid_denominator" for row in ltm):
+        elif any(row.get("reason") in {"invalid_denominator", "depreciation_period_mismatch"} for row in ltm):
             status = "not_computed"
         elif any(row.get("reason") == "partial_window" for row in ltm):
             status = "partial_window"

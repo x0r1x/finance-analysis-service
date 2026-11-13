@@ -52,6 +52,7 @@ from finance_analysis.application.semantic_guard import SemanticWriteGuard
 from finance_analysis.application.sheet_roles import sheet_roles_version
 from finance_analysis.application.tools import build_tools
 from finance_analysis.domain.audit import actuals_end_value_error
+from finance_analysis.domain.binding_evidence import depreciation_evidence_error
 from finance_analysis.domain.book import (
     FAS_PROJECTION_VERSION,
     FAS_SCHEMA_VERSION,
@@ -1592,6 +1593,15 @@ class FasService:
             if id_problem:
                 results.append(_rejected(index, "schema_invalid", id_problem))
                 continue
+            evidence = item.get("evidence")
+            if evidence is not None and not isinstance(evidence, dict):
+                results.append(_rejected(index, "schema_invalid", "evidence должен быть объектом"))
+                continue
+            if isinstance(concept, str):
+                problem = depreciation_evidence_error(concept, evidence if isinstance(evidence, dict) else None)
+                if problem:
+                    results.append(_rejected(index, "schema_invalid", problem))
+                    continue
             written = await self.guard.write_decision(
                 job_id,
                 event_type=event_type,
@@ -1607,6 +1617,7 @@ class FasService:
                 binding_key=None if target == "book" else target,
                 supersedes=supersedes,
                 question_id=given_id if isinstance(given_id, str) else None,
+                evidence=evidence if isinstance(evidence, dict) else None,
             )
             if not written.accepted:
                 results.append(_rejected(index, written.code or "schema_invalid", written.detail))

@@ -172,14 +172,18 @@ def ebitda_definition(profile: dict | None) -> str:
     return "invalid"
 
 
-def recipe_block(
+def methodology_block(
     profile: dict | None,
     bindings: list[dict],
     *,
     metric: str,
     names: tuple[str, ...] | None = None,
 ) -> dict | None:
-    """ras и ifrs не подставляют книжную EBITDA. В этом срезе число рецепта не выпускается."""
+    """Книжная EBITDA остаётся у пометки book. Остальные пометки эту строку не подставляют.
+
+    EBITDA по отчётности считает только профиль icr.bank. Для прочих коэффициентов
+    методика расчёта не выпускается.
+    """
 
     kind = ebitda_definition(profile)
     if kind == "book":
@@ -188,25 +192,25 @@ def recipe_block(
         return None
     # Одна фраза на ICR, чистый долг к EBITDA и корпоративный DSCR. Найденные строки её не меняют.
     del bindings
-    message = _recipe_message(kind)
+    message = _methodology_message(kind)
     return {
         "metric": metric,
         "rows": [],
         "needs_input": [],
         "missing_inputs": [],
-        "warnings": [{"code": "ebitda_recipe_unpublished", "params": {"message": message}}],
+        "warnings": [{"code": "ebitda_methodology_unpublished", "params": {"message": message}}],
         "status": "not_computed",
         "message": message,
     }
 
 
 _GAAP_UNPUBLISHED = (
-    "Коэффициент не посчитан: выбрана отчётность GAAP, а отдельный рецепт ещё не утверждён. "
-    "Рецепт МСФО сюда не подставляется."
+    "Коэффициент не посчитан: выбрана отчётность GAAP, а отдельная методика расчёта EBITDA ещё не утверждена. "
+    "Методика МСФО сюда не подставляется."
 )
 
 
-def _recipe_message(kind: str) -> str:
+def _methodology_message(kind: str) -> str:
     if kind == "ras":
         return _RAS_UNPUBLISHED
     if kind == "ifrs":
@@ -240,7 +244,7 @@ def coverage_ratio(
     from finance_analysis.domain.coverage import is_coverage_test_period
 
     if metric in {"icr", "icr_ebit"}:
-        blocked = recipe_block(profile, bindings, metric=metric)
+        blocked = methodology_block(profile, bindings, metric=metric)
         if blocked:
             return blocked
     primaries = _primaries(bindings, absent)
