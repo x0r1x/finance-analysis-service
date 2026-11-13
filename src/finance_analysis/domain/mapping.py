@@ -16,6 +16,9 @@ from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.components import component_records, scenario_of
 from finance_analysis.domain.glossary import (
     GlossaryPackage,
+    LabelHit,
+    _fold,
+    _peel,
     generic_case_label,
     label_scan,
     label_surface,
@@ -42,18 +45,29 @@ _OPERATING_PROFIT_REVIEW = (
     "Она сохраняется и не переносится на другое понятие. "
     "Подтверждение текущего смысла снимает пометку."
 )
-# Явная форма кода пояснений. Голое число соседней ячейки кодом не является.
+# Явная форма кода пояснений и коды баланса из каталога этого релиза.
+# Голое число вне каталога кодом не является: так значения 50, 90 и 100 не становятся строками.
 _MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
+_BALANCE_LINE_CODES = frozenset({"1400", "1410", "1500", "1510", "1520", "510", "610"})
+_MULTI_PRIMARY = frozenset({"lease_liability"})
 
 
 def marked_line_code(value: object) -> str | None:
-    """Код строки только в форме «Ф. 5 (740)». Иначе код для сопоставления не определён."""
+    """Код строки: «Ф. 5 (740)» или код баланса из каталога релиза."""
 
-    if not isinstance(value, str):
+    if isinstance(value, bool) or value is None:
         return None
-    if not _MARKED_LINE_CODE.match(value.strip()):
+    if isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
         return None
-    return "ф.5 (740)"
+    if _MARKED_LINE_CODE.match(text):
+        return "ф.5 (740)"
+    if text in _BALANCE_LINE_CODES:
+        return text
+    return None
 
 
 @dataclass(frozen=True)
@@ -94,12 +108,25 @@ def assign_rows(
 ) -> dict[str, Assignment]:
     apply_block_titles(rows)
     human, ignored, absent, accepted = _decisions(events)
+    sheet_codes: dict[str, set[str]] = {}
+    for row in rows:
+        code = marked_line_code(row.get("line_code"))
+        if code:
+            sheet_codes.setdefault(str(row.get("sheet") or ""), set()).add(code)
     draft: list[tuple[dict, Assignment]] = []
     filtered: dict[str, list[dict]] = {}
     for row in rows:
         if row.get("kind") != "fact":
             continue
-        item = _one(row, human, ignored, absent, glossary, accepted)
+        item = _one(
+            row,
+            human,
+            ignored,
+            absent,
+            glossary,
+            accepted,
+            sheet_codes.get(str(row.get("sheet") or ""), set()),
+        )
         missed = _statement_filtered(row, glossary, roles)
         if missed:
             filtered.setdefault(missed, []).append(row)
@@ -195,7 +222,15 @@ def decide(
     return Assignment(top.concept, status, "inferred", True, matched, "normal", top_p, evidence)
 
 
-def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[str, str]) -> Assignment:
+def _one(
+    row,
+    human,
+    ignored,
+    absent,
+    glossary: GlossaryPackage,
+    accepted: dict[str, str],
+    sheet_codes: set[str] | None = None,
+) -> Assignment:
     key = row["binding_key"]
     if key in ignored:
         return Assignment(None, "ignored", "confirmed", False, None, "normal")
@@ -214,7 +249,7 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[
         )
     if row.get("excluded"):
         return Assignment(None, "not_applicable", "inferred", False, None, "normal")
-    shared = _ambiguous_label(row, glossary)
+    shared = _ambiguous_label(row, glossary, sheet_codes or set())
     if shared is not None:
         return shared
     found = lexical_hit(row, glossary)
@@ -231,6 +266,8 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[
     code = marked_line_code(row.get("line_code"))
     if code:
         evidence["line_code"] = code
+    if hit.concept == "borrowings_total":
+        evidence["granularity"] = "total"
     if strength == "section_heading":
         evidence["match_provenance"] = "section_heading"
         evidence["section_heading"] = _nearest_heading(row)
@@ -241,13 +278,91 @@ def _one(row, human, ignored, absent, glossary: GlossaryPackage, accepted: dict[
     return Assignment(hit.concept, status, "inferred", True, hit.text, "normal", None, evidence)
 
 
-def _ambiguous_label(row: dict, glossary: GlossaryPackage) -> Assignment | None:
-    """Метка нескольких понятий не выбирает одно. Кандидаты остаются в evidence."""
+def _blob(row: dict) -> str:
+    parts = [str(row.get("label") or ""), str(row.get("parent_label") or ""), str(row.get("label_path_text") or "")]
+    path = row.get("label_path")
+    if isinstance(path, (list, tuple)):
+        parts.extend(str(item) for item in path)
+    return " ".join(parts).casefold().replace("ё", "е")
+
+
+def _mentions(blob: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in blob for needle in needles)
+
+
+def _debt_context(row: dict, sheet_codes: set[str]) -> str | None:
+    """Код, раздел или лист модели выбирают одно понятие общей подписи."""
+
+    label = str(row.get("label") or "")
+    peeled = _peel(label)
+    folded = _fold(peeled.body)
+    if folded not in {"заемные средства", "займы и кредиты"}:
+        return None
+    surface = label.casefold().replace("ё", "е")
+    blob = _blob(row)
+    long_term = _mentions(blob, ("раздел iv", "iv. долгосроч", "долгосрочные обязательства", "non-current", "long-term"))
+    short_term = _mentions(blob, ("раздел v", "v. краткосроч", "краткосрочные обязательства", "short-term"))
+    codes = [marked_line_code(row.get("line_code"))]
+    codes.extend(peeled.codes)
+    legacy = not ({"1410", "1510"} & sheet_codes)
+    for code in codes:
+        if code in {"1410"} or (code == "510" and legacy):
+            return "borrowings_lt"
+        if code in {"1510"} or (code == "610" and legacy):
+            return "borrowings_st"
+    if long_term and not short_term:
+        return "borrowings_lt"
+    if short_term and not long_term:
+        return "borrowings_st"
+    if "итого" in surface:
+        return "borrowings_total"
+    sheet = str(row.get("sheet") or "").casefold().replace("ё", "е")
+    if folded == "займы и кредиты" and ("модель долга" in sheet or "debt model" in sheet):
+        return "debt_outstanding"
+    return None
+
+
+def _lease_breakdown(row: dict) -> bool:
+    """Субсчет аренды: код 76.07 или счет 76 вместе с «Арендные обязательства»."""
+
+    blob = _blob(row)
+    if re.search(r"76\s*\.\s*07", blob):
+        return True
+    return "арендные обязательства" in blob and re.search(r"(?<!\d)76(?!\d)", blob) is not None
+
+
+def _drop_borrowings_total(draft: list[tuple[dict, Assignment]]) -> None:
+    """Итог заемных средств не входит в сумму, если на листе уже есть 1410 или 1510."""
+
+    lined: set[str] = set()
+    for row, item in draft:
+        if item.concept in {"borrowings_lt", "borrowings_st"} and item.is_primary and item.status in {"bound", "bound_with_warning"}:
+            lined.add(str(row.get("sheet") or ""))
+    for index, (row, item) in enumerate(draft):
+        if item.concept == "borrowings_total" and str(row.get("sheet") or "") in lined:
+            draft[index] = (row, _drop_primary(item))
+
+
+def _ambiguous_label(row: dict, glossary: GlossaryPackage, sheet_codes: set[str] | None = None) -> Assignment | None:
+    """Метка нескольких понятий не выбирает одно. Кандидаты остаются в evidence.
+
+    «Заемные средства» и «Займы и кредиты» разрешаются по коду строки, заголовку
+    раздела или листу модели. Без этого контекста победителя нет.
+    """
 
     label = str(row.get("label") or "")
     hits = glossary.ambiguous_hits(label)
     if len(hits) < 2:
         return None
+    chosen = _debt_context(row, sheet_codes or set())
+    if chosen is not None:
+        evidence = {"match_strength": "exact", "label": {"kind": "alt", "text": label}}
+        code = marked_line_code(row.get("line_code"))
+        if code:
+            evidence["line_code"] = code
+        if chosen == "borrowings_total":
+            evidence["granularity"] = "total"
+        return Assignment(chosen, "bound", "inferred", True, label, "normal", None, evidence)
     candidates = []
     for hit in hits:
         concept = glossary.concepts.get(hit.concept)
@@ -296,6 +411,8 @@ def lexical_hit(row: dict, glossary: GlossaryPackage):
     """
 
     label = str(row.get("label") or "")
+    if _lease_breakdown(row) and glossary.concepts.get("lease_liability") is not None:
+        return LabelHit("lease_liability", "alt", label), "exact"
     found = glossary.resolve_match(label)
     if found is not None:
         hit, _strength = found
@@ -393,7 +510,9 @@ def _one_primary(
         if item.is_primary and item.concept and item.status in {"bound", "bound_with_warning"}:
             # Разная основа цены — не одна величина. Пул основной строки у каждой свой.
             owners.setdefault((item.concept, _terms_key(item)), []).append(index)
-    for indexes in list(owners.values()):
+    for key, indexes in list(owners.items()):
+        if key[0] in _MULTI_PRIMARY:
+            continue
         headed = [index for index in indexes if _via_heading(draft[index][1])]
         labeled = [index for index in indexes if index not in headed]
         if labeled and headed:
@@ -464,6 +583,7 @@ def _one_primary(
         for index in drop:
             row, item = draft[index]
             draft[index] = (row, _drop_primary(item, ambiguous=True))
+    _drop_borrowings_total(draft)
     _release_split_terms(draft)
 
 

@@ -308,6 +308,8 @@ class Concept:
     definition: Mapping[str, str]
     expand: Mapping[str, str]
     broader: str | None
+    xref_ifrs: str | None = None
+    xref_gaap: str | None = None
     aggregation: str | None = None
     pricing_basis: str | None = None
     billing_period: str | None = None
@@ -607,7 +609,29 @@ def _concept(
         definition=MappingProxyType(_string_map(glossary.get("definition"), name)),
         expand=MappingProxyType(_string_map(glossary.get("expand"), name)),
         broader=_optional_str(glossary.get("broader"), name),
+        xref_ifrs=_xref(glossary, name)[0],
+        xref_gaap=_xref(glossary, name)[1],
     )
+
+
+def _xref(glossary: dict, name: str) -> tuple[str | None, str | None]:
+    """Необязательные имена того же понятия в IFRS и US GAAP. Пустое поле пакет не ломает."""
+
+    raw = glossary.get("xref")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict) or set(raw) - {"ifrs", "gaap"}:
+        raise GlossaryInvalid([name])
+
+    def one(key: str) -> str | None:
+        value = raw.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            raise GlossaryInvalid([name, key])
+        return value
+
+    return one("ifrs"), one("gaap")
 
 
 def _pref(raw, name: str) -> dict[str, str]:

@@ -1,0 +1,11 @@
+concept: section_st_total
+pref:
+  en: "Total current liabilities"
+  ru: "Итого по разделу V"
+alt:
+  ru:
+    - "Итого краткосрочных обязательств"
+    - "1500"
+definition:
+  en: "Line 1500. Section total used only to check whether a missing line 1510 is zero."
+  ru: "Строка 1500. Итог раздела V. В долг не входит. Нужен, чтобы решить, равна ли отсутствующая строка 1510 нулю."

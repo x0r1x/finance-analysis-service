@@ -4,6 +4,8 @@
 
 Глоссарий — данные FAS. Пакет в git — это `configs/concepts/`, `configs/glossary/` и `configs/metrics/`. Релиз — неизменяемая копия этого документа в object store. Загрузка книги запоминает id релиза, с которым она собрана.
 
+`borrowings_lt`, `borrowings_st` и `lease_liability` — строки запаса, из которых считается `total_debt`. Сам `total_debt` — метрика в `configs/metrics/coverage.yaml`, а не понятие строки. Подписи «Заемные средства» и «Займы и кредиты» неоднозначны: их разбирают код строки, заголовок раздела или лист модели долга.
+
 `GLOSSARY_AUTO_PROMOTE` по умолчанию выключен. Метка, выученная на книгах, сама активным релизом не становится. `uv run fas glossary shadow <version>` строит shadow-отчёт кандидата. Пороги и canary-гейт — в [design-v0.23.md](../design-v0.23.md) §5.9, не на этой странице.
 
 Размеченные книги и команда `fas eval mapping` описаны в [eval/README.md](../../eval/README.md).

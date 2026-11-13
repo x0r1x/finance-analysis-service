@@ -4,6 +4,8 @@
 
 The glossary is FAS data. The git package is `configs/concepts/`, `configs/glossary/`, and `configs/metrics/`. A release is an immutable copy of that document in the object store. Book loads record the release id they were built with.
 
+`borrowings_lt`, `borrowings_st` and `lease_liability` are the stock lines behind `total_debt`. `total_debt` itself is a metric in `configs/metrics/coverage.yaml`, not a row concept. The labels «Заемные средства» and «Займы и кредиты» are ambiguous and resolve from the line code, the section heading, or a debt-model sheet.
+
 `GLOSSARY_AUTO_PROMOTE` defaults to off. A label learned from books does not become the active release by itself. `uv run fas glossary shadow <version>` builds the shadow report for a candidate. The thresholds and the canary gate are in [design-v0.23.md](../design-v0.23.md) §5.9, not on this page.
 
 Labeled books and the `fas eval mapping` command are described in [eval/README.md](../../eval/README.md).

@@ -94,6 +94,15 @@ _IDS = frozenset(
         "total_assets",
         "deferred_tax_asset",
         "deferred_tax_liability",
+        "borrowings_lt",
+        "borrowings_st",
+        "borrowings_total",
+        "lease_liability",
+        "finance_lease_liability",
+        "operating_lease_liability",
+        "accounts_payable",
+        "section_lt_total",
+        "section_st_total",
     }
 )
 

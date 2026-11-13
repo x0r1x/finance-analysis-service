@@ -364,3 +364,39 @@ concepts:
     semantic_role: measure
     dimension: money
     temporal_nature: stock
+  borrowings_lt:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  borrowings_st:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  borrowings_total:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  lease_liability:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  finance_lease_liability:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  operating_lease_liability:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  accounts_payable:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  section_lt_total:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  section_st_total:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock

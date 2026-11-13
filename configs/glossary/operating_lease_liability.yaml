@@ -1,0 +1,9 @@
+concept: operating_lease_liability
+pref:
+  en: "Operating lease liability"
+  ru: "Обязательства по операционной аренде"
+definition:
+  en: "ASC 842 operating lease liability. Included in US GAAP debt unless the profile turns the flag off."
+  ru: "Обязательство по операционной аренде ASC 842. В долг по US GAAP входит, пока профиль не выключит параметр."
+xref:
+  gaap: "Operating lease liability"

@@ -1,0 +1,15 @@
+concept: lease_liability
+pref:
+  en: "Lease liability (FSBU 25 / IFRS 16)"
+  ru: "Обязательства по аренде (ФСБУ 25 / IFRS 16)"
+alt:
+  en:
+    - "IFRS 16 lease liability"
+  ru:
+    - "в том числе обязательства по аренде"
+    - "в т.ч. обязательства по аренде"
+definition:
+  en: "Full FSBU 25 / IFRS 16 lease liability at present value, excluding VAT, long-term and short-term together. Paragraph 11 exemptions are not subtracted here. Paragraph 12 says a lease with a purchase option is not exempt. The 1C split 76.07.1, 76.07.2, 76.07.5 and 76.07.9 is a hypothesis."
+  ru: "Все обязательство по аренде по ФСБУ 25 и IFRS 16: приведенная стоимость без НДС, долгосрочная и краткосрочная части вместе. Оговорки пункта 11 калькулятор сам не вычитает. Пункт 12: выкупной лизинг под пункт 11 не подпадает. Разбор субсчетов 1С 76.07.1, 76.07.2, 76.07.5 и 76.07.9 — гипотеза."
+xref:
+  ifrs: "Lease liability"

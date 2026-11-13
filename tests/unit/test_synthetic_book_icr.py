@@ -339,7 +339,8 @@ def test_synthetic_book_tags_the_income_statement_as_year_to_date():
     assert got["cf-debt"].status == "bound"
     assert got["balance-a"].is_primary is False
     assert got["balance-b"].is_primary is False
-    assert got["balance-a"].status != "ambiguous"
+    # Голая подпись «Займы и кредиты» без раздела и кода строки неоднозначна и не забирает debt_outstanding у CF.
+    assert got["balance-a"].status == "ambiguous"
     assert got["ratios-ebitda"].evidence["period_basis"] == "ltm"
     periods = [
         {"axis_id": axis, "period_id": period_id, **meta}
