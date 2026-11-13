@@ -400,6 +400,7 @@ def select_ratio(
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
     links: list[dict] | None = None,
+    statement_sheets: frozenset[str] | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -423,7 +424,11 @@ def select_ratio(
             absent=common.get("absent") or frozenset(),
             links=common.get("graph_links") if links is None else links,
             book=common.get("book_fcff") or [],
-            statement_sheets=common.get("statement_sheets") or frozenset(),
+            statement_sheets=(
+                statement_sheets
+                if statement_sheets is not None
+                else common.get("statement_sheets") or frozenset()
+            ),
         )
     named = _named_variant(profile)
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):

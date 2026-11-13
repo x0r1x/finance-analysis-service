@@ -841,8 +841,8 @@ class Analyses:
             "sign_convention": body.get("sign_convention") or "outflow_negative",
             "marker_class": body.get("marker_class"),
             "absent": await self._absent(job_id, target),
-            "statement_sheets": frozenset(load_sheet_roles().statement),
         }
+        statement_sheets = frozenset(load_sheet_roles().statement)
         verdict = await svc.resolve_model_type(job_id, target.head)
         labels = decision_labels(verdict)
         computed = []
@@ -883,6 +883,7 @@ class Analyses:
                     interest_order=svc.model_types.interest_order,
                     row_fallbacks=svc.model_types.row_fallbacks,
                     links=links,
+                    statement_sheets=statement_sheets,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})

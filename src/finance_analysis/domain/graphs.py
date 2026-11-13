@@ -171,6 +171,7 @@ def trace_metric(
     facts_available: bool = True,
     rows_available: bool = True,
     graph_links_available: bool = True,
+    absent: frozenset[str] = frozenset(),
 ) -> MetricTrace:
     """Собрать read-only трассировку входа метрики → concept → binding → cell.
 
@@ -198,7 +199,7 @@ def trace_metric(
     scoped_bindings = _same_build(bindings, resolved_build)
     scoped_rows = _same_build(rows, resolved_build)
     row_by_binding = _row_keys(scoped_rows, scoped_bindings)
-    paid_interest = _fcff_paid_row(metric_id, scoped_bindings)
+    paid_interest = _fcff_paid_row(metric_id, scoped_bindings, absent)
 
     # Сначала привязки → row_key, затем факты/ссылки только по нужным строкам.
     needed_rows: set[str] = set()
@@ -326,6 +327,7 @@ def check_metric_physical_trace(
     facts_available: bool = True,
     rows_available: bool = True,
     graph_links_available: bool = True,
+    absent: frozenset[str] = frozenset(),
 ) -> tuple[MetricTrace, list[TraceIntegrityFinding]]:
     """Трассировка + findings (исходные данные и инвариант DTO)."""
 
@@ -343,6 +345,7 @@ def check_metric_physical_trace(
         facts_available=facts_available,
         rows_available=rows_available,
         graph_links_available=graph_links_available,
+        absent=absent,
     )
     return trace, list(trace.integrity)
 
@@ -385,12 +388,16 @@ def validate_metric_trace_document(body: Mapping[str, Any]) -> None:
         raise GraphTraceError(errors[0].message)
 
 
-def _fcff_paid_row(metric_id: str, bindings: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+def _fcff_paid_row(
+    metric_id: str,
+    bindings: Sequence[Mapping[str, Any]],
+    absent: frozenset[str],
+) -> Mapping[str, Any] | None:
     """Единственная строка interest с кодом 4123. Это не понятие каталога."""
 
     if metric_id != "fcff":
         return None
-    paid = [row for row in bindings if _paid_interest_row(row, frozenset())]
+    paid = [row for row in bindings if _paid_interest_row(row, absent)]
     if len(paid) != 1:
         return None
     return paid[0]

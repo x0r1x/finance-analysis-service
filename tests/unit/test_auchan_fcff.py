@@ -33,8 +33,32 @@ _U18 = "=U11+(1-0.2)*('Фин отчетность РСБУ'!K33)-Outputs!U15"
 def test_compute_metrics_passes_graph_links():
     source = inspect.getsource(Analyses.compute_metrics)
     assert '"graph_links"' in source
-    assert '"statement_sheets"' in source
+    assert "statement_sheets=statement_sheets" in source
+    assert '"statement_sheets"' not in source
     assert "book_fcff" not in source
+    common = {
+        "facts": [],
+        "bindings": [],
+        "periods": [],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    got = select_ratio(
+        "icr",
+        None,
+        common,
+        profile=None,
+        profile_ref=None,
+        composed={},
+        concepts=frozenset(),
+        money=frozenset(),
+        statement_sheets=frozenset({"ОДДС"}),
+    )
+    assert "statement_sheets" not in str(got.get("error") or "")
+    assert got["metric"] == "icr"
 
 
 def test_bare_70_is_not_paid_interest():

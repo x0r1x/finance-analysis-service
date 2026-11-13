@@ -486,6 +486,69 @@ def test_fcff_trace_cites_the_paid_interest_cell():
     validate_metric_trace_document(trace.as_dict())
 
 
+def test_absent_interest_drops_the_inferred_4123_row_from_the_shield_and_the_trace():
+    absent = frozenset({"interest"})
+    inputs = {
+        "all_of": ["operating_cash_flow", "capex", "income_tax_rate"],
+        "one_of": [],
+    }
+    facts = [
+        _fact("ocf", "Y1", "100", "S!A1"),
+        _fact("capex", "Y1", "-30", "S!B1"),
+        _fact("paid", "Y1", "-10", "S!C1"),
+        _fact("rate", "Y1", "0.2", "S!D1"),
+    ]
+    periods = [_period("Y1", 1)]
+
+    def bindings(source: str) -> list[dict]:
+        return [
+            _bind("operating_cash_flow", "ocf", code="стр. 4100", sheet="ОДДС"),
+            _bind("capex", "capex"),
+            _bind("interest", "paid", primary=False, code="стр. 4123", source=source),
+            _bind("income_tax_rate", "rate"),
+        ]
+
+    blocked = free_cash_flow(
+        facts=facts,
+        bindings=bindings("inferred"),
+        periods=periods,
+        absent=absent,
+        statement_sheets=frozenset({"ОДДС"}),
+    )
+    assert blocked["rows"][0]["reason"] == "ocf_basis_unknown"
+    assert blocked["rows"][0]["value"] is None
+    hidden = trace_metric(
+        "fcff",
+        inputs=inputs,
+        bindings=bindings("inferred"),
+        facts=facts,
+        absent=absent,
+    )
+    assert all(step.concept != "interest" for step in hidden.steps)
+
+    # concept.set пишет привязке source confirmed. Так строка возвращается в щит и в след.
+    kept = free_cash_flow(
+        facts=facts,
+        bindings=bindings("confirmed"),
+        periods=periods,
+        absent=absent,
+        statement_sheets=frozenset({"ОДДС"}),
+    )
+    assert kept["rows"][0]["value"] == Decimal(78).quantize(_MONEY)
+    assert kept["rows"][0]["components"]["interest_paid"] == ["S!C1"]
+    shown = trace_metric(
+        "fcff",
+        inputs=inputs,
+        bindings=bindings("confirmed"),
+        facts=facts,
+        absent=absent,
+    )
+    paid = next(step for step in shown.steps if step.concept == "interest")
+    assert paid.row_key == "paid"
+    assert paid.cell_ids == ("S!C1",)
+    validate_metric_trace_document(shown.as_dict())
+
+
 def _period(pid: str, index: int, year: int | None = None) -> dict:
     item = {
         "axis_id": "a",
