@@ -7,6 +7,10 @@ import re
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
+from finance_analysis.domain.binding_evidence import (
+    depreciation_evidence_error,
+    stamped_depreciation_evidence,
+)
 from finance_analysis.domain.calibration import (
     Calibrator,
     Thresholds,
@@ -188,7 +192,7 @@ def assign_rows(
     facts: list[dict] | None = None,
 ) -> dict[str, Assignment]:
     apply_block_titles(rows)
-    human, ignored, absent, accepted = _decisions(events)
+    human, ignored, absent, accepted, marks = _decisions(events)
     sheet_codes: dict[str, set[str]] = {}
     for row in rows:
         code = marked_line_code(row.get("line_code"))
@@ -207,6 +211,7 @@ def assign_rows(
             glossary,
             accepted,
             sheet_codes.get(str(row.get("sheet") or ""), set()),
+            marks,
         )
         missed = _statement_filtered(row, glossary, roles)
         if missed:
@@ -311,6 +316,7 @@ def _one(
     glossary: GlossaryPackage,
     accepted: dict[str, str],
     sheet_codes: set[str] | None = None,
+    marks: dict[str, dict] | None = None,
 ) -> Assignment:
     key = row["binding_key"]
     if key in ignored:
@@ -319,6 +325,10 @@ def _one(
         concept = human[key]
         if concept in absent:
             return Assignment(concept, "unknown", "confirmed", False, None, "normal")
+        evidence = _operating_profit_review(concept, accepted.get(key))
+        mark = (marks or {}).get(key)
+        if mark:
+            evidence = {**evidence, **mark}
         return Assignment(
             concept,
             "bound",
@@ -326,7 +336,7 @@ def _one(
             True,
             None,
             "normal",
-            evidence=_operating_profit_review(concept, accepted.get(key)),
+            evidence=evidence,
         )
     if row.get("excluded"):
         return Assignment(None, "not_applicable", "inferred", False, None, "normal")
@@ -1332,19 +1342,25 @@ def absent_in_journal(events: list[dict]) -> frozenset[str]:
     return frozenset(_decisions(events)[2])
 
 
-def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str], dict[str, str]]:
+def _decisions(events: list[dict]):
     from finance_analysis.domain.state import fold
 
     human: dict[str, str] = {}
     ignored: set[str] = set()
     absent: set[str] = set()
     accepted: dict[str, str] = {}
+    marks: dict[str, dict] = {}
     for event in sorted(fold(events).values(), key=lambda item: int(item["seq"])):
         kind = event.get("type")
         binding = str(event.get("binding_key") or event.get("target") or "")
         value = event.get("value")
         if kind in _HUMAN and isinstance(value, str) and binding != "book":
             human[binding] = value
+            raw = event.get("evidence")
+            if isinstance(raw, dict) and depreciation_evidence_error(value, raw) is None:
+                marks[binding] = stamped_depreciation_evidence(raw, event)
+            else:
+                marks.pop(binding, None)
             if event.get("meaning") == OPERATING_PROFIT_MEANING and value == "operating_profit":
                 accepted[binding] = OPERATING_PROFIT_MEANING
             else:
@@ -1353,4 +1369,4 @@ def _decisions(events: list[dict]) -> tuple[dict[str, str], set[str], set[str], 
             ignored.add(binding)
         elif kind == "concept.absent" and isinstance(value, str):
             absent.add(value)
-    return human, ignored, absent, accepted
+    return human, ignored, absent, accepted, marks
