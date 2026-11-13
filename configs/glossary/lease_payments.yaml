@@ -1,0 +1,10 @@
+concept: lease_payments
+pref:
+  en: "Lease payments"
+  ru: "Лизинговые платежи"
+alt:
+  en: ["Total lease payments"]
+  ru: ["Платежи по договору аренды"]
+definition:
+  en: "Lease payments of the lessee. Principal and interest are the parts."
+  ru: "Лизинговые платежи арендатора. Части — основной долг и проценты."

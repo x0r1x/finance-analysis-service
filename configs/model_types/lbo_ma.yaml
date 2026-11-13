@@ -18,6 +18,7 @@ metrics:
   llcr: {use: not_applicable}
   plcr: {use: not_applicable}
   icr: {use: not_applicable}
+  icr_ebit: {use: not_applicable}
   net_debt_ebitda: {use: not_applicable}
   escrow_coverage: {use: not_applicable}
   npv: {use: not_applicable}

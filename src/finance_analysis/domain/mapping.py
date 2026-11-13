@@ -45,15 +45,24 @@ _OPERATING_PROFIT_REVIEW = (
     "Она сохраняется и не переносится на другое понятие. "
     "Подтверждение текущего смысла снимает пометку."
 )
-# Явная форма, коды баланса из каталога и «стр. N». Голое число вне каталога кодом не является.
-_MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*5\s*\(\s*740\s*\)$")
+# Белый список форм, коды баланса из каталога и подпись «стр. NNNN». Голое число вне каталога кодом не является.
+_MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*(\d+)\s*\(\s*(\d+)\s*\)$")
+_MARKED_LINE_CODES = {
+    ("5", "740"): "ф.5 (740)",
+    ("2", "2330"): "ф.2 (2330)",
+    ("2", "070"): "ф.2 (070)",
+}
 _STATED_LINE_CODE = re.compile(r"(?i)^(?:стр\.?|код|строка)\s*(\d{3,4})$")
 _BALANCE_LINE_CODES = frozenset({"1400", "1410", "1500", "1510", "1520", "510", "610"})
 _MULTI_PRIMARY = frozenset({"lease_liability"})
 
 
 def marked_line_code(value: object) -> str | None:
-    """«Ф. 5 (740)», «стр. N» или код баланса из каталога. Голое число вне каталога — не код."""
+    """Код из белого списка форм, подписи «стр. NNNN» или кода баланса из каталога.
+
+    Форма вне белого списка — не код, даже если число совпало с балансом.
+    Голое число вне каталога кодом не является. Канон «стр. NNNN» снова проходит эту функцию.
+    """
 
     if isinstance(value, bool) or value is None:
         return None
@@ -63,11 +72,11 @@ def marked_line_code(value: object) -> str | None:
         text = value.strip()
     else:
         return None
-    if _MARKED_LINE_CODE.match(text):
-        return "ф.5 (740)"
+    match = _MARKED_LINE_CODE.match(text)
+    if match is not None:
+        return _MARKED_LINE_CODES.get((match.group(1), match.group(2)))
     stated = _STATED_LINE_CODE.match(text)
     if stated is not None:
-        # Канон снова проходит эту функцию. Голый «4123» второй проход отбрасывает.
         return f"стр. {stated.group(1)}"
     if text in _BALANCE_LINE_CODES:
         return text
