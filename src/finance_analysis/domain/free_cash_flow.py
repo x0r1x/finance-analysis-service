@@ -19,9 +19,12 @@ from finance_analysis.domain.metrics import (
     _output_sheet,
     _primaries,
     _stated_digits,
+    _sums,
     aligned_keys,
     confirm_paid_interest,
+    unconfirmed_scale,
 )
+from finance_analysis.domain.period_basis import basis_of, keys_for_basis
 
 _EXCLUDED = (
     "Операционный поток не уменьшен на проценты. "
@@ -36,6 +39,7 @@ _FINANCING_SECTION = (
     "финансовой деятельности",
     "financing",
 )
+_GUARDED = ("operating_cash_flow", "capex")
 
 
 def free_cash_flow(
@@ -49,6 +53,9 @@ def free_cash_flow(
     book: list[dict] | None = None,
 ) -> dict:
     primaries = _primaries(bindings, absent)
+    clash = _ambiguous_primary(bindings, absent)
+    if clash:
+        return _finish(_ambiguous(clash), [], periods, book)
     ocf = primaries.get("operating_cash_flow")
     capex = primaries.get("capex")
     if ocf is None:
@@ -64,16 +71,40 @@ def free_cash_flow(
         and accrued.get("row_key") == paid.get("row_key")
     ):
         accrued = None
+    watched = [ocf, capex]
+    if paid is not None:
+        watched.append(paid)
+    if unconfirmed_scale(facts, watched):
+        rows = [
+            _blank(period, "scale_unconfirmed")
+            for period in _ocf_periods(facts, ocf, periods)
+        ]
+        return _finish(
+            {
+                "metric": "fcff",
+                "rows": rows,
+                "needs_input": [],
+                "warnings": [],
+                "status": "not_computed",
+            },
+            rows,
+            periods,
+            book,
+        )
     basis = _basis(ocf, bindings, absent, facts, links or [])
     rate_row = primaries.get("income_tax_rate")
     aligned = aligned_keys(periods)
+    ocf_flow = _flow(facts, ocf, aligned, periods)
+    capex_flow = _flow(facts, capex, aligned, periods)
+    paid_flow = _flow(facts, paid, aligned, periods) if paid is not None else {}
+    accrued_flow = _flow(facts, accrued, aligned, periods) if accrued is not None else {}
     table, rate_periods = _rates(facts, rate_row, aligned) if rate_row else ({}, [])
     warnings: list[dict] = []
     seen: set[str] = set()
     rows: list[dict] = []
     for period in _ocf_periods(facts, ocf, periods):
-        ocf_value = _at(facts, ocf, period, aligned)
-        capex_value = _at(facts, capex, period, aligned)
+        ocf_value = _at(ocf_flow, period, aligned)
+        capex_value = _at(capex_flow, period, aligned)
         if ocf_value is None or capex_value is None:
             rows.append(
                 _blank(
@@ -91,14 +122,16 @@ def free_cash_flow(
             continue
         if basis != "interest_excluded":
             if basis == "candidate":
-                blocked = _candidate_block(facts, accrued, paid, period, aligned)
+                blocked = _candidate_block(
+                    accrued_flow, paid_flow, accrued, paid, period, aligned
+                )
                 if blocked:
                     rows.append(_blank(period, blocked))
                     continue
             if paid is None:
                 rows.append(_blank(period, "interest_paid_unconfirmed"))
                 continue
-            paid_value = _at(facts, paid, period, aligned)
+            paid_value = _at(paid_flow, period, aligned)
             if paid_value is None:
                 rows.append(_blank(period, "interest_paid_unconfirmed"))
                 continue
@@ -287,13 +320,13 @@ def _named_in_formula(ocf: dict) -> bool:
     return mentions_income and not mentions_interest
 
 
-def _candidate_block(facts, accrued, paid, period, aligned) -> str | None:
+def _candidate_block(accrued_flow, paid_flow, accrued, paid, period, aligned) -> str | None:
     if paid is None or accrued is None:
         return (
             "interest_paid_unconfirmed" if paid is None else "interest_accrual_cash_gap"
         )
-    paid_value = _at(facts, paid, period, aligned)
-    accrued_value = _at(facts, accrued, period, aligned)
+    paid_value = _at(paid_flow, period, aligned)
+    accrued_value = _at(accrued_flow, period, aligned)
     if (
         paid_value is None
         or accrued_value is None
@@ -362,28 +395,38 @@ def _ocf_periods(facts: list[dict], binding: dict, periods: list[dict]) -> list[
     return ordered
 
 
-def _at(
-    facts: list[dict], binding: dict, period: dict, aligned: dict
-) -> Decimal | None:
+def _flow(facts: list[dict], binding: dict, aligned: dict, periods: list[dict]) -> dict:
+    """Та же сумма, что у остальных денежных метрик: нарастающий итог уже за период.
+
+    Строка `ltm` не складывается по кварталам: остаётся конец её окна.
+    """
+
+    series = _sums(facts, binding, aligned, periods)
+    if basis_of(binding)[0] != "ltm":
+        return series
+    by_axis: dict[str, list] = {}
+    ordered = sorted(periods, key=lambda item: item.get("period_index") or 0)
+    for period in ordered:
+        own = (period.get("axis_id"), period.get("period_id"))
+        key = aligned.get(own, own)
+        if key not in series:
+            continue
+        bucket = by_axis.setdefault(str(period.get("axis_id") or ""), [])
+        if key not in bucket:
+            bucket.append(key)
+    kept: set = set()
+    for keys in by_axis.values():
+        kept.update(keys_for_basis(keys, binding))
+    return {key: series[key] for key in kept}
+
+
+def _at(series: dict, period: dict, aligned: dict) -> Decimal | None:
     wanted = aligned.get(
         (period["axis_id"], period["period_id"]),
         (period["axis_id"], period["period_id"]),
     )
-    total = None
-    for fact in facts:
-        if fact.get("row_key") != binding.get("row_key"):
-            continue
-        key = aligned.get(
-            (fact.get("axis_id"), fact.get("period_id")),
-            (fact.get("axis_id"), fact.get("period_id")),
-        )
-        if key != wanted:
-            continue
-        number = _figure(fact)
-        if number is None:
-            continue
-        total = number if total is None else total + number
-    return total
+    value = series.get(wanted)
+    return value if isinstance(value, Decimal) else None
 
 
 def _cells(facts: list[dict], binding: dict, period: dict, aligned: dict) -> list[str]:
@@ -560,6 +603,25 @@ def _book_figure(value) -> Decimal | None:
     return _money(number)
 
 
+def _ambiguous_primary(bindings: list[dict], absent: frozenset[str]) -> str | None:
+    """Имя OCF или capex, если основных строк больше одной."""
+
+    counts = {name: 0 for name in _GUARDED}
+    for row in bindings:
+        concept = row.get("effective_concept")
+        if concept not in counts:
+            continue
+        if not (row.get("is_primary") and row.get("status") in _BOUND):
+            continue
+        if concept in absent and row.get("source") not in HUMAN_SOURCES:
+            continue
+        counts[concept] += 1
+    for name in _GUARDED:
+        if counts[name] > 1:
+            return name
+    return None
+
+
 def _missing(subject: str) -> dict:
     return {
         "metric": "fcff",
@@ -569,4 +631,15 @@ def _missing(subject: str) -> dict:
         ],
         "warnings": [],
         "status": "missing_input",
+    }
+
+
+def _ambiguous(subject: str) -> dict:
+    return {
+        "metric": "fcff",
+        "rows": [],
+        "needs_input": [{"kind": "concept", "reason": "ambiguous", "subject": subject}],
+        "missing_inputs": [subject],
+        "warnings": [],
+        "status": "needs_input",
     }
