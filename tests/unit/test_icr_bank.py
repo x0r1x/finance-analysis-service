@@ -368,6 +368,7 @@ def test_ytd_without_the_prior_year_is_needs_input():
         _profile(),
     )
     assert got["status"] == "needs_input"
+    assert _at(got, "2025Q2")["reason"] == "fiscal_calendar_unknown"
     assert all(row["value"] is None for row in got["rows"])
 
 
@@ -591,6 +592,98 @@ def test_ytd_identity_rejects_a_shifted_fiscal_year_end():
         _profile(),
     )
     assert _at(got, "2025Q2")["status"] == "needs_input"
+    assert _at(got, "2025Q2")["reason"] == "fiscal_calendar_unknown"
+    assert _at(got, "2025Q2")["value"] is None
+
+
+def _dated_quarters(spans: list[tuple[str, str, str]]) -> list[dict]:
+    return [
+        {
+            "axis_id": "a",
+            "period_id": period_id,
+            "period_index": index,
+            "grain": "quarter",
+            "timeline_id": "t",
+            "calendar_year": int(end[:4]),
+            "period_start": start,
+            "period_end": end,
+        }
+        for index, (period_id, start, end) in enumerate(spans, start=1)
+    ]
+
+
+def _ytd_ratio(periods: list[dict], period_id: str):
+    facts = [
+        *_series("ebitda", periods, ["10", "30", "60", "100", "12", "40"]),
+        *_series("interest", periods, ["1", "3", "6", "10", "2", "5"]),
+    ]
+    got = _select(
+        "icr",
+        _common(facts, [_bind("ebitda", **_ytd()), _bind("interest", **_ytd())], periods),
+        _profile(),
+    )
+    return got, _at(got, period_id), _at(got, period_id, "quarter_reference")
+
+
+def test_march_fiscal_year_uses_the_march_quarter_as_prior_q4():
+    periods = _dated_quarters(
+        [
+            ("FY25Q1", "2024-04-01", "2024-06-30"),
+            ("FY25Q2", "2024-07-01", "2024-09-30"),
+            ("FY25Q3", "2024-10-01", "2024-12-31"),
+            ("FY25Q4", "2025-01-01", "2025-03-31"),
+            ("FY26Q1", "2025-04-01", "2025-06-30"),
+            ("FY26Q2", "2025-07-01", "2025-09-30"),
+        ]
+    )
+    _got, row, step = _ytd_ratio(periods, "FY26Q2")
+    assert row["value"] == quantize_ratio(Decimal(110) / Decimal(12))
+    assert row["status"] == "computed"
+    assert step["value"] == quantize_ratio(Decimal(28) / Decimal(3))
+
+
+def test_june_fiscal_year_uses_the_june_quarter_as_prior_q4():
+    periods = _dated_quarters(
+        [
+            ("FY25Q1", "2024-07-01", "2024-09-30"),
+            ("FY25Q2", "2024-10-01", "2024-12-31"),
+            ("FY25Q3", "2025-01-01", "2025-03-31"),
+            ("FY25Q4", "2025-04-01", "2025-06-30"),
+            ("FY26Q1", "2025-07-01", "2025-09-30"),
+            ("FY26Q2", "2025-10-01", "2025-12-31"),
+        ]
+    )
+    _got, row, step = _ytd_ratio(periods, "FY26Q2")
+    assert row["value"] == quantize_ratio(Decimal(110) / Decimal(12))
+    assert row["status"] == "computed"
+    assert step["value"] == quantize_ratio(Decimal(28) / Decimal(3))
+
+
+def test_a_quarter_off_the_fiscal_grid_is_a_mismatch():
+    periods = _ytd_periods()
+    periods.append(
+        {
+            "axis_id": "a",
+            "period_id": "stub",
+            "period_index": 0,
+            "grain": "quarter",
+            "timeline_id": "t",
+            "calendar_year": 2024,
+            "period_start": "2024-02-01",
+            "period_end": "2024-02-28",
+        }
+    )
+    facts = [
+        *_series("ebitda", _ytd_periods(), ["10", "30", "60", "100", "12", "40"]),
+        *_series("interest", _ytd_periods(), ["1", "3", "6", "10", "2", "5"]),
+    ]
+    got = _select(
+        "icr",
+        _common(facts, [_bind("ebitda", **_ytd()), _bind("interest", **_ytd())], periods),
+        _profile(),
+    )
+    assert _at(got, "2025Q2")["status"] == "needs_input"
+    assert _at(got, "2025Q2")["reason"] == "fiscal_calendar_mismatch"
     assert _at(got, "2025Q2")["value"] is None
 
 

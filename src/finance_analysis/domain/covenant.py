@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from finance_analysis.domain.cover_metrics import (
@@ -34,7 +35,7 @@ from finance_analysis.domain.metrics import (
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
-from finance_analysis.domain.period_basis import _as_date, _year_of, basis_of
+from finance_analysis.domain.period_basis import _as_date, basis_of
 from finance_analysis.domain.returns import project_return
 
 DEFAULT_DEFINITION_TEXT = "определение по умолчанию, не из договора"
@@ -455,16 +456,32 @@ def _sign_name(value: Decimal) -> str:
     return "zero"
 
 
-def _quarter_of(period: dict) -> int | None:
+_FISCAL_REASONS = frozenset({"fiscal_calendar_unknown", "fiscal_calendar_mismatch"})
+
+
+def _quarter_of(period: dict, year_end_month: int) -> int | None:
+    """Квартал финансового года: 4-й кончается в месяц закрытия, не в декабре."""
+
     end = _as_date(period.get("period_end"))
     if end is None:
         return None
-    return (end.month - 1) // 3 + 1
+    return {0: 4, 3: 1, 6: 2, 9: 3}.get((end.month - year_end_month) % 12)
 
 
-def _same_slot(ordered: list[dict], year: int, quarter: int) -> dict | None:
+def _fiscal_year_of(period: dict, month: int, day: int) -> int | None:
+    """Год, в котором финансовый год заканчивается."""
+
+    end = _as_date(period.get("period_end"))
+    if end is None:
+        return None
+    if (end.month, end.day) <= (month, day):
+        return end.year
+    return end.year + 1
+
+
+def _same_slot(ordered: list[dict], year: int, quarter: int, month: int, day: int) -> dict | None:
     for item in ordered:
-        if _year_of(item) == year and _quarter_of(item) == quarter:
+        if _fiscal_year_of(item, month, day) == year and _quarter_of(item, month) == quarter:
             return item
     return None
 
@@ -475,35 +492,40 @@ def _aligned_key(period: dict, aligned: dict):
 
 
 def _ytd_ltm(series: dict, period: dict, ordered: list[dict], aligned: dict):
-    """LTM = YTD + прошлый год − YTD того же квартала прошлого года.
+    """LTM = YTD + прошлый финансовый год − YTD того же квартала прошлого года.
 
-    Полный год (4-й квартал или зерно от 12 месяцев) уже равен LTM.
-    Нет года или прошлого квартала — None, число не выпускается.
+    Полный год (4-й квартал финансового года или зерно от 12 месяцев) уже равен LTM.
+    Нет конца года — причина fiscal_calendar_unknown или fiscal_calendar_mismatch.
     """
 
-    year = _year_of(period)
     current = series.get(_aligned_key(period, aligned))
-    if year is None or current is None:
-        return None
+    if current is None:
+        return None, "needs_input"
+    calendar = _fiscal_calendar(ordered)
+    if isinstance(calendar, str):
+        return None, calendar
+    month, day = calendar
     months = grain_months(period.get("grain"))
     if months is not None and months >= 12:
-        return current
-    quarter = _quarter_of(period)
-    if quarter is None:
-        return None
+        return current, None
+    year = _fiscal_year_of(period, month, day)
+    quarter = _quarter_of(period, month)
+    if year is None or quarter is None:
+        return None, "fiscal_calendar_mismatch"
     if quarter == 4:
-        return current
-    prior_end = _same_slot(ordered, year - 1, 4)
-    prior_same = _same_slot(ordered, year - 1, quarter)
+        return current, None
+    prior_end = _same_slot(ordered, year - 1, 4, month, day)
+    prior_same = _same_slot(ordered, year - 1, quarter, month, day)
     if prior_end is None or prior_same is None:
-        return None
-    if not _ytd_comparable(period, prior_same, prior_end):
-        return None
+        return None, "needs_input"
+    problem = _ytd_comparable(period, prior_same, prior_end, month)
+    if problem:
+        return None, problem
     full_year = series.get(_aligned_key(prior_end, aligned))
     prior = series.get(_aligned_key(prior_same, aligned))
     if full_year is None or prior is None:
-        return None
-    return current + full_year - prior
+        return None, "needs_input"
+    return current + full_year - prior, None
 
 
 def _span_days(period: dict) -> int | None:
@@ -519,43 +541,144 @@ def _fiscal_quarter_month(year_end_month: int, quarter: int) -> int:
     return 12 if month == 0 else month
 
 
-def _ytd_comparable(current: dict, prior_same: dict, prior_end: dict) -> bool:
-    """Сравнимые кварталы одного фискального календаря. Иначе тождество не считается.
+def _dated_quarter(period: dict):
+    months = grain_months(period.get("grain"))
+    if months != 3:
+        return None
+    start = _as_date(period.get("period_start"))
+    end = _as_date(period.get("period_end"))
+    if start is None or end is None or end < start:
+        return None
+    return start, end
+
+
+def _fiscal_calendar(ordered: list[dict]) -> tuple[int, int] | str:
+    """(месяц, день) конца финансового года либо причина, почему его нет.
+
+    Годовой период задаёт конец, если такие концы совпадают. Иначе конец — закрытие
+    четырёх смежных кварталов от самого раннего period_start на оси. Первый квартал
+    оси при этом читается как Q1: серия с середины года без годового периода от Q1
+    не отличается.
+    """
+
+    annuals = []
+    quarters = []
+    for item in ordered:
+        end = _as_date(item.get("period_end"))
+        months = grain_months(item.get("grain"))
+        if end is None or months is None:
+            continue
+        if months >= 12:
+            annuals.append((end.month, end.day))
+        elif _dated_quarter(item) is not None:
+            quarters.append(item)
+    annual_end = None
+    if annuals:
+        if len(set(annuals)) != 1:
+            return "fiscal_calendar_mismatch"
+        annual_end = annuals[0]
+    quarter_end = _quarter_year_end(quarters)
+    if isinstance(quarter_end, str):
+        return quarter_end
+    if annual_end is not None and quarter_end is not None and annual_end != quarter_end:
+        return "fiscal_calendar_mismatch"
+    found = annual_end or quarter_end
+    if found is None:
+        return "fiscal_calendar_unknown"
+    if not _quarters_on_grid(quarters, found[0]):
+        return "fiscal_calendar_mismatch"
+    return found
+
+
+def _quarter_year_end(quarters: list[dict]) -> tuple[int, int] | str | None:
+    dated = []
+    for item in quarters:
+        pair = _dated_quarter(item)
+        if pair is None:
+            return "fiscal_calendar_mismatch"
+        dated.append(pair)
+    if len(dated) < 4:
+        return None
+    dated.sort(key=lambda row: row[1])
+    anchor = min(start for start, _end in dated)
+    anchor_key = (anchor.month, anchor.day)
+    closings = []
+    for index in range(len(dated) - 3):
+        block = dated[index : index + 4]
+        if not _contiguous(block):
+            continue
+        if (block[0][0].month, block[0][0].day) != anchor_key:
+            continue
+        rolled = block[-1][1] + timedelta(days=1)
+        if (rolled.month, rolled.day) != anchor_key:
+            continue
+        closings.append((block[-1][1].month, block[-1][1].day))
+    if not closings:
+        return None
+    if len(set(closings)) != 1:
+        return "fiscal_calendar_mismatch"
+    return closings[0]
+
+
+def _contiguous(block: list[tuple]) -> bool:
+    for index in range(len(block) - 1):
+        if block[index][1] + timedelta(days=1) != block[index + 1][0]:
+            return False
+    return True
+
+
+def _quarters_on_grid(quarters: list[dict], year_end_month: int) -> bool:
+    for item in quarters:
+        if _quarter_of(item, year_end_month) is None:
+            return False
+    return True
+
+
+def _ytd_comparable(current: dict, prior_same: dict, prior_end: dict, year_end_month: int) -> str | None:
+    """None — кварталы одного финансового года сравнимы. Иначе причина needs_input.
 
     Консолидация и учётная база в метаданных периода не лежат: их проверяет договор
     вызова, не эта функция.
     """
 
     if grain_months(current.get("grain")) != grain_months(prior_same.get("grain")):
-        return False
+        return "needs_input"
     if grain_months(prior_end.get("grain")) != grain_months(current.get("grain")):
-        return False
+        return "needs_input"
     current_len = _span_days(current)
     prior_len = _span_days(prior_same)
     if current_len is None or prior_len is None or current_len != prior_len or _span_days(prior_end) is None:
-        return False
+        return "needs_input"
     current_end = _as_date(current.get("period_end"))
     prior_end_date = _as_date(prior_same.get("period_end"))
     year_end = _as_date(prior_end.get("period_end"))
-    quarter = _quarter_of(current)
+    quarter = _quarter_of(current, year_end_month)
     if current_end is None or prior_end_date is None or year_end is None or quarter is None:
-        return False
+        return "fiscal_calendar_mismatch"
     if (current_end.month, current_end.day) != (prior_end_date.month, prior_end_date.day):
-        return False
-    return _fiscal_quarter_month(year_end.month, quarter) == current_end.month
+        return "needs_input"
+    if year_end.month != year_end_month:
+        return "fiscal_calendar_mismatch"
+    if _fiscal_quarter_month(year_end_month, quarter) != current_end.month:
+        return "fiscal_calendar_mismatch"
+    return None
 
 
 def _ytd_step(series: dict, period: dict, ordered: list[dict], aligned: dict):
-    """Приращение нарастающего итога за один квартал. На 4 не умножается."""
+    """Приращение нарастающего итога за один финансовый квартал. На 4 не умножается."""
 
     current = series.get(_aligned_key(period, aligned))
-    quarter = _quarter_of(period)
-    year = _year_of(period)
-    if current is None or quarter is None:
+    calendar = _fiscal_calendar(ordered)
+    if current is None or isinstance(calendar, str):
+        return None
+    month, day = calendar
+    quarter = _quarter_of(period, month)
+    year = _fiscal_year_of(period, month, day)
+    if quarter is None or year is None:
         return None
     if quarter == 1:
         return current
-    previous = _same_slot(ordered, year, quarter - 1) if year is not None else None
+    previous = _same_slot(ordered, year, quarter - 1, month, day)
     if previous is None:
         return None
     prior = series.get(_aligned_key(previous, aligned))
@@ -773,7 +896,8 @@ def bank_icr(
                 )
                 continue
             if number is None or den is None:
-                rows.append(_line("icr", period, None, "needs_input", "needs_input", names, "LTM", variant="bank"))
+                published = reason if reason in _FISCAL_REASONS else "needs_input"
+                rows.append(_line("icr", period, None, "needs_input", published, names, "LTM", variant="bank"))
                 continue
             if den == 0:
                 rows.append(
@@ -853,8 +977,10 @@ def _bank_pair(formula, series, period, ordered, aligned, basis, sign, *, quarte
     parts = {}
     names = (*formula.numerator.plus, *formula.numerator.minus, *formula.denominator.plus, *formula.denominator.minus)
     for name in dict.fromkeys(names):
-        value = _concept_amount(name, series, period, ordered, aligned, basis, quarter)
+        value, problem = _concept_amount(name, series, period, ordered, aligned, basis, quarter)
         if value is None:
+            if problem in _FISCAL_REASONS:
+                return None, None, problem
             return None, None, "partial_window" if basis != "ytd" and not quarter else "needs_input"
         parts[name] = value
     number = Decimal(0)
@@ -873,18 +999,20 @@ def _bank_pair(formula, series, period, ordered, aligned, basis, sign, *, quarte
 def _concept_amount(name, series, period, ordered, aligned, basis, quarter: bool):
     column = series[name]
     if basis == "ytd":
-        return _ytd_step(column, period, ordered, aligned) if quarter else _ytd_ltm(column, period, ordered, aligned)
+        if quarter:
+            return _ytd_step(column, period, ordered, aligned), None
+        return _ytd_ltm(column, period, ordered, aligned)
     if basis == "ltm" or quarter:
-        return column.get(_aligned_key(period, aligned))
+        return column.get(_aligned_key(period, aligned)), None
     keys, _window, problem = _span("LTM", ordered, period, aligned, period["axis_id"])
     if problem or not keys:
-        return None
+        return None, None
     total = Decimal(0)
     for key in keys:
         if key not in column:
-            return None
+            return None, None
         total += column[key]
-    return total
+    return total, None
 
 
 def select_ratio(
