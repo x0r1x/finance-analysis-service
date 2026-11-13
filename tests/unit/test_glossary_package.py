@@ -31,6 +31,8 @@ _IDS = frozenset(
         "icr",
         "cash_taxes",
         "operating_cash_flow",
+        "investing_cash_flow",
+        "financing_cash_flow",
         "net_debt",
         "dscr_covenant",
         "escrow_balance",

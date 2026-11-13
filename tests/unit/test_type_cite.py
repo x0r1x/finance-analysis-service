@@ -1052,11 +1052,12 @@ def test_citation_stays_out_of_the_ratio_matrix_and_an_empty_list_adds_no_key():
         assert set(concepts).isdisjoint(_HELD_OUT)
     for type_id in ("bank_leasing", "dcf_valuation"):
         for metric in RATIO_METRICS:
-            assert applicability(catalog, (type_id,), metric) == "not_applicable", (
+            expected = "optional" if metric == "ncf" else "not_applicable"
+            assert applicability(catalog, (type_id,), metric) == expected, (
                 type_id,
                 metric,
             )
-    optional_dscr = frozenset({"dscr", "dscr_min", "dscr_avg"})
+    optional_dscr = frozenset({"dscr", "dscr_min", "dscr_avg", "ncf"})
     for type_id in ("real_estate_income", "renewables_dpm"):
         for metric in RATIO_METRICS:
             use = applicability(catalog, (type_id,), metric)

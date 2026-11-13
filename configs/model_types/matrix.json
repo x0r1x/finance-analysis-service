@@ -320,6 +320,41 @@
       "use": "not_applicable"
     }
   },
+  "ncf": {
+    "bank_leasing": {
+      "use": "optional"
+    },
+    "corporate": {
+      "use": "optional"
+    },
+    "dcf_valuation": {
+      "use": "optional"
+    },
+    "development_escrow": {
+      "use": "optional"
+    },
+    "investment_project": {
+      "use": "optional"
+    },
+    "lbo_ma": {
+      "use": "optional"
+    },
+    "other": {
+      "use": "optional"
+    },
+    "ppp_concession": {
+      "use": "optional"
+    },
+    "project_finance": {
+      "use": "optional"
+    },
+    "real_estate_income": {
+      "use": "optional"
+    },
+    "renewables_dpm": {
+      "use": "optional"
+    }
+  },
   "net_debt_ebitda": {
     "bank_leasing": {
       "use": "not_applicable"

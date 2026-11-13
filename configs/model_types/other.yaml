@@ -19,3 +19,4 @@ metrics:
   npv: {use: optional}
   irr: {use: optional}
   fcff: {use: optional}
+  ncf: {use: optional}

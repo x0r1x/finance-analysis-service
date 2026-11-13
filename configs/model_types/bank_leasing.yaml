@@ -20,3 +20,4 @@ metrics:
   npv: {use: not_applicable}
   irr: {use: not_applicable}
   fcff: {use: not_applicable}
+  ncf: {use: optional}

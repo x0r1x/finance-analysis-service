@@ -35,6 +35,7 @@ from finance_analysis.domain.metrics import (
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
+from finance_analysis.domain.net_cash_flow import net_cash_flow
 from finance_analysis.domain.period_basis import basis_of
 from finance_analysis.domain.returns import project_return
 
@@ -424,6 +425,19 @@ def select_ratio(
             absent=common.get("absent") or frozenset(),
             links=common.get("graph_links") if links is None else links,
             book=common.get("book_fcff") or [],
+            statement_sheets=(
+                statement_sheets
+                if statement_sheets is not None
+                else common.get("statement_sheets") or frozenset()
+            ),
+        )
+    if metric == "ncf":
+        return net_cash_flow(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            absent=common.get("absent") or frozenset(),
+            book=common.get("book_ncf") or [],
             statement_sheets=(
                 statement_sheets
                 if statement_sheets is not None

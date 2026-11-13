@@ -23,8 +23,8 @@ from finance_analysis.domain.validation.model_types import (
     validate_model_types,
 )
 
-# Типы без показателей покрытия из текущего каталога: все cover/NPV = not_applicable.
-# Полноценные типы моделей; будущие метрики не запрещены. Renewables / RE — DSCR optional.
+# Типы без показателей покрытия: cover/NPV неприменимы. NCF необязателен на каждом типе.
+# Renewables / RE — DSCR optional.
 _NO_COVER_METRICS = ("lbo_ma", "dcf_valuation", "bank_leasing")
 _OPTIONAL_DSCR = frozenset({"dscr", "dscr_min", "dscr_avg"})
 _DSCR_VARIANT_TYPES = ("renewables_dpm", "real_estate_income")
@@ -103,16 +103,17 @@ def test_no_cover_metrics_and_dscr_optional_types_match_intended_cells():
     catalog = _catalog()
     for type_id in _NO_COVER_METRICS:
         for metric in RATIO_METRICS:
-            assert applicability(catalog, (type_id,), metric) == "not_applicable", (
+            expected = "optional" if metric == "ncf" else "not_applicable"
+            assert applicability(catalog, (type_id,), metric) == expected, (
                 type_id,
                 metric,
             )
-            assert catalog.types[type_id].metrics[metric] == "not_applicable"
+            assert catalog.types[type_id].metrics[metric] == expected
             assert metric not in catalog.types[type_id].variants
     for type_id in _DSCR_VARIANT_TYPES:
         for metric in RATIO_METRICS:
             use = applicability(catalog, (type_id,), metric)
-            if metric in _OPTIONAL_DSCR:
+            if metric == "ncf" or metric in _OPTIONAL_DSCR:
                 assert use == "optional", (type_id, metric)
             else:
                 assert use == "not_applicable", (type_id, metric)

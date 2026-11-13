@@ -49,7 +49,10 @@ from finance_analysis.application.project import (
 )
 from finance_analysis.application.rule_engine import load_rules
 from finance_analysis.application.semantic_guard import SemanticWriteGuard
-from finance_analysis.application.sheet_roles import sheet_roles_version
+from finance_analysis.application.sheet_roles import (
+    load_sheet_roles,
+    sheet_roles_version,
+)
 from finance_analysis.application.tools import build_tools
 from finance_analysis.domain.audit import actuals_end_value_error
 from finance_analysis.domain.book import (
@@ -2947,6 +2950,7 @@ class FasService:
             build_key=head.build_key,
             graph_links_available=graph_links_available,
             absent=absent,
+            statement_sheets=frozenset(load_sheet_roles().statement),
         )
         # catalog_version / build_key уже в trace; ответ валидируется схемой.
         return assemble_metric_trace_response(trace)

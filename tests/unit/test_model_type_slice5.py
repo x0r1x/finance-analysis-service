@@ -419,7 +419,7 @@ def test_lease_portfolio_and_signal_scores_only_the_full_set():
 
     Причина unknown, метки пустые. Проценты с основным долгом сами тип не дают.
     Пять понятий держат score 1.0 только у bank_leasing. Вариантов нет.
-    Двенадцать метрик каталога неприменимы, открытых вопросов нет.
+    Тринадцать метрик каталога: ncf необязателен, остальные неприменимы. Открытых вопросов нет.
     При нулевом score лидер остаётся bank_leasing: равенство режется по id.
     """
 
@@ -434,11 +434,13 @@ def test_lease_portfolio_and_signal_scores_only_the_full_set():
     assert item.groups == ()
     assert catalog.types["bank_leasing"].variants == {}
     metrics = catalog.types["bank_leasing"].metrics
-    assert len(RATIO_METRICS) == 12
+    assert len(RATIO_METRICS) == 13
     assert set(metrics) == set(RATIO_METRICS)
-    assert set(metrics.values()) == {"not_applicable"}
+    assert metrics["ncf"] == "optional"
+    assert {use for name, use in metrics.items() if name != "ncf"} == {"not_applicable"}
     for metric in RATIO_METRICS:
-        assert applicability(catalog, ("bank_leasing",), metric) == "not_applicable", metric
+        expected = "optional" if metric == "ncf" else "not_applicable"
+        assert applicability(catalog, ("bank_leasing",), metric) == expected, metric
     bound, _sheets = resolved_workbook(_LEASE_BOOK)
     assert open_concepts(catalog, ("bank_leasing",), bound=bound, absent=frozenset()) == ()
     assert open_concepts(

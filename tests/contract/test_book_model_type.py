@@ -36,7 +36,7 @@ _OPEN = {"packt": 84, "rvi": 216}
 # У Packt interest уже основная строка. У RVI три неоднозначные строки interest остаются.
 _DROPPED = {"packt": (0, []), "rvi": (3, ["interest"])}
 # У Packt interest связан, поэтому ICR считается. LLCR и PLCR по-прежнему пропущены.
-_SKIPPED = {"packt": ["llcr", "plcr"], "rvi": ["icr", "llcr", "plcr"]}
+_SKIPPED = {"packt": ["llcr", "plcr", "ncf"], "rvi": ["icr", "llcr", "plcr", "ncf"]}
 
 
 @pytest.fixture
