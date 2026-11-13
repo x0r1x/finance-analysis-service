@@ -304,7 +304,12 @@ def test_icr_catalog_matches_python_and_golden():
     icr = load_financial_catalog().indicators["icr"]
     assert icr.base is None
     assert icr.status == "active"
-    assert icr.variants == {}
+    assert set(icr.variants) == {"bank"}
+    bank = icr.variants["bank"]
+    assert bank.window == "LTM"
+    assert bank.formula.as_dict()["numerator"]["plus"] == ["ebitda"]
+    assert bank.formula.as_dict()["denominator"]["plus"] == ["interest"]
+    assert "ebit" not in bank.inputs.concepts
     terms = {"ebitda": "money", "ebit": "money", "interest": "money"}
     assert_slice(
         icr,

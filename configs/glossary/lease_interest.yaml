@@ -1,0 +1,10 @@
+concept: lease_interest
+pref:
+  en: "Lease interest"
+  ru: "Проценты по аренде"
+alt:
+  en: ["Interest on lease liability"]
+  ru: ["Проценты по обязательству по аренде"]
+definition:
+  en: "Interest on the lessee lease liability. Lessor interest income is a different concept."
+  ru: "Проценты по обязательству арендатора. Процентный доход лизингодателя — другое понятие."

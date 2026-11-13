@@ -9,6 +9,7 @@ row_fallbacks:
       rule: interest_basis_paid
 interest_order:
   icr: [interest, interest_paid]
+  icr_ebit: [interest, interest_paid]
   corporate_covenant: [interest, interest_paid]
   ocf_covenant: [interest, interest_paid]
   pf: [interest_paid, interest]
@@ -35,6 +36,16 @@ metrics:
   icr:
     definition: "ICR: EBITDA или EBIT, делённые на проценты. Если в книге один числитель, частное считается по нему. Если оба, Python берёт EBITDA и ставит предупреждение icr_numerator."
     numerator: [ebitda, ebit]
+    denominator: interest
+    variants:
+      bank:
+        definition: "Внутренний профиль icr.bank: EBITDA / проценты, окно LTM. Это не ICR по 6960-У и не ковенант договора. Состав знаменателя и окно считает bank_icr. EBIT в числитель не входит."
+        numerator: {plus: [ebitda]}
+        denominator: {plus: [interest]}
+        window: LTM
+  icr_ebit:
+    definition: "EBIT / проценты за период. В банковский ICR не подставляется и лизинг к знаменателю не прибавляет."
+    numerator: [ebit]
     denominator: interest
   adscr:
     definition: "ADSCR наследует входы DSCR, CFADS и обслуживание долга, и считает сумму CFADS к сумме обслуживания долга за 12 месяцев lookback. На годе код отвечает adscr_not_applicable. Неполное окно FAS не досчитывает доли периода."

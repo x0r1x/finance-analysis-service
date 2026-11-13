@@ -18,6 +18,7 @@ metrics:
   escrow_coverage: {use: required}
   dscr: {use: optional, variant: pf}
   icr: {use: not_applicable}
+  icr_ebit: {use: not_applicable}
   adscr: {use: not_applicable}
   dscr_min: {use: not_applicable}
   dscr_avg: {use: not_applicable}

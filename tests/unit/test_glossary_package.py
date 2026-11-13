@@ -18,6 +18,10 @@ _IDS = frozenset(
         "cfads",
         "debt_service",
         "interest",
+        "lease_payments",
+        "lease_principal",
+        "lease_interest",
+        "finance_costs",
         "principal",
         "debt_outstanding",
         "ebitda",
@@ -126,6 +130,7 @@ def test_package_resolves_display_labels_and_keeps_ranges_as_text():
     assert package.ids == _IDS
     assert package.concepts["debt_service"].not_all_zero is True
     assert package.concepts["debt_service"].composed_of == ("interest", "principal")
+    assert package.concepts["lease_payments"].composed_of == ("lease_principal", "lease_interest")
     assert package.concepts["cfads"].related_to == ("dscr",)
     assert package.concepts["cfads"].broader is None
     assert package.concepts["cfads"].broader_than == ()

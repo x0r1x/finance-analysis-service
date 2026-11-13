@@ -46,6 +46,7 @@ async def test_capabilities_health_metrics(app):
     assert list(load_metric_inputs()) == list(RATIO_METRICS) == [
         "dscr",
         "icr",
+        "icr_ebit",
         "adscr",
         "dscr_min",
         "dscr_avg",

@@ -85,6 +85,7 @@ ANALYSIS_TYPES = ("audit", "ratios", "impact", "full")
 RATIO_METRICS = (
     "dscr",
     "icr",
+    "icr_ebit",
     "adscr",
     "dscr_min",
     "dscr_avg",
@@ -98,7 +99,7 @@ RATIO_METRICS = (
     "fcff",
 )
 # Поля строки метрики, которые уходят в `inputs_json` результата.
-RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs")
+RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs", "ebitda_sign")
 # `scope` из §3.2: списки и одиночные значения.
 SCOPE_LISTS = ("sheets", "row_keys", "markers", "concepts")
 SCOPE_TEXT = ("axis_id", "period_from", "period_to")
