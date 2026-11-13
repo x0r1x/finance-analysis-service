@@ -27,6 +27,8 @@ _TRANCHE = re.compile(r"(?:транш|tranche)\s*([0-9a-zа-я]+)")
 COMPOSITION = (
     "cfo_statement + cfi_statement + financing_inflows / senior_principal + senior_interest_paid"
 )
+SERVICE_NOTE = " Реализация сервиса опубликованного определения, не воспроизведение закрытой модели банка."
+DEFINITION_ID = "dscr.housing@service-v1"
 METHODOLOGY = (
     "Вариант housing, не универсальный DSCR. "
     "DSCR интервала жилищного строительства: сальдо денежных потоков от текущих операций "
@@ -34,6 +36,7 @@ METHODOLOGY = (
     "по финансовой деятельности (financing_inflows), делённые на погашение основного долга "
     "(senior_principal) и уплаченные проценты по несубординированным кредитам и займам "
     "(senior_interest_paid). Пустая ячейка не заменяется нулём."
+    + SERVICE_NOTE
 )
 
 
@@ -99,6 +102,7 @@ def housing_dscr(
             "warnings": [],
             "status": "not_computed",
             "message": broken,
+            "definition": DEFINITION_ID,
             "definition_source": "housing",
             "methodology": METHODOLOGY,
             "composition": COMPOSITION,
@@ -134,20 +138,22 @@ def housing_dscr(
         "needs_input": [],
         "warnings": warnings,
         "status": status,
+        "definition": DEFINITION_ID,
         "definition_source": "housing",
         "methodology": METHODOLOGY,
         "composition": COMPOSITION,
     }
 
 
-def _period_row(period, facts, bindings, aligned, convention, absent, addback: bool, fees: bool = False, swaps: bool = False):
+def collect_interval(period, facts, bindings, aligned, convention, absent) -> dict:
+    """Потоки ОДДС и старшие обязательства интервала. Без возврата процентов, комиссий и свопов."""
+
     own = (period.get("axis_id"), period.get("period_id"))
     key = aligned.get(own, own)
+    flows: dict[str, Decimal] = {}
     missing: list[str] = []
-    components: dict = {}
     cells: list[str] = []
     notes: list[str] = []
-    numerator = Decimal(0)
     for concept in _NUMERATOR:
         amount, found, hole = _concept_amount(
             _bound(bindings, concept, absent), facts, key, aligned, payment=False, convention=convention
@@ -155,11 +161,37 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         if hole or amount is None:
             missing.append(concept)
             continue
-        numerator += amount
-        components[concept] = format(amount, "f")
+        flows[concept] = amount
         cells.extend(found)
         if concept == "financing_inflows":
             notes.append("financing_inflows_included")
+    split: dict = {}
+    denominator, denom_missing, denom_reason, denom_cells = _denominator(
+        bindings, facts, key, aligned, convention, absent, split
+    )
+    missing.extend(denom_missing)
+    cells.extend(denom_cells)
+    return {
+        "flows": flows,
+        "missing": missing,
+        "principal": split.get("senior_principal"),
+        "interest": split.get("senior_interest_paid"),
+        "denominator": denominator,
+        "denom_reason": denom_reason,
+        "cells": cells,
+        "notes": notes,
+    }
+
+
+def _period_row(period, facts, bindings, aligned, convention, absent, addback: bool, fees: bool = False, swaps: bool = False):
+    own = (period.get("axis_id"), period.get("period_id"))
+    key = aligned.get(own, own)
+    collected = collect_interval(period, facts, bindings, aligned, convention, absent)
+    missing = list(collected["missing"])
+    components = {name: format(amount, "f") for name, amount in collected["flows"].items()}
+    cells = list(collected["cells"])
+    notes = list(collected["notes"])
+    numerator = sum(collected["flows"].values(), Decimal(0))
     addback_reason = None
     if addback:
         extra, extra_cells, addback_reason = _cash_interest(bindings, facts, key, aligned, convention, absent)
@@ -176,12 +208,8 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         notes.append("interest_inside_numerator")
     if addback_reason:
         notes.append(addback_reason)
-    split: dict = {}
-    denominator, denom_missing, denom_reason, denom_cells = _denominator(
-        bindings, facts, key, aligned, convention, absent, split
-    )
-    missing.extend(denom_missing)
-    cells.extend(denom_cells)
+    denominator = collected["denominator"]
+    denom_reason = collected["denom_reason"]
     for concept, enabled in (("senior_fees", fees), ("senior_swaps", swaps)):
         if not enabled:
             continue
@@ -217,8 +245,10 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         status, reason = "computed", None
     if denominator is not None:
         components["denominator"] = format(denominator, "f")
-    for name, amount in split.items():
-        components[name] = format(amount, "f")
+    if collected["principal"] is not None:
+        components["senior_principal"] = format(collected["principal"], "f")
+    if collected["interest"] is not None:
+        components["senior_interest_paid"] = format(collected["interest"], "f")
     den_names = ["senior_principal", "senior_interest_paid"]
     if fees:
         den_names.append("senior_fees")
@@ -247,6 +277,7 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         "status": status,
         "reason": reason,
         "missing": missing,
+        "definition": DEFINITION_ID,
         "methodology": METHODOLOGY,
         "composition": composition,
         "standard": "ОДДС",

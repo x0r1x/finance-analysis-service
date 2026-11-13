@@ -59,6 +59,8 @@ def render_markdown(result: dict) -> str:
             if not row.get("methodology"):
                 continue
             lines.append(f"- methodology: {_show(row.get('methodology'))}")
+            if row.get("definition"):
+                lines.append(f"- definition: {_show(row.get('definition'))}")
             if row.get("variant"):
                 lines.append(f"- variant: {_show(row.get('variant'))}")
             if row.get("composition"):
