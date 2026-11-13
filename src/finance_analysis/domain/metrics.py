@@ -8,9 +8,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
+from finance_analysis.domain.mapping import marked_line_code
+from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import basis_of, restate_series
 
 MONEY = Decimal("0.000001")
@@ -49,7 +52,7 @@ def interest_choice(
 
     Lookup — по id из порядка (concept или row_fallback id). Поля
     `binding_key` / `matching.rule` у fallback декларативны и сюда не входят.
-    Предупреждение, когда выбран id из row_fallbacks.
+    Предупреждение — только когда выбран fallback, а канонической строки нет.
     """
 
     fallbacks = row_fallbacks or {}
@@ -57,17 +60,80 @@ def interest_choice(
         if name not in primaries:
             continue
         if name in fallbacks:
-            return name, {
-                "code": "interest_basis_fallback",
-                "params": {
-                    "concept": name,
-                    "canonical": getattr(fallbacks[name], "canonical", None),
-                    "fallback": name,
-                    "message": INTEREST_BASIS_FALLBACK,
-                },
-            }
+            canonical = getattr(fallbacks[name], "canonical", None)
+            if canonical not in primaries:
+                return name, {
+                    "code": "interest_basis_fallback",
+                    "params": {
+                        "concept": name,
+                        "canonical": canonical,
+                        "fallback": name,
+                        "message": INTEREST_BASIS_FALLBACK,
+                    },
+                }
         return name, None
     return None, None
+
+
+# shortcut: имена листов Outputs скопированы из sheet_roles.yaml. У привязки нет колонки листа: имя берётся из sheet, иначе из первого сегмента row_key. Поднять, когда привязка хранит лист.
+_OUTPUT_SHEETS = frozenset({"outputs", "output", "итоги", "сводка"})
+_PAID_INTEREST_CODE = "4123"
+
+
+def confirm_paid_interest(
+    primaries: dict, bindings: list[dict], absent: frozenset[str] = frozenset()
+) -> dict | None:
+    """Единственная строка interest с кодом 4123 занимает пустой ключ interest_paid.
+
+    Основную interest не заменяет. Уже занятый interest_paid не переписывает.
+    Ноль или несколько таких строк ничего не добавляют. Лист Outputs не доказательство.
+    """
+
+    if "interest_paid" in primaries:
+        return None
+    paid = [row for row in bindings if _paid_interest_row(row, absent)]
+    if len(paid) != 1:
+        return None
+    injected = {**paid[0], "effective_concept": "interest_paid", "is_primary": True}
+    primaries["interest_paid"] = injected
+    return injected
+
+
+def _paid_interest_row(row: dict, absent: frozenset[str]) -> bool:
+    if row.get("effective_concept") != "interest" or row.get("status") not in _BOUND:
+        return False
+    if "interest" in absent and row.get("source") not in HUMAN_SOURCES:
+        return False
+    if _output_sheet(row):
+        return False
+    return _stated_digits(row) == _PAID_INTEREST_CODE
+
+
+def _output_sheet(row: dict) -> bool:
+    sheet = row.get("sheet")
+    if not isinstance(sheet, str) or not sheet.strip():
+        key = row.get("row_key")
+        sheet = key.split("|", 1)[0] if isinstance(key, str) and "|" in key else ""
+    return bool(sheet) and sheet_name_key(str(sheet)) in _OUTPUT_SHEETS
+
+
+def _stated_digits(row: dict) -> str | None:
+    raw = row.get("line_code")
+    if not isinstance(raw, str) or not raw:
+        evidence = row.get("evidence")
+        if not isinstance(evidence, dict):
+            packed = row.get("evidence_json")
+            if isinstance(packed, str) and packed:
+                try:
+                    evidence = json.loads(packed)
+                except json.JSONDecodeError:
+                    evidence = None
+        raw = evidence.get("line_code") if isinstance(evidence, dict) else None
+    code = marked_line_code(raw)
+    if code is None or not code.startswith("стр. "):
+        return None
+    digits = code.removeprefix("стр. ")
+    return digits if digits.isdigit() else None
 
 
 _EBITDA_DEFINITION = frozenset({"book", "ras", "ifrs", "gaap"})
@@ -178,6 +244,7 @@ def coverage_ratio(
         if blocked:
             return blocked
     primaries = _primaries(bindings, absent)
+    confirm_paid_interest(primaries, bindings, absent)
     order = interest_order or {}
     warnings: list[dict] = []
     fallback_parts: tuple[str, str] | None = None

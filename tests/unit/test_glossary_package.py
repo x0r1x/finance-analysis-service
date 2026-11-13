@@ -86,6 +86,7 @@ _IDS = frozenset(
         "ebitda_ifrs",
         "ebt",
         "income_tax",
+        "income_tax_rate",
         "net_income",
         "fixed_assets",
         "intangibles",

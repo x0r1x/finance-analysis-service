@@ -134,6 +134,9 @@ def _composed(body: dict, name: str) -> Composed | None:
     numerator = body.get("numerator")
     if not isinstance(numerator, dict):
         return None
+    # FCFF объявляет plus/minus без окна и знаменателя: это не частное.
+    if "window" not in body and "denominator" not in body:
+        return None
     window = body.get("window")
     denominator = body.get("denominator")
     if window not in {"LTM", "period"}:

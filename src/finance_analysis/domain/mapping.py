@@ -42,24 +42,32 @@ _OPERATING_PROFIT_REVIEW = (
     "Она сохраняется и не переносится на другое понятие. "
     "Подтверждение текущего смысла снимает пометку."
 )
-# Явная форма «Ф. N (код)». Голое число соседней ячейки кодом не является.
+# Явная форма «Ф. N (код)» и подпись «стр. NNNN». Голое число соседней ячейки кодом не является.
 _MARKED_LINE_CODE = re.compile(r"(?i)^ф\.\s*(\d+)\s*\(\s*(\d+)\s*\)$")
 _MARKED_LINE_CODES = {
     ("5", "740"): "ф.5 (740)",
     ("2", "2330"): "ф.2 (2330)",
     ("2", "070"): "ф.2 (070)",
 }
+_STATED_LINE_CODE = re.compile(r"(?i)^(?:стр\.?|код|строка)\s*(\d{3,4})$")
 
 
 def marked_line_code(value: object) -> str | None:
-    """Код строки только из белого списка форм. Иначе код для сопоставления не определён."""
+    """Код строки из белого списка форм или явной подписи «стр. NNNN».
+
+    Голое число кодом не является. Канон «стр. NNNN» снова проходит эту функцию.
+    """
 
     if not isinstance(value, str):
         return None
-    match = _MARKED_LINE_CODE.match(value.strip())
-    if match is None:
+    text = value.strip()
+    match = _MARKED_LINE_CODE.match(text)
+    if match is not None:
+        return _MARKED_LINE_CODES.get((match.group(1), match.group(2)))
+    stated = _STATED_LINE_CODE.match(text)
+    if stated is None:
         return None
-    return _MARKED_LINE_CODES.get((match.group(1), match.group(2)))
+    return f"стр. {stated.group(1)}"
 
 
 @dataclass(frozen=True)
