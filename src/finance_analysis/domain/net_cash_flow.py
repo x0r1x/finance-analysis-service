@@ -4,7 +4,7 @@
 Нет строки раздела — у интервала нет значения. Прочерк или пустая ячейка
 помеченного итога 4100/4200/4300 на листе формы читается как ноль.
 Строка 4400 — цитата одного интервала, не вход и не сумма вызова.
-Допуск сверки — одна единица масштаба листа.
+Допуск сверки — одна единица масштаба этого интервала. Разные множители его не расширяют.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from finance_analysis.domain.metrics import (
     _primaries,
     _scale,
     _stated_digits,
-    _stored_scale,
     _sums,
     aligned_keys,
     unconfirmed_scale,
@@ -211,6 +210,9 @@ def _dash_period(
 def _blank_fact(fact: dict) -> bool:
     if _figure(fact) is not None:
         return False
+    # error и missing — дыра. Ноль только у пустой ячейки и у прочерка.
+    if fact.get("value_status") not in (None, "empty"):
+        return False
     raw = fact.get("value")
     if raw is None:
         raw = fact.get("value_dec")
@@ -325,34 +327,47 @@ def _ambiguous(bindings: list[dict], absent: frozenset[str]) -> str | None:
     return None
 
 
-def _sheet_unit(facts: list[dict], bindings: list[dict]) -> Decimal:
-    """Одна единица листа в единицах опубликованной суммы.
+def _interval_unit(facts: list[dict], bindings: list[dict], row: dict | None) -> Decimal:
+    """Одна единица этого интервала. Чужой множитель допуск не расширяет."""
 
-    74 и 75 на листе в тысячах расходятся на единицу: это округление строк.
-    Множитель масштаба становится допуском, только если сумма уже умножена на него.
-    """
-
-    multiplied: Decimal | None = None
+    if not isinstance(row, dict):
+        return Decimal(1)
+    units = []
     for binding in bindings:
-        scale = _scale(_stored_scale(facts, binding))
-        if scale is None or scale == 1:
-            continue
-        for fact in facts:
-            if fact.get("row_key") != binding.get("row_key"):
-                continue
-            raw = fact.get("value_dec")
-            if raw is None:
-                raw = fact.get("value")
-            try:
-                raw_number = None if raw in (None, "") else Decimal(str(raw))
-            except (InvalidOperation, ValueError):
-                raw_number = None
-            published = _figure(fact)
-            if raw_number is None or published is None:
-                continue
-            if published == raw_number * scale and published != raw_number:
-                multiplied = abs(scale)
-    return multiplied if multiplied is not None else Decimal(1)
+        matched = [
+            fact
+            for fact in facts
+            if fact.get("row_key") == binding.get("row_key")
+            and fact.get("axis_id") == row.get("axis_id")
+            and fact.get("period_id") == row.get("period_id")
+        ]
+        if matched:
+            units.append(_fact_unit(matched[0]))
+    if len(units) < 2 or len(set(units)) != 1:
+        return Decimal(1)
+    return units[0]
+
+
+def _fact_unit(fact: dict) -> Decimal:
+    scale = _scale(fact.get("scale_factor"))
+    if scale is None or scale == 1:
+        return Decimal(1)
+    raw = fact.get("value_dec")
+    if raw is None:
+        raw = fact.get("value")
+    try:
+        raw_number = None if raw in (None, "") else Decimal(str(raw))
+    except (InvalidOperation, ValueError):
+        raw_number = None
+    published = _figure(fact)
+    if (
+        raw_number is not None
+        and published is not None
+        and published == raw_number * scale
+        and published != raw_number
+    ):
+        return abs(scale)
+    return Decimal(1)
 
 
 def _with_book(result, rows, facts, bindings, book) -> dict:
@@ -374,8 +389,9 @@ def _book_mismatch(rows, facts, bindings, book: list[dict]) -> list[dict]:
         book_value = _book_figure(item.get("value"))
         if book_value is None:
             continue
-        fas = _fas_for_interval(rows, item)
-        if fas is not None and abs(fas - book_value) <= _sheet_unit(facts, bindings):
+        cited = _cited_row(rows, item)
+        fas = cited["value"] if cited is not None else None
+        if fas is not None and abs(fas - book_value) <= _interval_unit(facts, bindings, cited):
             continue
         cell = item.get("cell_id") or item.get("cell")
         notes.append(
@@ -392,7 +408,7 @@ def _book_mismatch(rows, facts, bindings, book: list[dict]) -> list[dict]:
     return notes
 
 
-def _fas_for_interval(rows: list[dict], item: dict) -> Decimal | None:
+def _cited_row(rows: list[dict], item: dict) -> dict | None:
     """Один посчитанный интервал. Без ключа и при нескольких строках суммы нет."""
 
     computed = [
@@ -413,10 +429,10 @@ def _fas_for_interval(rows: list[dict], item: dict) -> Decimal | None:
             matched.append(row)
         if len(matched) != 1:
             return None
-        return matched[0]["value"]
+        return matched[0]
     if len(computed) != 1:
         return None
-    return computed[0]["value"]
+    return computed[0]
 
 
 def _book_figure(value) -> Decimal | None:

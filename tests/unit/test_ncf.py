@@ -134,6 +134,55 @@ def test_book_4400_does_not_replace_the_sum_and_allows_one_scale_unit():
     assert "4400" not in source
 
 
+def test_mixed_scales_do_not_widen_the_quote_and_a_read_error_is_not_a_dash():
+    bindings, facts, periods = _flows()
+    for fact in facts:
+        if fact["row_key"] == "cfo":
+            fact["value"] = "0.1"
+            fact["normalized_value"] = "100"
+            fact["scale_factor"] = "1000"
+    off = _run((bindings, facts, periods), book=[{"value": "175", "cell_id": "F!D1"}])
+    assert off["rows"][0]["value"] == Decimal(75).quantize(_MONEY)
+    assert any(note["code"] == "ncf_book_mismatch" for note in off["warnings"])
+
+    shared = _flows()
+    raws = {"cfo": "0.1", "cfi": "-0.04", "cff": "0.015"}
+    norms = {"cfo": "100", "cfi": "-40", "cff": "15"}
+    for fact in shared[1]:
+        fact["value"] = raws[fact["row_key"]]
+        fact["normalized_value"] = norms[fact["row_key"]]
+        fact["scale_factor"] = "1000"
+    wide = _run(shared, book=[{"value": "1075", "cell_id": "F!D1"}])
+    assert wide["rows"][0]["value"] == Decimal(75).quantize(_MONEY)
+    assert not any(note["code"] == "ncf_book_mismatch" for note in wide["warnings"])
+
+    bindings, facts, periods = _flows()
+    facts = [fact for fact in facts if fact["row_key"] != "cfi"]
+    broken = _fact("cfi", "Y1", None, "S!B1")
+    broken["value_status"] = "error"
+    facts.append(broken)
+    refused = _run((bindings, facts, periods))
+    assert refused["rows"][0]["value"] is None
+    assert refused["rows"][0]["status"] == "not_computed"
+    assert not any(note["code"] == "ncf_dashed_line" for note in refused["warnings"])
+
+    facts = [fact for fact in facts if fact["row_key"] != "cfi"]
+    missing = _fact("cfi", "Y1", None, "S!B1")
+    missing["value_status"] = "missing"
+    facts.append(missing)
+    gap = _run((bindings, facts, periods))
+    assert gap["rows"][0]["status"] == "not_computed"
+    assert gap["rows"][0]["value"] is None
+
+    facts = [fact for fact in facts if fact["row_key"] != "cfi"]
+    blank = _fact("cfi", "Y1", None, "S!B1")
+    blank["value_status"] = "empty"
+    facts.append(blank)
+    empty = _run((bindings, facts, periods))
+    assert empty["rows"][0]["value"] == Decimal(115).quantize(_MONEY)
+    assert any(note["code"] == "ncf_dashed_line" for note in empty["warnings"])
+
+
 def test_a_quote_matches_one_interval_and_does_not_sum_the_call():
     periods = [_period("Q1", 1, 2025), _period("Q2", 2, 2025)]
     bindings = [

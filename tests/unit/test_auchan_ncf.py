@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -15,7 +16,10 @@ from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.mapping import assign_rows, marked_line_code
 
 _BOOK = Path(
-    "/Users/alekseykashin/projects/finance-context-builder/resources/corpus/АШАН_модель_CF.xlsx"
+    os.environ.get(
+        "FAS_AUCHAN_BOOK",
+        "/Users/alekseykashin/projects/finance-context-builder/resources/corpus/АШАН_модель_CF.xlsx",
+    )
 )
 _NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 _MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
