@@ -3,8 +3,8 @@
 Сумма уже подписанных чисел. Модуль не берётся. YAML сумму не исполняет.
 Нет строки раздела — у интервала нет значения. Прочерк или пустая ячейка
 помеченного итога 4100/4200/4300 на листе формы читается как ноль.
-Строка 4400 — цитата аргумента book, не вход. Допуск сверки — одна единица
-масштаба листа в тех единицах, в которых опубликована сумма.
+Строка 4400 — цитата одного интервала, не вход и не сумма вызова.
+Допуск сверки — одна единица масштаба листа.
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import basis_of, keys_for_basis
 
 DASH_NOTE = "прочерк на цитируемой строке формы"
+_NOT_COMPUTED = "Интервальный NCF не посчитан. Число книги не вход калькулятора."
+_DIFFERS = "Сальдо книги разошлось с суммой трёх потоков."
 _SECTIONS = (
     ("operating_cash_flow", "4100"),
     ("investing_cash_flow", "4200"),
@@ -80,7 +82,7 @@ def net_cash_flow(
     warnings: list[dict] = []
     seen: set[str] = set()
     rows = []
-    for period in _periods_of(series, periods, aligned):
+    for period in _periods_of(series, periods, aligned, facts, chosen, statement):
         parts: list[Decimal] = []
         dashed: list[str] = []
         hole = False
@@ -257,7 +259,14 @@ def _flow(facts: list[dict], binding: dict, aligned: dict, periods: list[dict]) 
     return {key: series[key] for key in kept}
 
 
-def _periods_of(series: dict[str, dict], periods: list[dict], aligned: dict) -> list[dict]:
+def _periods_of(
+    series: dict[str, dict],
+    periods: list[dict],
+    aligned: dict,
+    facts: list[dict],
+    chosen: dict[str, dict],
+    statement: frozenset[str],
+) -> list[dict]:
     have: set = set()
     for values in series.values():
         have.update(values)
@@ -268,10 +277,25 @@ def _periods_of(series: dict[str, dict], periods: list[dict], aligned: dict) -> 
             (period.get("axis_id"), period.get("period_id")),
             (period.get("axis_id"), period.get("period_id")),
         )
-        if key in have and key not in seen:
+        dashed = key not in have and _fully_dashed(facts, chosen, period, statement)
+        if (key in have or dashed) and key not in seen:
             ordered.append(period)
             seen.add(key)
     return ordered
+
+
+def _fully_dashed(
+    facts: list[dict],
+    chosen: dict[str, dict],
+    period: dict,
+    statement: frozenset[str],
+) -> bool:
+    """Три прочерка без числа всё равно интервал. Чужой пропуск им не является."""
+
+    return all(
+        _dash_period(facts, chosen[name], period, code, statement)
+        for name, code in _SECTIONS
+    )
 
 
 def _at(series: dict, period: dict, aligned: dict) -> Decimal | None:
@@ -339,14 +363,10 @@ def _with_book(result, rows, facts, bindings, book) -> dict:
 
 
 def _book_mismatch(rows, facts, bindings, book: list[dict]) -> list[dict]:
-    # shortcut: одна цитата сверяется с суммой интервалов вызова, не с кварталом длинной оси. Поднять, когда сверка идёт по каждому периоду.
-    computed = [
-        row["value"]
-        for row in rows
-        if row.get("status") == "computed" and isinstance(row.get("value"), Decimal)
-    ]
-    fas = _money(sum(computed, Decimal(0))) if computed else None
-    unit = _sheet_unit(facts, bindings)
+    """Цитата сверяется с одним интервалом. Сумма вызова интервалом не является."""
+
+    if not book:
+        return []
     notes = []
     for item in book:
         if not isinstance(item, dict):
@@ -354,7 +374,8 @@ def _book_mismatch(rows, facts, bindings, book: list[dict]) -> list[dict]:
         book_value = _book_figure(item.get("value"))
         if book_value is None:
             continue
-        if fas is not None and abs(fas - book_value) <= unit:
+        fas = _fas_for_interval(rows, item)
+        if fas is not None and abs(fas - book_value) <= _sheet_unit(facts, bindings):
             continue
         cell = item.get("cell_id") or item.get("cell")
         notes.append(
@@ -364,11 +385,38 @@ def _book_mismatch(rows, facts, bindings, book: list[dict]) -> list[dict]:
                     "cell": None if cell is None else str(cell),
                     "book": book_value,
                     "fas": fas,
-                    "message": "Сальдо книги разошлось с суммой трёх потоков.",
+                    "message": _NOT_COMPUTED if fas is None else _DIFFERS,
                 },
             }
         )
     return notes
+
+
+def _fas_for_interval(rows: list[dict], item: dict) -> Decimal | None:
+    """Один посчитанный интервал. Без ключа и при нескольких строках суммы нет."""
+
+    computed = [
+        row
+        for row in rows
+        if row.get("status") == "computed" and isinstance(row.get("value"), Decimal)
+    ]
+    period_id = item.get("period_id")
+    axis_id = item.get("axis_id")
+    keyed = period_id not in (None, "") or axis_id not in (None, "")
+    if keyed:
+        matched = []
+        for row in computed:
+            if period_id not in (None, "") and row.get("period_id") != period_id:
+                continue
+            if axis_id not in (None, "") and row.get("axis_id") != axis_id:
+                continue
+            matched.append(row)
+        if len(matched) != 1:
+            return None
+        return matched[0]["value"]
+    if len(computed) != 1:
+        return None
+    return computed[0]["value"]
 
 
 def _book_figure(value) -> Decimal | None:

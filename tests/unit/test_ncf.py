@@ -134,6 +134,90 @@ def test_book_4400_does_not_replace_the_sum_and_allows_one_scale_unit():
     assert "4400" not in source
 
 
+def test_a_quote_matches_one_interval_and_does_not_sum_the_call():
+    periods = [_period("Q1", 1, 2025), _period("Q2", 2, 2025)]
+    bindings = [
+        _bind("operating_cash_flow", "cfo", code="стр. 4100", basis="ytd"),
+        _bind("investing_cash_flow", "cfi", code="стр. 4200"),
+        _bind("financing_cash_flow", "cff", code="стр. 4300"),
+    ]
+    facts = [
+        _fact("cfo", "Q1", "100", "S!A1"),
+        _fact("cfo", "Q2", "180", "S!A2"),
+        _fact("cfi", "Q1", "-40", "S!B1"),
+        _fact("cfi", "Q2", "-40", "S!B2"),
+        _fact("cff", "Q1", "15", "S!C1"),
+        _fact("cff", "Q2", "15", "S!C2"),
+    ]
+    quoted = net_cash_flow(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        statement_sheets=_SHEETS,
+        book=[{"value": "55", "cell_id": "F!D2", "period_id": "Q2", "axis_id": "a"}],
+    )
+    assert [row["value"] for row in quoted["rows"]] == [
+        Decimal(75).quantize(_MONEY),
+        Decimal(55).quantize(_MONEY),
+    ]
+    assert not any(note["code"] == "ncf_book_mismatch" for note in quoted["warnings"])
+
+    missed = net_cash_flow(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        statement_sheets=_SHEETS,
+        book=[{"value": "40", "cell_id": "F!D2", "period_id": "Q2"}],
+    )
+    [miss] = [item for item in missed["warnings"] if item["code"] == "ncf_book_mismatch"]
+    assert miss["params"]["fas"] == Decimal(55).quantize(_MONEY)
+    assert miss["params"]["book"] == Decimal(40).quantize(_MONEY)
+
+    total = net_cash_flow(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        statement_sheets=_SHEETS,
+        book=[{"value": "130", "cell_id": "F!D9"}],
+    )
+    [note] = [item for item in total["warnings"] if item["code"] == "ncf_book_mismatch"]
+    assert note["params"]["fas"] is None
+    assert note["params"]["book"] == Decimal(130).quantize(_MONEY)
+    assert note["params"]["message"] == (
+        "Интервальный NCF не посчитан. Число книги не вход калькулятора."
+    )
+    assert [row["value"] for row in total["rows"]] == [
+        Decimal(75).quantize(_MONEY),
+        Decimal(55).quantize(_MONEY),
+    ]
+
+
+def test_three_coded_dashes_publish_zero():
+    bindings, _facts, periods = _flows()
+    facts = [
+        _fact("cfo", "Y1", None, "S!A1", raw="—"),
+        _fact("cfi", "Y1", None, "S!B1", raw="—"),
+        _fact("cff", "Y1", None, "S!C1", raw="—"),
+    ]
+    got = _run((bindings, facts, periods))
+    assert len(got["rows"]) == 1
+    assert got["status"] == "succeeded"
+    assert got["rows"][0]["value"] == Decimal(0).quantize(_MONEY)
+    assert got["rows"][0]["status"] == "computed"
+    notes = [note for note in got["warnings"] if note["code"] == "ncf_dashed_line"]
+    assert {note["params"]["concept"] for note in notes} == {
+        "operating_cash_flow",
+        "investing_cash_flow",
+        "financing_cash_flow",
+    }
+    assert all(note["params"]["message"] == _DASH for note in notes)
+
+    gone = [row for row in bindings if row["effective_concept"] != "investing_cash_flow"]
+    empty = _run((gone, facts, periods))
+    assert empty["status"] == "missing_input"
+    assert empty["rows"] == []
+
+
 def test_bare_4200_is_not_a_code_and_4223_does_not_replace_the_total():
     assert marked_line_code("4200") is None
     assert marked_line_code(4200) is None
