@@ -494,8 +494,10 @@ def test_escrow_type_requires_housing_and_other_types_do_not():
     assert catalog.types["development_escrow"].variants["dscr"] == "housing"
     assert applicability(catalog, ("project_finance",), "dscr") == "required"
     assert catalog.types["project_finance"].variants["dscr"] == "pf"
-    assert catalog.types["development_escrow"].metrics["dscr_min"] == "not_applicable"
-    assert catalog.types["development_escrow"].metrics["adscr"] == "not_applicable"
+    assert catalog.types["development_escrow"].metrics["dscr_min"] == "optional"
+    assert catalog.types["development_escrow"].variants["dscr_min"] == "housing"
+    assert catalog.types["development_escrow"].metrics["adscr"] == "optional"
+    assert catalog.types["development_escrow"].variants["adscr"] == "housing"
     escrow = infer(catalog, bound=frozenset({"escrow_balance"}), sheets=frozenset(), accept=0.6, gap=0.15)
     assert escrow.confident is True and escrow.primary == "development_escrow"
     verdict = Effective(

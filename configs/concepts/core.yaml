@@ -72,6 +72,24 @@ concepts:
     dimension: money
     temporal_nature: flow
     expected_sign: outflow
+  senior_fees:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  senior_swaps:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: flow
+    expected_sign: outflow
+  credit_limit:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
+  guaranteed_funds:
+    semantic_role: measure
+    dimension: money
+    temporal_nature: stock
   debt_outstanding:
     semantic_role: measure
     dimension: money

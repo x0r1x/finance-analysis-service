@@ -197,6 +197,7 @@ async def test_audit_arguments_and_async(app):
             "net_debt_ebitda",
             "total_debt",
             "escrow_coverage",
+            "escrow_blended_rate",
             "npv",
             "irr",
             "fcff",

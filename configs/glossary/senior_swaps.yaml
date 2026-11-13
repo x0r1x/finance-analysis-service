@@ -1,0 +1,14 @@
+concept: senior_swaps
+pref:
+  en: "Senior hedge net payments"
+  ru: "Чистые платежи по свопу несубординированного долга"
+negative:
+  - "субординированный"
+  - "заем акционера"
+  - "заем участника"
+  - "займ учредителя"
+  - "subordinated"
+  - "shareholder loan"
+definition:
+  en: "Net cash paid on a hedge of unsubordinated debt. A missing cell is not zero."
+  ru: "Чистые денежные платежи по хеджу несубординированного долга. Пустая ячейка не ноль."

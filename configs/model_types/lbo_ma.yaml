@@ -25,3 +25,4 @@ metrics:
   irr: {use: not_applicable}
   total_debt: {use: not_applicable}
   fcff: {use: not_applicable}
+  escrow_blended_rate: {use: not_applicable}

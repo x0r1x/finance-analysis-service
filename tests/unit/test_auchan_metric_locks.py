@@ -11,6 +11,7 @@ _OFF = (
     "llcr",
     "plcr",
     "escrow_coverage",
+    "escrow_blended_rate",
     "npv",
     "irr",
 )

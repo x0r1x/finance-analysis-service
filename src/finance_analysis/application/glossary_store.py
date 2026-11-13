@@ -56,6 +56,11 @@ _PROFILE_FIELDS = frozenset(
         "debt_standard",
         "include_operating_lease_liability",
         "interest_addback",
+        "include_senior_fees",
+        "include_senior_swaps",
+        "guaranteed_funds_none",
+        "escrow_rate_scale",
+        "llcr_definition",
         "actuals_end",
         "sheet_class",
     }
@@ -526,7 +531,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, icr_definition, debt_standard, include_operating_lease_liability, interest_addback, actuals_end и sheet_class",
+                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, icr_definition, debt_standard, include_operating_lease_liability, interest_addback, include_senior_fees, include_senior_swaps, guaranteed_funds_none, escrow_rate_scale, llcr_definition, actuals_end и sheet_class",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -587,6 +592,25 @@ class GlossaryStore:
             problem = interest_addback_error(body["interest_addback"])
             if problem:
                 raise InvalidArgument(problem)
+        for flag in ("include_senior_fees", "include_senior_swaps", "guaranteed_funds_none"):
+            if flag in body and body[flag] is not None:
+                from finance_analysis.domain.housing_dscr import profile_flag_error
+
+                problem = profile_flag_error(flag, body[flag])
+                if problem:
+                    raise InvalidArgument(problem)
+        if "escrow_rate_scale" in body and body["escrow_rate_scale"] is not None:
+            from finance_analysis.domain.housing_cover import scale_error
+
+            problem = scale_error(body["escrow_rate_scale"])
+            if problem:
+                raise InvalidArgument(problem)
+        if "llcr_definition" in body and body["llcr_definition"] is not None:
+            from finance_analysis.domain.housing_cover import llcr_definition_error
+
+            problem = llcr_definition_error(body["llcr_definition"])
+            if problem:
+                raise InvalidArgument(problem)
         if "sign_convention" in body and body["sign_convention"] not in _SIGNS:
             raise InvalidArgument("sign_convention: outflow_negative или outflow_positive")
         if "marker_class" in body and body["marker_class"] not in _MARKERS:
@@ -618,6 +642,9 @@ class GlossaryStore:
                     saved["include_operating_lease_liability"] = body["include_operating_lease_liability"]
                 if "interest_addback" in body:
                     saved["interest_addback"] = body["interest_addback"]
+                for flag in ("include_senior_fees", "include_senior_swaps", "guaranteed_funds_none", "escrow_rate_scale", "llcr_definition"):
+                    if flag in body:
+                        saved[flag] = body[flag]
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]
                 if body.get("sheet_class"):
@@ -662,6 +689,11 @@ class GlossaryStore:
                 saved["interest_addback"] = body["interest_addback"]
             elif "interest_addback" in current["body"]:
                 saved["interest_addback"] = current["body"]["interest_addback"]
+            for flag in ("include_senior_fees", "include_senior_swaps", "guaranteed_funds_none", "escrow_rate_scale", "llcr_definition"):
+                if flag in body:
+                    saved[flag] = body[flag]
+                elif flag in current["body"]:
+                    saved[flag] = current["body"][flag]
             if "actuals_end" in body:
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]

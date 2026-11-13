@@ -27,6 +27,8 @@ _TRANCHE = re.compile(r"(?:транш|tranche)\s*([0-9a-zа-я]+)")
 COMPOSITION = (
     "cfo_statement + cfi_statement + financing_inflows / senior_principal + senior_interest_paid"
 )
+SERVICE_NOTE = " Реализация сервиса опубликованного определения, не воспроизведение закрытой модели банка."
+DEFINITION_ID = "dscr.housing@service-v1"
 METHODOLOGY = (
     "Вариант housing, не универсальный DSCR. "
     "DSCR интервала жилищного строительства: сальдо денежных потоков от текущих операций "
@@ -34,6 +36,7 @@ METHODOLOGY = (
     "по финансовой деятельности (financing_inflows), делённые на погашение основного долга "
     "(senior_principal) и уплаченные проценты по несубординированным кредитам и займам "
     "(senior_interest_paid). Пустая ячейка не заменяется нулём."
+    + SERVICE_NOTE
 )
 
 
@@ -41,6 +44,23 @@ def interest_addback_error(value) -> str | None:
     if value is True or value is False:
         return None
     return "interest_addback: true или false"
+
+
+def profile_flag_error(name: str, value) -> str | None:
+    if value is True or value is False:
+        return None
+    return f"{name}: true или false"
+
+
+def _named_flag(profile: dict | None, name: str) -> bool | None:
+    """Выключен, когда поля нет. Чужое значение не читается как ложь."""
+
+    if profile is None or name not in profile or profile.get(name) is None:
+        return False
+    raw = profile.get(name)
+    if raw is True or raw is False:
+        return raw
+    return None
 
 
 def interest_addback(profile: dict | None) -> bool | None:
@@ -64,7 +84,16 @@ def housing_dscr(
     profile: dict | None = None,
 ) -> dict:
     flag = interest_addback(profile)
+    fees = _named_flag(profile, "include_senior_fees")
+    swaps = _named_flag(profile, "include_senior_swaps")
+    broken = None
     if flag is None:
+        broken = "interest_addback: true или false"
+    elif fees is None:
+        broken = "include_senior_fees: true или false"
+    elif swaps is None:
+        broken = "include_senior_swaps: true или false"
+    if broken:
         return {
             "metric": "dscr",
             "variant": "housing",
@@ -72,7 +101,8 @@ def housing_dscr(
             "needs_input": [],
             "warnings": [],
             "status": "not_computed",
-            "message": "interest_addback: true или false",
+            "message": broken,
+            "definition": DEFINITION_ID,
             "definition_source": "housing",
             "methodology": METHODOLOGY,
             "composition": COMPOSITION,
@@ -90,6 +120,8 @@ def housing_dscr(
             sign_convention,
             absent,
             flag,
+            fees is True,
+            swaps is True,
         )
         rows.append(row)
         warnings.extend(notes)
@@ -106,20 +138,22 @@ def housing_dscr(
         "needs_input": [],
         "warnings": warnings,
         "status": status,
+        "definition": DEFINITION_ID,
         "definition_source": "housing",
         "methodology": METHODOLOGY,
         "composition": COMPOSITION,
     }
 
 
-def _period_row(period, facts, bindings, aligned, convention, absent, addback: bool):
+def collect_interval(period, facts, bindings, aligned, convention, absent) -> dict:
+    """Потоки ОДДС и старшие обязательства интервала. Без возврата процентов, комиссий и свопов."""
+
     own = (period.get("axis_id"), period.get("period_id"))
     key = aligned.get(own, own)
+    flows: dict[str, Decimal] = {}
     missing: list[str] = []
-    components: dict = {}
     cells: list[str] = []
     notes: list[str] = []
-    numerator = Decimal(0)
     for concept in _NUMERATOR:
         amount, found, hole = _concept_amount(
             _bound(bindings, concept, absent), facts, key, aligned, payment=False, convention=convention
@@ -127,11 +161,37 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         if hole or amount is None:
             missing.append(concept)
             continue
-        numerator += amount
-        components[concept] = format(amount, "f")
+        flows[concept] = amount
         cells.extend(found)
         if concept == "financing_inflows":
             notes.append("financing_inflows_included")
+    split: dict = {}
+    denominator, denom_missing, denom_reason, denom_cells = _denominator(
+        bindings, facts, key, aligned, convention, absent, split
+    )
+    missing.extend(denom_missing)
+    cells.extend(denom_cells)
+    return {
+        "flows": flows,
+        "missing": missing,
+        "principal": split.get("senior_principal"),
+        "interest": split.get("senior_interest_paid"),
+        "denominator": denominator,
+        "denom_reason": denom_reason,
+        "cells": cells,
+        "notes": notes,
+    }
+
+
+def _period_row(period, facts, bindings, aligned, convention, absent, addback: bool, fees: bool = False, swaps: bool = False):
+    own = (period.get("axis_id"), period.get("period_id"))
+    key = aligned.get(own, own)
+    collected = collect_interval(period, facts, bindings, aligned, convention, absent)
+    missing = list(collected["missing"])
+    components = {name: format(amount, "f") for name, amount in collected["flows"].items()}
+    cells = list(collected["cells"])
+    notes = list(collected["notes"])
+    numerator = sum(collected["flows"].values(), Decimal(0))
     addback_reason = None
     if addback:
         extra, extra_cells, addback_reason = _cash_interest(bindings, facts, key, aligned, convention, absent)
@@ -148,11 +208,22 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         notes.append("interest_inside_numerator")
     if addback_reason:
         notes.append(addback_reason)
-    denominator, denom_missing, denom_reason, denom_cells = _denominator(
-        bindings, facts, key, aligned, convention, absent
-    )
-    missing.extend(denom_missing)
-    cells.extend(denom_cells)
+    denominator = collected["denominator"]
+    denom_reason = collected["denom_reason"]
+    for concept, enabled in (("senior_fees", fees), ("senior_swaps", swaps)):
+        if not enabled:
+            continue
+        extra, problem, extra_cells = _attributed_cash(
+            bindings, facts, key, aligned, convention, absent, concept
+        )
+        cells.extend(extra_cells)
+        if problem == "missing":
+            missing.append(concept)
+        elif problem:
+            denom_reason = denom_reason or problem
+        elif extra is not None and denominator is not None:
+            denominator += extra
+            components[concept] = format(extra, "f")
     if _draw_and_repay(bindings, facts, key, aligned, absent, denominator):
         notes.append("same_interval_draw_and_repay")
     if _escrow_outside(bindings, facts, key, aligned, absent, components.get("cfo_statement")):
@@ -174,6 +245,18 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         status, reason = "computed", None
     if denominator is not None:
         components["denominator"] = format(denominator, "f")
+    if collected["principal"] is not None:
+        components["senior_principal"] = format(collected["principal"], "f")
+    if collected["interest"] is not None:
+        components["senior_interest_paid"] = format(collected["interest"], "f")
+    den_names = ["senior_principal", "senior_interest_paid"]
+    if fees:
+        den_names.append("senior_fees")
+    if swaps:
+        den_names.append("senior_swaps")
+    composition = COMPOSITION
+    if fees or swaps:
+        composition = "cfo_statement + cfi_statement + financing_inflows / " + " + ".join(den_names)
     components["cells"] = cells
     _compare_book(
         notes,
@@ -194,8 +277,9 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         "status": status,
         "reason": reason,
         "missing": missing,
+        "definition": DEFINITION_ID,
         "methodology": METHODOLOGY,
-        "composition": COMPOSITION,
+        "composition": composition,
         "standard": "ОДДС",
         "components": components,
         "inputs": [*_NUMERATOR, "senior_principal", "senior_interest_paid"],
@@ -204,7 +288,7 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
     return row, [{"code": code, "params": {"period_id": period.get("period_id")}} for code in notes]
 
 
-def _denominator(bindings, facts, key, aligned, convention, absent):
+def _denominator(bindings, facts, key, aligned, convention, absent, split=None):
     debt = [row for concept in _DEBT for row in _bound(bindings, concept, absent)]
     caps = [row for row in debt if _is_cap(row) and _seniority(row) == "senior" and not _mixed(row)]
     senior = [
@@ -235,6 +319,9 @@ def _denominator(bindings, facts, key, aligned, convention, absent):
             missing.append("senior_interest_paid")
         if missing or principal is None or interest is None:
             return None, missing or ["senior_interest_paid"], None, cells
+        if split is not None:
+            split["senior_principal"] = principal
+            split["senior_interest_paid"] = interest
         return principal + interest, [], None, cells
     if mixed and not totals:
         return None, [], "seniority_unsplit", []
@@ -483,6 +570,21 @@ def _cash_interest(bindings, facts, key, aligned, convention, absent):
 
 def _senior_cash(row: dict) -> bool:
     return bool(row.get("is_primary")) and _seniority(row) == "senior" and not _mixed(row) and not _is_cap(row)
+
+
+def _attributed_cash(bindings, facts, key, aligned, convention, absent, concept):
+    """Старшая кассовая сумма. Младшая строка не доказывает, что старшей суммы нет."""
+
+    rows = _bound(bindings, concept, absent)
+    if any(_mixed(row) for row in rows):
+        return None, "seniority_unsplit", []
+    senior = [row for row in rows if _seniority(row) == "senior"]
+    if not senior:
+        return None, "missing", []
+    amount, cells, hole = _sum_rows(senior, facts, key, aligned, True, convention)
+    if hole or amount is None:
+        return None, "missing", cells
+    return amount, None, cells
 
 
 def _draw_and_repay(bindings, facts, key, aligned, absent, denominator) -> bool:

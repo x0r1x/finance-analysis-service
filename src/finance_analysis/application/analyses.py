@@ -64,6 +64,7 @@ from finance_analysis.domain.errors import (
     NotAcceptable,
     NotFound,
 )
+from finance_analysis.domain.housing_cover import dispatch_cover
 from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
 from finance_analysis.domain.ids import ulid as check_ulid
@@ -94,6 +95,7 @@ RATIO_METRICS = (
     "net_debt_ebitda",
     "total_debt",
     "escrow_coverage",
+    "escrow_blended_rate",
     "npv",
     "irr",
     "fcff",
@@ -866,7 +868,18 @@ class Analyses:
                     }
                 )
                 continue
-            if metric in LOAN_LIFE:
+            routed = dispatch_cover(
+                metric,
+                metric_variant=variant_of.get(metric),
+                dscr_variant=variant_of.get("dscr"),
+                profile=body,
+                basis=basis,
+                direction=direction,
+                common=common,
+            )
+            if routed is not None:
+                result = routed
+            elif metric in LOAN_LIFE:
                 result = loan_life_ratio(metric, basis=basis, **common)
             elif metric in REDUCED:
                 result = dscr_reductions(metric, **common)
