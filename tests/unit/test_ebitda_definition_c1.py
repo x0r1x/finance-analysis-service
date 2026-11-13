@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 
 import pytest
@@ -154,6 +155,20 @@ def _blob(result: dict) -> str:
     return str(result)
 
 
+def _old_operating_profit(binding: str) -> dict:
+    return {
+        "seq": 1,
+        "type": "concept.set",
+        "target": binding,
+        "binding_key": binding,
+        "value": "operating_profit",
+        "actor": {"user_id": "alex", "client_id": "desk"},
+        "expected_seq": None,
+        "request_id": "old-set",
+        "at_utc": "2020-01-01T00:00:00Z",
+    }
+
+
 @pytest.mark.parametrize(
     "label",
     [
@@ -186,21 +201,164 @@ def test_old_operating_profit_binding_is_kept_and_flagged(label: str):
     assert isinstance(notice, str) and "needs review" in notice
 
 
-def test_current_operating_profit_binding_is_not_flagged():
+def test_old_operating_profit_with_an_unresolvable_label_is_flagged():
+    """Старая ручная привязка помечается, даже если подпись ни к чему не относится."""
+
     glossary = load_catalog()
-    row = _row("row", "Операционная прибыль модели")
-    events = [
-        {
-            "seq": 1,
-            "type": "concept.set",
-            "target": "row",
-            "binding_key": "row",
-            "value": "operating_profit",
-        }
-    ]
+    row = _row("row", "Строка без метки")
+    events = [_old_operating_profit("row")]
     item = assign_rows([row], events, glossary)["row"]
     assert item.concept == "operating_profit"
+    assert item.status == "bound"
+    assert item.source == "confirmed"
+    assert item.concept != "profit_from_sales"
+    notice = item.evidence.get("needs_review")
+    assert isinstance(notice, str) and "needs review" in notice
+
+
+def test_marking_an_old_operating_profit_binding_twice_keeps_history():
+    glossary = load_catalog()
+    events = [_old_operating_profit("row")]
+    snapshot = [dict(events[0])]
+    row = _row("row", "Строка без метки")
+    first = assign_rows([row], events, glossary)["row"]
+    second = assign_rows([row], events, glossary)["row"]
+    assert first.evidence == second.evidence
+    assert "needs review" in first.evidence["needs_review"]
+    assert events == snapshot
+    assert events[0]["value"] == "operating_profit"
+    assert events[0]["actor"] == {"user_id": "alex", "client_id": "desk"}
+    assert events[0]["request_id"] == "old-set"
+    assert "meaning" not in events[0]
+
+
+def test_confirming_operating_profit_clears_the_review_and_keeps_history(tmp_path):
+    """Новое подтверждение снимает пометку и не переписывает старую запись."""
+
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.journal import Journal
+    from finance_analysis.application.keys import log_key
+    from finance_analysis.domain.book import Actor
+
+    async def run():
+        store = LocalStore(tmp_path)
+        journal = Journal(store)
+        job = "b" * 64
+        old = _old_operating_profit("row")
+        await store.put(log_key(job, 1), json.dumps(old, ensure_ascii=False).encode())
+        glossary = load_catalog()
+        row = _row("row", "Строка без метки")
+        before = assign_rows([row], await journal.read_all(job), glossary)["row"]
+        assert "needs review" in before.evidence["needs_review"]
+        actor = Actor(user_id="alex", client_id="desk")
+        confirmed, duplicate = await journal.commit(
+            job,
+            target="row",
+            event_type="concept.confirmed",
+            value="operating_profit",
+            actor=actor,
+            expected_seq=None,
+            request_id="confirm",
+            binding_key="row",
+        )
+        assert duplicate is False
+        assert confirmed["meaning"] == "model"
+        events = await journal.read_all(job)
+        assert events[0] == old
+        assert [item["type"] for item in events] == ["concept.set", "concept.confirmed"]
+        cleared = assign_rows([row], events, glossary)["row"]
+        assert cleared.concept == "operating_profit"
+        assert cleared.source == "confirmed"
+        assert "needs_review" not in cleared.evidence
+        _again, duplicate_again = await journal.commit(
+            job,
+            target="row",
+            event_type="concept.confirmed",
+            value="operating_profit",
+            actor=actor,
+            expected_seq=confirmed["seq"],
+            request_id="confirm",
+            binding_key="row",
+        )
+        assert duplicate_again is True
+        assert len(await journal.read_all(job)) == 2
+
+    asyncio.run(run())
+
+
+def test_confirming_an_old_confirmation_clears_the_review(tmp_path):
+    """Повторное подтверждение старой записи не затирает её и снимает пометку."""
+
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.journal import Journal
+    from finance_analysis.application.keys import log_key
+    from finance_analysis.domain.book import Actor
+
+    async def run():
+        store = LocalStore(tmp_path)
+        job = "d" * 64
+        old = _old_operating_profit("row")
+        old["type"] = "concept.confirmed"
+        old["request_id"] = "again"
+        await store.put(log_key(job, 1), json.dumps(old, ensure_ascii=False).encode())
+        actor = Actor(user_id="alex", client_id="desk")
+        renewed, duplicate = await Journal(store).commit(
+            job,
+            target="row",
+            event_type="concept.confirmed",
+            value="operating_profit",
+            actor=actor,
+            expected_seq=1,
+            request_id="again",
+            binding_key="row",
+        )
+        assert duplicate is False
+        assert renewed["meaning"] == "model"
+        events = await Journal(store).read_all(job)
+        assert events[0] == old
+        cleared = assign_rows([_row("row", "Строка без метки")], events, load_catalog())["row"]
+        assert cleared.concept == "operating_profit"
+        assert "needs_review" not in cleared.evidence
+
+    asyncio.run(run())
+
+
+def test_changing_the_operating_profit_binding_clears_the_review():
+    glossary = load_catalog()
+    events = [
+        _old_operating_profit("row"),
+        {**_old_operating_profit("row"), "seq": 2, "value": "ebitda", "request_id": "change"},
+    ]
+    item = assign_rows([_row("row", "Строка без метки")], events, glossary)["row"]
+    assert item.concept == "ebitda"
     assert "needs_review" not in item.evidence
+    assert events[0]["value"] == "operating_profit"
+
+
+def test_new_operating_profit_binding_is_not_flagged(tmp_path):
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.application.journal import Journal
+    from finance_analysis.domain.book import Actor
+
+    async def run():
+        journal = Journal(LocalStore(tmp_path))
+        event, duplicate = await journal.commit(
+            "c" * 64,
+            target="row",
+            event_type="concept.set",
+            value="operating_profit",
+            actor=Actor(user_id="alex", client_id="desk"),
+            expected_seq=None,
+            request_id="new-set",
+            binding_key="row",
+        )
+        assert duplicate is False
+        assert event["meaning"] == "model"
+        item = assign_rows([_row("row", "Строка без метки")], [event], load_catalog())["row"]
+        assert item.concept == "operating_profit"
+        assert "needs_review" not in item.evidence
+
+    asyncio.run(run())
 
 
 def test_ras_lines_bind_and_operating_profit_stays_apart():

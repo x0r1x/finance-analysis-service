@@ -317,7 +317,7 @@ def test_two_decision_kinds_stay_and_a_failed_proposal_stays_open(tmp_path):
         events = await journal.read_all(job)
         kinds = {event["type"] for event in fold(events).values()}
         assert {"sign.set", "concept.set", "unit.set", "concept.absent", "profile.set"} <= kinds
-        _human, _ignored, absent = _decisions(events)
+        _human, _ignored, absent, _accepted = _decisions(events)
         assert "capex" in absent
 
         gloss = GlossaryStore(store)
