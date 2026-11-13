@@ -4,11 +4,12 @@ fcff = operating_cash_flow + shield − capex.
 Щит есть только когда проценты уже вычтены из выбранной строки OCF:
 величина уплаченных процентов × (1 − ставка этого периода).
 Нет строки OCF — из прибыли и амортизации её не собирать. Ставку 20% не подставлять.
+Сверка пишет fcff_book_mismatch. Ячейка книги входом не является.
 """
 
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
+from decimal import Decimal, InvalidOperation, localcontext
 
 from finance_analysis.domain.metrics import (
     HUMAN_SOURCES,
@@ -26,6 +27,9 @@ _EXCLUDED = (
     "Операционный поток не уменьшен на проценты. "
     "FCFF посчитан как OCF − capex, без добавки процентов после налога."
 )
+_NO_ANNUAL = "Годовой FCFF не посчитан. Число книги не вход калькулятора."
+_DIFFERS = "Годовой FCFF не совпал с числом книги."
+_ADD_BACK = frozenset({"interest", "interest_paid"})
 _BOUND = frozenset({"bound", "bound_with_warning"})
 _FINANCING_SECTION = (
     "финансовая деятельность",
@@ -41,14 +45,16 @@ def free_cash_flow(
     periods: list[dict],
     sign_convention: str = "outflow_negative",
     absent: frozenset[str] = frozenset(),
+    links: list[dict] | None = None,
+    book: list[dict] | None = None,
 ) -> dict:
     primaries = _primaries(bindings, absent)
     ocf = primaries.get("operating_cash_flow")
     capex = primaries.get("capex")
     if ocf is None:
-        return _missing("operating_cash_flow")
+        return _finish(_missing("operating_cash_flow"), [], periods, book)
     if capex is None:
-        return _missing("capex")
+        return _finish(_missing("capex"), [], periods, book)
     confirm_paid_interest(primaries, bindings, absent)
     paid = primaries.get("interest_paid")
     accrued = primaries.get("interest")
@@ -58,7 +64,7 @@ def free_cash_flow(
         and accrued.get("row_key") == paid.get("row_key")
     ):
         accrued = None
-    basis = _basis(ocf, bindings, absent)
+    basis = _basis(ocf, bindings, absent, facts, links or [])
     rate_row = primaries.get("income_tax_rate")
     aligned = aligned_keys(periods)
     table, rate_periods = _rates(facts, rate_row, aligned) if rate_row else ({}, [])
@@ -145,23 +151,34 @@ def free_cash_flow(
         if any(item["status"] == "computed" for item in rows)
         else "not_computed"
     )
-    return {
-        "metric": "fcff",
-        "rows": rows,
-        "needs_input": [],
-        "warnings": warnings,
-        "status": status,
-    }
+    return _finish(
+        {
+            "metric": "fcff",
+            "rows": rows,
+            "needs_input": [],
+            "warnings": warnings,
+            "status": status,
+        },
+        rows,
+        periods,
+        book,
+    )
 
 
-def _basis(ocf: dict, bindings: list[dict], absent: frozenset[str]) -> str:
+def _basis(
+    ocf: dict,
+    bindings: list[dict],
+    absent: frozenset[str],
+    facts: list[dict],
+    links: list[dict],
+) -> str:
     rows = _interest_rows(bindings, absent)
     coded = [row for row in rows if _stated_digits(row) == "4123"]
     if _stated_digits(ocf) == "4100" and coded:
         return "interest_included"
     if rows and not coded and all(_financing(row) for row in rows):
         return "interest_excluded"
-    if _formula_candidate(ocf):
+    if _formula_candidate(ocf, bindings, absent, facts, links):
         return "candidate"
     return "unknown"
 
@@ -196,8 +213,67 @@ def _section(row: dict) -> str:
     return parts[-2] if len(parts) > 1 else ""
 
 
-def _formula_candidate(ocf: dict) -> bool:
-    # shortcut: базис по графу читает только текст formula на привязке OCF. Ссылки на ячейки без имени понятия базис не задают. Поднять, когда в расчёт приходят понятия предшественников.
+def _formula_candidate(
+    ocf: dict,
+    bindings: list[dict],
+    absent: frozenset[str],
+    facts: list[dict],
+    links: list[dict],
+) -> bool:
+    # shortcut: ссылка без привязанного предшественника базис не задаёт и не отменяет. Поднять, когда у каждой ссылки есть строка.
+    concepts = _precedent_concepts(ocf, bindings, absent, facts, links)
+    if concepts:
+        return "net_income" in concepts and not concepts & _ADD_BACK
+    return _named_in_formula(ocf)
+
+
+def _precedent_concepts(
+    ocf: dict,
+    bindings: list[dict],
+    absent: frozenset[str],
+    facts: list[dict],
+    links: list[dict],
+) -> set[str]:
+    row_key = ocf.get("row_key")
+    if not isinstance(row_key, str) or not links:
+        return set()
+    cell_row: dict[str, str] = {}
+    for link in links:
+        cell = link.get("cell")
+        key = link.get("row_key")
+        if isinstance(cell, str) and cell and isinstance(key, str) and key:
+            cell_row.setdefault(cell, key)
+    for fact in facts:
+        cell = fact.get("cell_id")
+        key = fact.get("row_key")
+        if isinstance(cell, str) and cell and isinstance(key, str) and key:
+            cell_row.setdefault(cell, key)
+    bound: dict[str, set[str]] = {}
+    for row in bindings:
+        if row.get("status") not in _BOUND:
+            continue
+        key = row.get("row_key")
+        concept = row.get("effective_concept")
+        if not isinstance(key, str) or not isinstance(concept, str) or not concept:
+            continue
+        if concept in absent and row.get("source") not in HUMAN_SOURCES:
+            continue
+        bound.setdefault(key, set()).add(concept)
+    found: set[str] = set()
+    for link in links:
+        if link.get("row_key") != row_key:
+            continue
+        ref = link.get("ref_cell")
+        if not isinstance(ref, str) or not ref:
+            continue
+        target = cell_row.get(ref)
+        if not target or target == row_key:
+            continue
+        found |= bound.get(target, set())
+    return found
+
+
+def _named_in_formula(ocf: dict) -> bool:
     text = ocf.get("formula")
     if not isinstance(text, str) or not text.strip():
         return False
@@ -381,6 +457,88 @@ def _blank(period: dict, reason: str | None) -> dict:
         "status": "not_computed",
         "reason": reason,
     }
+
+
+def _finish(result: dict, rows: list[dict], periods: list[dict], book) -> dict:
+    notes = _book_mismatch(rows, periods, book or [])
+    if notes:
+        result["warnings"] = [*result["warnings"], *notes]
+    return result
+
+
+def _book_mismatch(rows: list[dict], periods: list[dict], book: list[dict]) -> list[dict]:
+    """Год сверки — сумма кварталов calendar_year. Нет годового числа — так и пишем."""
+
+    if not book:
+        return []
+    year_of: dict[tuple, int] = {}
+    for period in periods:
+        year = _year(period.get("calendar_year"))
+        if year is None:
+            continue
+        year_of[(period.get("axis_id"), period.get("period_id"))] = year
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        year = year_of.get((row.get("axis_id"), row.get("period_id")))
+        if year is None:
+            continue
+        grouped.setdefault(year, []).append(row)
+    notes = []
+    for item in book:
+        if not isinstance(item, dict):
+            continue
+        book_value = _book_figure(item.get("value"))
+        if book_value is None:
+            continue
+        year = _year(item.get("calendar_year"))
+        members = grouped.get(year, []) if year is not None else []
+        fas = None
+        if members and all(
+            row.get("status") == "computed" and isinstance(row.get("value"), Decimal)
+            for row in members
+        ):
+            fas = _money(sum((row["value"] for row in members), Decimal(0)))
+        if fas is not None and _close(fas, book_value):
+            continue
+        cell = item.get("cell_id") or item.get("cell")
+        notes.append(
+            {
+                "code": "fcff_book_mismatch",
+                "params": {
+                    "cell": None if cell is None else str(cell),
+                    "book": book_value,
+                    "fas": fas,
+                    "calendar_year": year,
+                    "message": _NO_ANNUAL if fas is None else _DIFFERS,
+                },
+            }
+        )
+    return notes
+
+
+def _year(value) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _book_figure(value) -> Decimal | None:
+    if isinstance(value, bool) or value is None or isinstance(value, float):
+        return None
+    if isinstance(value, Decimal):
+        number = value
+    elif isinstance(value, (int, str)):
+        try:
+            number = Decimal(value)
+        except InvalidOperation:
+            return None
+    else:
+        return None
+    return _money(number)
 
 
 def _missing(subject: str) -> dict:

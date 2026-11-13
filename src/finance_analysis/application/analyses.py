@@ -818,6 +818,10 @@ class Analyses:
             semantics = await svc._dataset_rows(job_id, pinned, "period_semantics")
         except (NotFound, StopIteration):
             semantics = []
+        try:
+            links = await svc._dataset_rows(job_id, pinned, "graph_links")
+        except (NotFound, StopIteration):
+            links = []
         phase_of = {(row["axis_id"], row["period_id"]): row.get("phase") for row in semantics}
         explicit = any(phase_of.values())
         body = await self._profile(target.head)
@@ -877,6 +881,7 @@ class Analyses:
                     money=money,
                     interest_order=svc.model_types.interest_order,
                     row_fallbacks=svc.model_types.row_fallbacks,
+                    links=links,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
