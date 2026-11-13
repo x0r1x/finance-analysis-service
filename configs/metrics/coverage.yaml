@@ -71,6 +71,11 @@ metrics:
     numerator: {plus: [net_debt]}
     denominator: {plus: [ebitda]}
     window: LTM
+  total_debt:
+    definition: "Долг на дату: долгосрочные и краткосрочные заемные средства плюс обязательство по аренде. Знаменателя нет, частное не считается."
+    numerator: {plus: [borrowings_lt, borrowings_st, lease_liability]}
+    window: period
+    aggregation: stock
   escrow_coverage:
     definition: "Покрытие счетов эскроу: остаток эскроу / остаток долга за период. Это покрытие, не ставка."
     numerator: {plus: [escrow_balance]}

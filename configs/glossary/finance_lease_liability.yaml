@@ -1,0 +1,9 @@
+concept: finance_lease_liability
+pref:
+  en: "Finance lease liability"
+  ru: "Финансовая аренда ASC 842"
+definition:
+  en: "ASC 842 finance lease liability. Shown apart from the operating lease liability."
+  ru: "Строка финансовой аренды по ASC 842. В отчете лежит отдельно от операционной аренды."
+xref:
+  gaap: "Finance lease liability"

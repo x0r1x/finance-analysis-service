@@ -23,4 +23,5 @@ metrics:
   escrow_coverage: {use: not_applicable}
   npv: {use: not_applicable}
   irr: {use: not_applicable}
+  total_debt: {use: optional}
   fcff: {use: optional}

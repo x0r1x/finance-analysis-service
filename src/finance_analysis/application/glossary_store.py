@@ -53,6 +53,8 @@ _PROFILE_FIELDS = frozenset(
         "dscr_definition",
         "ebitda_definition",
         "icr_definition",
+        "debt_standard",
+        "include_operating_lease_liability",
         "actuals_end",
         "sheet_class",
     }
@@ -523,7 +525,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, icr_definition, actuals_end и sheet_class",
+                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, icr_definition, debt_standard, include_operating_lease_liability, actuals_end и sheet_class",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -566,6 +568,18 @@ class GlossaryStore:
             problem = ebitda_definition_error(body["ebitda_definition"])
             if problem:
                 raise InvalidArgument(problem)
+        if "debt_standard" in body and body["debt_standard"] is not None:
+            from finance_analysis.domain.total_debt import debt_standard_error
+
+            problem = debt_standard_error(body["debt_standard"])
+            if problem:
+                raise InvalidArgument(problem)
+        if "include_operating_lease_liability" in body and body["include_operating_lease_liability"] is not None:
+            from finance_analysis.domain.total_debt import operating_lease_flag_error
+
+            problem = operating_lease_flag_error(body["include_operating_lease_liability"])
+            if problem:
+                raise InvalidArgument(problem)
         if "sign_convention" in body and body["sign_convention"] not in _SIGNS:
             raise InvalidArgument("sign_convention: outflow_negative или outflow_positive")
         if "marker_class" in body and body["marker_class"] not in _MARKERS:
@@ -591,6 +605,10 @@ class GlossaryStore:
                     saved["icr_definition"] = body["icr_definition"]
                 if body.get("ebitda_definition"):
                     saved["ebitda_definition"] = body["ebitda_definition"]
+                if body.get("debt_standard"):
+                    saved["debt_standard"] = body["debt_standard"]
+                if "include_operating_lease_liability" in body:
+                    saved["include_operating_lease_liability"] = body["include_operating_lease_liability"]
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]
                 if body.get("sheet_class"):
@@ -622,6 +640,15 @@ class GlossaryStore:
                     saved["ebitda_definition"] = body["ebitda_definition"]
             elif current["body"].get("ebitda_definition"):
                 saved["ebitda_definition"] = current["body"]["ebitda_definition"]
+            if "debt_standard" in body:
+                if body.get("debt_standard"):
+                    saved["debt_standard"] = body["debt_standard"]
+            elif current["body"].get("debt_standard"):
+                saved["debt_standard"] = current["body"]["debt_standard"]
+            if "include_operating_lease_liability" in body:
+                saved["include_operating_lease_liability"] = body["include_operating_lease_liability"]
+            elif "include_operating_lease_liability" in current["body"]:
+                saved["include_operating_lease_liability"] = current["body"]["include_operating_lease_liability"]
             if "actuals_end" in body:
                 if body.get("actuals_end"):
                     saved["actuals_end"] = body["actuals_end"]

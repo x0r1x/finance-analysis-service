@@ -27,4 +27,5 @@ metrics:
   net_debt_ebitda: {use: not_applicable}
   npv: {use: not_applicable}
   irr: {use: not_applicable}
+  total_debt: {use: not_applicable}
   fcff: {use: not_applicable}

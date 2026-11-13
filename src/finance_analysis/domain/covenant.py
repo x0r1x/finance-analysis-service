@@ -1067,6 +1067,16 @@ def select_ratio(
     Без имени корпоративный тип остаётся на `corporate_covenant`, остальные — на своей формуле.
     """
 
+    if metric == "total_debt":
+        from finance_analysis.domain.total_debt import total_debt_result
+
+        return total_debt_result(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            profile=profile,
+            marker_class=common["marker_class"],
+        )
     if metric in {"npv", "irr"}:
         return project_return(
             metric,

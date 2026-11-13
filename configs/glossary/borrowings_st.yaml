@@ -1,0 +1,20 @@
+concept: borrowings_st
+pref:
+  en: "Short-term borrowings"
+  ru: "Краткосрочные заемные средства"
+alt:
+  en:
+    - "Current borrowings"
+  ru:
+    - text: "Заемные средства"
+      ambiguous: true
+    - text: "Займы и кредиты"
+      ambiguous: true
+    - "1510"
+    - "610"
+definition:
+  en: "Section V, line 1510. Balance of account 66 plus the part of account 67 due within 12 months. Interest payable, bonds and notes on 66 and 67 are included. Accounts 60, 62 and 68 are not."
+  ru: "Раздел V, строка 1510. Сальдо счета 66 плюс часть счета 67 со сроком до 12 месяцев. Проценты к уплате входят. Облигации и векселя на счетах 66 и 67 входят. Счета 60, 62 и 68 не входят."
+xref:
+  ifrs: "Borrowings, current"
+  gaap: "Short-term debt"

@@ -92,6 +92,7 @@ RATIO_METRICS = (
     "llcr",
     "plcr",
     "net_debt_ebitda",
+    "total_debt",
     "escrow_coverage",
     "npv",
     "irr",

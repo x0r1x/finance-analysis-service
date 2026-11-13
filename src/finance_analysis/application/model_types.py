@@ -131,6 +131,14 @@ def _side(raw: dict) -> Side:
 
 
 def _composed(body: dict, name: str) -> Composed | None:
+    if body.get("aggregation") == "stock":
+        numerator = body.get("numerator")
+        if not isinstance(numerator, dict) or body.get("window") != "period" or "denominator" in body:
+            raise ModelTypeInvalid(f"{name}: сумма запаса — числитель, окно period, без знаменателя")
+        side = _side(numerator)
+        if not side.plus and not side.minus:
+            raise ModelTypeInvalid(f"{name}: сумма пуста")
+        return Composed(side, Side((), ()), "period")
     numerator = body.get("numerator")
     if not isinstance(numerator, dict):
         return None
