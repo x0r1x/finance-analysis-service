@@ -1,4 +1,4 @@
-"""Банковский ICR: срезы 1–5. Рецепт РСБУ и МСФО остаётся not_computed."""
+"""Банковский ICR: срезы 1–6. EBITDA по РСБУ и МСФО считается из отчётности."""
 
 from __future__ import annotations
 
@@ -235,18 +235,28 @@ def test_icr_ebit_falls_back_to_interest_paid_and_the_bank_path_does_not():
     assert bank["needs_input"][0]["subject"] == "interest"
 
 
-def test_ras_recipe_stays_not_computed():
+def test_ras_without_depreciation_is_not_computed():
     got = _select(
         "icr",
         _common(
-            [_fact("ebitda", "Y1", "30"), _fact("interest", "Y1", "10")],
-            [_bind("ebitda"), _bind("interest")],
+            [
+                _fact("ebitda", "Y1", "999"),
+                _fact("sales", "Y1", "30"),
+                _fact("interest", "Y1", "10"),
+            ],
+            [
+                _bind("ebitda"),
+                _bind("profit_from_sales", "sales"),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
             [_year()],
         ),
-        {"ebitda_definition": "ras", **_profile()},
+        {"ebitda_definition": "ras", **_profile(denominator=_evidence(standard="fsbu25"))},
     )
     assert got["status"] == "not_computed"
     assert got["rows"] == []
+    assert got["reason"] == "depreciation_missing"
+    assert "999" not in json.dumps(got)
 
 
 def test_in_interest_warns_and_does_not_add_lease_interest_again():
@@ -560,22 +570,33 @@ def test_lease_split_needs_one_scope_on_both_rows():
     assert bare["needs_input"][0]["subject"] == "lease_scope"
 
 
-def test_gaap_is_not_the_ifrs_recipe():
-    from finance_analysis.domain.metrics import _recipe_message
+def test_gaap_is_not_the_ifrs_methodology():
+    from finance_analysis.domain.metrics import _methodology_message
 
     got = _select(
         "icr",
         _common(
-            [_fact("ebitda", "Y1", "30"), _fact("interest", "Y1", "10")],
-            [_bind("ebitda"), _bind("interest")],
+            [
+                _fact("ebitda", "Y1", "30"),
+                _fact("profit", "Y1", "80"),
+                _fact("dep", "Y1", "20"),
+                _fact("interest", "Y1", "10"),
+            ],
+            [
+                _bind("ebitda"),
+                _bind("ifrs_operating_profit", "profit"),
+                _bind("depreciation_notes", "dep"),
+                _bind("interest"),
+            ],
             [_year()],
         ),
         {"ebitda_definition": "gaap", **_profile()},
     )
     assert got["status"] == "not_computed"
     assert got["rows"] == []
-    assert got["message"] == _recipe_message("gaap")
-    assert got["message"] != _recipe_message("ifrs")
+    assert got["message"] == _methodology_message("gaap")
+    assert got["message"] != _methodology_message("ifrs")
+    assert got["warnings"][0]["code"] == "ebitda_methodology_unpublished"
 
 
 def test_ytd_identity_rejects_a_shifted_fiscal_year_end():
@@ -767,3 +788,315 @@ def test_denominator_evidence_does_not_cross_axes_unless_both_scopes_are_each():
 
 def _series(row: str, periods: list[dict], values: list[str]) -> list[dict]:
     return [_fact(row, period["period_id"], value) for period, value in zip(periods, values, strict=True)]
+
+
+def _form(code: str) -> dict:
+    return {"evidence_json": json.dumps({"line_code": code})}
+
+
+def _ytd_form(code: str) -> dict:
+    return {
+        "evidence_json": json.dumps(
+            {"period_basis": "ytd", "period_basis_source": "header", "line_code": code}
+        )
+    }
+
+
+def test_ras_ebitda_is_sales_profit_plus_depreciation():
+    got = _select(
+        "icr",
+        _common(
+            [
+                _fact("ebitda", "Y1", "999"),
+                _fact("sales", "Y1", "100"),
+                _fact("dep", "Y1", "40"),
+                _fact("interest", "Y1", "20"),
+            ],
+            [
+                _bind("ebitda"),
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep"),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
+            [_year()],
+        ),
+        {"ebitda_definition": "ras", **_profile(denominator=_evidence(standard="fsbu25"))},
+    )
+    row = got["rows"][0]
+    assert row["value"] == Decimal("7.0000000000")
+    assert row["inputs"] == ["profit_from_sales", "depreciation_notes", "interest"]
+    assert "ebitda" not in row["inputs"]
+
+
+def test_ifrs_ebitda_is_operating_profit_plus_depreciation():
+    got = _select(
+        "icr",
+        _common(
+            [
+                _fact("ebitda", "Y1", "999"),
+                _fact("model", "Y1", "1"),
+                _fact("profit", "Y1", "80"),
+                _fact("dep", "Y1", "20"),
+                _fact("finance", "Y1", "25"),
+            ],
+            [
+                _bind("ebitda"),
+                _bind("operating_profit", "model"),
+                _bind("ifrs_operating_profit", "profit"),
+                _bind("depreciation_notes", "dep"),
+                _bind("finance_costs", "finance"),
+            ],
+            [_year()],
+        ),
+        {
+            "ebitda_definition": "ifrs",
+            **_profile(
+                finance_costs_confirmed=True,
+                denominator=_evidence(binding="finance_costs", standard="ifrs16"),
+            ),
+        },
+    )
+    row = got["rows"][0]
+    assert row["value"] == Decimal("4.0000000000")
+    assert "operating_profit" not in row["inputs"]
+    assert "ebitda" not in row["inputs"]
+    assert row["inputs"] == ["ifrs_operating_profit", "depreciation_notes", "finance_costs"]
+    model_only = _select(
+        "icr",
+        _common(
+            [_fact("model", "Y1", "80"), _fact("dep", "Y1", "20"), _fact("finance", "Y1", "25")],
+            [
+                _bind("operating_profit", "model"),
+                _bind("depreciation_notes", "dep"),
+                _bind("finance_costs", "finance"),
+            ],
+            [_year()],
+        ),
+        {
+            "ebitda_definition": "ifrs",
+            **_profile(
+                finance_costs_confirmed=True,
+                denominator=_evidence(binding="finance_costs", standard="ifrs16"),
+            ),
+        },
+    )
+    assert model_only["status"] == "not_computed"
+    assert model_only["reason"] == "statement_line_missing"
+
+
+def test_quarterly_ras_ebitda_sums_matching_depreciation():
+    periods = _flow_quarters()
+    facts = [
+        *_series("sales", periods, ["10", "20", "30", "40"]),
+        *_series("dep", periods, ["1", "1", "1", "1"]),
+        *_series("interest", periods, ["1", "2", "3", "4"]),
+    ]
+    got = _select(
+        "icr",
+        _common(
+            facts,
+            [
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep"),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
+            periods,
+        ),
+        {"ebitda_definition": "ras", **_profile(denominator=_evidence(standard="fsbu25"))},
+    )
+    assert _at(got, "2025Q2")["value"] == quantize_ratio(Decimal(104) / Decimal(10))
+    step = _at(got, "2025Q2", "quarter_reference")
+    assert step["value"] == quantize_ratio(Decimal(41) / Decimal(4))
+    assert step["value"] != _at(got, "2025Q2")["value"] * 4
+
+
+def test_annual_depreciation_does_not_fill_a_quarterly_ltm():
+    periods = [
+        *_flow_quarters(),
+        {
+            "axis_id": "notes",
+            "period_id": "Y",
+            "period_index": 1,
+            "grain": "year",
+            "timeline_id": "t",
+            "calendar_year": 2025,
+            "period_end": "2025-12-31",
+        },
+    ]
+    facts = [
+        *_series("sales", _flow_quarters(), ["10", "20", "30", "40"]),
+        *_series("interest", _flow_quarters(), ["1", "2", "3", "4"]),
+        {"row_key": "dep", "axis_id": "notes", "period_id": "Y", "normalized_value": "400"},
+    ]
+    got = _select(
+        "icr",
+        _common(
+            facts,
+            [
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep"),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
+            periods,
+        ),
+        {"ebitda_definition": "ras", **_profile(denominator=_evidence(standard="fsbu25"))},
+    )
+    assert got["status"] == "not_computed"
+    assert _at(got, "2025Q2")["reason"] == "depreciation_period_mismatch"
+    assert _at(got, "2025Q2")["value"] is None
+    assert "400" not in json.dumps([row.get("value") for row in got["rows"]])
+
+
+def test_ytd_ltm_applies_to_profit_depreciation_and_interest():
+    periods = _ytd_periods()
+    facts = [
+        *_series("sales", periods, ["10", "30", "60", "100", "12", "40"]),
+        *_series("dep", periods, ["1", "2", "3", "4", "1", "2"]),
+        *_series("interest", periods, ["1", "3", "6", "10", "2", "5"]),
+    ]
+    got = _select(
+        "icr",
+        _common(
+            facts,
+            [
+                _bind("profit_from_sales", "sales", **_ytd()),
+                _bind("depreciation_notes", "dep", **_ytd()),
+                _bind("interest", **_ytd_form("ф.2 (2330)")),
+            ],
+            periods,
+        ),
+        {"ebitda_definition": "ras", **_profile(denominator=_evidence(standard="fsbu25"))},
+    )
+    assert _at(got, "2025Q2")["value"] == quantize_ratio(Decimal(114) / Decimal(12))
+    assert _at(got, "2025Q2", "quarter_reference")["value"] == quantize_ratio(Decimal(29) / Decimal(3))
+
+
+def test_statement_basis_must_match_the_denominator():
+    sales = [
+        _fact("sales", "Y1", "100"),
+        _fact("dep", "Y1", "40"),
+        _fact("finance", "Y1", "20"),
+        _fact("interest", "Y1", "20"),
+    ]
+    ras_on_ifrs = _select(
+        "icr",
+        _common(
+            sales,
+            [
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep"),
+                _bind("finance_costs", "finance"),
+            ],
+            [_year()],
+        ),
+        {
+            "ebitda_definition": "ras",
+            **_profile(
+                finance_costs_confirmed=True,
+                denominator=_evidence(binding="finance_costs", standard="fsbu25"),
+            ),
+        },
+    )
+    assert ras_on_ifrs["status"] == "not_computed"
+    assert ras_on_ifrs["reason"] == "statement_basis_mismatch"
+    ifrs_on_ras = _select(
+        "icr",
+        _common(
+            sales,
+            [
+                _bind("ifrs_operating_profit", "sales"),
+                _bind("depreciation_notes", "dep"),
+                _bind("interest", **_form("ф.2 (2330)")),
+            ],
+            [_year()],
+        ),
+        {"ebitda_definition": "ifrs", **_profile(denominator=_evidence(standard="ifrs16"))},
+    )
+    assert ifrs_on_ras["status"] == "not_computed"
+    assert ifrs_on_ras["reason"] == "statement_basis_mismatch"
+    ras_without_code = _select(
+        "icr",
+        _common(
+            sales,
+            [
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep"),
+                _bind("interest"),
+            ],
+            [_year()],
+        ),
+        {"ebitda_definition": "ras", **_profile(denominator=_evidence(standard="fsbu25"))},
+    )
+    assert ras_without_code["reason"] == "statement_basis_mismatch"
+
+
+def test_capital_lease_ebitda_cannot_add_lease_interest_again():
+    common = _common(
+        [
+            _fact("profit", "Y1", "80"),
+            _fact("dep", "Y1", "20"),
+            _fact("interest", "Y1", "10"),
+            _fact("lease", "Y1", "7"),
+        ],
+        [
+            _bind("ifrs_operating_profit", "profit"),
+            _bind("depreciation_notes", "dep"),
+            _bind("interest"),
+            _bind("lease_interest", "lease"),
+        ],
+        [_year()],
+    )
+    doubled = _select(
+        "icr",
+        common,
+        {
+            "ebitda_definition": "ifrs",
+            **_profile("add_interest", denominator=_evidence(standard="ifrs16")),
+        },
+    )
+    assert doubled["status"] == "not_computed"
+    assert doubled["reason"] == "lease_ebitda_double_count"
+    assert doubled["rows"] == []
+    ras = _select(
+        "icr",
+        _common(
+            [
+                _fact("sales", "Y1", "80"),
+                _fact("dep", "Y1", "20"),
+                _fact("interest", "Y1", "10"),
+                _fact("lease", "Y1", "7"),
+            ],
+            [
+                _bind("profit_from_sales", "sales"),
+                _bind("depreciation_notes", "dep"),
+                _bind("interest", **_form("ф.2 (2330)")),
+                _bind("lease_interest", "lease"),
+            ],
+            [_year()],
+        ),
+        {
+            "ebitda_definition": "ras",
+            **_profile("add_interest", denominator=_evidence(standard="фсбу 25")),
+        },
+    )
+    assert ras["reason"] == "lease_ebitda_double_count"
+    matched = _select(
+        "icr",
+        common,
+        {
+            "ebitda_definition": "ifrs",
+            **_profile("add_interest", denominator=_evidence(standard="operating")),
+        },
+    )
+    assert matched["rows"][0]["value"] == quantize_ratio(Decimal(100) / Decimal(17))
+    blank = _profile("add_interest")
+    blank["icr_definition"]["denominator"]["standard"] = " "
+    assert _select("icr", common, {"ebitda_definition": "ifrs", **blank})["reason"] == "lease_ebitda_double_count"
+    kept = _select(
+        "icr",
+        common,
+        {"ebitda_definition": "ifrs", **_profile(denominator=_evidence(standard="ifrs16"))},
+    )
+    assert kept["rows"][0]["value"] == Decimal("10.0000000000")
+    assert "lease_interest" not in kept["rows"][0]["inputs"]
+    assert kept["warnings"][0]["code"] == "lease_interest_double_count"

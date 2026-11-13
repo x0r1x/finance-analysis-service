@@ -8,5 +8,5 @@ alt:
     - "2200"
     - "50"
 definition:
-  en: "Sales profit on the RAS income statement, including old line 50 and line 2200. Not IFRS operating profit. This release does not add it into a recipe."
-  ru: "Прибыль от продаж отчёта РСБУ, старый код 50 и строка 2200. Не операционная прибыль МСФО. В этом релизе в рецепт не складывается."
+  en: "Sales profit on the RAS income statement, including old line 50 and line 2200. Not IFRS operating profit. Inside icr.bank it is added to depreciation from the notes. Other ratios do not add it."
+  ru: "Прибыль от продаж отчёта РСБУ, старый код 50 и строка 2200. Не операционная прибыль МСФО. В профиле icr.bank складывается с амортизацией пояснений. В остальные коэффициенты не входит."

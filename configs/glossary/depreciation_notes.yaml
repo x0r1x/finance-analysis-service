@@ -9,5 +9,5 @@ alt:
     - "Амортизация на конец года (заполняется только 4 кв.)"
     - "Амортизация за соответствующий последний отчетный год"
 definition:
-  en: "Annual depreciation in the notes, line 5640 or form 5 line 740. Not a quarterly flow. This release does not add it."
-  ru: "Годовая амортизация пояснений, строка 5640 или ф.5 (740). Не поток квартала. В этом релизе не прибавляется."
+  en: "Depreciation and amortisation from the notes, line 5640 or form 5 line 740, including a right-of-use asset when the notes show it. icr.bank adds the amount as reported when its period grain matches the EBITDA window. An annual figure is not spread across quarters."
+  ru: "Амортизация пояснений, строка 5640 или ф.5 (740), включая амортизацию права пользования, если пояснения её показывают. Профиль icr.bank прибавляет сумму как в книге, когда зерно периода совпадает с окном EBITDA. Годовое значение на кварталы не раскладывается."
