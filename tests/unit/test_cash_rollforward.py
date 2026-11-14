@@ -188,6 +188,31 @@ def test_gross_and_net_are_not_added():
     assert check("cash_rollforward_break", summed)[0].params["basis"] == "gross"
 
 
+def test_section_totals_do_not_stand_in_for_the_company_net():
+    """Три итога разделов, первая строка основная. Закрытие их не цитирует: база — сальдо."""
+
+    held = _sections(close="120", net="20")
+    assert check("cash_rollforward_break", held) == []
+    gap = _sections(close="121", net="20")
+    found = check("cash_rollforward_break", gap)
+    assert found[0].params["basis"] == "net"
+    assert found[0].params["reason"] == "residual"
+
+
+def test_cited_primary_sections_stay_gross():
+    data = _sections(close="115", net="99", cite_primary=True)
+    assert check("cash_rollforward_break", data) == []
+    gap = _sections(close="116", net="99", cite_primary=True)
+    assert check("cash_rollforward_break", gap)[0].params["basis"] == "gross"
+
+
+def test_company_labels_the_close_cites_stay_gross():
+    data = _sections(close="140", net="99", company=True, cite_company=True)
+    assert check("cash_rollforward_break", data) == []
+    gap = _sections(close="141", net="99", company=True, cite_company=True)
+    assert check("cash_rollforward_break", gap)[0].params["basis"] == "gross"
+
+
 def test_formula_that_names_only_the_net_line_does_not_use_gross():
     """Прецеденты закрытия — только сальдо. Валовые строки рядом в сумму не входят."""
 
@@ -313,6 +338,59 @@ def _amounts(close: str) -> AuditInput:
             "cash_balance": {"2024": close},
         }
     )
+
+
+def _sections(
+    *,
+    close: str,
+    net: str,
+    cite_primary: bool = False,
+    company: bool = False,
+    cite_company: bool = False,
+) -> AuditInput:
+    """Открытие 100. Итоги разделов 40/10/5 и 25/8/2. Строка организации 50 и 10."""
+
+    specs = [
+        ("cash_opening", "S|1|S!r2", 1, "100", True, None),
+        ("cash_inflow", "S|20|S!r2", 20, "40", True, "Поступления — всего"),
+        ("cash_inflow", "S|21|S!r2", 21, "10", False, "Поступления — всего"),
+        ("cash_inflow", "S|22|S!r2", 22, "5", False, "Поступления — всего"),
+        ("cash_outflow", "S|23|S!r2", 23, "25", True, "Платежи — всего"),
+        ("cash_outflow", "S|24|S!r2", 24, "8", False, "Платежи — всего"),
+        ("cash_outflow", "S|25|S!r2", 25, "2", False, "Платежи — всего"),
+        ("cash_net", "S|4|S!r2", 4, net, True, None),
+        ("cash_balance", "S|6|S!r2", 6, close, True, None),
+    ]
+    if company:
+        specs[1:1] = [
+            ("cash_inflow", "S|26|S!r2", 26, "50", False, "Приток денежных средств"),
+            ("cash_outflow", "S|27|S!r2", 27, "10", False, "Отток денежных средств"),
+        ]
+    rows = []
+    facts = []
+    bindings = []
+    for concept, row_key, number, value, primary, label in specs:
+        rows.append(row(row_key))
+        binding = {
+            "effective_concept": concept,
+            "row_key": row_key,
+            "status": "bound",
+            "is_primary": primary,
+        }
+        if label:
+            binding["matched_label"] = label
+        bindings.append(binding)
+        facts.append(fact(row_key, f"S!C{number}", "2024", value))
+    links: list[dict] = []
+    if cite_primary:
+        links = link("S!C6", "=C20-C23", "S|6|S!r2", "2024", ("S!C20", "S!C23"))
+    if cite_company:
+        links = link("S!C6", "=C26-C27", "S|6|S!r2", "2024", ("S!C26", "S!C27"))
+    periods = [
+        {"axis_id": "S!r2", "period_id": "2024", "period_index": 0, "period_key_base": "2024"},
+        {"axis_id": "S!r2", "period_id": "2025", "period_index": 1, "period_key_base": "2025"},
+    ]
+    return AuditInput(rows=rows, periods=periods, facts=facts, links=links, bindings=bindings)
 
 
 def _book(lines: dict[str, dict[str, str]], *, links: list[dict] | None = None) -> AuditInput:

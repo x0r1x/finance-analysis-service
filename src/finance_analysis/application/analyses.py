@@ -137,6 +137,15 @@ def _attach_book_rows(envelope: dict, got: dict) -> None:
         envelope["result_data"]["book_rows"] = rows
 
 
+def _identity_variant_absent(result: dict) -> bool:
+    warnings = result.get("warnings") or []
+    return (
+        result.get("status") == "not_computed"
+        and len(warnings) == 1
+        and warnings[0].get("code") == "fcf_identity_variant_absent"
+    )
+
+
 def _absent_params(metric: str, result: dict) -> dict:
     """Параметры пропуска необязательной метрики.
 
@@ -915,6 +924,10 @@ class Analyses:
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
                 warnings.append({"code": "input_absent", "params": _absent_params(metric, result)})
+                continue
+            if use == "optional" and _identity_variant_absent(result):
+                uses.append({"metric": metric, "applicability": "optional", "skipped": "variant_absent"})
+                warnings.extend(result["warnings"])
                 continue
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])

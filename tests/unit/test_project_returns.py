@@ -376,11 +376,102 @@ def test_fcff_identity_matches_interest_after_tax_and_a_shift_warns_without_repl
     assert "ocf" not in npv["rows"][0]["inputs"]
 
 
-def test_unnamed_identity_variant_does_not_warn():
-    got = _identity(None, [{"operating_cash_flow": "100", "capex": "30", "project_fcf": "0"}])
-    assert got["status"] == "succeeded"
-    assert got["warnings"] == []
+async def test_optional_identity_without_a_variant_is_not_a_completed_check():
+    got = await _ratios(["npv", "irr", "fcf_identity"])
+    identity = next(item for item in got["applicability"] if item["metric"] == "fcf_identity")
+    assert identity == {"metric": "fcf_identity", "applicability": "optional", "skipped": "variant_absent"}
+    assert [item["code"] for item in got["warnings"]] == ["fcf_identity_variant_absent"]
+    assert not any(row["metric"] == "fcf_identity" for row in got["rows"])
+    recorded = [item for item in got["applicability"] if item["metric"] in {"npv", "irr"}]
+    assert recorded == [
+        {"metric": "npv", "applicability": "required"},
+        {"metric": "irr", "applicability": "required"},
+    ]
+    assert any(item["subject"] == "project_fcf" for item in got["needs_input"])
+
+
+async def test_another_not_computed_identity_stays_a_completed_check(monkeypatch):
+    from finance_analysis.application import analyses as analyses_mod
+
+    original = analyses_mod.confirmed_variants
+
+    def named(catalog, verdict):
+        found = dict(original(catalog, verdict))
+        found["fcf_identity"] = "vk477"
+        return found
+
+    monkeypatch.setattr(analyses_mod, "confirmed_variants", named)
+    got = await _ratios(
+        ["fcf_identity"],
+        bindings=[
+            _bind("project_fcf"),
+            _bind("operating_cash_flow"),
+            _bind("capex"),
+        ],
+        facts=[_fact("project_fcf", "Y0", "1"), _fact("project_fcf", "Y2", "1")],
+        periods=[_period("Y0", 0), _period("Y1", 1), _period("Y2", 2)],
+    )
+    assert got["applicability"] == [{"metric": "fcf_identity", "applicability": "optional"}]
+    assert [item["code"] for item in got["warnings"]] == ["project_return_incomplete"]
     assert got["rows"] == []
+
+
+async def _ratios(metrics, *, bindings=None, facts=None, periods=None):
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Service:
+        model_types = load_model_types()
+        catalog = load_catalog()
+        guard = _Guard()
+
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset == "bindings":
+                return bindings or []
+            if dataset == "fact_observation":
+                return facts or []
+            if dataset == "dim_period":
+                return periods or []
+            if dataset == "dim_row":
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                ("investment_project",),
+                "investment_project",
+                "confirmed",
+                None,
+                1,
+                None,
+                1.0,
+                {"investment_project": 1.0},
+                (),
+            )
+
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    target = Target(head=head, build="build", manifest={}, fresh=True)
+    return await Analyses(_Service()).compute_metrics("job", target, metrics)
+
+
+def test_unnamed_identity_variant_does_not_warn():
+    row = [{"operating_cash_flow": "100", "capex": "30", "project_fcf": "0"}]
+    got = _identity(None, row)
+    unknown = _identity("other", row)
+    assert got["status"] == "not_computed"
+    assert got["rows"] == []
+    assert [item["code"] for item in got["warnings"]] == ["fcf_identity_variant_absent"]
+    assert unknown["status"] == "not_computed"
+    assert unknown["rows"] == []
+    assert [item["code"] for item in unknown["warnings"]] == ["fcf_identity_variant_absent"]
 
 
 def test_full_lease_payment_does_not_match_the_interest_portion():

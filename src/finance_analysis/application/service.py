@@ -2034,18 +2034,27 @@ class FasService:
         return verdict
 
     async def _profile_dscr_variant(self, job_id: str) -> str | None:
-        """Имя варианта из профиля книги. Явный состав профиля след не подменяет."""
+        """Поле `dscr_variant`, иначе составной вариант определения.
+
+        Явный состав числителя и знаменателя след не подменяет. Поле `dscr_variant`
+        задаёт `cash_covenant`. То же имя в `dscr_definition.variant` след не берёт.
+        """
 
         events = await self.guard.read_all(job_id)
         profile_id = _profile_id(events)
         if not profile_id:
             return None
         body = await self.glossary.profile_body(profile_id)
-        raw = body.get("dscr_definition") if isinstance(body, dict) else None
+        if not isinstance(body, dict):
+            return None
+        named = body.get("dscr_variant")
+        if isinstance(named, str) and named:
+            return named
+        raw = body.get("dscr_definition")
         if not isinstance(raw, dict) or "numerator" in raw or "denominator" in raw:
             return None
         name = raw.get("variant")
-        if not isinstance(name, str) or not name:
+        if not isinstance(name, str) or not name or name == "cash_covenant":
             return None
         return name
 

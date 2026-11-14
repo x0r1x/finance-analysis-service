@@ -85,7 +85,7 @@ def fcf_identity(
 
     metric = "fcf_identity"
     if variant not in _IDENTITY:
-        return _empty(metric, "succeeded")
+        return _warned(metric, "fcf_identity_variant_absent")
     primaries = _primaries(bindings, absent)
     flow = primaries.get("project_fcf")
     operating = primaries.get("operating_cash_flow")

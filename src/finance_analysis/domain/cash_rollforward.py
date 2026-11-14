@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from finance_analysis.domain.audit import AuditInput
+from finance_analysis.domain.cash_flow import _COMPANY_IN, _COMPANY_OUT, _label_key
 from finance_analysis.domain.derive_fingerprint import configs_root
 from finance_analysis.domain.errors import InvalidArgument
 from finance_analysis.domain.ids import concept_id
@@ -107,17 +108,21 @@ def _optional(raw: object) -> str | None:
 
 
 def _basis(data: AuditInput, spec: CashCorkscrew, close: str) -> str | None:
-    """Прецеденты закрытия, если они делят движение без вложенного итога. Иначе вал, иначе сальдо."""
+    """Прецеденты закрытия, если они делят движение без вложенного итога.
 
-    inflow = _one(data, spec.inflow)
-    outflow = _one(data, spec.outflow)
+    Иначе вал, когда на каждой стороне одна привязанная строка. Несколько итогов
+    разделов вал по одной основной строке не выбирают. Тогда сальдо.
+    """
+
+    inflow = _gross_row(data, spec.inflow, _COMPANY_IN)
+    outflow = _gross_row(data, spec.outflow, _COMPANY_OUT)
     net = _one(data, spec.net)
     named = _precedents(data, close) & {row for row in (inflow, outflow, net) if row}
     if inflow and outflow and named == {inflow, outflow} and not _nested(data, inflow, outflow):
         return "gross"
     if net and named == {net}:
         return "net"
-    if inflow and outflow:
+    if inflow and outflow and _bound_count(data, spec.inflow) == 1 and _bound_count(data, spec.outflow) == 1:
         return "gross"
     if net:
         return "net"
@@ -130,8 +135,8 @@ def _nested(data: AuditInput, left: str, right: str) -> bool:
 
 def _residuals(data: AuditInput, spec: CashCorkscrew, close: str, basis: str) -> list[CashNote]:
     opening = _one(data, spec.opening)
-    inflow = _one(data, spec.inflow) if basis == "gross" else None
-    outflow = _one(data, spec.outflow) if basis == "gross" else None
+    inflow = _gross_row(data, spec.inflow, _COMPANY_IN) if basis == "gross" else None
+    outflow = _gross_row(data, spec.outflow, _COMPANY_OUT) if basis == "gross" else None
     net = _one(data, spec.net) if basis == "net" else None
     fx_row = _one(data, spec.fx)
     close_values = _series(data, close)
@@ -236,6 +241,49 @@ def _ordered(data: AuditInput, axis: str) -> list[str]:
         if name and name not in found:
             found.append(name)
     return found
+
+
+def _gross_row(data: AuditInput, concept: str, company: frozenset[str]) -> str | None:
+    """Строка организации глушит итоги разделов. Без неё остаётся одна основная."""
+
+    keys: list[str] = []
+    for binding in data.bindings:
+        if binding.get("status") not in _BOUND or _concept(binding) != concept:
+            continue
+        key = binding.get("row_key")
+        if not key or _label_key(binding) not in company:
+            continue
+        text = str(key)
+        if text not in keys:
+            keys.append(text)
+    if len(keys) == 1:
+        return keys[0]
+    if keys:
+        return None
+    return _one(data, concept)
+
+
+def _bound_count(data: AuditInput, concept: str | None) -> int:
+    if not concept:
+        return 0
+    return len(_bound_keys(data, concept))
+
+
+def _bound_keys(data: AuditInput, concept: str | None) -> list[str]:
+    if not concept:
+        return []
+    keys: list[str] = []
+    for binding in data.bindings:
+        if binding.get("status") not in _BOUND or _concept(binding) != concept:
+            continue
+        key = binding.get("row_key")
+        if key and str(key) not in keys:
+            keys.append(str(key))
+    return keys
+
+
+def _concept(binding: dict) -> str:
+    return str(binding.get("effective_concept") or binding.get("concept") or "")
 
 
 def _one(data: AuditInput, concept: str | None) -> str | None:
