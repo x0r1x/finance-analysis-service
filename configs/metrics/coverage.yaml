@@ -1,12 +1,7 @@
 # DSCR и ICR. Частное считает Python Decimal, не SQL.
-# interest_paid — не понятие таксономии, а row_fallback (решение 40).
-# binding_key / matching.rule — декларативные метаданные; lookup по id в interest_order.
-row_fallbacks:
-  interest_paid:
-    canonical: interest
-    binding_key: interest_paid
-    matching:
-      rule: interest_basis_paid
+# interest_paid — понятие таксономии и кандидат interest_order. row_fallback с этим id нет.
+# Порядок ICR на main: сначала interest, затем interest_paid.
+row_fallbacks: {}
 interest_order:
   icr: [interest, interest_paid]
   icr_ebit: [interest, interest_paid]

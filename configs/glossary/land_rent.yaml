@@ -1,0 +1,9 @@
+concept: land_rent
+pref:
+  en: "Land rent"
+  ru: "Арендная плата за землю"
+alt:
+  ru: ["Арендная плата за земельный участок"]
+definition:
+  en: "Land rent borne by the landlord. Not added together with land tax."
+  ru: "Арендная плата за землю, которую несёт арендодатель. Вместе с налогом на землю не складывается."

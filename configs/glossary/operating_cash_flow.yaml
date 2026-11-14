@@ -3,7 +3,7 @@ pref:
   en: "Operating cash flow"
   ru: "Операционный денежный поток"
 alt:
-  en: ["OCF", "cash flow from operating activities"]
+  en: ["OCF", "CFO", "cash flow from operating activities"]
   ru:
     - "Денежный поток от операционной деятельности"
     - "ИТОГО - Операционный денежный поток"

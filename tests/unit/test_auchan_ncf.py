@@ -170,7 +170,7 @@ _BOUND = (
     ),
     ("Outputs", 22, "Обслуживание долга (Debt Service)", "debt_service", True, "bound"),
     ("Outputs", 24, _INTEREST, "interest", False, "bound"),
-    ("Outputs", 35, "Чистый денежный поток за период (NCF)", None, False, "unknown"),
+    ("Outputs", 35, "Чистый денежный поток за период (NCF)", "ncf", False, "ambiguous"),
     (
         "Outputs",
         36,
@@ -187,7 +187,7 @@ _BOUND = (
         False,
         "bound",
     ),
-    ("Outputs", 49, "Чистый денежный поток (NCF)", None, False, "unknown"),
+    ("Outputs", 49, "Чистый денежный поток (NCF)", "ncf", False, "ambiguous"),
     (
         "Outputs",
         50,
@@ -197,7 +197,7 @@ _BOUND = (
         "unknown",
     ),
     ("Outputs", 56, _INTEREST, "interest", False, "bound"),
-    ("Формулы", 58, "Чистый денежный поток за период (NCF)", None, False, "unknown"),
+    ("Формулы", 58, "Чистый денежный поток за период (NCF)", "ncf", False, "bound"),
     (
         "Формулы",
         61,
@@ -224,8 +224,12 @@ _BOUND = (
         "unknown",
     ),
     *[
-        ("Для Стратегии 2017", row, "CAPEX", "capex", False, "bound")
-        for row in (65, 77, 89, 101)
+        item
+        for row in (64, 76, 88, 100)
+        for item in (
+            ("Для Стратегии 2017", row, "CFO", "operating_cash_flow", False, "bound"),
+            ("Для Стратегии 2017", row + 1, "CAPEX", "capex", False, "bound"),
+        )
     ],
 )
 

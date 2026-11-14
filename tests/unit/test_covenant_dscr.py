@@ -845,11 +845,8 @@ def test_interest_order_is_read_from_coverage_config():
     assert order["icr_ebit"] == ("interest", "interest_paid")
     assert order["corporate_covenant"] == ("interest", "interest_paid")
     assert order["pf"] == ("interest_paid", "interest")
-    paid = catalog.row_fallbacks["interest_paid"]
-    assert paid.canonical == "interest"
-    assert paid.binding_key == "interest_paid"
-    assert paid.matching_rule == "interest_basis_paid"
-    assert "interest_paid" not in catalog.concepts
+    assert "interest_paid" in catalog.concepts
+    assert "interest_paid" not in catalog.row_fallbacks
 
 
 def test_icr_uses_accrued_interest_before_paid_interest():

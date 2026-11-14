@@ -52,25 +52,31 @@ def interest_choice(
 
     Lookup — по id из порядка (concept или row_fallback id). Поля
     `binding_key` / `matching.rule` у fallback декларативны и сюда не входят.
-    Предупреждение — только когда выбран fallback, а канонической строки нет.
+    Предупреждение — когда выбраны уплаченные проценты, а строки начисления нет.
     """
 
     fallbacks = row_fallbacks or {}
     for name in order:
         if name not in primaries:
             continue
+        canonical = None
+        warn = False
         if name in fallbacks:
             canonical = getattr(fallbacks[name], "canonical", None)
-            if canonical not in primaries:
-                return name, {
-                    "code": "interest_basis_fallback",
-                    "params": {
-                        "concept": name,
-                        "canonical": canonical,
-                        "fallback": name,
-                        "message": INTEREST_BASIS_FALLBACK,
-                    },
-                }
+            warn = canonical not in primaries
+        elif name == "interest_paid":
+            canonical = "interest"
+            warn = "interest" not in primaries
+        if warn:
+            return name, {
+                "code": "interest_basis_fallback",
+                "params": {
+                    "concept": name,
+                    "canonical": canonical,
+                    "fallback": name,
+                    "message": INTEREST_BASIS_FALLBACK,
+                },
+            }
         return name, None
     return None, None
 

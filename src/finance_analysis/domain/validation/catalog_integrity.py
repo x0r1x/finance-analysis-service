@@ -18,6 +18,8 @@ from finance_analysis.domain.validation.model_types import (
 # Слоты, которые реально читает код (metrics.py / covenant.py).
 INTEREST_ORDER_SLOTS = frozenset({"icr", "icr_ebit", "corporate_covenant", "ocf_covenant", "pf"})
 INTEREST_CANONICAL = "interest"
+# interest_paid — понятие кассы. В этих слотах оно остаётся кандидатом вместо начисления.
+INTEREST_ORDER_CONCEPTS = frozenset({INTEREST_CANONICAL, "interest_paid"})
 # Декларативные rule id. Рантайм по ним не диспатчит (выбор B).
 MATCHING_RULES = frozenset({"interest_basis_paid"})
 
@@ -31,6 +33,9 @@ _METRIC_KEYS = frozenset(
         "variants",
         "base",
         "rate",
+        "terminal",
+        "add_back",
+        "compare_with",
         "window",
         "definition",
         "status",
@@ -38,6 +43,7 @@ _METRIC_KEYS = frozenset(
         "aggregate",
     }
 )
+_ADD_BACK_KEYS = frozenset({"concept", "tax_complement"})
 _SIDE_KEYS = frozenset({"plus", "minus"})
 
 
@@ -108,7 +114,7 @@ def _coverage_shape(document: Mapping[str, object]) -> None:
         _metric_body_keys(str(name), body)
 
 
-_BASE_EXCLUSIVE = frozenset({"numerator", "denominator", "rate"})
+_BASE_EXCLUSIVE = frozenset({"numerator", "denominator", "rate", "terminal", "add_back", "compare_with"})
 
 
 def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -> None:
@@ -138,9 +144,13 @@ def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -
     if body.get("aggregate") == "sum" and "denominator" in body:
         raise CatalogIntegrityError(f"{name}: сумма без знаменателя")
     if "rate" in body:
-        rate = body.get("rate")
-        if not isinstance(rate, str) or not rate:
-            raise CatalogIntegrityError(f"{name}: rate — непустая строка")
+        _rate_names(name, body.get("rate"))
+    if "terminal" in body:
+        _concept_name(name, "terminal", body.get("terminal"))
+    if "compare_with" in body:
+        _concept_name(name, "compare_with", body.get("compare_with"))
+    if "add_back" in body:
+        _add_back(name, body.get("add_back"))
     if "variants" in body:
         if not allow_variants:
             raise CatalogIntegrityError(f"{name}: вложенные variants не поддерживаются")
@@ -149,6 +159,36 @@ def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -
             raise CatalogIntegrityError(f"{name}.variants: объект")
         for variant, spec in variants.items():
             _metric_body_keys(f"{name}.{variant}", spec, allow_variants=False)
+
+
+def _rate_names(owner: str, value: object) -> tuple[str, ...]:
+    """Одна ставка или приоритетный список. Повтор понятия запрещён."""
+
+    if isinstance(value, str) and value:
+        return (value,)
+    if isinstance(value, list) and value and all(isinstance(item, str) and item for item in value):
+        names = tuple(str(item) for item in value)
+        if len(set(names)) != len(names):
+            raise CatalogIntegrityError(f"{owner}: rate повторяет понятие")
+        return names
+    raise CatalogIntegrityError(f"{owner}: rate — непустая строка или список строк")
+
+
+def _concept_name(owner: str, field: str, value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise CatalogIntegrityError(f"{owner}: {field} — непустая строка")
+    return value
+
+
+def _add_back(owner: str, value: object) -> tuple[str, str]:
+    if not isinstance(value, dict):
+        raise CatalogIntegrityError(f"{owner}: add_back — объект concept и tax_complement")
+    bad = sorted(set(value) - _ADD_BACK_KEYS)
+    if bad or set(value) != _ADD_BACK_KEYS:
+        raise CatalogIntegrityError(f"{owner}: add_back — ровно concept и tax_complement")
+    concept = _concept_name(owner, "add_back.concept", value.get("concept"))
+    tax = _concept_name(owner, "add_back.tax_complement", value.get("tax_complement"))
+    return concept, tax
 
 
 def _formula_term(owner: str, field: str, value: object) -> None:
@@ -238,7 +278,7 @@ def _interest_order(
             raise CatalogIntegrityError(f"interest_order.{key}: повторы кандидатов")
         for name in names:
             if name in concepts:
-                if name != INTEREST_CANONICAL:
+                if name not in INTEREST_ORDER_CONCEPTS:
                     raise CatalogIntegrityError(
                         f"interest_order.{key}: понятие {name} не {INTEREST_CANONICAL}"
                     )
@@ -309,6 +349,10 @@ def _has_own_terms(expr: MetricExpression) -> bool:
         or expr.denominator_minus
         or expr.one_of
         or expr.rate
+        or expr.rates
+        or expr.terminal
+        or expr.compare_with
+        or expr.add_back
     )
 
 
@@ -324,6 +368,10 @@ def _resolve_expression(name: str, expressions: Mapping[str, MetricExpression]) 
             expr.denominator_minus,
             expr.one_of,
             expr.rate,
+            expr.rates,
+            expr.terminal,
+            expr.compare_with,
+            expr.add_back,
         )
     ):
         return expr
@@ -339,10 +387,20 @@ def _expression_units(
     concept_dimensions: Mapping[str, str],
     dimensions: DimensionCatalog,
 ) -> None:
-    if expr.rate is not None:
-        rate_dim = _dimension(name, expr.rate, concept_dimensions)
+    for rate_name in expr.rates or ((expr.rate,) if expr.rate else ()):
+        rate_dim = _dimension(name, rate_name, concept_dimensions)
         if rate_dim != "ratio":
-            raise CatalogIntegrityError(f"{name}: rate {expr.rate} должен быть размерности ratio")
+            raise CatalogIntegrityError(f"{name}: rate {rate_name} должен быть размерности ratio")
+    if expr.terminal is not None and _dimension(name, expr.terminal, concept_dimensions) != "money":
+        raise CatalogIntegrityError(f"{name}: terminal {expr.terminal} должен быть размерности money")
+    if expr.compare_with is not None and _dimension(name, expr.compare_with, concept_dimensions) != "money":
+        raise CatalogIntegrityError(f"{name}: compare_with {expr.compare_with} должен быть размерности money")
+    if expr.add_back is not None:
+        concept, tax = expr.add_back
+        if _dimension(name, concept, concept_dimensions) != "money":
+            raise CatalogIntegrityError(f"{name}: add_back {concept} должен быть размерности money")
+        if _dimension(name, tax, concept_dimensions) != "ratio":
+            raise CatalogIntegrityError(f"{name}: add_back {tax} должен быть размерности ratio")
     num_terms = [*expr.numerator_plus, *expr.numerator_minus]
     den_terms = [*expr.denominator_plus, *expr.denominator_minus]
     if num_terms:

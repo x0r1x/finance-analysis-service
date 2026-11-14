@@ -141,7 +141,7 @@ def test_dscr_preserves_model_type_variant_and_formula():
     assert base_formula["denominator"]["plus"] == ["debt_service"]
     assert catalog.indicators["npv"].unit == "money"
     assert catalog.indicators["npv"].formula.rate == "discount_rate"
-    assert "interest_paid" in catalog.row_fallback_ids
+    assert "interest_paid" not in catalog.row_fallback_ids
 
 
 def test_inputs_preserve_all_of_and_one_of():

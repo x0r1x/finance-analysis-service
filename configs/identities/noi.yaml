@@ -1,0 +1,8 @@
+# Разность ЧОД. Ключ identities не используется: он собирает только суммы lf.identity.
+difference:
+  result: noi
+  plus: [effective_gross_income]
+  minus: [operating_expenses, capital_reserve]
+  optional_minus: [property_management]
+  forbid: [interest, debt_service, income_tax, depreciation]
+  exclusive: [land_tax, land_rent]

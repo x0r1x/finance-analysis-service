@@ -112,8 +112,8 @@ def test_glossary_defines_components_without_the_forbidden_synonym():
     assert package.resolve("Заемные средства") is None
     assert package.resolve("Займы и кредиты") is None
     assert package.concepts["borrowings_lt"].xref_ifrs
-    assert package.concepts["total_debt"].id if False else "lease_liability" in package.ids
-    assert "total_debt" not in package.ids
+    assert "lease_liability" in package.ids
+    assert package.concepts["total_debt"].id == "total_debt"
 
 
 def test_line_codes_bind_borrowings_and_do_not_bind_lease_from_1520():
