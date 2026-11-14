@@ -67,7 +67,11 @@ def load_cash_corkscrew(path: str | None = None) -> CashCorkscrew:
 
 
 def check_cash(data: AuditInput, spec: CashCorkscrew | None = None) -> list[CashNote]:
-    """Остаток на конец против открытия и движения. Пустой список — сверять не с чем или числа сошлись."""
+    """Остаток на конец против открытия и движения.
+
+    Пустой список значит, что строку закрытия не предъявляли, либо сверка прошла
+    без расхождений. Непроведённая сверка возвращает insufficient_data или not_checked.
+    """
 
     spec = spec or load_cash_corkscrew()
     close = _one(data, spec.closing)
@@ -174,7 +178,7 @@ def _residuals(data: AuditInput, spec: CashCorkscrew, close: str, basis: str) ->
                 if prior is not None and abs(opened - prior) > spec.tolerance:
                     notes.append(_break(opening, axis, period, "continuity", basis, fx_row is not None, opened - prior))
     if not checked and not notes:
-        return [CashNote("insufficient_data", close, "", "", {})]
+        return [CashNote("not_checked", close, "", "", {})]
     return notes
 
 

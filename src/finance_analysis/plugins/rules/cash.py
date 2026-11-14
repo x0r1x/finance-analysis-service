@@ -28,6 +28,16 @@ class CashRollforwardBreak(Rule):
 
 
 @dataclass(frozen=True)
+class CashRollforwardUnchecked(Rule):
+    def check(self, data: AuditInput) -> list[Finding]:
+        return _notes(
+            self,
+            data,
+            [note for note in check_cash(data) if note.tag in {"insufficient_data", "not_checked"}],
+        )
+
+
+@dataclass(frozen=True)
 class CashStatementTie(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         return _notes(self, data, statement_tie(data))
@@ -43,6 +53,17 @@ CASH_ROLLFORWARD_BREAK = CashRollforwardBreak(
     ROWS_LINKS,
     2,
     finding_kind="error",
+)
+CASH_ROLLFORWARD_UNCHECKED = CashRollforwardUnchecked(
+    "cash_rollforward_unchecked",
+    "1",
+    "omission",
+    "medium",
+    ("ПБУ 23/2011 п. 19",),
+    "Сверка остатка денежных средств не выполнена",
+    ROWS_LINKS,
+    2,
+    finding_kind="warning",
 )
 CASH_STATEMENT_TIE = CashStatementTie(
     "cash_statement_tie",

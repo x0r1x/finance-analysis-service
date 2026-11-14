@@ -255,6 +255,25 @@ def test_close_only_is_insufficient_and_not_a_break():
     assert check("cash_rollforward_break", data) == []
 
 
+def test_a_chosen_basis_with_nothing_to_compare_is_not_a_pass():
+    data = _book(
+        {
+            "cash_inflow": {"2024": "40"},
+            "cash_outflow": {"2024": "25"},
+            "cash_balance": {"2024": "100"},
+        }
+    )
+    assert [note.tag for note in check_cash(data)] == ["not_checked"]
+    assert check("cash_rollforward_break", data) == []
+    found = check("cash_rollforward_unchecked", data)
+    assert len(found) == 1
+    assert found[0].finding_kind == "warning"
+    close_only = _book({"cash_balance": {"2024": "100"}})
+    assert [note.tag for note in check_cash(close_only)] == ["insufficient_data"]
+    assert len(check("cash_rollforward_unchecked", close_only)) == 1
+    assert check_cash(_book({"cash_inflow": {"2024": "40"}, "cash_outflow": {"2024": "25"}})) == []
+
+
 def test_no_close_declares_nothing():
     data = _book({"cash_inflow": {"2024": "40"}, "cash_outflow": {"2024": "25"}})
     assert check_cash(data) == []

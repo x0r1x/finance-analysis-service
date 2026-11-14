@@ -3,6 +3,7 @@
 
 from finance_analysis.plugins.rules.cash import (
     CASH_ROLLFORWARD_BREAK,
+    CASH_ROLLFORWARD_UNCHECKED,
     CASH_STATEMENT_TIE,
 )
 from finance_analysis.plugins.rules.checks import CHECK_FAILURE, NO_MASTER_CHECK
@@ -106,6 +107,7 @@ RULES = (
     NOI_METHOD,
     NOI_COVERAGE,
     CASH_ROLLFORWARD_BREAK,
+    CASH_ROLLFORWARD_UNCHECKED,
     CASH_STATEMENT_TIE,
 )
 
