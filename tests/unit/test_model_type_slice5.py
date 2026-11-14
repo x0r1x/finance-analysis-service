@@ -437,7 +437,7 @@ def test_lease_portfolio_and_signal_scores_only_the_full_set():
 
     Причина unknown, метки пустые. Проценты с основным долгом сами тип не дают.
     Пять понятий держат score 1.0 только у bank_leasing. Вариантов нет.
-    Семнадцать метрик каталога: ncf необязателен, остальные неприменимы. Открытых вопросов нет.
+    Двадцать две метрики каталога: ncf необязателен, остальные неприменимы. Открытых вопросов нет.
     При нулевом score лидер остаётся bank_leasing: равенство режется по id.
     """
 
@@ -452,7 +452,7 @@ def test_lease_portfolio_and_signal_scores_only_the_full_set():
     assert item.groups == ()
     assert catalog.types["bank_leasing"].variants == {}
     metrics = catalog.types["bank_leasing"].metrics
-    assert len(RATIO_METRICS) == 17
+    assert len(RATIO_METRICS) == 22
     assert set(metrics) == set(RATIO_METRICS)
     assert metrics["ncf"] == "optional"
     assert {use for name, use in metrics.items() if name != "ncf"} == {"not_applicable"}

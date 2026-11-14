@@ -305,6 +305,8 @@ def result_unit(
         return "money"
     if resolved.compare_with and num and not den:
         return _dim(name, num[0], concept_dimensions)
+    if resolved.numerator_plus and resolved.numerator_minus and not den and resolved.rate is None:
+        return _dim(name, resolved.numerator_plus[0], concept_dimensions)
     if num and not den:
         # IRR и сходные потоковые показатели без знаменателя → ratio.
         return "ratio"

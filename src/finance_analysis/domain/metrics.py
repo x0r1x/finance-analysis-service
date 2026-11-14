@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 
 from finance_analysis.domain.mapping import marked_line_code
 from finance_analysis.domain.model_type import sheet_name_key
-from finance_analysis.domain.period_basis import basis_of, restate_series
+from finance_analysis.domain.period_basis import _year_of, basis_of, restate_series
 
 MONEY = Decimal("0.000001")
 RATIO = Decimal("0.0000000001")
@@ -30,6 +30,17 @@ SCALE_ASSUMED = (
 )
 INTEREST_BASIS_FALLBACK = "В знаменателе взяты уплаченные проценты: строки начисленных процентов нет."
 MIXED_BASIS = "Способ показа числителя и знаменателя различается. Коэффициент не рассчитан."
+LEASE_OVERLAP = (
+    "Строка процентов не подтверждает, что процентов по лизингу в ней нет. "
+    "Добавка лизинга дала бы двойной счёт. Коэффициент не рассчитан."
+)
+NEGATIVE_LEASE_INTEREST = (
+    "Основной долг в составе лизингового платежа больше самого платежа. Коэффициент не рассчитан."
+)
+OPERATING_LEASE_NUMERATOR = (
+    "Расход по операционной аренде входит в операционную прибыль. "
+    "Числитель EBITDA на лизинговый платёж не увеличен."
+)
 _BOUND = frozenset({"bound", "bound_with_warning"})
 # Источники привязки от человека: только они отменяют `concept.absent` (§5.10.5).
 HUMAN_SOURCES = frozenset({"confirmed", "profile"})
@@ -445,6 +456,420 @@ def coverage_ratio(
             built["components"]["principal"] = _component_cells(facts, primaries["principal"], [period])
         rows.append(built)
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
+
+
+def lease_interest_coverage(
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+    annual: bool = False,
+) -> dict:
+    """EBITDA / (|проценты| + проценты в составе лизингового платежа).
+
+    `annual` складывает уже переведённые в период потоки календарного года.
+    Без него каждая точка знаменателя — свой коэффициент, в зерне строки.
+    Прямая строка `lease_interest` и пара «платёж − долг» вместе не считаются.
+    """
+
+    metric = "icr_lease"
+    primaries = _primaries(bindings, absent)
+    warnings: list[dict] = []
+    if "ebitda" not in primaries or "interest" not in primaries:
+        subject = "ebitda" if "ebitda" not in primaries else "interest"
+        return _lease_gap(metric, subject, [subject], bindings, absent, warnings, missing_input=True)
+    watched = {"ebitda", "interest", "lease_interest", "lease_payment", "lease_principal"}
+    ambiguous = [name for name, rows in _groups(bindings).items() if len(rows) > 1 and name in watched]
+    if ambiguous:
+        return _lease_ask(metric, "ambiguous", ambiguous[0], [ambiguous[0]], warnings)
+    mode = _lease_mode(primaries, bindings, absent)
+    if mode == "ambiguous":
+        return _lease_ask(metric, "ambiguous", "lease_interest", ["lease_interest"], warnings)
+    if mode == "none":
+        return _lease_gap(
+            metric, "lease_payment", ["lease_payment", "lease_principal"], bindings, absent, warnings
+        )
+    if mode == "half":
+        subject = "lease_principal" if "lease_payment" in primaries else "lease_payment"
+        return _lease_gap(metric, subject, [subject], bindings, absent, warnings)
+    named = {"ebitda": primaries["ebitda"], "interest": primaries["interest"]}
+    if mode == "direct":
+        named["lease_interest"] = primaries["lease_interest"]
+    elif mode == "pair":
+        named["lease_payment"] = primaries["lease_payment"]
+        named["lease_principal"] = primaries["lease_principal"]
+    if unconfirmed_scale(facts, list(named.values())):
+        components, scales = _scale_bundle(facts, named)
+        return _explained(
+            metric,
+            periods,
+            "scale_unconfirmed",
+            SCALE_UNCONFIRMED,
+            warnings,
+            home=_home_period(facts, primaries["ebitda"], periods),
+            components=components,
+            scales=scales,
+        )
+    bases = {name: _flow_basis(row) for name, row in named.items()}
+    denominator_bases = {basis for name, basis in bases.items() if name != "ebitda"}
+    allowed_ltm = bases["ebitda"] == "ltm" and denominator_bases == {"period"}
+    if len(set(bases.values())) > 1 and not allowed_ltm:
+        return _explained(metric, periods, "basis_mismatch", MIXED_BASIS, warnings)
+    if not allowed_ltm and _grain_conflict(facts, named, periods):
+        return _explained(metric, periods, "basis_mismatch", MIXED_BASIS, warnings)
+    sheet = _assume_sheet_units(facts, list(named.values()), warnings)
+    aligned = aligned_keys(periods)
+    series = {name: _sums(facts, row, aligned, periods, sheet=sheet) for name, row in named.items()}
+    home = _axes_of(facts, primaries["interest"])
+    points = _lease_points(periods, home, aligned, series, mode, sign_convention, marker_class)
+    if any(addend is not None and addend < 0 for _period, _key, addend in points):
+        return _lease_stop(metric, periods, "not_computed", "negative_lease_interest", NEGATIVE_LEASE_INTEREST, warnings)
+    if any(addend is not None and addend > 0 for _period, _key, addend in points) and not _excludes_lease(
+        primaries["interest"]
+    ):
+        asked = _lease_ask(metric, "lease_interest_overlap", "interest", ["interest"], warnings)
+        asked["message"] = LEASE_OVERLAP
+        asked["warnings"] = [
+            *warnings,
+            {"code": "lease_interest_overlap", "params": {"message": LEASE_OVERLAP}},
+        ]
+        return asked
+    if _lease_in_opex(named):
+        warnings.append({"code": "operating_lease_numerator", "params": {"message": OPERATING_LEASE_NUMERATOR}})
+    if allowed_ltm:
+        rows, computed = _lease_ltm_rows(
+            metric, periods, series, home, facts, primaries, aligned, mode, sign_convention, marker_class
+        )
+        status = "succeeded" if computed else "partial_window"
+        result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
+        if not computed:
+            result["message"] = PARTIAL_DENOMINATOR
+        return result
+    if annual:
+        rows = _lease_annual_rows(metric, points, series, sign_convention, facts, primaries, mode)
+    else:
+        rows = _lease_period_rows(metric, points, series, sign_convention, facts, primaries, mode)
+    if any(row["status"] == "computed" for row in rows):
+        status = "succeeded"
+    elif any(row.get("reason") == "partial_window" for row in rows):
+        status = "not_computed"
+    else:
+        status = "missing_input"
+    return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
+
+
+def _lease_mode(primaries: dict, bindings: list[dict], absent: frozenset[str]) -> str:
+    direct = "lease_interest" in primaries
+    pay = "lease_payment" in primaries
+    principal = "lease_principal" in primaries
+    if direct and (pay or principal):
+        return "ambiguous"
+    if direct:
+        return "direct"
+    if pay and principal:
+        return "pair"
+    gone = absent_concepts(bindings, absent)
+    if "lease_payment" in gone and "lease_principal" in gone:
+        return "zero"
+    if pay or principal:
+        return "half"
+    return "none"
+
+
+def _lease_ask(metric: str, reason: str, subject: str, missing: list[str], warnings: list[dict]) -> dict:
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [{"kind": "concept", "reason": reason, "subject": subject}],
+        "missing_inputs": missing,
+        "warnings": warnings,
+        "status": "needs_input",
+    }
+
+
+def _lease_gap(
+    metric: str,
+    subject: str,
+    missing: list[str],
+    bindings: list[dict],
+    absent: frozenset[str],
+    warnings: list[dict],
+    *,
+    missing_input: bool = False,
+) -> dict:
+    reason = "absent_in_book" if subject in absent_concepts(bindings, absent) else "concept_unknown"
+    result = _lease_ask(metric, reason, subject, missing, warnings)
+    if missing_input:
+        result["status"] = "missing_input"
+    return result
+
+
+def _lease_stop(metric: str, periods: list[dict], status: str, reason: str, message: str, warnings: list[dict]) -> dict:
+    period = periods[0] if periods else None
+    if period is None:
+        rows: list[dict] = []
+    else:
+        row = _row(metric, period, None, status, reason)
+        row["message"] = message
+        rows = [row]
+    return {
+        "metric": metric,
+        "rows": rows,
+        "needs_input": [],
+        "warnings": warnings,
+        "status": status,
+        "message": message,
+    }
+
+
+def _binding_evidence(binding: dict) -> dict:
+    evidence = binding.get("evidence")
+    if isinstance(evidence, dict):
+        return evidence
+    raw = binding.get("evidence_json")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        import json
+
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+    return {}
+
+
+def _excludes_lease(binding: dict) -> bool:
+    """Проценты по кредитам и займам, либо явный флаг. Метка «2330» сама по себе не годится."""
+
+    if _binding_evidence(binding).get("excludes_lease_interest") is True:
+        return True
+    label = str(binding.get("label_text") or binding.get("label") or "")
+    folded = label.casefold().replace("ё", "е")
+    loan = "кредит" in folded or "займ" in folded
+    lease = "лизинг" in folded or "аренд" in folded
+    return bool(loan and not lease)
+
+
+def _lease_in_opex(named: dict) -> bool:
+    for name in ("lease_payment", "lease_interest", "lease_principal"):
+        row = named.get(name)
+        if row is None:
+            continue
+        evidence = _binding_evidence(row)
+        if evidence.get("operating_lease_in_opex") is True or evidence.get("lease_in_operating_expenses") is True:
+            return True
+    return False
+
+
+def _grain_conflict(facts: list[dict], named: dict, periods: list[dict]) -> bool:
+    from finance_analysis.domain.cover_metrics import GRAIN_MONTHS
+
+    lengths = []
+    for binding in named.values():
+        axes = _axes_of(facts, binding)
+        found = set()
+        for period in periods:
+            grain = period.get("grain")
+            if period.get("axis_id") not in axes or not grain:
+                continue
+            found.add(GRAIN_MONTHS.get(str(grain), str(grain)))
+        if found:
+            lengths.append(found)
+    return len(lengths) >= 2 and any(item != lengths[0] for item in lengths[1:])
+
+
+def _lease_addend(mode: str, key: tuple, series: dict, convention: str) -> Decimal | None:
+    """Процент лизинга после приведения знака каждой части. None — части на ключе нет."""
+
+    if mode == "zero":
+        return Decimal(0)
+    if mode == "direct":
+        value = series["lease_interest"].get(key)
+        if value is None:
+            return None
+        return _payment(value, convention)
+    paid = series["lease_payment"].get(key)
+    principal = series["lease_principal"].get(key)
+    if paid is None or principal is None:
+        return None
+    return _payment(paid, convention) - _payment(principal, convention)
+
+
+def _lease_points(
+    periods: list[dict],
+    home: set[str],
+    aligned: dict,
+    series: dict,
+    mode: str,
+    convention: str,
+    marker_class: str | None,
+) -> list[tuple]:
+    found = []
+    for period in periods:
+        if period.get("axis_id") not in home:
+            continue
+        marker = period.get("marker_class")
+        if marker_class and marker and marker != marker_class:
+            continue
+        own = (period.get("axis_id"), period.get("period_id"))
+        key = aligned.get(own, own)
+        if key not in series["interest"]:
+            continue
+        found.append((period, key, _lease_addend(mode, key, series, convention)))
+    return found
+
+
+def _divide(numerator: Decimal, denominator: Decimal) -> Decimal:
+    with localcontext() as ctx:
+        ctx.prec = 38
+        ctx.rounding = "ROUND_HALF_EVEN"
+        return quantize_ratio(numerator / denominator)
+
+
+def _lease_components(facts: list[dict], primaries: dict, used: list[dict], mode: str) -> dict:
+    parts = {
+        "ebitda": _component_cells(facts, primaries["ebitda"], used),
+        "interest": _component_cells(facts, primaries["interest"], used),
+    }
+    if mode == "pair":
+        parts["lease_payment"] = _component_cells(facts, primaries["lease_payment"], used)
+        parts["lease_principal"] = _component_cells(facts, primaries["lease_principal"], used)
+    elif mode == "direct":
+        parts["lease_interest"] = _component_cells(facts, primaries["lease_interest"], used)
+    return parts
+
+
+def _lease_period_rows(
+    metric: str,
+    points: list[tuple],
+    series: dict,
+    convention: str,
+    facts: list[dict],
+    primaries: dict,
+    mode: str,
+) -> list[dict]:
+    rows = []
+    for period, key, addend in points:
+        if addend is None or key not in series["ebitda"]:
+            continue
+        denominator = _payment(series["interest"][key], convention) + addend
+        if denominator == 0:
+            rows.append(_row(metric, period, None, "missing_input", "zero_denominator"))
+            continue
+        row = _row(metric, period, _divide(series["ebitda"][key], denominator), "computed", None)
+        row["components"] = _lease_components(facts, primaries, [period], mode)
+        rows.append(row)
+    return rows
+
+
+def _lease_annual_rows(
+    metric: str,
+    points: list[tuple],
+    series: dict,
+    convention: str,
+    facts: list[dict],
+    primaries: dict,
+    mode: str,
+) -> list[dict]:
+    """Сумма потоков за год. Год из одного годового зерна не складывается второй раз."""
+
+    from finance_analysis.domain.cover_metrics import GRAIN_MONTHS
+
+    grouped: dict = {}
+    for period, key, addend in points:
+        grouped.setdefault(_year_of(period), []).append((period, key, addend))
+    rows = []
+    for _year, items in sorted(grouped.items(), key=lambda item: (item[0] is None, item[0] or 0)):
+        spans = []
+        for period, _key, _addend in items:
+            span = GRAIN_MONTHS.get(str(period.get("grain") or ""))
+            if span is None:
+                spans = []
+                break
+            spans.append(span)
+        last = max(items, key=lambda item: int(item[0].get("period_index") or 0))[0]
+        ready = [item for item in items if item[2] is not None and item[1] in series["ebitda"]]
+        if not spans or sum(spans) != 12 or len(ready) != len(items):
+            row = _row(metric, last, None, "not_computed", "partial_window")
+            row["message"] = PARTIAL_DENOMINATOR
+            rows.append(row)
+            continue
+        numerator = sum((series["ebitda"][key] for _period, key, _addend in ready), Decimal(0))
+        denominator = sum(
+            (
+                _payment(series["interest"][key], convention) + addend
+                for _period, key, addend in ready
+            ),
+            Decimal(0),
+        )
+        if denominator == 0:
+            rows.append(_row(metric, last, None, "missing_input", "zero_denominator"))
+            continue
+        row = _row(metric, last, _divide(numerator, denominator), "computed", None)
+        row["components"] = _lease_components(facts, primaries, [item[0] for item in ready], mode)
+        rows.append(row)
+    return rows
+
+
+def _lease_ltm_rows(
+    metric: str,
+    periods: list[dict],
+    series: dict,
+    home: set[str],
+    facts: list[dict],
+    primaries: dict,
+    aligned: dict,
+    mode: str,
+    convention: str,
+    marker_class: str | None,
+) -> tuple[list[dict], bool]:
+    """Числитель `ltm` делится на сумму знаменателя за двенадцать месяцев, как у ICR."""
+
+    from finance_analysis.domain.cover_metrics import _window
+
+    ordered = _dated_periods([period for period in periods if period.get("axis_id") in home])
+    numerator_axes = _axes_of(facts, primaries["ebitda"])
+    rows = []
+    computed = False
+    for period in _dated_periods([item for item in periods if item.get("axis_id") in numerator_axes]):
+        marker = period.get("marker_class")
+        if marker_class and marker and marker != marker_class:
+            continue
+        key = aligned.get((period["axis_id"], period["period_id"]), (period["axis_id"], period["period_id"]))
+        if key not in series["ebitda"]:
+            continue
+        window = _window(ordered, period, "lookback")
+        if window is None:
+            rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
+            continue
+        total = Decimal(0)
+        hole = False
+        for item in window:
+            dkey = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
+            addend = _lease_addend(mode, dkey, series, convention) if dkey in series["interest"] else None
+            if addend is None:
+                hole = True
+                break
+            total += _payment(series["interest"][dkey], convention) + addend
+        if hole:
+            rows.append(_row(metric, period, None, "missing_input", "no_binding"))
+            continue
+        if total == 0:
+            rows.append(_row(metric, period, None, "missing_input", "zero_denominator"))
+            continue
+        row = _row(metric, period, _divide(series["ebitda"][key], total), "computed", None)
+        row["window"] = [item["period_id"] for item in window]
+        row["components"] = _lease_components(facts, primaries, window, mode)
+        rows.append(row)
+        computed = True
+    if not rows:
+        return [_noted(metric, periods[0], "partial_window", PARTIAL_DENOMINATOR)] if periods else [], False
+    return rows, computed
 
 
 def _ltm_numerator(

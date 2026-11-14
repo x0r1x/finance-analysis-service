@@ -310,6 +310,92 @@ def test_a_book_row_with_no_matching_cell_warns_once():
     assert got["warnings"][0]["params"]["model"] in {"10", "11"}
 
 
+def _identity(variant, rows, *, convention="outflow_negative"):
+    catalog = _catalog()
+    facts, periods, bindings = [], [], []
+    concepts = {name for row in rows for name in row}
+    for concept in concepts:
+        bindings.append(_bind(concept))
+    for index, row in enumerate(rows):
+        period = f"Y{index}"
+        periods.append(_period(period, index))
+        for concept, value in row.items():
+            facts.append(_fact(concept, period, value))
+    return select_ratio(
+        "fcf_identity",
+        variant,
+        _common(facts, bindings, periods) | {"sign_convention": convention},
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+
+
+def test_vk477_identity_normalizes_a_negative_capex_and_skips_interest():
+    got = _identity(
+        "vk477",
+        [{"operating_cash_flow": "100", "capex": "-30", "project_fcf": "70", "net_interest": "10"}],
+    )
+    assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+
+
+def test_fcff_identity_matches_interest_after_tax_and_a_shift_warns_without_replacing_npv():
+    row = {
+        "operating_cash_flow": "100",
+        "capex": "30",
+        "net_interest": "10",
+        "tax_rate": "0.20",
+        "project_fcf": "78",
+    }
+    assert _identity("fcff_after_interest", [row])["warnings"] == []
+    shifted = {**row, "net_interest": "11"}
+    warned = _identity("fcff_after_interest", [shifted])
+    assert warned["warnings"][0]["code"] == "fcf_identity_mismatch"
+    assert warned["rows"] == []
+    catalog = _catalog()
+    facts = [
+        _fact("project_fcf", "Y0", "78"),
+        _fact("project_fcf", "Y1", "0"),
+        _fact("discount_rate", "rate", "0.10", axis="p"),
+    ]
+    periods = [_period("Y0", 0), _period("Y1", 1), _period("rate", None, axis="p")]
+    npv = select_ratio(
+        "npv",
+        None,
+        _common(facts, [_bind("project_fcf"), _bind("discount_rate")], periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    assert npv["rows"][0]["inputs"] == ["project_fcf", "discount_rate"]
+    assert "ocf" not in npv["rows"][0]["inputs"]
+
+
+def test_unnamed_identity_variant_does_not_warn():
+    got = _identity(None, [{"operating_cash_flow": "100", "capex": "30", "project_fcf": "0"}])
+    assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+    assert got["rows"] == []
+
+
+def test_full_lease_payment_does_not_match_the_interest_portion():
+    built = {
+        "operating_cash_flow": "100",
+        "capex": "30",
+        "net_interest": "40",
+        "tax_rate": "0.20",
+        "project_fcf": "78",
+    }
+    got = _identity("fcff_after_interest", [built])
+    assert got["warnings"][0]["code"] == "fcf_identity_mismatch"
+    assert got["warnings"][0]["params"]["cells"]
+
+
 def test_book_row_that_disagrees_is_a_warning():
     book = _load("port.json")
     npv, irr = _returns(book, field="project_fcf", book_npv="100", book_irr="0.5")

@@ -7,9 +7,12 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+import re
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 
+from finance_analysis.domain.cash_flow import net_cash_flow as period_net_cash_flow
 from finance_analysis.domain.cover_metrics import (
     _missing,
     _ordered,
@@ -35,13 +38,14 @@ from finance_analysis.domain.metrics import (
     coverage_ratio,
     ebitda_definition,
     interest_choice,
+    lease_interest_coverage,
     methodology_block,
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, Side
 from finance_analysis.domain.net_cash_flow import net_cash_flow
 from finance_analysis.domain.period_basis import _as_date, basis_of
-from finance_analysis.domain.returns import project_return
+from finance_analysis.domain.returns import fcf_identity, project_return
 
 DEFAULT_DEFINITION_TEXT = "определение по умолчанию, не из договора"
 _WINDOWS = frozenset({"LTM", "period"})
@@ -50,6 +54,16 @@ _VARIANT_FIELDS = frozenset({"variant", "basis_ref"})
 _SIDE_FIELDS = frozenset({"plus", "minus"})
 _CYCLE = frozenset({"dscr", "dscr_covenant"})
 _MISMATCH = Decimal("0.005")
+_CASH_OTHER = "other_financial_debt_service"
+_CASH_CORE = ("operating_cash_flow", "interest_paid", "capex", "principal")
+_CAPITALIZED_INTEREST = re.compile(r"(?<!\d)4224(?!\d)")
+CAPITALIZED_INTEREST = (
+    "Проценты в стоимости инвестиционного актива, в надбавку к OCF не входят."
+)
+# shortcut: год i — календарный год по дате конца периода, другой финансовый год — когда в книге появится дата закрытия года
+PARTIAL_YEAR = (
+    "Год i неполный: нет непрерывных двенадцати месяцев до 31 декабря. Коэффициент не рассчитан."
+)
 
 
 def _number(value) -> bool:
@@ -252,12 +266,18 @@ def composed_ratio(
     )
     if blocked:
         return blocked
+    unbound: frozenset[str] = frozenset()
+    if metric == "debt_off_balance_ebitda":
+        bound = _primaries(bindings, absent)
+        if "total_debt" in bound and "off_balance_obligations" not in bound:
+            unbound = frozenset({"off_balance_obligations"})
     needed = (
         *formula.numerator.plus,
         *formula.numerator.minus,
         *formula.denominator.plus,
         *formula.denominator.minus,
     )
+    needed = tuple(name for name in needed if name not in unbound)
     missing = _missing(metric, bindings, needed, absent)
     if missing:
         return missing
@@ -280,7 +300,7 @@ def composed_ratio(
     window_name = "LTM" if roll else formula.window
     # Строка EBITDA со способом `ltm` уже покрывает двенадцать месяцев.
     # Четыре квартала такой строки не складываются и не требуют полного окна.
-    ebitda_ltm = metric == "net_debt_ebitda" and basis.get("ebitda") == "ltm"
+    ebitda_ltm = metric in _EBITDA_STOCK and basis.get("ebitda") == "ltm"
     span_name = "period" if ebitda_ltm else window_name
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
     stock = series.get("net_debt") or {}
@@ -291,6 +311,20 @@ def composed_ratio(
         dated = any(_stock_choice(item, periods, aligned, stock)[0] is not None for item in ordered)
         debt_on_axis = metric != "net_debt_ebitda" or any(key in stock for key in axis_keys) or dated
         for period in ordered:
+            if unbound:
+                rows.append(
+                    _line(
+                        metric,
+                        period,
+                        None,
+                        "input_absent",
+                        "input_absent",
+                        list(dict.fromkeys((*inputs, *unbound))),
+                        None,
+                        message=_OFF_BALANCE_ABSENT,
+                    )
+                )
+                continue
             marker = period.get("marker_class")
             if marker_class and marker and marker != marker_class:
                 continue
@@ -335,6 +369,41 @@ def composed_ratio(
                         )
                     )
                     continue
+            elif metric in _STOCK_RATIOS:
+                numerator, stock_problem = _stock_numerator(
+                    period, periods, aligned, series, formula.numerator
+                )
+                if stock_problem:
+                    rows.append(
+                        _line(
+                            metric,
+                            period,
+                            None,
+                            "not_computed",
+                            stock_problem,
+                            inputs,
+                            window,
+                            message=_AMBIGUOUS_STOCK,
+                        )
+                    )
+                    continue
+                denominator = _part(keys, series, "ebitda", sign_convention, False, basis)
+                names = (*formula.numerator.plus, *formula.numerator.minus)
+                present = any(key in (series.get(name) or {}) for name in names for key in keys)
+                if numerator is None and not present:
+                    rows.append(
+                        _line(
+                            metric,
+                            period,
+                            None,
+                            "input_absent",
+                            "input_absent",
+                            inputs,
+                            window,
+                            message=_OFF_BALANCE_ABSENT if "off_balance_obligations" in names else _STOCK_ABSENT,
+                        )
+                    )
+                    continue
             else:
                 shared = frozenset(formula.numerator.plus) & frozenset(formula.denominator.plus)
                 numerator = _total(
@@ -360,10 +429,11 @@ def composed_ratio(
         warnings.extend(_escrow_coverage_book(rows, facts, bindings, periods, absent, warnings))
     status = "succeeded"
     message = None
-    absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
-    if absent and not any(row["status"] == "computed" for row in rows):
+    debt_absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
+    stock_absent = metric in _STOCK_RATIOS and any(row["status"] == "input_absent" for row in rows)
+    if (debt_absent or stock_absent) and not any(row["status"] == "computed" for row in rows):
         status = "input_absent"
-        message = _NET_DEBT_ABSENT
+        message = next((row.get("message") for row in rows if row.get("message")), _NET_DEBT_ABSENT)
     elif roll and rows and not any(row["status"] == "computed" for row in rows):
         if any(row.get("reason") == "partial_window" for row in rows):
             status = "partial_window"
@@ -1320,6 +1390,163 @@ def _concept_amount(name, series, period, ordered, aligned, basis, quarter: bool
     return total, None
 
 
+def cash_covenant_dscr(
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+) -> dict:
+    """Кассовый DSCR года i. OCF со знаком, остальные входы — модули платежей.
+
+    `debt_service` в знаменатель не входит. `concept.absent` на прочей
+    финансовой задолженности убирает третье слагаемое и не подставляет ноль
+    вместо ненайденной строки. Неполный календарный год не считается.
+    """
+
+    include_other = _CASH_OTHER not in absent
+    needed = (*_CASH_CORE, *((_CASH_OTHER,) if include_other else ()))
+    missing = _missing("dscr", bindings, needed, absent)
+    if missing:
+        note = _capitalized_interest(bindings)
+        if note:
+            missing["warnings"] = [*missing["warnings"], note]
+        return missing
+    primaries = _primaries(bindings, absent)
+    inputs = list(needed)
+    if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
+        return _refused("dscr", periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)
+    if len({_flow_basis(primaries[name]) for name in inputs}) > 1:
+        return _refused("dscr", periods, "basis_mismatch", MIXED_BASIS, inputs)
+    warnings: list[dict] = []
+    note = _capitalized_interest(bindings)
+    if note:
+        warnings.append(note)
+    sheet = _assume_sheet_units(facts, [primaries[name] for name in inputs], warnings)
+    aligned = aligned_keys(periods)
+    series = {name: _sums(facts, primaries[name], aligned, periods, sheet=sheet) for name in inputs}
+    rows = []
+    for axis in sorted(_axes_of(facts, primaries["operating_cash_flow"])):
+        ordered = _ordered(periods, axis)
+        for window, problem in _cash_spans(ordered):
+            anchor = window[-1]
+            marker = anchor.get("marker_class")
+            if marker_class and marker and marker != marker_class:
+                continue
+            keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in window]
+            window_ids = [item["period_id"] for item in window]
+            if problem:
+                message = PARTIAL_YEAR if problem == "partial_window" else None
+                rows.append(_line("dscr", anchor, None, "not_computed", problem, inputs, window_ids, message=message))
+                continue
+            numerator = _cash_numerator(keys, series, sign_convention)
+            denominator = _cash_denominator(keys, series, sign_convention, include_other=include_other)
+            if numerator is None or denominator is None:
+                rows.append(_line("dscr", anchor, None, "missing_input", "no_binding", inputs, window_ids))
+                continue
+            if denominator == 0:
+                rows.append(_line("dscr", anchor, None, "no_debt_service", "zero_denominator", inputs, window_ids))
+                continue
+            line = _line("dscr", anchor, _ratio(numerator, denominator), "computed", None, inputs, window_ids)
+            line["components"] = {name: _component_cells(facts, primaries[name], window) for name in inputs}
+            line["variant"] = "cash_covenant"
+            rows.append(line)
+    status = "succeeded"
+    message = None
+    if rows and not any(row["status"] == "computed" for row in rows):
+        if any(row.get("reason") == "partial_window" for row in rows):
+            status = "partial_window"
+            message = PARTIAL_YEAR
+        elif any(row.get("reason") in {"no_period_dates", "grain_unknown"} for row in rows):
+            status = "not_computed"
+    result = {"metric": "dscr", "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
+    if message:
+        result["message"] = message
+    return result
+
+
+def _capitalized_interest(bindings: list[dict]) -> dict | None:
+    for row in bindings:
+        blob = " ".join(str(row.get(key) or "") for key in ("label", "label_path_text", "code"))
+        if _CAPITALIZED_INTEREST.search(blob):
+            return {"code": "capitalized_interest", "params": {"message": CAPITALIZED_INTEREST, "code": "4224"}}
+    return None
+
+
+def _cash_spans(ordered: list[dict]) -> list[tuple[list[dict], str | None]]:
+    if not ordered:
+        return []
+    months = {grain_months(item.get("grain")) for item in ordered}
+    if len(months) != 1 or None in months:
+        return [(ordered[-1:], "grain_unknown")]
+    span = next(iter(months))
+    if span is not None and span >= 12:
+        return [([item], None) for item in ordered]
+    if any(item.get("period_start") is None or item.get("period_end") is None for item in ordered):
+        return [(ordered[-1:], "no_period_dates")]
+    groups: dict[int, list[dict]] = {}
+    for item in ordered:
+        groups.setdefault(item["period_end"].year, []).append(item)
+    found = []
+    for year in sorted(groups):
+        items = sorted(groups[year], key=lambda item: (item["period_end"], int(item.get("period_index") or 0)))
+        problem = None
+        if items[0]["period_start"] != date(year, 1, 1) or items[-1]["period_end"] != date(year, 12, 31):
+            problem = "partial_window"
+        else:
+            for before, after in pairwise(items):
+                if before["period_end"] + timedelta(days=1) != after["period_start"]:
+                    problem = "partial_window"
+                    break
+        found.append((items, problem))
+    return found
+
+
+def _cash_numerator(keys, series: dict, convention: str) -> Decimal | None:
+    earned = _cash_signed(keys, series, "operating_cash_flow")
+    paid = _cash_paid(keys, series, "interest_paid", convention)
+    spent = _cash_paid(keys, series, "capex", convention)
+    if earned is None or paid is None or spent is None:
+        return None
+    return earned + paid - spent
+
+
+def _cash_denominator(keys, series: dict, convention: str, *, include_other: bool) -> Decimal | None:
+    principal = _cash_paid(keys, series, "principal", convention)
+    paid = _cash_paid(keys, series, "interest_paid", convention)
+    if principal is None or paid is None:
+        return None
+    total = principal + paid
+    if not include_other:
+        return total
+    other = _cash_paid(keys, series, _CASH_OTHER, convention)
+    if other is None:
+        return None
+    return total + other
+
+
+def _cash_signed(keys, series: dict, name: str) -> Decimal | None:
+    total = Decimal(0)
+    values = series[name]
+    for key in keys:
+        if key not in values:
+            return None
+        total += values[key]
+    return total
+
+
+def _cash_paid(keys, series: dict, name: str, convention: str) -> Decimal | None:
+    total = Decimal(0)
+    values = series[name]
+    for key in keys:
+        if key not in values:
+            return None
+        total += _payment(values[key], convention)
+    return total
+
+
 def select_ratio(
     metric: str,
     variant: str | None,
@@ -1397,6 +1624,41 @@ def select_ratio(
                 if statement_sheets is not None
                 else common.get("statement_sheets") or frozenset()
             ),
+        )
+    if metric == "ncf_period":
+        return period_net_cash_flow(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common.get("sign_convention") or "outflow_negative",
+            absent=common.get("absent") or frozenset(),
+        )
+    if metric == "fcf_identity":
+        return fcf_identity(
+            variant,
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            absent=common.get("absent") or frozenset(),
+            sign_convention=common.get("sign_convention") or "outflow_negative",
+        )
+    if metric == "icr_lease":
+        return lease_interest_coverage(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common["sign_convention"],
+            marker_class=common["marker_class"],
+            absent=common["absent"],
+        )
+    if metric == "dscr" and variant == "cash_covenant":
+        return cash_covenant_dscr(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common["sign_convention"],
+            marker_class=common["marker_class"],
+            absent=common["absent"],
         )
     named = _named_variant(profile)
     if metric == "dscr" and (named or variant) == "housing":
@@ -1549,6 +1811,22 @@ def _stock_choice(
     return None, None
 
 
+def _stock_numerator(
+    period: dict, periods: list[dict], aligned: dict, series: dict, side: Side
+) -> tuple[Decimal | None, str | None]:
+    """Сумма остатков на одну дату. Пропуск слагаемого нулём не становится."""
+
+    total = Decimal(0)
+    for name, sign in (*((item, 1) for item in side.plus), *((item, -1) for item in side.minus)):
+        value, problem = _stock_choice(period, periods, aligned, series.get(name) or {})
+        if problem:
+            return None, problem
+        if value is None:
+            return None, None
+        total += sign * value
+    return total, None
+
+
 def _same_end(periods: list[dict], period: dict) -> list[dict]:
     """Периоды с той же датой конца, включая период оси коэффициента.
 
@@ -1607,6 +1885,16 @@ def _part(keys, series: dict, name: str, convention: str, pay: bool, basis: dict
 
 _NET_DEBT_ABSENT = (
     "Чистый долг не содержит значений на оси, по которой считается отношение к EBITDA. "
+    "Коэффициент не рассчитан."
+)
+_STOCK_RATIOS = frozenset({"total_debt_ebitda", "debt_off_balance_ebitda"})
+_EBITDA_STOCK = frozenset({"net_debt_ebitda", "total_debt_ebitda", "debt_off_balance_ebitda"})
+_OFF_BALANCE_ABSENT = (
+    "Забалансовые обязательства не привязаны. "
+    "Показатель долговой нагрузки с их учётом не рассчитан."
+)
+_STOCK_ABSENT = (
+    "Остаток долга не содержит значений на оси, по которой считается отношение к EBITDA. "
     "Коэффициент не рассчитан."
 )
 
