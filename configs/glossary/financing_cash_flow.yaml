@@ -1,0 +1,12 @@
+concept: financing_cash_flow
+pref:
+  en: "Cash flow from financing activities"
+  ru: "Денежный поток от финансовой деятельности"
+alt:
+  en: ["CFF"]
+  ru:
+    - "Сальдо денежных потоков от финансовых операций"
+    - "стр. 4300"
+definition:
+  en: "Section total of financing cash flow. Not debt service and not interest."
+  ru: "Итог раздела финансового потока. Не обслуживание долга и не проценты."

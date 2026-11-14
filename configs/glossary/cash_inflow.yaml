@@ -1,0 +1,12 @@
+concept: cash_inflow
+pref:
+  ru: "Приток денежных средств"
+  en: "Cash inflows"
+alt:
+  ru:
+    - "Поступление денежных средств за период"
+    - "Поступления — всего"
+    - "Поступления - всего"
+definition:
+  ru: "Совокупный приток за период или итог поступлений раздела. Не остаток и не строка расшифровки."
+  en: "Period cash inflow, or a section receipts total. Not a cash balance and not a detail line."

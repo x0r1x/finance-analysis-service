@@ -1,6 +1,11 @@
 """Правила аудита (§6.1): фаза 1 — формулы, ссылки, циклы, проверки; фаза 2 — граф,
 строки, единицы, периоды, корпус, знак; фаза 3 — коэффициенты."""
 
+from finance_analysis.plugins.rules.cash import (
+    CASH_ROLLFORWARD_BREAK,
+    CASH_ROLLFORWARD_UNCHECKED,
+    CASH_STATEMENT_TIE,
+)
 from finance_analysis.plugins.rules.checks import CHECK_FAILURE, NO_MASTER_CHECK
 from finance_analysis.plugins.rules.coverage import (
     MISSING_TOTAL_ROW,
@@ -22,6 +27,7 @@ from finance_analysis.plugins.rules.formulas import (
     NESTED_IF,
     OFFSET_INDIRECT_USED,
 )
+from finance_analysis.plugins.rules.noi import NOI_COVERAGE, NOI_METHOD, NOI_MISMATCH
 from finance_analysis.plugins.rules.ratios import (
     ICR_REFERENCE,
     MARKER_MIX,
@@ -97,6 +103,12 @@ RULES = (
     PERIOD_GRAIN_MISMATCH,
     MISSING_TOTAL_ROW,
     UNMAPPED_IN_METRIC_CHAIN,
+    NOI_MISMATCH,
+    NOI_METHOD,
+    NOI_COVERAGE,
+    CASH_ROLLFORWARD_BREAK,
+    CASH_ROLLFORWARD_UNCHECKED,
+    CASH_STATEMENT_TIE,
 )
 
 __all__ = ["RULES"]

@@ -25,6 +25,9 @@ _DEBTLENS_HITS = (
     ("Assumptions", "C13", "Year 1 vacancy", "vacancy"),
     ("Assumptions", "C20", "Underwriting capitalization rate", "cap_rate"),
     ("Operating Forecast", "C9", "Vacancy", "vacancy"),
+    ("Operating Forecast", "C12", "Effective gross income", "effective_gross_income"),
+    ("Operating Forecast", "C13", "Operating expense ($/sf)", "operating_expenses"),
+    ("Operating Forecast", "C14", "Operating expenses", "operating_expenses"),
     ("Operating Forecast", "C15", "Net operating income", "noi"),
     ("Debt Schedule", "F6", "Interest", "interest"),
     ("Debt Schedule", "G6", "Principal", "principal"),
@@ -36,7 +39,7 @@ _DEBTLENS_FREE = (
     ("Summary", "C13", "DSCR capacity"),
     ("Sensitivity", "C16", "Value adj. / Cap rate"),
 )
-# Одиннадцать подписей solar_dogu. Project Size (AC) и €/W (DC) — известные принятые
+# Шестнадцать подписей solar_dogu. Project Size (AC) и €/W (DC) — известные принятые
 # привязки installed_capacity: тело AC совпадает после снятия скобки, €/W (DC) приходит
 # через аббревиатуру dc. Глоссарий и сопоставитель пока не чиним.
 _SOLAR_HITS = (
@@ -47,6 +50,11 @@ _SOLAR_HITS = (
     ("Model", "B23", "Degredation ", "degradation"),
     ("Model", "B58", "Annual Energy per year", "energy_generation"),
     ("Model", "B61", "PPA Power Price", "energy_tariff"),
+    ("Model", "B123", "Depreciation", "depreciation"),
+    ("Model", "B128", "Depreciation", "depreciation"),
+    ("Model", "B133", "Depreciation", "depreciation"),
+    ("Model", "B138", "Depreciation", "depreciation"),
+    ("Model", "B143", "Depreciation", "depreciation"),
     ("Model", "B164", "EBITDA", "ebitda"),
     ("Model", "C168", "Interest", "interest"),
     ("Model", "C169", "Principal", "principal"),
@@ -234,7 +242,7 @@ def test_enterprise_and_equity_without_wacc_are_not_confident_dcf():
 
 
 def test_debtlens_stays_confident_real_estate_income_at_full_score():
-    """Книга связывает шесть понятий и остаётся уверенным real_estate_income со score 1.0.
+    """Книга связывает восемь понятий и остаётся уверенным real_estate_income со score 1.0.
 
     Близкие подписи не привязываются. Цитата типа — cap_rate, noi и vacancy.
     """
@@ -271,7 +279,16 @@ def test_debtlens_stays_confident_real_estate_income_at_full_score():
     assert hits == list(_DEBTLENS_HITS)
     bound, sheets = resolved_workbook(book)
     assert bound == frozenset(
-        {"cap_rate", "dscr", "interest", "noi", "principal", "vacancy"}
+        {
+            "cap_rate",
+            "dscr",
+            "effective_gross_income",
+            "interest",
+            "noi",
+            "operating_expenses",
+            "principal",
+            "vacancy",
+        }
     )
     got = infer(_catalog(), bound=bound, sheets=sheets, accept=0.6, gap=0.15)
     assert got.confident is True
@@ -282,7 +299,7 @@ def test_debtlens_stays_confident_real_estate_income_at_full_score():
 
 
 def test_solar_dogu_stays_confident_renewables_dpm_at_full_score():
-    """Книга solar_dogu связывает восемь понятий и остаётся уверенным renewables_dpm со score 1.0.
+    """Книга solar_dogu связывает девять понятий и остаётся уверенным renewables_dpm со score 1.0.
 
     Близкие подписи не привязываются. Сигнал остаётся concepts_bound_any и держит
     installed_capacity. Цитата типа — degradation, energy_generation и energy_tariff.
@@ -330,6 +347,7 @@ def test_solar_dogu_stays_confident_renewables_dpm_at_full_score():
         {
             "capex",
             "degradation",
+            "depreciation",
             "ebitda",
             "energy_generation",
             "energy_tariff",
@@ -419,7 +437,7 @@ def test_lease_portfolio_and_signal_scores_only_the_full_set():
 
     Причина unknown, метки пустые. Проценты с основным долгом сами тип не дают.
     Пять понятий держат score 1.0 только у bank_leasing. Вариантов нет.
-    Пятнадцать метрик каталога неприменимы, открытых вопросов нет.
+    Двадцать две метрики каталога: ncf и ncf_period необязательны, остальные неприменимы. Открытых вопросов нет.
     При нулевом score лидер остаётся bank_leasing: равенство режется по id.
     """
 
@@ -434,11 +452,16 @@ def test_lease_portfolio_and_signal_scores_only_the_full_set():
     assert item.groups == ()
     assert catalog.types["bank_leasing"].variants == {}
     metrics = catalog.types["bank_leasing"].metrics
-    assert len(RATIO_METRICS) == 15
+    assert len(RATIO_METRICS) == 22
     assert set(metrics) == set(RATIO_METRICS)
-    assert set(metrics.values()) == {"not_applicable"}
+    assert metrics["ncf"] == "optional"
+    assert metrics["ncf_period"] == "optional"
+    assert {use for name, use in metrics.items() if name not in {"ncf", "ncf_period"}} == {
+        "not_applicable"
+    }
     for metric in RATIO_METRICS:
-        assert applicability(catalog, ("bank_leasing",), metric) == "not_applicable", metric
+        expected = "optional" if metric in {"ncf", "ncf_period"} else "not_applicable"
+        assert applicability(catalog, ("bank_leasing",), metric) == expected, metric
     bound, _sheets = resolved_workbook(_LEASE_BOOK)
     assert open_concepts(catalog, ("bank_leasing",), bound=bound, absent=frozenset()) == ()
     assert open_concepts(

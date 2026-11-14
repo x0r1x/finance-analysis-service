@@ -9,6 +9,7 @@ from pathlib import Path
 from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.metrics import coverage_ratio, quantize_ratio
 from finance_analysis.domain.model_type import applicability, infer
+from finance_analysis.domain.returns import fcf_identity, project_return
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ppp"
 _NPV_TOL = Decimal("0.01")
@@ -310,6 +311,183 @@ def test_a_book_row_with_no_matching_cell_warns_once():
     assert got["warnings"][0]["params"]["model"] in {"10", "11"}
 
 
+def _identity(variant, rows, *, convention="outflow_negative"):
+    catalog = _catalog()
+    facts, periods, bindings = [], [], []
+    concepts = {name for row in rows for name in row}
+    for concept in concepts:
+        bindings.append(_bind(concept))
+    for index, row in enumerate(rows):
+        period = f"Y{index}"
+        periods.append(_period(period, index))
+        for concept, value in row.items():
+            facts.append(_fact(concept, period, value))
+    return select_ratio(
+        "fcf_identity",
+        variant,
+        _common(facts, bindings, periods) | {"sign_convention": convention},
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+
+
+def test_vk477_identity_normalizes_a_negative_capex_and_skips_interest():
+    got = _identity(
+        "vk477",
+        [{"operating_cash_flow": "100", "capex": "-30", "project_fcf": "70", "net_interest": "10"}],
+    )
+    assert got["status"] == "succeeded"
+    assert got["warnings"] == []
+
+
+def test_fcff_identity_matches_interest_after_tax_and_a_shift_warns_without_replacing_npv():
+    row = {
+        "operating_cash_flow": "100",
+        "capex": "30",
+        "net_interest": "10",
+        "tax_rate": "0.20",
+        "project_fcf": "78",
+    }
+    assert _identity("fcff_after_interest", [row])["warnings"] == []
+    shifted = {**row, "net_interest": "11"}
+    warned = _identity("fcff_after_interest", [shifted])
+    assert warned["warnings"][0]["code"] == "fcf_identity_mismatch"
+    assert warned["rows"] == []
+    catalog = _catalog()
+    facts = [
+        _fact("project_fcf", "Y0", "78"),
+        _fact("project_fcf", "Y1", "0"),
+        _fact("discount_rate", "rate", "0.10", axis="p"),
+    ]
+    periods = [_period("Y0", 0), _period("Y1", 1), _period("rate", None, axis="p")]
+    npv = select_ratio(
+        "npv",
+        None,
+        _common(facts, [_bind("project_fcf"), _bind("discount_rate")], periods),
+        profile={},
+        profile_ref=None,
+        composed=catalog.composed,
+        concepts=catalog.concepts,
+        money=frozenset(),
+    )
+    assert npv["rows"][0]["inputs"] == ["project_fcf", "discount_rate"]
+    assert "ocf" not in npv["rows"][0]["inputs"]
+
+
+async def test_optional_identity_without_a_variant_is_not_a_completed_check():
+    got = await _ratios(["npv", "irr", "fcf_identity"])
+    identity = next(item for item in got["applicability"] if item["metric"] == "fcf_identity")
+    assert identity == {"metric": "fcf_identity", "applicability": "optional", "skipped": "variant_absent"}
+    assert [item["code"] for item in got["warnings"]] == ["fcf_identity_variant_absent"]
+    assert not any(row["metric"] == "fcf_identity" for row in got["rows"])
+    recorded = [item for item in got["applicability"] if item["metric"] in {"npv", "irr"}]
+    assert recorded == [
+        {"metric": "npv", "applicability": "required"},
+        {"metric": "irr", "applicability": "required"},
+    ]
+    assert any(item["subject"] == "project_fcf" for item in got["needs_input"])
+
+
+async def test_another_not_computed_identity_stays_a_completed_check(monkeypatch):
+    from finance_analysis.application import analyses as analyses_mod
+
+    original = analyses_mod.confirmed_variants
+
+    def named(catalog, verdict):
+        found = dict(original(catalog, verdict))
+        found["fcf_identity"] = "vk477"
+        return found
+
+    monkeypatch.setattr(analyses_mod, "confirmed_variants", named)
+    got = await _ratios(
+        ["fcf_identity"],
+        bindings=[
+            _bind("project_fcf"),
+            _bind("operating_cash_flow"),
+            _bind("capex"),
+        ],
+        facts=[_fact("project_fcf", "Y0", "1"), _fact("project_fcf", "Y2", "1")],
+        periods=[_period("Y0", 0), _period("Y1", 1), _period("Y2", 2)],
+    )
+    assert got["applicability"] == [{"metric": "fcf_identity", "applicability": "optional"}]
+    assert [item["code"] for item in got["warnings"]] == ["project_return_incomplete"]
+    assert got["rows"] == []
+
+
+async def _ratios(metrics, *, bindings=None, facts=None, periods=None):
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Service:
+        model_types = load_model_types()
+        catalog = load_catalog()
+        guard = _Guard()
+
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset == "bindings":
+                return bindings or []
+            if dataset == "fact_observation":
+                return facts or []
+            if dataset == "dim_period":
+                return periods or []
+            if dataset == "dim_row":
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                ("investment_project",),
+                "investment_project",
+                "confirmed",
+                None,
+                1,
+                None,
+                1.0,
+                {"investment_project": 1.0},
+                (),
+            )
+
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    target = Target(head=head, build="build", manifest={}, fresh=True)
+    return await Analyses(_Service()).compute_metrics("job", target, metrics)
+
+
+def test_unnamed_identity_variant_does_not_warn():
+    row = [{"operating_cash_flow": "100", "capex": "30", "project_fcf": "0"}]
+    got = _identity(None, row)
+    unknown = _identity("other", row)
+    assert got["status"] == "not_computed"
+    assert got["rows"] == []
+    assert [item["code"] for item in got["warnings"]] == ["fcf_identity_variant_absent"]
+    assert unknown["status"] == "not_computed"
+    assert unknown["rows"] == []
+    assert [item["code"] for item in unknown["warnings"]] == ["fcf_identity_variant_absent"]
+
+
+def test_full_lease_payment_does_not_match_the_interest_portion():
+    built = {
+        "operating_cash_flow": "100",
+        "capex": "30",
+        "net_interest": "40",
+        "tax_rate": "0.20",
+        "project_fcf": "78",
+    }
+    got = _identity("fcff_after_interest", [built])
+    assert got["warnings"][0]["code"] == "fcf_identity_mismatch"
+    assert got["warnings"][0]["params"]["cells"]
+
+
 def test_book_row_that_disagrees_is_a_warning():
     book = _load("port.json")
     npv, irr = _returns(book, field="project_fcf", book_npv="100", book_irr="0.5")
@@ -317,3 +495,136 @@ def test_book_row_that_disagrees_is_a_warning():
     assert irr["warnings"][0]["code"] == "irr_book_mismatch"
     assert npv["rows"][0]["status"] == "computed"
     assert irr["rows"][0]["status"] == "computed"
+
+
+def test_two_axes_of_project_fcf_are_not_added():
+    flow = [
+        ("base", "Y1", 1, "-100"),
+        ("forecast", "Y1", 1, "-120"),
+        ("base", "Y2", 2, "60"),
+        ("forecast", "Y2", 2, "70"),
+    ]
+    facts = [
+        {
+            "row_key": "project_fcf",
+            "axis_id": axis,
+            "period_id": period,
+            "normalized_value": value,
+        }
+        for axis, period, _index, value in flow
+    ]
+    facts.append(
+        {
+            "row_key": "discount_rate",
+            "axis_id": "base",
+            "period_id": "R",
+            "normalized_value": "0.10",
+        }
+    )
+    periods = [
+        {"axis_id": axis, "period_id": period, "period_index": index}
+        for axis, period, index, _value in flow
+    ]
+    periods.append({"axis_id": "base", "period_id": "R", "period_index": None})
+    bindings = [
+        {
+            "effective_concept": "project_fcf",
+            "row_key": "project_fcf",
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        },
+        {
+            "effective_concept": "discount_rate",
+            "row_key": "discount_rate",
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        },
+    ]
+    for metric in ("npv", "irr"):
+        got = project_return(metric, facts=facts, bindings=bindings, periods=periods)
+        assert got["status"] == "not_computed"
+        assert got["rows"] == []
+        assert got["warnings"][0]["code"] == "axis_ambiguous"
+    identity_bindings = [
+        *bindings,
+        {
+            "effective_concept": "operating_cash_flow",
+            "row_key": "operating_cash_flow",
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        },
+        {
+            "effective_concept": "capex",
+            "row_key": "capex",
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        },
+    ]
+    facts.extend(
+        [
+            {"row_key": "operating_cash_flow", "axis_id": "base", "period_id": "Y1", "normalized_value": "10"},
+            {"row_key": "capex", "axis_id": "base", "period_id": "Y1", "normalized_value": "3"},
+        ]
+    )
+    identity = fcf_identity(
+        "vk477",
+        facts=facts,
+        bindings=identity_bindings,
+        periods=periods,
+    )
+    assert identity["status"] == "not_computed"
+    assert identity["rows"] == []
+    assert identity["warnings"][0]["code"] == "axis_ambiguous"
+
+
+def test_two_sign_changes_keep_the_root_and_warn():
+    # −100, 230, −132 имеет корни 10% и 20%. Оба внутри (−0.9, 20), поэтому
+    # прежняя бисекция видит один знак на концах и корень не возвращает.
+    missed = _irr_of(["-100", "230", "-132"])
+    assert missed["status"] == "not_computed"
+    assert missed["rows"] == []
+    assert missed["warnings"] == []
+    # −100, 2710, −2860: две перемены, один положительный корень внутри скобки,
+    # второй дальше 20. Найденный корень остаётся, какой именно — не закрепляем.
+    got = _irr_of(["-100", "2710", "-2860"])
+    assert got["status"] == "succeeded"
+    assert len(got["rows"]) == 1
+    assert got["warnings"] == [
+        {"code": "irr_multiple_roots", "params": {"metric": "irr", "sign_changes": 2}}
+    ]
+    plain = _irr_of(["-100", "60", "70"])
+    assert plain["status"] == "succeeded"
+    assert plain["warnings"] == []
+
+
+def _irr_of(values: list[str]) -> dict:
+    facts, periods = [], []
+    for index, value in enumerate(values):
+        period = f"Y{index}"
+        facts.append(
+            {
+                "row_key": "project_fcf",
+                "axis_id": "a",
+                "period_id": period,
+                "normalized_value": value,
+            }
+        )
+        periods.append({"axis_id": "a", "period_id": period, "period_index": index})
+    return project_return(
+        "irr",
+        facts=facts,
+        bindings=[
+            {
+                "effective_concept": "project_fcf",
+                "row_key": "project_fcf",
+                "is_primary": True,
+                "status": "bound",
+                "source": "inferred",
+            }
+        ],
+        periods=periods,
+    )

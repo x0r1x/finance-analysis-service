@@ -19,6 +19,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from finance_analysis.domain.metrics import _paid_interest_row
+from finance_analysis.domain.net_cash_flow import DASH_NOTE, dashed_lines
 
 _SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "meta_layer_graphs.json"
 
@@ -66,11 +67,14 @@ class TraceStep:
     cell_ids: tuple[str, ...] = ()
     missing_trace: str | None = None
     excel_links: tuple[ExcelLink, ...] = ()
+    note: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         body = asdict(self)
         body["cell_ids"] = list(self.cell_ids)
         body["excel_links"] = [link.as_dict() for link in self.excel_links]
+        if not self.note:
+            body.pop("note", None)
         return body
 
 
@@ -172,6 +176,7 @@ def trace_metric(
     rows_available: bool = True,
     graph_links_available: bool = True,
     absent: frozenset[str] = frozenset(),
+    statement_sheets: frozenset[str] = frozenset(),
 ) -> MetricTrace:
     """Собрать read-only трассировку входа метрики → concept → binding → cell.
 
@@ -260,6 +265,20 @@ def trace_metric(
                 build_key=resolved_build or "",
             )
         )
+    if metric_id == "ncf":
+        for dashed in dashed_lines(
+            list(scoped_bindings),
+            list(scoped_facts),
+            statement_sheets,
+            absent,
+        ):
+            steps.append(
+                _dash_step(
+                    dashed,
+                    model_id=resolved_model or "",
+                    build_key=resolved_build or "",
+                )
+            )
 
     dto_findings = validate_metric_traces(
         [
@@ -328,6 +347,7 @@ def check_metric_physical_trace(
     rows_available: bool = True,
     graph_links_available: bool = True,
     absent: frozenset[str] = frozenset(),
+    statement_sheets: frozenset[str] = frozenset(),
 ) -> tuple[MetricTrace, list[TraceIntegrityFinding]]:
     """Трассировка + findings (исходные данные и инвариант DTO)."""
 
@@ -346,6 +366,7 @@ def check_metric_physical_trace(
         rows_available=rows_available,
         graph_links_available=graph_links_available,
         absent=absent,
+        statement_sheets=statement_sheets,
     )
     return trace, list(trace.integrity)
 
@@ -428,6 +449,24 @@ def _paid_interest_step(
         excel_links=_excel_links_for_cells(
             graph_links, cell_ids, model_id=model_id, build_key=build_key
         ),
+    )
+
+
+def _dash_step(row: Mapping[str, Any], *, model_id: str, build_key: str) -> TraceStep:
+    binding_key = str(row.get("binding_key") or "")
+    concept = str(row.get("concept") or "")
+    return TraceStep(
+        concept=concept,
+        role="all_of",
+        metric_edge_id=metric_input_edge_id("ncf", "all_of", concept),
+        binding_key=binding_key or None,
+        binding_edge_id=(
+            semantic_binding_edge_id(model_id, build_key, binding_key) if binding_key else None
+        ),
+        row_key=str(row.get("row_key") or "") or None,
+        cell_ids=tuple(row.get("cell_ids") or ()),
+        missing_trace=None,
+        note=DASH_NOTE,
     )
 
 

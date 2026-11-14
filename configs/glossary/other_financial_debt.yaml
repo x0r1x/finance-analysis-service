@@ -1,0 +1,7 @@
+concept: other_financial_debt
+pref:
+  en: "Other financial debt"
+  ru: "Прочая финансовая задолженность"
+definition:
+  en: "Credit-like portion of lines 1450, 1520, 1550, and 1530 only when the note shows a borrowing. Not the line total."
+  ru: "Кредитная доля строк 1450, 1520 и 1550. Строка 1530 входит только если расшифровка показывает заимствование. Итог смешанной строки не берется."

@@ -1,0 +1,10 @@
+concept: effective_gross_income
+pref:
+  en: "Effective gross income"
+  ru: "Действительный валовой доход"
+alt:
+  en: ["Effective gross income of the property"]
+  ru: ["Валовый доход по объекту", "Валовой доход по объекту"]
+definition:
+  en: "Potential gross income after vacancy and collection loss. Vacancy rate is not subtracted again."
+  ru: "Потенциальный валовой доход после простоя и неплатежей. Доля вакантных площадей второй раз не вычитается."

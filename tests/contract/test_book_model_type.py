@@ -20,23 +20,27 @@ HEADERS = {"X-User-Id": "alex", "X-Client-Id": "desk"}
 PACKT = job_id("packt")
 RVI = job_id("rvi")
 # Счётчики fact-строк: связанные, неоднозначные, неизвестные и неприменимые.
-# У Packt роль reference снимает ничьи interest и principal, поэтому связанных строк 9, а неоднозначных 2.
+# У Packt роль reference снимает ничьи interest и principal, поэтому связанных строк 11, а неоднозначных 2.
 # У RVI «Merchant price (real)» и «Merchant price (nominal)» — точные метки
 # forecast_energy_tariff с разной основой цены. Обе строки bound, ни одна не основная.
 # Mid case, Low case и Applied (real terms) под заголовком
 # Electricity price forecast (real terms) связаны по заголовку и тоже не основные.
-# Ожидаемый инвариант: Packt 9/2/82, RVI 10/6/213.
+# Ожидаемый инвариант: Packt 11/2/80, RVI 11/6/212.
+# ncf_period связывает приток и отток Packt и одну строку RVI.
 # 5/6/218 — счёт RVI на main после решения 42, не текущий инвариант.
 _COUNTS = {
-    "packt": {"bound": 9, "ambiguous": 2, "unknown": 82, "not_applicable": 4},
-    "rvi": {"bound": 10, "ambiguous": 6, "unknown": 213, "not_applicable": 9},
+    "packt": {"bound": 11, "ambiguous": 2, "unknown": 80, "not_applicable": 4},
+    "rvi": {"bound": 11, "ambiguous": 6, "unknown": 212, "not_applicable": 9},
 }
 # Неизвестные и неоднозначные строки минус входы метрик, которые тип модели не спрашивает.
-_OPEN = {"packt": 84, "rvi": 216}
+_OPEN = {"packt": 82, "rvi": 215}
 # У Packt interest уже основная строка. У RVI три неоднозначные строки interest остаются.
 _DROPPED = {"packt": (0, []), "rvi": (3, ["interest"])}
 # У Packt interest связан, поэтому ICR считается. LLCR и PLCR по-прежнему пропущены.
-_SKIPPED = {"packt": ["llcr", "plcr"], "rvi": ["icr", "icr_ebit", "llcr", "plcr"]}
+_SKIPPED = {
+    "packt": ["llcr", "plcr", "ncf", "ncf_period"],
+    "rvi": ["icr", "icr_ebit", "llcr", "plcr", "ncf", "ncf_period"],
+}
 
 
 @pytest.fixture
@@ -114,15 +118,20 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         hidden = sorted(
             item["metric"] for item in ratios["result_data"]["metrics"] if item["applicability"] == "not_applicable"
         )
-        # Срез 2, FCFF и total_debt на project_finance не считаются. Вопросы и привязки из-за них не меняются.
+        # Срез 2, FCFF, total_debt и debt_incl_off_balance на project_finance не считаются.
         assert hidden == [
+            "debt_incl_off_balance",
+            "debt_off_balance_ebitda",
             "escrow_blended_rate",
             "escrow_coverage",
+            "fcf_identity",
             "fcff",
+            "icr_lease",
             "irr",
             "net_debt_ebitda",
             "npv",
             "total_debt",
+            "total_debt_ebitda",
         ], alias
         assert ratios["model_type"]["primary"] == "project_finance"
         assert "book_rows" not in ratios["result_data"], alias

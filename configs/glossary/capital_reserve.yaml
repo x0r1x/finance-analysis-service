@@ -1,0 +1,10 @@
+concept: capital_reserve
+pref:
+  en: "Replacement reserve"
+  ru: "Капитальный резерв"
+alt:
+  en: ["Reserve for replacement", "Capital reserve"]
+  ru: ["Резерв на замещение", "Капитальный резерв по объекту", "Резерв на ремонт и замену мебели"]
+definition:
+  en: "Replacement of short-lived components, including repair of that kind and furniture. Not debt service, income tax, depreciation or life-extending capital works."
+  ru: "Замещение короткоживущих элементов, включая такой ремонт и замену мебели. Не обслуживание долга, налог на прибыль, амортизация и затраты, удлиняющие срок службы."

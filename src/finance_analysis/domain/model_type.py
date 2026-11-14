@@ -75,6 +75,11 @@ class MetricExpression:
     one_of: frozenset[str] = field(default_factory=frozenset)
     rate: str | None = None
     base: str | None = None
+    aggregate: str | None = None
+    rates: tuple[str, ...] = ()
+    terminal: str | None = None
+    compare_with: str | None = None
+    add_back: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)

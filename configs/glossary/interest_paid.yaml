@@ -1,0 +1,12 @@
+concept: interest_paid
+pref:
+  en: "Interest paid"
+  ru: "Проценты уплаченные"
+alt:
+  en: ["paid interest"]
+  ru: ["уплаченные проценты", "проценты выплаченные"]
+hidden:
+  ru: ["4123", "стр. 4123"]
+definition:
+  en: "Interest paid inside operating cash flow, statement line 4123. Line 4224 and accrued line 2330 are not this concept."
+  ru: "Проценты, уплаченные внутри операционного потока. Код строки 4123. Код 4224 и начисление 2330 сюда не входят."
