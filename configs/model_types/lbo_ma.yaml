@@ -32,4 +32,4 @@ metrics:
   total_debt_ebitda: {use: not_applicable}
   debt_off_balance_ebitda: {use: not_applicable}
   fcf_identity: {use: not_applicable}
-  ncf_period: {use: not_applicable}
+  ncf_period: {use: optional}

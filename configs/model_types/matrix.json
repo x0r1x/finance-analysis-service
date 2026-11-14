@@ -296,7 +296,7 @@
       "use": "not_applicable"
     },
     "dcf_valuation": {
-      "use": "not_applicable"
+      "use": "optional"
     },
     "development_escrow": {
       "use": "not_applicable"
@@ -317,7 +317,7 @@
       "use": "not_applicable"
     },
     "real_estate_income": {
-      "use": "not_applicable"
+      "use": "optional"
     },
     "renewables_dpm": {
       "use": "not_applicable"
@@ -571,13 +571,13 @@
   },
   "ncf_period": {
     "bank_leasing": {
-      "use": "not_applicable"
+      "use": "optional"
     },
     "corporate": {
       "use": "optional"
     },
     "dcf_valuation": {
-      "use": "not_applicable"
+      "use": "optional"
     },
     "development_escrow": {
       "use": "optional"
@@ -586,7 +586,7 @@
       "use": "optional"
     },
     "lbo_ma": {
-      "use": "not_applicable"
+      "use": "optional"
     },
     "other": {
       "use": "optional"
@@ -595,13 +595,13 @@
       "use": "optional"
     },
     "project_finance": {
-      "use": "not_applicable"
+      "use": "optional"
     },
     "real_estate_income": {
-      "use": "not_applicable"
+      "use": "optional"
     },
     "renewables_dpm": {
-      "use": "not_applicable"
+      "use": "optional"
     }
   },
   "net_debt_ebitda": {

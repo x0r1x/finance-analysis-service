@@ -20,7 +20,7 @@ HEADERS = {"X-User-Id": "alex", "X-Client-Id": "desk"}
 PACKT = job_id("packt")
 RVI = job_id("rvi")
 # Счётчики fact-строк: связанные, неоднозначные, неизвестные и неприменимые.
-# У Packt роль reference снимает ничьи interest и principal, поэтому связанных строк 9, а неоднозначных 2.
+# У Packt роль reference снимает ничьи interest и principal, поэтому связанных строк 11, а неоднозначных 2.
 # У RVI «Merchant price (real)» и «Merchant price (nominal)» — точные метки
 # forecast_energy_tariff с разной основой цены. Обе строки bound, ни одна не основная.
 # Mid case, Low case и Applied (real terms) под заголовком
@@ -37,7 +37,10 @@ _OPEN = {"packt": 82, "rvi": 215}
 # У Packt interest уже основная строка. У RVI три неоднозначные строки interest остаются.
 _DROPPED = {"packt": (0, []), "rvi": (3, ["interest"])}
 # У Packt interest связан, поэтому ICR считается. LLCR и PLCR по-прежнему пропущены.
-_SKIPPED = {"packt": ["llcr", "plcr", "ncf"], "rvi": ["icr", "icr_ebit", "llcr", "plcr", "ncf"]}
+_SKIPPED = {
+    "packt": ["llcr", "plcr", "ncf", "ncf_period"],
+    "rvi": ["icr", "icr_ebit", "llcr", "plcr", "ncf", "ncf_period"],
+}
 
 
 @pytest.fixture
@@ -125,7 +128,6 @@ async def test_packt_and_rvi_are_project_finance(local_service):
             "fcff",
             "icr_lease",
             "irr",
-            "ncf_period",
             "net_debt_ebitda",
             "npv",
             "total_debt",

@@ -185,8 +185,8 @@ def test_ncf_is_money_and_does_not_replace_project_fcf_or_cash():
     assert "ncf_period" not in load_model_types().composed
     assert list(load_metric_inputs())[-1] == "ncf_period"
     types = load_model_types()
-    assert applicability(types, ("corporate",), "ncf_period") == "optional"
-    assert applicability(types, ("lbo_ma",), "ncf_period") == "not_applicable"
+    for type_id in types.types:
+        assert applicability(types, (type_id,), "ncf_period") == "optional", type_id
     got = _run(
         [_bind("cash_balance"), _bind("project_fcf")],
         [_fact("cash_balance", "100"), _fact("project_fcf", "100")],
