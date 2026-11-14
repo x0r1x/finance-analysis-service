@@ -52,6 +52,13 @@ def project_return(
             return _empty(metric, "not_computed")
         shown = quantize_ratio(solved)
     home = points[-1][2]
+    warnings = _book(metric, shown, facts, primaries.get(metric))
+    if metric == "irr":
+        changes = _sign_changes(points)
+        if changes > 1:
+            warnings.append(
+                {"code": "irr_multiple_roots", "params": {"metric": "irr", "sign_changes": changes}}
+            )
     return {
         "metric": metric,
         "rows": [
@@ -69,7 +76,7 @@ def project_return(
             }
         ],
         "needs_input": [],
-        "warnings": _book(metric, shown, facts, primaries.get(metric)),
+        "warnings": warnings,
         "status": "succeeded",
     }
 
@@ -213,6 +220,19 @@ def _npv(points: list[tuple[int, Decimal, dict]], rate: Decimal) -> Decimal:
         ctx.rounding = "ROUND_HALF_EVEN"
         base = Decimal(1) + rate
         return sum((flow / base**index for index, flow, _period in points), Decimal(0))
+
+
+def _sign_changes(points: list[tuple[int, Decimal, dict]]) -> int:
+    previous = 0
+    changes = 0
+    for _index, flow, _period in points:
+        if flow == 0:
+            continue
+        sign = 1 if flow > 0 else -1
+        if previous and sign != previous:
+            changes += 1
+        previous = sign
+    return changes
 
 
 def _irr(points: list[tuple[int, Decimal, dict]]) -> Decimal | None:

@@ -579,3 +579,44 @@ def test_two_axes_of_project_fcf_are_not_added():
     assert identity["status"] == "not_computed"
     assert identity["rows"] == []
     assert identity["warnings"][0]["code"] == "axis_ambiguous"
+
+
+def test_two_sign_changes_keep_the_root_and_warn():
+    got = _irr_of(["-100", "230", "-132"])
+    assert got["status"] == "succeeded"
+    assert len(got["rows"]) == 1
+    assert got["warnings"] == [
+        {"code": "irr_multiple_roots", "params": {"metric": "irr", "sign_changes": 2}}
+    ]
+    plain = _irr_of(["-100", "60", "70"])
+    assert plain["status"] == "succeeded"
+    assert plain["warnings"] == []
+
+
+def _irr_of(values: list[str]) -> dict:
+    facts, periods = [], []
+    for index, value in enumerate(values):
+        period = f"Y{index}"
+        facts.append(
+            {
+                "row_key": "project_fcf",
+                "axis_id": "a",
+                "period_id": period,
+                "normalized_value": value,
+            }
+        )
+        periods.append({"axis_id": "a", "period_id": period, "period_index": index})
+    return project_return(
+        "irr",
+        facts=facts,
+        bindings=[
+            {
+                "effective_concept": "project_fcf",
+                "row_key": "project_fcf",
+                "is_primary": True,
+                "status": "bound",
+                "source": "inferred",
+            }
+        ],
+        periods=periods,
+    )
