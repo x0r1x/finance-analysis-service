@@ -59,13 +59,16 @@ def _bind(concept: str, row: str, *, primary: bool = True) -> dict:
     }
 
 
-def _fact(row: str, period: str, value: str) -> dict:
-    return {
+def _fact(row: str, period: str, value: str, *, status: str | None = None, axis: str = "a") -> dict:
+    item = {
         "row_key": row,
-        "axis_id": "a",
+        "axis_id": axis,
         "period_id": period,
         "normalized_value": value,
     }
+    if status is not None:
+        item["value_status"] = status
+    return item
 
 
 def _year(period: str = "Y1") -> dict:
@@ -97,6 +100,64 @@ def test_sum_adds_bound_rows_and_zeros_a_missing_component():
     assert got["warnings"] == [
         {"code": "component_absent", "params": {"concepts": ["off_balance_third_party"]}}
     ]
+
+
+def test_a_missing_bound_fact_is_a_gap_and_an_explicit_zero_counts():
+    bindings = [
+        _bind("long_term_borrowings", "lt"),
+        _bind("short_term_borrowings", "st"),
+        _bind("other_financial_debt", "other"),
+        _bind("off_balance_third_party", "third"),
+        _bind("off_balance_lease", "lease"),
+    ]
+    facts = [
+        _fact("lt", "Y1", "100"),
+        _fact("lt", "Y2", "120"),
+        _fact("st", "Y1", "30"),
+        _fact("st", "Y2", "40"),
+        _fact("other", "Y1", "10"),
+        _fact("third", "Y1", "0"),
+        _fact("third", "Y2", "0"),
+        _fact("lease", "Y1", "20"),
+        _fact("lease", "Y2", "25"),
+    ]
+    got = debt_incl_off_balance(
+        components=_COMPONENTS,
+        facts=facts,
+        bindings=bindings,
+        periods=[_year("Y1"), _year("Y2")],
+    )
+    assert got["status"] == "succeeded"
+    rows = {row["period_id"]: row for row in got["rows"]}
+    assert rows["Y1"]["value"] == "160"
+    assert "Y2" not in rows
+    assert {
+        "code": "component_gap",
+        "params": {"concept": "other_financial_debt", "axis_id": "a", "period_id": "Y2"},
+    } in got["warnings"]
+    filled = debt_incl_off_balance(
+        components=_COMPONENTS,
+        facts=[*facts, _fact("other", "Y2", "0")],
+        bindings=bindings,
+        periods=[_year("Y1"), _year("Y2")],
+    )
+    assert {row["period_id"]: row["value"] for row in filled["rows"]} == {"Y1": "160", "Y2": "185"}
+    assert filled["warnings"] == []
+    errored = debt_incl_off_balance(
+        components=_COMPONENTS,
+        facts=[*facts, _fact("other", "Y2", "10", status="error")],
+        bindings=bindings,
+        periods=[_year("Y1"), _year("Y2")],
+    )
+    assert "Y2" not in {row["period_id"] for row in errored["rows"]}
+    gapped = debt_incl_off_balance(
+        components=_COMPONENTS,
+        facts=[_fact("lt", "Y1", "1", status="error")],
+        bindings=bindings,
+        periods=[_year("Y1")],
+    )
+    assert gapped["rows"] == []
+    assert gapped["status"] == "not_computed"
 
 
 def test_no_bound_component_is_missing_input():

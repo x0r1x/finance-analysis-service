@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 
 _METRIC = "debt_incl_off_balance"
 _BOUND = frozenset({"bound", "bound_with_warning"})
+_VALUED = frozenset({"cached", "zero_explicit"})
 # Только эти источники отменяют `concept.absent`, как у `_primaries`.
 _HUMAN = frozenset({"confirmed", "profile"})
 
@@ -35,10 +36,13 @@ def debt_incl_off_balance(
             "status": "missing_input",
         }
     present = list(dict.fromkeys(concept for concept in components if concept in bound_rows))
-    rows = [_row(key, amounts, present) for key, amounts in _by_period(facts, bound_rows, present).items()]
+    complete, warnings = _by_period(facts, bound_rows, present)
+    rows = [_row(key, amounts, present) for key, amounts in complete]
     missing = [concept for concept in components if concept not in bound_rows]
-    warnings = [{"code": "component_absent", "params": {"concepts": missing}}] if missing else []
-    return {"metric": _METRIC, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
+    if missing:
+        warnings.append({"code": "component_absent", "params": {"concepts": missing}})
+    status = "not_computed" if not rows and warnings else "succeeded"
+    return {"metric": _METRIC, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
 
 
 def _bound_rows(components: tuple[str, ...], bindings: list[dict], absent: frozenset[str]) -> dict[str, list[str]]:
@@ -61,7 +65,7 @@ def _by_period(
     facts: list[dict],
     bound_rows: dict[str, list[str]],
     present: list[str],
-) -> dict[tuple, dict[str, Decimal]]:
+) -> tuple[list[tuple[tuple, dict[str, Decimal]]], list[dict]]:
     row_concepts: dict[str, list[str]] = {}
     for concept in present:
         for row_key in bound_rows[concept]:
@@ -69,21 +73,46 @@ def _by_period(
             if concept not in concepts:
                 concepts.append(concept)
     totals: dict[tuple, dict[str, Decimal]] = {}
+    gaps: dict[tuple, set[str]] = {}
     for fact in facts:
         concepts = row_concepts.get(fact.get("row_key"))
         if not concepts:
             continue
         key = (fact.get("axis_id"), fact.get("period_id"))
-        bucket = totals.get(key)
-        if bucket is None:
-            bucket = {concept: Decimal(0) for concept in present}
-            totals[key] = bucket
-        number = _decimal(fact.get("normalized_value"))
+        bucket = totals.setdefault(key, {})
+        gapped = gaps.setdefault(key, set())
+        number = _usable(fact)
         if number is None:
+            for concept in concepts:
+                gapped.add(concept)
+                bucket.pop(concept, None)
             continue
         for concept in concepts:
-            bucket[concept] += number
-    return totals
+            if concept in gapped:
+                continue
+            bucket[concept] = bucket.get(concept, Decimal(0)) + number
+    complete: list[tuple[tuple, dict[str, Decimal]]] = []
+    warnings: list[dict] = []
+    for key, bucket in totals.items():
+        holes = [concept for concept in present if concept not in bucket]
+        if holes:
+            for concept in holes:
+                warnings.append(
+                    {
+                        "code": "component_gap",
+                        "params": {"concept": concept, "axis_id": key[0], "period_id": key[1]},
+                    }
+                )
+            continue
+        complete.append((key, bucket))
+    return complete, warnings
+
+
+def _usable(fact: dict) -> Decimal | None:
+    status = fact.get("value_status")
+    if status is not None and status not in _VALUED:
+        return None
+    return _decimal(fact.get("normalized_value"))
 
 
 def _row(key: tuple, amounts: dict[str, Decimal], present: list[str]) -> dict:
