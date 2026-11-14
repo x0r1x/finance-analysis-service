@@ -582,7 +582,15 @@ def test_two_axes_of_project_fcf_are_not_added():
 
 
 def test_two_sign_changes_keep_the_root_and_warn():
-    got = _irr_of(["-100", "230", "-132"])
+    # −100, 230, −132 имеет корни 10% и 20%. Оба внутри (−0.9, 20), поэтому
+    # прежняя бисекция видит один знак на концах и корень не возвращает.
+    missed = _irr_of(["-100", "230", "-132"])
+    assert missed["status"] == "not_computed"
+    assert missed["rows"] == []
+    assert missed["warnings"] == []
+    # −100, 2710, −2860: две перемены, один положительный корень внутри скобки,
+    # второй дальше 20. Найденный корень остаётся, какой именно — не закрепляем.
+    got = _irr_of(["-100", "2710", "-2860"])
     assert got["status"] == "succeeded"
     assert len(got["rows"]) == 1
     assert got["warnings"] == [
