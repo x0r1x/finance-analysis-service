@@ -45,6 +45,9 @@ def test_matching_noi_is_silent_and_does_not_replace_the_cell():
     data = _book(sheet, reserve="5")
     assert check("noi_mismatch", data) == []
     assert check("noi_method", data) == []
+    coverage = check("noi_coverage", data)
+    assert [item.params.get("concepts") for item in coverage] == [["property_management"]]
+    assert coverage[0].finding_kind == "insufficient_data"
     assert sheet["value_dec"] == Decimal(65)
 
 
@@ -62,15 +65,19 @@ def test_mismatch_keeps_the_book_value():
 def test_missing_reserve_does_not_start_the_check():
     data = _book(fact(_NOI, "S!C4", "2024", "70"), reserve=None)
     assert check("noi_mismatch", data) == []
+    assert check("noi_coverage", data) == []
 
 
 def test_management_is_subtracted_and_not_imputed():
     without = _book(fact(_NOI, "S!C4", "2024", "65"), reserve="5")
     assert check("noi_mismatch", without) == []
+    assert [item.params.get("concepts") for item in check("noi_coverage", without)] == [["property_management"]]
     with_fee = _book(fact(_NOI, "S!C4", "2024", "63"), reserve="5", management="2")
     assert check("noi_mismatch", with_fee) == []
     over = _book(fact(_NOI, "S!C4", "2024", "65"), reserve="5", management="2")
     assert check("noi_mismatch", over)[0].params["periods"] == ["2024"]
+    assert check("noi_coverage", with_fee) == []
+    assert check("noi_coverage", over) == []
 
 
 def test_both_land_charges_block_the_sum():
@@ -101,6 +108,26 @@ def test_interest_inside_noi_formula_is_methodology():
     found = check("noi_method", data)
     assert [item.params["concept"] for item in found] == ["interest"]
     assert found[0].finding_kind == "methodology"
+
+
+def test_a_later_period_without_a_term_is_not_a_silent_match():
+    base = _book(fact(_NOI, "S!C4", "2024", "65"), reserve="5")
+    data = AuditInput(
+        rows=base.rows,
+        periods=base.periods,
+        facts=[
+            *base.facts,
+            fact(_EGI, "S!D1", "2025", "100"),
+            fact(_OPEX, "S!D2", "2025", "30"),
+            fact(_NOI, "S!D4", "2025", "70"),
+        ],
+        links=base.links,
+        bindings=base.bindings,
+    )
+    assert check("noi_mismatch", data) == []
+    coverage = check("noi_coverage", data)
+    assert any(item.params.get("periods") == ["2025"] for item in coverage)
+    assert all(item.finding_kind == "insufficient_data" for item in coverage)
 
 
 def _book(

@@ -64,7 +64,11 @@ def load_noi_difference(path: str | None = None) -> NoiDifference:
 
 
 def reconcile(data: AuditInput, spec: NoiDifference | None = None) -> list[NoiNote]:
-    """Находки сверки. Пустой список — сверять не с чем или числа сошлись."""
+    """Находки сверки.
+
+    Пустой список на арифметическом пути значит, что каждый период строки
+    результата проверен и сошёлся. Ранний выход без заметок тоже пуст.
+    """
 
     spec = spec or load_noi_difference()
     notes: list[NoiNote] = []
@@ -86,14 +90,17 @@ def reconcile(data: AuditInput, spec: NoiDifference | None = None) -> list[NoiNo
     if expenses and reserve and reserve in _precedents(data, expenses):
         return [*notes, NoiNote("double_reserve", expenses, {"reserve": reserve})]
     optional: list[str] = []
+    omitted: list[str] = []
     for name in spec.optional_minus:
         found = _bound(data, name)
         if len(found) > 1:
             return notes
         if found:
             optional.append(found[0])
+        else:
+            omitted.append(name)
     result_row = required[spec.result]
-    broken = _broken(
+    broken, unchecked = _compared(
         data,
         result_row or "",
         [required[name] or "" for name in spec.plus],
@@ -102,6 +109,10 @@ def reconcile(data: AuditInput, spec: NoiDifference | None = None) -> list[NoiNo
     )
     if broken and result_row:
         notes.append(NoiNote("mismatch", result_row, {"periods": broken}))
+    if omitted and result_row:
+        notes.append(NoiNote("optional_omitted", result_row, {"concepts": omitted}))
+    if unchecked and result_row:
+        notes.append(NoiNote("period_unchecked", result_row, {"periods": unchecked}))
     return notes
 
 
@@ -152,23 +163,25 @@ def _series(data: AuditInput, row_key: str) -> dict[tuple[str, str], Decimal]:
     return found
 
 
-def _broken(
+def _compared(
     data: AuditInput,
     result: str,
     plus: list[str],
     minus: list[str],
     optional: list[str],
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     target = _series(data, result)
     parts = [_series(data, row) for row in (*plus, *minus, *optional)]
     broken: list[str] = []
+    unchecked: list[str] = []
     for key, book in target.items():
         values = [series.get(key) for series in parts]
         if any(item is None for item in values):
+            unchecked.append(key[1])
             continue
         numbers = [item for item in values if item is not None]
         plus_n = len(plus)
         reconstructed = sum(numbers[:plus_n], Decimal(0)) - sum((abs(item) for item in numbers[plus_n:]), Decimal(0))
         if abs(reconstructed - book) > _TOLERANCE:
             broken.append(key[1])
-    return broken
+    return broken, unchecked

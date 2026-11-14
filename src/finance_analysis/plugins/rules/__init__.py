@@ -26,7 +26,7 @@ from finance_analysis.plugins.rules.formulas import (
     NESTED_IF,
     OFFSET_INDIRECT_USED,
 )
-from finance_analysis.plugins.rules.noi import NOI_METHOD, NOI_MISMATCH
+from finance_analysis.plugins.rules.noi import NOI_COVERAGE, NOI_METHOD, NOI_MISMATCH
 from finance_analysis.plugins.rules.ratios import (
     ICR_REFERENCE,
     MARKER_MIX,
@@ -104,6 +104,7 @@ RULES = (
     UNMAPPED_IN_METRIC_CHAIN,
     NOI_MISMATCH,
     NOI_METHOD,
+    NOI_COVERAGE,
     CASH_ROLLFORWARD_BREAK,
     CASH_STATEMENT_TIE,
 )
