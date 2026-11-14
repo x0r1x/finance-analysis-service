@@ -314,6 +314,21 @@ def test_live_manifest_stamps_the_corkscrew_and_an_old_manifest_still_validates(
     empty["cash_corkscrew"] = ""
     with pytest.raises(ValueError, match="cash_corkscrew"):
         validate_manifest({**fresh, "version": semantic_model_version_for(empty), "components": empty})
+    identities = stamp_path(configs_root(), "configs/identities")[:16]
+    assert components["identities"] == identities
+    assert validate_manifest(fresh)["components"]["identities"] == identities
+    without_identities = {key: value for key, value in components.items() if key != "identities"}
+    aged = {
+        "version": semantic_model_version_for(without_identities),
+        "components": without_identities,
+        "fas_version": "0.23.0",
+        "created_at_utc": "2026-11-06T00:00:00Z",
+    }
+    assert validate_manifest(aged)["version"] == aged["version"]
+    blank = dict(components)
+    blank["identities"] = "zz"
+    with pytest.raises(ValueError, match="identities"):
+        validate_manifest({**fresh, "version": semantic_model_version_for(blank), "components": blank})
 
 
 def _movement(opening_2025: str, close_2025: str) -> AuditInput:
