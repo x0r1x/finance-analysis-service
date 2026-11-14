@@ -31,6 +31,8 @@ def project_return(
     points, problem = _points(facts, flow, periods)
     if problem == "series_gap":
         return _warned(metric, "project_return_incomplete")
+    if problem == "axis_ambiguous":
+        return _warned(metric, "axis_ambiguous")
     if points is None:
         return _empty(metric, "missing_input")
     rate = None
@@ -99,6 +101,8 @@ def fcf_identity(
     points, problem = _points(facts, flow, periods)
     if problem == "series_gap":
         return _warned(metric, "project_return_incomplete")
+    if problem == "axis_ambiguous":
+        return _warned(metric, "axis_ambiguous")
     if points is None:
         return _empty(metric, "missing_input")
     shield = variant == "fcff_after_interest"
@@ -154,7 +158,13 @@ def _points(
     facts: list[dict], binding: dict, periods: list[dict]
 ) -> tuple[list[tuple[int, Decimal, dict]] | None, str | None]:
     row = binding["row_key"]
-    axes = {fact["axis_id"] for fact in facts if fact.get("row_key") == row}
+    axes = {
+        fact["axis_id"]
+        for fact in facts
+        if fact.get("row_key") == row and fact.get("normalized_value") is not None
+    }
+    if len(axes) > 1:
+        return None, "axis_ambiguous"
     filled: dict[int, tuple[Decimal, dict]] = {}
     for period in periods:
         if period.get("axis_id") not in axes or period.get("period_index") is None:

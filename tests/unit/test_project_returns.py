@@ -9,6 +9,7 @@ from pathlib import Path
 from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.metrics import coverage_ratio, quantize_ratio
 from finance_analysis.domain.model_type import applicability, infer
+from finance_analysis.domain.returns import fcf_identity, project_return
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ppp"
 _NPV_TOL = Decimal("0.01")
@@ -494,3 +495,87 @@ def test_book_row_that_disagrees_is_a_warning():
     assert irr["warnings"][0]["code"] == "irr_book_mismatch"
     assert npv["rows"][0]["status"] == "computed"
     assert irr["rows"][0]["status"] == "computed"
+
+
+def test_two_axes_of_project_fcf_are_not_added():
+    flow = [
+        ("base", "Y1", 1, "-100"),
+        ("forecast", "Y1", 1, "-120"),
+        ("base", "Y2", 2, "60"),
+        ("forecast", "Y2", 2, "70"),
+    ]
+    facts = [
+        {
+            "row_key": "project_fcf",
+            "axis_id": axis,
+            "period_id": period,
+            "normalized_value": value,
+        }
+        for axis, period, _index, value in flow
+    ]
+    facts.append(
+        {
+            "row_key": "discount_rate",
+            "axis_id": "base",
+            "period_id": "R",
+            "normalized_value": "0.10",
+        }
+    )
+    periods = [
+        {"axis_id": axis, "period_id": period, "period_index": index}
+        for axis, period, index, _value in flow
+    ]
+    periods.append({"axis_id": "base", "period_id": "R", "period_index": None})
+    bindings = [
+        {
+            "effective_concept": "project_fcf",
+            "row_key": "project_fcf",
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        },
+        {
+            "effective_concept": "discount_rate",
+            "row_key": "discount_rate",
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        },
+    ]
+    for metric in ("npv", "irr"):
+        got = project_return(metric, facts=facts, bindings=bindings, periods=periods)
+        assert got["status"] == "not_computed"
+        assert got["rows"] == []
+        assert got["warnings"][0]["code"] == "axis_ambiguous"
+    identity_bindings = [
+        *bindings,
+        {
+            "effective_concept": "operating_cash_flow",
+            "row_key": "operating_cash_flow",
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        },
+        {
+            "effective_concept": "capex",
+            "row_key": "capex",
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        },
+    ]
+    facts.extend(
+        [
+            {"row_key": "operating_cash_flow", "axis_id": "base", "period_id": "Y1", "normalized_value": "10"},
+            {"row_key": "capex", "axis_id": "base", "period_id": "Y1", "normalized_value": "3"},
+        ]
+    )
+    identity = fcf_identity(
+        "vk477",
+        facts=facts,
+        bindings=identity_bindings,
+        periods=periods,
+    )
+    assert identity["status"] == "not_computed"
+    assert identity["rows"] == []
+    assert identity["warnings"][0]["code"] == "axis_ambiguous"
