@@ -81,10 +81,11 @@ def _inputs(body: dict, refs: dict[str, MetricInputs], name: str) -> MetricInput
         all_of.update(den_one)
     if "rate" in body:
         names = _rate_names(body.get("rate"), name)
+        # Одна ставка — обязательный вход. Список приоритета живёт на формуле, не в one_of.
         if len(names) == 1:
             all_of.add(names[0])
-        else:
-            one_of.update(names)
+    if "terminal" in body:
+        all_of.add(_concept_name(body.get("terminal"), name, "terminal"))
     if "compare_with" in body:
         all_of.add(_concept_name(body.get("compare_with"), name, "compare_with"))
     if "add_back" in body:
