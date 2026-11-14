@@ -80,11 +80,18 @@ def net_cash_flow(
     aligned = aligned_keys(periods)
     left = _volumes(facts, inflow, aligned, periods, sign_convention)
     right = _volumes(facts, outflow, aligned, periods, sign_convention)
-    cited = _primary(bindings, "ncf", absent) or _primary(bindings, "cash_net", absent)
+    cited_rows = _primaries(bindings, "ncf", absent)
+    quote_ambiguous = len(cited_rows) > 1
+    if not cited_rows:
+        cited_rows = _primaries(bindings, "cash_net", absent)
+        quote_ambiguous = len(cited_rows) > 1
+    cited = None if quote_ambiguous or not cited_rows else cited_rows[0]
     cited_series = _sums(facts, cited, aligned, periods) if cited is not None else {}
     rows = []
     warned = False
     warnings: list[dict] = []
+    if quote_ambiguous:
+        warnings.append({"code": "ncf_quote_ambiguous", "params": {"metric": "ncf_period"}})
     seen: set[tuple] = set()
     for period in periods:
         own = (period["axis_id"], period["period_id"])
@@ -204,8 +211,8 @@ def _currencies(facts: list[dict], rows: list[dict]) -> set[str]:
     return found
 
 
-def _primary(bindings: list[dict], concept: str, absent: frozenset[str]) -> dict | None:
-    found = None
+def _primaries(bindings: list[dict], concept: str, absent: frozenset[str]) -> list[dict]:
+    found: list[dict] = []
     for row in bindings:
         if row.get("effective_concept") != concept or not row.get("is_primary"):
             continue
@@ -213,7 +220,7 @@ def _primary(bindings: list[dict], concept: str, absent: frozenset[str]) -> dict
             continue
         if concept in absent and row.get("source") not in _HUMAN:
             continue
-        found = row
+        found.append(row)
     return found
 
 

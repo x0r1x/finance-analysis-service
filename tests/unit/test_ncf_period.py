@@ -210,6 +210,26 @@ def test_cited_line_warns_and_does_not_replace_the_number():
     assert empty["warnings"] == []
 
 
+def test_two_primary_quotes_skip_the_book_comparison():
+    got = _run(
+        [
+            _bind("cash_inflow"),
+            _bind("cash_outflow"),
+            _bind("ncf", row="ncf_a"),
+            _bind("ncf", row="ncf_b"),
+        ],
+        [
+            _fact("cash_inflow", "100"),
+            _fact("cash_outflow", "40"),
+            _fact("ncf_a", "60"),
+            _fact("ncf_b", "1"),
+        ],
+    )
+    assert got["status"] == "succeeded"
+    assert _value(got) == Decimal(60).quantize(_MONEY)
+    assert [item["code"] for item in got["warnings"]] == ["ncf_quote_ambiguous"]
+
+
 def test_three_exact_section_labels_stay_bound_with_one_primary():
     draft = [
         ({"row_key": key}, _assignment("cash_inflow", "Поступления — всего"))
