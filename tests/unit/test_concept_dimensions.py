@@ -427,6 +427,20 @@ def test_tariff_basis_is_not_the_physical_dimension():
     assert check("pricing_basis_mismatch", bridged) == []
 
 
+def test_price_currency_stays_on_the_tariff_rule():
+    concepts = {"energy_tariff": "currency_per_energy"}
+    pricing = {"energy_tariff": "energy"}
+    currencies = _priced(
+        [row(A, unit="RUB/MWh"), row(B, unit="USD/MWh"), row(C, unit="RUB/MWh")],
+        ("=C5+C6", ("S!C5", "S!C6")),
+        [_bound(A, "energy_tariff"), _bound(B, "energy_tariff"), _bound(C, "energy_tariff")],
+        concepts,
+        concept_pricing=pricing,
+    )
+    assert check("unit_mismatch", currencies) == []
+    assert [item.params["reason"] for item in check("pricing_basis_mismatch", currencies)] == ["currency"]
+
+
 def _weighted(concept_dimension: str, weight_dimension: str, *, weight_id: str = "weight_concept"):
     rate = {
         "semantic_role": "measure",
@@ -526,3 +540,21 @@ def test_concrete_unit_and_scale_follow_the_same_source_walk():
     assert copied["unit"] == "MWh"
     bare = next(item for item in stamped if item["row_key"] == A)
     assert "unit" not in bare or bare.get("unit") in (None, "")
+
+
+def test_money_units_name_their_currency():
+    from pathlib import Path
+
+    catalog = load_dimensions()
+    assert catalog.exponents["money"] == {"money": 1}
+    assert catalog.unit_currency["RUB"] == "RUB"
+    assert catalog.unit_currency["USD"] == "USD"
+    assert catalog.unit_currency["EUR"] == "EUR"
+    assert catalog.unit_currency["GBP"] == "GBP"
+    assert catalog.unit_currency["руб"] == "RUB"
+    text = (Path(__file__).resolve().parents[2] / "docs" / "dimensions.md").read_text(encoding="utf-8")
+    sentence = (
+        "У денежной единицы каталога валюта пишется так же, как у ценовой, "
+        "а правило конвертации в каталог не входит."
+    )
+    assert sentence in text

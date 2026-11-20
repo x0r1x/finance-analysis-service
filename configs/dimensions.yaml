@@ -6,7 +6,12 @@ taxonomy: dimensions-1
 dimensions:
   money:
     base: true
-    units: [RUB, USD, EUR, GBP, руб]
+    units:
+      - {unit: RUB, currency: RUB}
+      - {unit: USD, currency: USD}
+      - {unit: EUR, currency: EUR}
+      - {unit: GBP, currency: GBP}
+      - {unit: руб, currency: RUB}
   power:
     base: true
     units: [MW, kW, GW, МВт]

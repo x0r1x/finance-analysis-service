@@ -325,6 +325,64 @@ class ScaleMismatch(UnitRule):
         return {"scale": mine, "ref_scale": theirs, "ref_row": other["row_key"]}
 
 
+def _money_currency(data: AuditInput, row: dict) -> str | None:
+    """Валюта денежной единицы каталога. Цена и пустой токен сюда не входят."""
+
+    token = concrete_unit(row, data.unit_dimensions)
+    if data.unit_dimensions.get(token or "") != "money":
+        return None
+    return data.unit_currency.get(token or "") or None
+
+
+def _catalog_currency(data: AuditInput, own: dict, other: dict) -> dict | None:
+    """Валюта денежных единиц. Пустой каталог, цена и одна валюта находки не дают."""
+
+    if not data.unit_currency:
+        return None
+    left = _money_currency(data, own)
+    right = _money_currency(data, other)
+    if left and right and left != right:
+        return {"currency": left, "ref_currency": right, "ref_row": other["row_key"]}
+    return None
+
+
+def _opened_currencies(data: AuditInput, ref: str, trail: frozenset[str]) -> list[tuple[str, str]]:
+    """Валюта строки. Аддитивная формула открывается только без конкретной единицы."""
+
+    if ref in trail:
+        return []
+    other = _row_of_cell(data, ref)
+    if other is None:
+        return []
+    if concrete_unit(other, data.unit_dimensions) is not None:
+        currency = _money_currency(data, other)
+        return [(currency, other["row_key"])] if currency else []
+    link = data.link_cells.get(ref)
+    if link is None or not _additive(link.formula):
+        return []
+    found: list[tuple[str, str]] = []
+    inner = trail | {ref}
+    for child in link.refs:
+        found.extend(_opened_currencies(data, child, inner))
+    return found
+
+
+def _operand_currencies(data: AuditInput, refs: tuple | list) -> dict | None:
+    """Разные валюты слагаемых, когда у итога своей единицы нет. Первое отличие — одна находка."""
+
+    if not data.unit_currency:
+        return None
+    seen: str | None = None
+    for ref in refs:
+        for currency, row_key in _opened_currencies(data, ref, frozenset()):
+            if seen is None:
+                seen = currency
+                continue
+            if currency != seen:
+                return {"currency": seen, "ref_currency": currency, "ref_row": row_key}
+    return None
+
+
 @dataclass(frozen=True)
 class UnitMismatch(UnitRule):
     def mismatch(self, own: dict, other: dict) -> dict | None:
@@ -335,6 +393,31 @@ class UnitMismatch(UnitRule):
         if left and right and left != right:
             return {"currency": left, "ref_currency": right, "ref_row": other["row_key"]}
         return None
+
+    def cells(self, data: AuditInput) -> dict[str, dict]:
+        found = {}
+        for cell, link in data.link_cells.items():
+            if not _additive(link.formula):
+                continue
+            own = _row_of_cell(data, cell)
+            if own is None or len(set(link.refs)) < 2:
+                continue
+            clash = None
+            for ref in link.refs:
+                other = _row_of_cell(data, ref)
+                if other is None or other["row_key"] == own["row_key"]:
+                    continue
+                differs = self.mismatch(own, other)
+                if differs is None:
+                    differs = _catalog_currency(data, own, other)
+                if differs is not None:
+                    clash = differs
+                    break
+            if clash is None:
+                clash = _operand_currencies(data, link.refs)
+            if clash is not None:
+                found[cell] = clash
+        return found
 
 
 def _bound_dimension(data: AuditInput, row_key: str) -> str | None:

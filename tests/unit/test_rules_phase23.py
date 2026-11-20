@@ -311,3 +311,334 @@ def test_missing_total_row_after_concept_absent():
     assert found[0].params["concept"] == "debt_service"
     assert "llcr" in found[0].params["needed_by"]
     assert sorted(item.row_key for item in found[0].locations) == [A, B]
+
+
+def test_unit_mismatch_reads_catalog_currency_when_the_row_currency_is_empty():
+    units = {"RUB": "money", "USD": "money", "руб": "money"}
+    named = {"RUB": "RUB", "USD": "USD", "руб": "RUB"}
+    rows = [row(A, unit="RUB"), row(B, unit="USD"), row(C, unit="RUB")]
+    facts = [
+        fact(A, "S!C5", "2024", "1"),
+        fact(B, "S!C6", "2024", "1"),
+        fact(C, "S!C7", "2024", "1"),
+    ]
+    mixed = AuditInput(
+        rows=rows,
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    found = _codes("unit_mismatch", mixed)
+    assert found[0].params["currency"] == ["RUB"]
+    assert found[0].params["ref_currency"] == ["USD"]
+    assert found[0].params["ref_row"] == [B]
+    same = AuditInput(
+        rows=[row(A, unit="RUB"), row(B, unit="руб"), row(C, unit="RUB")],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    assert _codes("unit_mismatch", same) == []
+    silent = AuditInput(
+        rows=rows,
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency={},
+    )
+    assert _codes("unit_mismatch", silent) == []
+
+
+def test_unlabeled_total_reads_operand_catalog_currency():
+    units = {"RUB": "money", "USD": "money", "руб": "money"}
+    named = {"RUB": "RUB", "USD": "USD", "руб": "RUB"}
+    facts = [
+        fact(A, "S!C5", "2024", "1"),
+        fact(B, "S!C6", "2024", "1"),
+        fact(C, "S!C7", "2024", "1"),
+    ]
+    mixed = AuditInput(
+        rows=[row(A), row(B, unit="USD"), row(C, unit="RUB")],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    found = _codes("unit_mismatch", mixed)
+    assert len(found) == 1
+    assert found[0].params["currency"] == ["USD"]
+    assert found[0].params["ref_currency"] == ["RUB"]
+    assert found[0].params["ref_row"] == [C]
+    same = AuditInput(
+        rows=[row(A), row(B, unit="руб"), row(C, unit="RUB")],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    assert _codes("unit_mismatch", same) == []
+
+
+def test_unlabeled_subtotals_report_one_currency_mismatch():
+    units = {"RUB": "money", "USD": "money"}
+    named = {"RUB": "RUB", "USD": "USD"}
+    rub = "S|8|S!r2"
+    dollar = "S|9|S!r2"
+    facts = [
+        fact(A, "S!C5", "2024", "1"),
+        fact(B, "S!C6", "2024", "1"),
+        fact(C, "S!C7", "2024", "1"),
+        fact(rub, "S!C8", "2024", "1"),
+        fact(dollar, "S!C9", "2024", "1"),
+    ]
+    data = AuditInput(
+        rows=[row(A), row(B), row(C), row(rub, unit="RUB"), row(dollar, unit="USD")],
+        periods=PERIODS,
+        facts=facts,
+        links=(
+            link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7"))
+            + link("S!C6", "=C8+C8", B, "2024", ("S!C8", "S!C8"))
+            + link("S!C7", "=C9+C9", C, "2024", ("S!C9", "S!C9"))
+        ),
+        unit_dimensions=units,
+        unit_currency=named,
+        dimension_exponents={"money": {"money": 1}},
+    )
+    found = _codes("unit_mismatch", data)
+    assert len(found) == 1
+    assert found[0].params["currency"] == ["RUB"]
+    assert found[0].params["ref_currency"] == ["USD"]
+    assert found[0].params["ref_row"] == [dollar]
+    assert _codes("dimension_mismatch", data) == []
+    assert _codes("pricing_basis_mismatch", data) == []
+
+
+def test_price_formulas_do_not_open_into_unit_mismatch():
+    units = {
+        "RUB": "money",
+        "USD": "money",
+        "RUB/MWh": "currency_per_energy",
+        "USD/MWh": "currency_per_energy",
+    }
+    named = {"RUB": "RUB", "USD": "USD", "RUB/MWh": "RUB", "USD/MWh": "USD"}
+    rub = "S|8|S!r2"
+    dollar = "S|9|S!r2"
+    facts = [
+        fact(A, "S!C5", "2024", "1"),
+        fact(B, "S!C6", "2024", "1"),
+        fact(C, "S!C7", "2024", "1"),
+        fact(rub, "S!C8", "2024", "1"),
+        fact(dollar, "S!C9", "2024", "1"),
+    ]
+    data = AuditInput(
+        rows=[
+            row(A),
+            row(B, unit="RUB/MWh"),
+            row(C, unit="USD/MWh"),
+            row(rub, unit="RUB"),
+            row(dollar, unit="USD"),
+        ],
+        periods=PERIODS,
+        facts=facts,
+        links=(
+            link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7"))
+            + link("S!C6", "=C8+C8", B, "2024", ("S!C8", "S!C8"))
+            + link("S!C7", "=C9+C9", C, "2024", ("S!C9", "S!C9"))
+        ),
+        bindings=[
+            {"row_key": B, "status": "bound", "effective_concept": "energy_tariff"},
+            {"row_key": C, "status": "bound", "effective_concept": "energy_tariff"},
+        ],
+        unit_dimensions=units,
+        unit_currency=named,
+        concept_dimensions={"energy_tariff": "currency_per_energy"},
+        dimension_exponents={"money": {"money": 1}, "currency_per_energy": {"money": 1, "power": -1, "duration": -1}},
+        concept_pricing={"energy_tariff": "energy"},
+        dimension_pricing={"currency_per_energy": "energy"},
+    )
+    assert _codes("unit_mismatch", data) == []
+    priced = _codes("pricing_basis_mismatch", data)
+    assert [item.params["reason"] for item in priced] == ["currency"]
+
+
+def test_currency_walk_reports_one_finding_for_each_shape():
+    units = {"RUB": "money", "USD": "money", "EUR": "money", "MWh": "energy", "RUB/MWh": "currency_per_energy", "USD/MWh": "currency_per_energy", "руб": "money"}
+    named = {"RUB": "RUB", "USD": "USD", "EUR": "EUR", "RUB/MWh": "RUB", "USD/MWh": "USD", "руб": "RUB"}
+    rub = "S|8|S!r2"
+    dollar = "S|9|S!r2"
+    euro = "S|10|S!r2"
+    energy = "S|11|S!r2"
+    nested = AuditInput(
+        rows=[row(A), row(B), row(C), row(rub, unit="RUB"), row(dollar, unit="USD")],
+        periods=PERIODS,
+        facts=[
+            fact(A, "S!C5", "2024", "1"),
+            fact(B, "S!C6", "2024", "1"),
+            fact(C, "S!C7", "2024", "1"),
+            fact(rub, "S!C8", "2024", "1"),
+            fact(dollar, "S!C9", "2024", "1"),
+        ],
+        links=(
+            link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7"))
+            + link("S!C6", "=C8+C8", B, "2024", ("S!C8", "S!C8"))
+            + link("S!C7", "=C9+C9", C, "2024", ("S!C9", "S!C9"))
+        ),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    found = _codes("unit_mismatch", nested)
+    assert len(found) == 1
+    assert found[0].params["cells"] == 1
+    assert found[0].params["currency"] == ["RUB"]
+    assert found[0].params["ref_currency"] == ["USD"]
+    assert found[0].params["ref_row"] == [dollar]
+    declared = AuditInput(
+        rows=[row(A), row(B, unit="RUB"), row(C, unit="RUB"), row(dollar, unit="USD")],
+        periods=PERIODS,
+        facts=[
+            fact(A, "S!C5", "2024", "1"),
+            fact(B, "S!C6", "2024", "1"),
+            fact(C, "S!C7", "2024", "1"),
+            fact(dollar, "S!C9", "2024", "1"),
+        ],
+        links=(
+            link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7"))
+            + link("S!C6", "=C9+C9", B, "2024", ("S!C9", "S!C9"))
+        ),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    assert _codes("unit_mismatch", declared) == []
+    twice = AuditInput(
+        rows=[row(A), row(B, unit="USD"), row(C, unit="RUB")],
+        periods=PERIODS,
+        facts=[fact(A, "S!C5", "2024", "1"), fact(B, "S!C6", "2024", "1"), fact(C, "S!C7", "2024", "1")],
+        links=link("S!C5", "=C6+C7+C6", A, "2024", ("S!C6", "S!C7", "S!C6")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    repeated = _codes("unit_mismatch", twice)
+    assert len(repeated) == 1
+    assert repeated[0].params["cells"] == 1
+    assert repeated[0].params["currency"] == ["USD"]
+    assert repeated[0].params["ref_currency"] == ["RUB"]
+    same_cell = AuditInput(
+        rows=[row(A), row(B, unit="USD")],
+        periods=PERIODS,
+        facts=[fact(A, "S!C5", "2024", "1"), fact(B, "S!C6", "2024", "1")],
+        links=link("S!C5", "=C6+C6", A, "2024", ("S!C6", "S!C6")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    assert _codes("unit_mismatch", same_cell) == []
+    cycle = AuditInput(
+        rows=[row(A), row(B), row(rub, unit="RUB"), row(dollar, unit="USD")],
+        periods=PERIODS,
+        facts=[
+            fact(A, "S!C5", "2024", "1"),
+            fact(B, "S!C6", "2024", "1"),
+            fact(rub, "S!C8", "2024", "1"),
+            fact(dollar, "S!C9", "2024", "1"),
+        ],
+        links=(
+            link("S!C5", "=C6+C9", A, "2024", ("S!C6", "S!C9"))
+            + link("S!C6", "=C5+C8", B, "2024", ("S!C5", "S!C8"))
+        ),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    cycled = _codes("unit_mismatch", cycle)
+    assert len(cycled) == 2
+    assert {item.params["cells"] for item in cycled} == {1}
+    pairs = {(tuple(item.params["currency"]), tuple(item.params["ref_currency"])) for item in cycled}
+    assert pairs == {(("RUB",), ("USD",)), (("USD",), ("RUB",))}
+    summed = AuditInput(
+        rows=[
+            row(A),
+            row(B, unit="USD"),
+            row(C, unit="RUB"),
+            row(euro, unit="EUR"),
+            row(energy, unit="MWh"),
+        ],
+        periods=PERIODS,
+        facts=[
+            fact(A, "S!C5", "2024", "1"),
+            fact(B, "S!C6", "2024", "1"),
+            fact(C, "S!C7", "2024", "1"),
+            fact(euro, "S!C8", "2024", "1"),
+            fact(energy, "S!C9", "2024", "1"),
+        ],
+        links=link("S!C5", "=SUM(C6:C9)", A, "2024", ("S!C6", "S!C7", "S!C8", "S!C9")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    total = _codes("unit_mismatch", summed)
+    assert len(total) == 1
+    assert total[0].params["cells"] == 1
+    assert total[0].params["currency"] == ["USD"]
+    assert total[0].params["ref_currency"] == ["RUB"]
+    assert total[0].params["ref_row"] == [C]
+    subtracted = AuditInput(
+        rows=[row(A), row(B, unit="USD"), row(C, unit="RUB")],
+        periods=PERIODS,
+        facts=[fact(A, "S!C5", "2024", "1"), fact(B, "S!C6", "2024", "1"), fact(C, "S!C7", "2024", "1")],
+        links=link("S!C5", "=C6-C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    difference = _codes("unit_mismatch", subtracted)
+    assert len(difference) == 1
+    assert difference[0].params["cells"] == 1
+    assert difference[0].params["currency"] == ["USD"]
+    assert difference[0].params["ref_currency"] == ["RUB"]
+    prices = AuditInput(
+        rows=[row(A), row(B, unit="RUB/MWh"), row(C, unit="USD/MWh")],
+        periods=PERIODS,
+        facts=[fact(A, "S!C5", "2024", "1"), fact(B, "S!C6", "2024", "1"), fact(C, "S!C7", "2024", "1")],
+        links=link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    assert _codes("unit_mismatch", prices) == []
+
+
+def test_shared_subgraph_opened_from_two_branches_is_one_finding_per_cell():
+    units = {"RUB": "money", "USD": "money"}
+    named = {"RUB": "RUB", "USD": "USD"}
+    shared = "S|8|S!r2"
+    rub = "S|9|S!r2"
+    dollar = "S|10|S!r2"
+    data = AuditInput(
+        rows=[row(A), row(B), row(C), row(shared), row(rub, unit="RUB"), row(dollar, unit="USD")],
+        periods=PERIODS,
+        facts=[
+            fact(A, "S!C5", "2024", "1"),
+            fact(B, "S!C6", "2024", "1"),
+            fact(C, "S!C7", "2024", "1"),
+            fact(shared, "S!C8", "2024", "1"),
+            fact(rub, "S!C9", "2024", "1"),
+            fact(dollar, "S!C10", "2024", "1"),
+        ],
+        links=(
+            link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7"))
+            + link("S!C6", "=C8+C8", B, "2024", ("S!C8", "S!C8"))
+            + link("S!C7", "=C8+C8", C, "2024", ("S!C8", "S!C8"))
+            + link("S!C8", "=C9+C10", shared, "2024", ("S!C9", "S!C10"))
+        ),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    found = _codes("unit_mismatch", data)
+    assert len(found) == 2
+    assert {item.locations[0].row_key for item in found} == {A, shared}
+    assert {item.params["cells"] for item in found} == {1}
+    assert {tuple(item.params["currency"]) for item in found} == {("RUB",)}
+    assert {tuple(item.params["ref_currency"]) for item in found} == {("USD",)}
+    assert {tuple(item.params["ref_row"]) for item in found} == {(dollar,)}

@@ -874,6 +874,9 @@ class Analyses:
         warnings = []
         uses = []
         money = frozenset(name for name, item in svc.catalog.concepts.items() if item.unit == "money")
+        aggregations = {
+            name: item.effective_aggregation for name, item in svc.catalog.concepts.items()
+        }
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
@@ -916,6 +919,7 @@ class Analyses:
                     composed=svc.model_types.composed,
                     concepts=svc.catalog.ids,
                     money=money,
+                    aggregations=aggregations,
                     interest_order=svc.model_types.interest_order,
                     row_fallbacks=svc.model_types.row_fallbacks,
                     links=links,

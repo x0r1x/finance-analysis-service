@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
@@ -204,6 +205,7 @@ def covenant_dscr(
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
     composed: dict[str, Composed] | None = None,
+    aggregations: Mapping[str, str] | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
         profile, profile_ref, default, concepts=concepts, money=money, composed=composed
@@ -235,6 +237,7 @@ def covenant_dscr(
         marker_class=marker_class,
         absent=absent,
         profile=profile,
+        aggregations=aggregations,
     )
     if source == "default" and result["status"] == "succeeded":
         notes = [*notes, *_mismatch(result["rows"], facts, bindings, periods, absent)]
@@ -252,6 +255,7 @@ def composed_ratio(
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
     profile: dict | None = None,
+    aggregations: Mapping[str, str] | None = None,
 ) -> dict:
     blocked = methodology_block(
         profile,
@@ -354,7 +358,12 @@ def composed_ratio(
                         )
                     )
                     continue
-                denominator = _part(keys, series, "ebitda", sign_convention, False, basis)
+                denominator, fold_problem = _part(
+                    keys, series, "ebitda", sign_convention, False, basis, aggregations
+                )
+                if fold_problem:
+                    rows.append(_line(metric, period, None, "not_computed", fold_problem, inputs, window))
+                    continue
                 if numerator is None and not any(key in series["net_debt"] for key in keys):
                     rows.append(
                         _line(
@@ -387,7 +396,12 @@ def composed_ratio(
                         )
                     )
                     continue
-                denominator = _part(keys, series, "ebitda", sign_convention, False, basis)
+                denominator, fold_problem = _part(
+                    keys, series, "ebitda", sign_convention, False, basis, aggregations
+                )
+                if fold_problem:
+                    rows.append(_line(metric, period, None, "not_computed", fold_problem, inputs, window))
+                    continue
                 names = (*formula.numerator.plus, *formula.numerator.minus)
                 present = any(key in (series.get(name) or {}) for name in names for key in keys)
                 if numerator is None and not present:
@@ -406,10 +420,29 @@ def composed_ratio(
                     continue
             else:
                 shared = frozenset(formula.numerator.plus) & frozenset(formula.denominator.plus)
-                numerator = _total(
-                    keys, series, formula.numerator, sign_convention, pay_plus=False, basis=basis, pay_names=shared
+                numerator, num_fold = _total(
+                    keys,
+                    series,
+                    formula.numerator,
+                    sign_convention,
+                    pay_plus=False,
+                    basis=basis,
+                    pay_names=shared,
+                    aggregations=aggregations,
                 )
-                denominator = _total(keys, series, formula.denominator, sign_convention, pay_plus=True, basis=basis)
+                denominator, den_fold = _total(
+                    keys,
+                    series,
+                    formula.denominator,
+                    sign_convention,
+                    pay_plus=True,
+                    basis=basis,
+                    aggregations=aggregations,
+                )
+                fold_problem = num_fold or den_fold
+                if fold_problem:
+                    rows.append(_line(metric, period, None, "not_computed", fold_problem, inputs, window))
+                    continue
             if numerator is None or denominator is None:
                 rows.append(_line(metric, period, None, "missing_input", "no_binding", inputs, window))
                 continue
@@ -441,6 +474,10 @@ def composed_ratio(
     elif any(row.get("reason") == "ambiguous_stock" for row in rows) and not any(row["status"] == "computed" for row in rows):
         status = "not_computed"
         message = _AMBIGUOUS_STOCK
+    elif any(row.get("reason") == "not_folded" for row in rows) and not any(
+        row["status"] == "computed" for row in rows
+    ):
+        status = "not_computed"
     result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
     if message:
         result["message"] = message
@@ -1561,6 +1598,7 @@ def select_ratio(
     row_fallbacks: dict | None = None,
     links: list[dict] | None = None,
     statement_sheets: frozenset[str] | None = None,
+    aggregations: Mapping[str, str] | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -1688,6 +1726,7 @@ def select_ratio(
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
             composed=composed,
+            aggregations=aggregations,
         )
     if metric == "icr" and bank_requested(variant, profile):
         return bank_icr(
@@ -1711,6 +1750,7 @@ def select_ratio(
             marker_class=common["marker_class"],
             absent=common["absent"],
             profile=profile,
+            aggregations=aggregations,
         )
     return coverage_ratio(
         metric=metric,
@@ -1855,32 +1895,53 @@ def _total(
     pay_plus: bool,
     basis: dict | None = None,
     pay_names: frozenset[str] = frozenset(),
-) -> Decimal | None:
+    aggregations: Mapping[str, str] | None = None,
+) -> tuple[Decimal | None, str | None]:
     total = Decimal(0)
     for name in side.plus:
-        part = _part(keys, series, name, convention, pay_plus or name in pay_names, basis)
+        part, problem = _part(
+            keys, series, name, convention, pay_plus or name in pay_names, basis, aggregations
+        )
+        if problem:
+            return None, problem
         if part is None:
-            return None
+            return None, None
         total += part
     for name in side.minus:
-        part = _part(keys, series, name, convention, True, basis)
+        part, problem = _part(keys, series, name, convention, True, basis, aggregations)
+        if problem:
+            return None, problem
         if part is None:
-            return None
+            return None, None
         total -= part
-    return total
+    return total, None
 
 
-def _part(keys, series: dict, name: str, convention: str, pay: bool, basis: dict | None = None) -> Decimal | None:
-    """Складывает окно. Строка `ltm` берётся как есть на конец окна и не суммируется."""
+def _part(
+    keys,
+    series: dict,
+    name: str,
+    convention: str,
+    pay: bool,
+    basis: dict | None = None,
+    aggregations: Mapping[str, str] | None = None,
+) -> tuple[Decimal | None, str | None]:
+    """Складывает окно. `ltm` и `last` берутся на конец. `none` и `average` не сворачиваются."""
 
-    chosen = keys[-1:] if basis and basis.get(name) == "ltm" and keys else keys
+    fold = None if not aggregations else aggregations.get(name)
+    if keys and ((basis and basis.get(name) == "ltm") or fold == "last"):
+        chosen = keys[-1:]
+    elif fold in {"none", "average"} and len(keys) > 1:
+        return None, "not_folded"
+    else:
+        chosen = keys
     total = Decimal(0)
     for key in chosen:
         if key not in series[name]:
-            return None
+            return None, None
         value = series[name][key]
         total += _payment(value, convention) if pay else value
-    return total
+    return total, None
 
 
 _NET_DEBT_ABSENT = (
