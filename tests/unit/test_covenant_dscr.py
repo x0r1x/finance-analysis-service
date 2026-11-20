@@ -1432,11 +1432,9 @@ def test_select_ratio_uses_named_profile_variant_for_any_book():
     assert all(row.get("value") != Decimal("2.2000000000") for row in plain["rows"])
 
 
-def test_window_fold_follows_concept_aggregation():
-    import inspect
+async def test_window_fold_follows_concept_aggregation(monkeypatch):
     from pathlib import Path
 
-    from finance_analysis.application.analyses import Analyses
     from finance_analysis.domain.covenant import composed_ratio
     from finance_analysis.domain.model_type import Composed, Side
 
@@ -1524,8 +1522,80 @@ def test_window_fold_follows_concept_aggregation():
     averaged_final = next(row for row in averaged["rows"] if row["period_id"] == "Q4")
     assert averaged_final["reason"] == "not_folded"
     assert averaged_final["value"] is None
-    source = inspect.getsource(Analyses.compute_metrics)
-    assert "effective_aggregation" in source
-    assert "aggregations=aggregations" in source
+    from dataclasses import replace
+
+    import finance_analysis.application.analyses as analyses_mod
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    catalog = load_catalog()
+    assert catalog.concepts["installed_capacity"].effective_aggregation == "last"
+    assert catalog.concepts["energy_generation"].effective_aggregation == "sum"
+    types = load_model_types()
+    composed = dict(types.composed)
+    composed["capacity_yield"] = Composed(
+        Side(("installed_capacity",), ()),
+        Side(("energy_generation",), ()),
+        "LTM",
+    )
+    original = analyses_mod.applicability
+
+    def allow(model_catalog, labels, metric):
+        if metric == "capacity_yield":
+            return "required"
+        return original(model_catalog, labels, metric)
+
+    monkeypatch.setattr(analyses_mod, "applicability", allow)
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Service:
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset == "bindings":
+                return [
+                    _bind("installed_capacity", "cap"),
+                    _bind("energy_generation", "gen"),
+                ]
+            if dataset == "fact_observation":
+                rows = []
+                for index, capacity in ((1, "10"), (2, "20"), (3, "30"), (4, "40")):
+                    rows.append(_fact("cap", f"Q{index}", capacity))
+                    rows.append(_fact("gen", f"Q{index}", "1"))
+                return rows
+            if dataset == "dim_period":
+                return periods
+            if dataset in {"dim_row", "period_semantics", "graph_links"}:
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                ("corporate",),
+                "corporate",
+                "confirmed",
+                None,
+                1,
+                None,
+                1.0,
+                {"corporate": 1.0},
+                (),
+            )
+
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    target = Target(head=head, build="build", manifest={}, fresh=True)
+    service = _Service()
+    service.model_types = replace(types, composed=composed)
+    service.catalog = catalog
+    service.guard = _Guard()
+    got_metrics = await Analyses(service).compute_metrics("job", target, ["capacity_yield"])
+    final_metric = next(row for row in got_metrics["rows"] if row["period_id"] == "Q4")
+    assert final_metric["status"] == "computed"
+    assert final_metric["value"] == Decimal("10.0000000000")
     text = (Path(__file__).resolve().parents[2] / "docs" / "dimensions.md").read_text(encoding="utf-8")
     assert "Окно метрики читает `effective_aggregation`; `average` само не считается." in text

@@ -347,16 +347,16 @@ def _catalog_currency(data: AuditInput, own: dict, other: dict) -> dict | None:
 
 
 def _opened_currencies(data: AuditInput, ref: str, trail: frozenset[str]) -> list[tuple[str, str]]:
-    """Валюта строки. Пустая денежная единица аддитивной формулы открывает её слагаемые."""
+    """Валюта строки. Аддитивная формула открывается только без конкретной единицы."""
 
     if ref in trail:
         return []
     other = _row_of_cell(data, ref)
     if other is None:
         return []
-    currency = _money_currency(data, other)
-    if currency:
-        return [(currency, other["row_key"])]
+    if concrete_unit(other, data.unit_dimensions) is not None:
+        currency = _money_currency(data, other)
+        return [(currency, other["row_key"])] if currency else []
     link = data.link_cells.get(ref)
     if link is None or not _additive(link.formula):
         return []
