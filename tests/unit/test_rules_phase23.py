@@ -352,3 +352,35 @@ def test_unit_mismatch_reads_catalog_currency_when_the_row_currency_is_empty():
         unit_currency={},
     )
     assert _codes("unit_mismatch", silent) == []
+
+
+def test_unlabeled_total_reads_operand_catalog_currency():
+    units = {"RUB": "money", "USD": "money", "руб": "money"}
+    named = {"RUB": "RUB", "USD": "USD", "руб": "RUB"}
+    facts = [
+        fact(A, "S!C5", "2024", "1"),
+        fact(B, "S!C6", "2024", "1"),
+        fact(C, "S!C7", "2024", "1"),
+    ]
+    mixed = AuditInput(
+        rows=[row(A), row(B, unit="USD"), row(C, unit="RUB")],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    found = _codes("unit_mismatch", mixed)
+    assert len(found) == 1
+    assert found[0].params["currency"] == ["USD"]
+    assert found[0].params["ref_currency"] == ["RUB"]
+    assert found[0].params["ref_row"] == [C]
+    same = AuditInput(
+        rows=[row(A), row(B, unit="руб"), row(C, unit="RUB")],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7")),
+        unit_dimensions=units,
+        unit_currency=named,
+    )
+    assert _codes("unit_mismatch", same) == []

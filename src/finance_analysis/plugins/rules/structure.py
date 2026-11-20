@@ -325,15 +325,45 @@ class ScaleMismatch(UnitRule):
         return {"scale": mine, "ref_scale": theirs, "ref_row": other["row_key"]}
 
 
+def _money_currency(data: AuditInput, row: dict) -> str | None:
+    """Валюта денежной единицы каталога. Цена и пустой токен сюда не входят."""
+
+    token = concrete_unit(row, data.unit_dimensions)
+    if data.unit_dimensions.get(token or "") != "money":
+        return None
+    return data.unit_currency.get(token or "") or None
+
+
 def _catalog_currency(data: AuditInput, own: dict, other: dict) -> dict | None:
-    """Валюта единицы каталога. Пустой каталог и одна валюта находки не дают."""
+    """Валюта денежных единиц. Пустой каталог, цена и одна валюта находки не дают."""
 
     if not data.unit_currency:
         return None
-    left = data.unit_currency.get(concrete_unit(own, data.unit_dimensions) or "")
-    right = data.unit_currency.get(concrete_unit(other, data.unit_dimensions) or "")
+    left = _money_currency(data, own)
+    right = _money_currency(data, other)
     if left and right and left != right:
         return {"currency": left, "ref_currency": right, "ref_row": other["row_key"]}
+    return None
+
+
+def _operand_currencies(data: AuditInput, refs: tuple | list) -> dict | None:
+    """Разные валюты слагаемых, когда у итога своей единицы нет."""
+
+    if not data.unit_currency:
+        return None
+    seen: str | None = None
+    for ref in refs:
+        other = _row_of_cell(data, ref)
+        if other is None:
+            continue
+        currency = _money_currency(data, other)
+        if not currency:
+            continue
+        if seen is None:
+            seen = currency
+            continue
+        if currency != seen:
+            return {"currency": seen, "ref_currency": currency, "ref_row": other["row_key"]}
     return None
 
 
@@ -356,6 +386,7 @@ class UnitMismatch(UnitRule):
             own = _row_of_cell(data, cell)
             if own is None or len(set(link.refs)) < 2:
                 continue
+            clash = None
             for ref in link.refs:
                 other = _row_of_cell(data, ref)
                 if other is None or other["row_key"] == own["row_key"]:
@@ -364,8 +395,12 @@ class UnitMismatch(UnitRule):
                 if differs is None:
                     differs = _catalog_currency(data, own, other)
                 if differs is not None:
-                    found[cell] = differs
+                    clash = differs
                     break
+            if clash is None:
+                clash = _operand_currencies(data, link.refs)
+            if clash is not None:
+                found[cell] = clash
         return found
 
 

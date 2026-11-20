@@ -427,6 +427,20 @@ def test_tariff_basis_is_not_the_physical_dimension():
     assert check("pricing_basis_mismatch", bridged) == []
 
 
+def test_price_currency_stays_on_the_tariff_rule():
+    concepts = {"energy_tariff": "currency_per_energy"}
+    pricing = {"energy_tariff": "energy"}
+    currencies = _priced(
+        [row(A, unit="RUB/MWh"), row(B, unit="USD/MWh"), row(C, unit="RUB/MWh")],
+        ("=C5+C6", ("S!C5", "S!C6")),
+        [_bound(A, "energy_tariff"), _bound(B, "energy_tariff"), _bound(C, "energy_tariff")],
+        concepts,
+        concept_pricing=pricing,
+    )
+    assert check("unit_mismatch", currencies) == []
+    assert [item.params["reason"] for item in check("pricing_basis_mismatch", currencies)] == ["currency"]
+
+
 def _weighted(concept_dimension: str, weight_dimension: str, *, weight_id: str = "weight_concept"):
     rate = {
         "semantic_role": "measure",
