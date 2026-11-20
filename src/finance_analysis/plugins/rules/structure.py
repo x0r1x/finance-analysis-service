@@ -325,6 +325,18 @@ class ScaleMismatch(UnitRule):
         return {"scale": mine, "ref_scale": theirs, "ref_row": other["row_key"]}
 
 
+def _catalog_currency(data: AuditInput, own: dict, other: dict) -> dict | None:
+    """Валюта единицы каталога. Пустой каталог и одна валюта находки не дают."""
+
+    if not data.unit_currency:
+        return None
+    left = data.unit_currency.get(concrete_unit(own, data.unit_dimensions) or "")
+    right = data.unit_currency.get(concrete_unit(other, data.unit_dimensions) or "")
+    if left and right and left != right:
+        return {"currency": left, "ref_currency": right, "ref_row": other["row_key"]}
+    return None
+
+
 @dataclass(frozen=True)
 class UnitMismatch(UnitRule):
     def mismatch(self, own: dict, other: dict) -> dict | None:
@@ -335,6 +347,26 @@ class UnitMismatch(UnitRule):
         if left and right and left != right:
             return {"currency": left, "ref_currency": right, "ref_row": other["row_key"]}
         return None
+
+    def cells(self, data: AuditInput) -> dict[str, dict]:
+        found = {}
+        for cell, link in data.link_cells.items():
+            if not _additive(link.formula):
+                continue
+            own = _row_of_cell(data, cell)
+            if own is None or len(set(link.refs)) < 2:
+                continue
+            for ref in link.refs:
+                other = _row_of_cell(data, ref)
+                if other is None or other["row_key"] == own["row_key"]:
+                    continue
+                differs = self.mismatch(own, other)
+                if differs is None:
+                    differs = _catalog_currency(data, own, other)
+                if differs is not None:
+                    found[cell] = differs
+                    break
+        return found
 
 
 def _bound_dimension(data: AuditInput, row_key: str) -> str | None:

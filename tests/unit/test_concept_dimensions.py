@@ -526,3 +526,21 @@ def test_concrete_unit_and_scale_follow_the_same_source_walk():
     assert copied["unit"] == "MWh"
     bare = next(item for item in stamped if item["row_key"] == A)
     assert "unit" not in bare or bare.get("unit") in (None, "")
+
+
+def test_money_units_name_their_currency():
+    from pathlib import Path
+
+    catalog = load_dimensions()
+    assert catalog.exponents["money"] == {"money": 1}
+    assert catalog.unit_currency["RUB"] == "RUB"
+    assert catalog.unit_currency["USD"] == "USD"
+    assert catalog.unit_currency["EUR"] == "EUR"
+    assert catalog.unit_currency["GBP"] == "GBP"
+    assert catalog.unit_currency["руб"] == "RUB"
+    text = (Path(__file__).resolve().parents[2] / "docs" / "dimensions.md").read_text(encoding="utf-8")
+    sentence = (
+        "У денежной единицы каталога валюта пишется так же, как у ценовой, "
+        "а правило конвертации в каталог не входит."
+    )
+    assert sentence in text
