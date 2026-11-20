@@ -52,6 +52,30 @@ The call does not write. A `version` that is not in the store is `404` and does 
 
 A lexical hit that fails the unit check stays in `candidates` with `structure_pass: false` and `match` null. The model is not asked. A label with no lexical hit is ranked only when an embed or rerank server is configured, and that rank does not spend the per-book choice-model budget.
 
+## Concept relations
+
+The type registry is `finance_analysis.domain.relations`. Edges still live on the concept in `configs/concepts/`. There is no separate relation graph. A reverse edge is not written in for you. `cfads` `related_to` `dscr` stays one way. `energy_tariff` and `forecast_energy_tariff` are two explicit edges. `narrower_than` is not derived from `broader_than`.
+
+A semantic edge does not substitute one concept for another and does not sum its targets into a metric. Calculation asks the registry. No type currently grants substitution or aggregation. Reconciliation is only `composed_of`: that list matches `configs/identities/` and feeds the `lf.identity` vote. The parts are not summed into a metric input. `related_to` is not reconciliation, substitution, or aggregation.
+
+`calculated_from` is a formula dependency, not a part list and not a license to compute from the edge. `derived_from` is semantic origin, without arithmetic. Both are active in the schema and empty in the catalog. `equivalent_to`, `supersedes`, and `replaced_by` are inactive: a package that uses them does not load. Accrued `interest` and paid `interest_paid` are not equivalent.
+
+| Type | Status | Direction | Transitive | Inverse | Inverse required | Cycles | Substitution | Aggregation | Reconciliation | Ends |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `composed_of` | active | directed | no | none | no | no | no | no | yes | measure → measure, same dimension |
+| `calculated_from` | active | directed | no | none | no | no | no | no | no | concept → concept |
+| `derived_from` | active | directed | no | none | no | no | no | no | no | concept → concept |
+| `broader_than` | active | directed | yes | `narrower_than` | no | no | no | no | no | concept → concept |
+| `narrower_than` | active | directed | yes | `broader_than` | no | no | no | no | no | concept → concept |
+| `related_to` | active | symmetric | no | itself | no | yes | no | no | no | concept → concept |
+| `equivalent_to` | reserved | symmetric | yes | itself | no | yes | no | no | no | concept → concept |
+| `supersedes` | reserved | directed | no | `replaced_by` | no | no | no | no | no | concept → concept |
+| `replaced_by` | reserved | directed | no | `supersedes` | no | no | no | no | no | concept → concept |
+| `contradicts` | active | symmetric | no | itself | no | yes | no | no | no | concept → concept |
+| `requires` | active | directed | no | none | no | no | no | no | no | concept → concept |
+
+Transitivity in the table is a property of the type. Loading does not build a closure. `broader_than`, `narrower_than`, and the published `broader` field stay one parent-to-child graph; a cycle there rejects the package. An unknown type, an inactive type, a role or dimension the type does not allow, an edge to a missing concept, a forbidden cycle, and a type paired with its inverse on the same ordered pair fail the load. The messages are in Russian.
+
 ## Profiles
 
 A profile is a per-book overlay of labels and a few book settings.

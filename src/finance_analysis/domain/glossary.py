@@ -16,6 +16,7 @@ from finance_analysis.domain.dimensions import (
     weight_fits,
 )
 from finance_analysis.domain.ids import concept_id as check_concept_id
+from finance_analysis.domain.relations import RELATION_TYPES, constraint_errors, permits
 
 
 class GlossaryInvalid(ValueError):
@@ -277,14 +278,9 @@ class LabelHit:
     text: str
 
 
-# Первая версия. equivalent_to и replaced_by зарезервированы и в конфиг не принимаются.
-ACTIVE_RELATION_TYPES = frozenset({"composed_of", "broader_than", "related_to"})
-RESERVED_RELATION_TYPES = frozenset({"equivalent_to", "replaced_by"})
-
-
 @dataclass(frozen=True)
 class ConceptRelation:
-    """Ребро от понятия-источника к понятию-цели. Обратное ребро не подразумевается."""
+    """Ребро от понятия-источника к понятию-цели. Обратное ребро не достраивается."""
 
     type: str
     target: str
@@ -330,6 +326,16 @@ class Concept:
     @property
     def related_to(self) -> tuple[str, ...]:
         return self.relation_targets("related_to")
+
+    def targets_for(self, use: str) -> tuple[str, ...]:
+        """Цели связей, которым реестр разрешает этот расчётный режим.
+
+        substitution — подставить понятие вместо другого. aggregation — сложить
+        цели в значение источника. reconciliation — сверить состав. Смысловая
+        связь, в том числе related_to, эти режимы не открывает.
+        """
+
+        return tuple(item.target for item in self.relations if permits(item.type, use))
 
     @property
     def kind(self) -> str:
@@ -864,34 +870,48 @@ def _relations(body: dict, name: str, known: set[str]) -> tuple[ConceptRelation,
     seen: set[tuple[str, str]] = set()
     for kind, targets in raw.items():
         label = str(kind)
-        if label in RESERVED_RELATION_TYPES:
-            raise GlossaryInvalid([name, f"reserved:{label}"])
-        if label not in ACTIVE_RELATION_TYPES:
-            raise GlossaryInvalid([name, f"unknown:{label}"])
+        if label not in RELATION_TYPES:
+            raise GlossaryInvalid([name, f"unknown:{label}", f"понятие «{name}»: неизвестный тип отношения «{label}»"])
+        if not RELATION_TYPES[label].active:
+            raise GlossaryInvalid(
+                [name, f"reserved:{label}", f"понятие «{name}»: тип «{label}» зарезервирован и в данных не принимается"]
+            )
         if not isinstance(targets, list) or not targets:
-            raise GlossaryInvalid([name, label])
+            raise GlossaryInvalid([name, label, f"понятие «{name}»: у отношения «{label}» нет целей"])
         for item in targets:
             if not isinstance(item, str):
                 raise GlossaryInvalid([name, label])
             target = check_concept_id(item)
             if target == name:
-                raise GlossaryInvalid([name, f"cycle:{label}", target])
+                raise GlossaryInvalid(
+                    [name, f"cycle:{label}", target, f"отношение «{label}» не может указывать «{name}» на себя"]
+                )
             if (label, target) in seen:
-                raise GlossaryInvalid([name, f"duplicate:{label}", target])
+                raise GlossaryInvalid(
+                    [
+                        name,
+                        f"duplicate:{label}",
+                        target,
+                        f"отношение «{label}» у «{name}» повторяет «{target}»",
+                    ]
+                )
             seen.add((label, target))
             found.append(ConceptRelation(label, target))
     return tuple(found)
 
 
 def _check_relations(concepts: Mapping[str, Concept]) -> None:
-    """Цель есть в пакете. composed_of проверяется отдельно.
+    """Цель, роль, размерность и направление берутся из реестра типов.
 
-    Иерархия — один граф в направлении broader_than: цель связи — ребёнок,
-    опубликованный broader — ребро от родителя к ребёнку. Обход цикла один.
+    Иерархия — один граф от родителя к ребёнку. broader_than идёт как записано,
+    narrower_than разворачивается, опубликованный broader добавляет то же ребро.
+    Обратные рёбра сами не создаются. Цикл запрещён у типа, которому схема его не разрешает.
     """
 
     bad: list[str] = []
-    composed: dict[str, tuple[str, ...]] = {}
+    nodes = {concept.id: (concept.semantic_role, concept.dimension) for concept in concepts.values()}
+    edges = [(concept.id, relation.type, relation.target) for concept in concepts.values() for relation in concept.relations]
+    bad.extend(constraint_errors(nodes, edges))
     children: dict[str, set[str]] = {}
     parents: dict[str, set[str]] = {}
 
@@ -899,14 +919,14 @@ def _check_relations(concepts: Mapping[str, Concept]) -> None:
         children.setdefault(parent, set()).add(child)
 
     for concept in concepts.values():
-        for relation in concept.relations:
-            if relation.target not in concepts:
-                bad.append(f"missing:{relation.target}")
-        if concept.composed_of:
-            composed[concept.id] = concept.composed_of
         for target in concept.broader_than:
             link(concept.id, target)
             parents.setdefault(target, set()).add(concept.id)
+        for parent_name in concept.relation_targets("narrower_than"):
+            if parent_name not in concepts:
+                continue
+            link(parent_name, concept.id)
+            parents.setdefault(concept.id, set()).add(parent_name)
         parent = concept.broader
         if parent is None:
             continue
@@ -917,15 +937,25 @@ def _check_relations(concepts: Mapping[str, Concept]) -> None:
         declared = parents.get(concept.id)
         if declared is not None and declared != {parent}:
             bad.append(concept.id)
-    member = _cycle_member(composed)
-    if member:
-        bad.append("cycle:composed_of")
-        bad.append(member)
+    for spec in RELATION_TYPES.values():
+        if not spec.active or spec.cycles_allowed or spec.name in {"broader_than", "narrower_than"}:
+            continue
+        found = {
+            concept.id: concept.relation_targets(spec.name)
+            for concept in concepts.values()
+            if concept.relation_targets(spec.name)
+        }
+        member = _cycle_member(found)
+        if member:
+            bad.append(f"cycle:{spec.name}")
+            bad.append(member)
+            bad.append(f"цикл отношения «{spec.name}» проходит через «{member}»")
     hierarchy = {node: tuple(sorted(kids)) for node, kids in children.items()}
     member = _cycle_member(hierarchy)
     if member:
         bad.append("cycle:broader")
         bad.append(member)
+        bad.append(f"цикл иерархии понятий проходит через «{member}»")
     if bad:
         raise GlossaryInvalid(_unique(bad))
 

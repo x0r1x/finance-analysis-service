@@ -332,9 +332,11 @@ class GlossaryStore:
         return {"concepts": names, "state": state_of(await self.ensure())}
 
     async def composed_of(self, version: str | None) -> dict[str, tuple[str, ...]]:
-        """Проекция `composed_of` (§5.1) релиза, с которым построено состояние книги.
+        """Проекция связей сверки релиза, с которым построено состояние книги.
 
-        Сумму частей эта проекция не считает и во вход метрики не подставляет.
+        Реестр пускает в сверку только composed_of. related_to и прочие смысловые
+        связи сюда не входят и одно понятие другим не подменяют. Сумму частей
+        проекция не считает и во вход метрики не подставляет.
         """
 
         try:
@@ -342,7 +344,12 @@ class GlossaryStore:
         except NotFound:
             document = await self._active_document()
         concepts = package_of(document).concepts
-        return {name: concept.composed_of for name, concept in concepts.items() if concept.composed_of}
+        found = {}
+        for name, concept in concepts.items():
+            parts = concept.targets_for("reconciliation")
+            if parts:
+                found[name] = parts
+        return found
 
     async def concept_dimensions(self, version: str | None) -> dict[str, str]:
         """Размерность каждого понятия релиза, с которым построено состояние книги."""

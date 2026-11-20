@@ -22,7 +22,7 @@
     },
     "semRelEdgeId": {
       "type": "string",
-      "pattern": "^sem:rel:(composed_of|broader_than|related_to):.+->.+$",
+      "pattern": "^sem:rel:(broader_than|calculated_from|composed_of|contradicts|derived_from|narrower_than|related_to|requires):.+->.+$",
       "description": "Id-пространство таксономии; не входит в ответ MetricTrace (см. docs)"
     },
     "metricInEdgeId": {

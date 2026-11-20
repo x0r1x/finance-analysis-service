@@ -53,13 +53,19 @@ def ratio_numerator(data: LabelingInput) -> list[Vote]:
 
 
 def _identity_parts(data: LabelingInput) -> dict[str, tuple[str, ...]]:
-    """Части lf.identity. composed_of задаёт их; явный список тождеств добавляет то, чего в связи нет.
+    """Части lf.identity. Их задаёт связь, которой реестр разрешил сверку.
 
-    Расхождение списка с composed_of не подменяет связь: голос читает связь.
+    Сейчас это composed_of. related_to и другая смысловая связь части не задаёт
+    и понятие не подменяет. Список тождеств добавляет понятие без такой связи.
+    Расхождение списка со связью не подменяет связь: голос читает связь.
     Сумма в метрику отсюда не попадает.
     """
 
-    found = {concept.id: concept.composed_of for concept in data.concepts.values() if concept.composed_of}
+    found = {}
+    for concept in data.concepts.values():
+        parts = concept.targets_for("reconciliation")
+        if parts:
+            found[concept.id] = parts
     for left, parts in data.identities.items():
         if left not in found:
             found[left] = tuple(parts)
@@ -123,13 +129,14 @@ def rollforward(data: LabelingInput) -> list[Vote]:
 def sum_component(data: LabelingInput) -> list[Vote]:
     """Слагаемое итога, привязанного к debt_service → «компонент DS» (кандидат narrower, не синоним).
 
-    Голос требует, чтобы у понятия была связь composed_of. Список целей ряд не отбирает и не суммирует:
+    Голос требует связь, которой реестр разрешил сверку. Сейчас это composed_of.
+    Смысловая связь голос не открывает. Список целей ряд не отбирает и не суммирует:
     в голос попадают прецеденты строки итога.
     """
 
     ds = data.bound("debt_service")
     concept = data.concepts.get("debt_service")
-    if not ds or concept is None or not concept.composed_of:
+    if not ds or concept is None or not concept.targets_for("reconciliation"):
         return []
     keys = _key_of(data)
     return [
