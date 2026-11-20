@@ -1,4 +1,4 @@
-"""Redis 8.6.7 для chaos-тестов 0.22. Системный Redis на 6379 не трогаем."""
+"""Redis 8.6.8 для chaos-тестов 0.22. Системный Redis на 6379 не трогаем."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-REDIS_SERVER = os.environ.get("FAS_REDIS_SERVER", "/tmp/redis-src/redis-8.6.7/src/redis-server")
+REDIS_SERVER = os.environ.get("FAS_REDIS_SERVER", "/tmp/redis-src/redis-8.6.8/src/redis-server")
 REDIS_PORT = 6380
 REDIS_DIR = Path("/tmp/fas-redis-86")
 
@@ -72,7 +72,7 @@ class Redis86:
             if self.proc.poll() is not None:
                 raise RuntimeError(self.tail())
             time.sleep(0.05)
-        raise RuntimeError(self.tail() or "redis 8.6.7 не открыл порт")
+        raise RuntimeError(self.tail() or "redis 8.6.8 не открыл порт")
 
     def kill(self) -> None:
         proc = self.proc
@@ -93,7 +93,7 @@ class Redis86:
 @pytest.fixture(scope="session")
 def redis86():
     if not Path(REDIS_SERVER).is_file():
-        pytest.skip("нет бинарника Redis 8.6.7")
+        pytest.skip("нет бинарника Redis 8.6.8")
     if REDIS_DIR.exists():
         shutil.rmtree(REDIS_DIR)
     server = Redis86()

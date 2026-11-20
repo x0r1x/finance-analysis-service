@@ -20,7 +20,7 @@ from finance_analysis.settings import Settings
 from tests.books import ALIASES, BUILDER_ROOT
 
 JOB = ALIASES["packt"]
-REDIS_SERVER = os.environ.get("FAS_REDIS_SERVER", "/tmp/redis-src/redis-8.6.7/src/redis-server")
+REDIS_SERVER = os.environ.get("FAS_REDIS_SERVER", "/tmp/redis-src/redis-8.6.8/src/redis-server")
 REDIS_PORT = int(os.environ.get("FAS_TEST_REDIS_PORT", "6381"))
 _STARTED_URL: str | None = None
 
@@ -116,7 +116,7 @@ def redis86_url():
         yield explicit
         return
     if not Path(REDIS_SERVER).is_file():
-        pytest.skip("нет бинарника Redis 8.6.7 (FAS_REDIS_SERVER)")
+        pytest.skip("нет бинарника Redis 8.6.8 (FAS_REDIS_SERVER)")
     server = _ContractRedis()
     server.start()
     _STARTED_URL = server.url
