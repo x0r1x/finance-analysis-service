@@ -1430,3 +1430,102 @@ def test_select_ratio_uses_named_profile_variant_for_any_book():
     plain = select_ratio("dscr", "pf", common, profile=None, **kwargs)
     assert plain.get("definition_source") != "profile"
     assert all(row.get("value") != Decimal("2.2000000000") for row in plain["rows"])
+
+
+def test_window_fold_follows_concept_aggregation():
+    import inspect
+    from pathlib import Path
+
+    from finance_analysis.application.analyses import Analyses
+    from finance_analysis.domain.covenant import composed_ratio
+    from finance_analysis.domain.model_type import Composed, Side
+
+    periods = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    stock = Composed(
+        Side(("installed_capacity",), ()),
+        Side(("energy_generation",), ()),
+        "LTM",
+    )
+    facts = []
+    for index, capacity in ((1, "10"), (2, "20"), (3, "30"), (4, "40")):
+        facts.append(_fact("cap", f"Q{index}", capacity))
+        facts.append(_fact("gen", f"Q{index}", "1"))
+    bindings = [
+        _bind("installed_capacity", "cap"),
+        _bind("energy_generation", "gen"),
+    ]
+    got = composed_ratio(
+        "capacity_yield",
+        stock,
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        aggregations={"installed_capacity": "last", "energy_generation": "sum"},
+    )
+    final = next(row for row in got["rows"] if row["period_id"] == "Q4")
+    assert final["status"] == "computed"
+    assert final["value"] == Decimal("10.0000000000")
+    bare = composed_ratio(
+        "capacity_yield",
+        stock,
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+    )
+    bare_final = next(row for row in bare["rows"] if row["period_id"] == "Q4")
+    assert bare_final["value"] == Decimal("25.0000000000")
+    flows = Composed(Side(("ebitda",), ()), Side(("interest",), ()), "LTM")
+    flow_facts = []
+    for index in range(1, 5):
+        flow_facts.append(_fact("e", f"Q{index}", "10"))
+        flow_facts.append(_fact("i", f"Q{index}", "1"))
+    summed = composed_ratio(
+        "flow_cover",
+        flows,
+        facts=flow_facts,
+        bindings=[_bind("ebitda", "e"), _bind("interest", "i")],
+        periods=periods,
+        aggregations={"ebitda": "sum", "interest": "sum"},
+    )
+    summed_final = next(row for row in summed["rows"] if row["period_id"] == "Q4")
+    assert summed_final["value"] == Decimal("10.0000000000")
+    rate = Composed(Side(("discount_rate",), ()), Side(("energy_generation",), ()), "LTM")
+    rate_facts = []
+    for index, quote in ((1, "0.10"), (2, "0.10"), (3, "0.10"), (4, "0.20")):
+        rate_facts.append(_fact("rate", f"Q{index}", quote))
+        rate_facts.append(_fact("gen", f"Q{index}", "1"))
+    rate_bindings = [_bind("discount_rate", "rate"), _bind("energy_generation", "gen")]
+    refused = composed_ratio(
+        "rate_cover",
+        rate,
+        facts=rate_facts,
+        bindings=rate_bindings,
+        periods=periods,
+        aggregations={"discount_rate": "none", "energy_generation": "sum"},
+    )
+    refused_final = next(row for row in refused["rows"] if row["period_id"] == "Q4")
+    assert refused["status"] == "not_computed"
+    assert refused_final["status"] == "not_computed"
+    assert refused_final["reason"] == "not_folded"
+    assert refused_final["value"] is None
+    averaged = composed_ratio(
+        "rate_cover",
+        rate,
+        facts=rate_facts,
+        bindings=rate_bindings,
+        periods=periods,
+        aggregations={"discount_rate": "average", "energy_generation": "sum"},
+    )
+    averaged_final = next(row for row in averaged["rows"] if row["period_id"] == "Q4")
+    assert averaged_final["reason"] == "not_folded"
+    assert averaged_final["value"] is None
+    source = inspect.getsource(Analyses.compute_metrics)
+    assert "effective_aggregation" in source
+    assert "aggregations=aggregations" in source
+    text = (Path(__file__).resolve().parents[2] / "docs" / "dimensions.md").read_text(encoding="utf-8")
+    assert "Окно метрики читает `effective_aggregation`; `average` само не считается." in text
