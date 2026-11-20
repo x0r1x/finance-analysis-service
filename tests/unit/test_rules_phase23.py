@@ -384,3 +384,37 @@ def test_unlabeled_total_reads_operand_catalog_currency():
         unit_currency=named,
     )
     assert _codes("unit_mismatch", same) == []
+
+
+def test_unlabeled_subtotals_report_one_currency_mismatch():
+    units = {"RUB": "money", "USD": "money"}
+    named = {"RUB": "RUB", "USD": "USD"}
+    rub = "S|8|S!r2"
+    dollar = "S|9|S!r2"
+    facts = [
+        fact(A, "S!C5", "2024", "1"),
+        fact(B, "S!C6", "2024", "1"),
+        fact(C, "S!C7", "2024", "1"),
+        fact(rub, "S!C8", "2024", "1"),
+        fact(dollar, "S!C9", "2024", "1"),
+    ]
+    data = AuditInput(
+        rows=[row(A), row(B), row(C), row(rub, unit="RUB"), row(dollar, unit="USD")],
+        periods=PERIODS,
+        facts=facts,
+        links=(
+            link("S!C5", "=C6+C7", A, "2024", ("S!C6", "S!C7"))
+            + link("S!C6", "=C8+C8", B, "2024", ("S!C8", "S!C8"))
+            + link("S!C7", "=C9+C9", C, "2024", ("S!C9", "S!C9"))
+        ),
+        unit_dimensions=units,
+        unit_currency=named,
+        dimension_exponents={"money": {"money": 1}},
+    )
+    found = _codes("unit_mismatch", data)
+    assert len(found) == 1
+    assert found[0].params["currency"] == ["RUB"]
+    assert found[0].params["ref_currency"] == ["USD"]
+    assert found[0].params["ref_row"] == [dollar]
+    assert _codes("dimension_mismatch", data) == []
+    assert _codes("pricing_basis_mismatch", data) == []

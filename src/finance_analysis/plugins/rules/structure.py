@@ -346,24 +346,40 @@ def _catalog_currency(data: AuditInput, own: dict, other: dict) -> dict | None:
     return None
 
 
+def _opened_currencies(data: AuditInput, ref: str, trail: frozenset[str]) -> list[tuple[str, str]]:
+    """Валюта строки. Пустая денежная единица аддитивной формулы открывает её слагаемые."""
+
+    if ref in trail:
+        return []
+    other = _row_of_cell(data, ref)
+    if other is None:
+        return []
+    currency = _money_currency(data, other)
+    if currency:
+        return [(currency, other["row_key"])]
+    link = data.link_cells.get(ref)
+    if link is None or not _additive(link.formula):
+        return []
+    found: list[tuple[str, str]] = []
+    inner = trail | {ref}
+    for child in link.refs:
+        found.extend(_opened_currencies(data, child, inner))
+    return found
+
+
 def _operand_currencies(data: AuditInput, refs: tuple | list) -> dict | None:
-    """Разные валюты слагаемых, когда у итога своей единицы нет."""
+    """Разные валюты слагаемых, когда у итога своей единицы нет. Первое отличие — одна находка."""
 
     if not data.unit_currency:
         return None
     seen: str | None = None
     for ref in refs:
-        other = _row_of_cell(data, ref)
-        if other is None:
-            continue
-        currency = _money_currency(data, other)
-        if not currency:
-            continue
-        if seen is None:
-            seen = currency
-            continue
-        if currency != seen:
-            return {"currency": seen, "ref_currency": currency, "ref_row": other["row_key"]}
+        for currency, row_key in _opened_currencies(data, ref, frozenset()):
+            if seen is None:
+                seen = currency
+                continue
+            if currency != seen:
+                return {"currency": seen, "ref_currency": currency, "ref_row": row_key}
     return None
 
 
