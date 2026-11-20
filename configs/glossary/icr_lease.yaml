@@ -1,0 +1,7 @@
+concept: icr_lease
+pref:
+  en: "Interest coverage with lease"
+  ru: "Коэффициент покрытия процентов с учётом лизинга"
+definition:
+  en: "EBITDA divided by interest payable plus the interest portion of lease payments. The annual ratio sums the year's flows. A quarter is a separate ratio. Interest payable is RAS line 2330, or the same accrual under IFRS or US GAAP."
+  ru: "EBITDA, делённая на проценты к уплате плюс проценты в составе лизинговых платежей. Годовой коэффициент — сумма потоков за год, квартальный считается отдельно. Проценты к уплате — строка 2330 отчёта о финансовых результатах, РСБУ, либо то же начисление по МСФО или US GAAP."

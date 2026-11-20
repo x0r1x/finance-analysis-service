@@ -1,6 +1,6 @@
-packt	bound	9
+packt	bound	11
 packt	ambiguous	2
-packt	unknown	82
+packt	unknown	80
 packt	not_applicable	4
 packt	ambiguous	capex	0	58a5a22ce9a3af3081b95333e24283e6d81af30e
 packt	ambiguous	capex	0	8618b63c3e101803552471c5ee91744ec8b276f3
@@ -11,8 +11,10 @@ packt	bound	ebitda	1	919dbfb47142fba14217d1857515e9fdde8006e2
 packt	bound	interest	0	6e22fbc7c7107ec96cfef9efb0e605ac64121300
 packt	bound	interest	0	bdfbc6da164589a3af16846dbbedbc7e58929b80
 packt	bound	interest	1	cb2753e64746c5d7e1523da9d59ecce6c4f13f43
+packt	bound	ncf	1	2c8c5d280261b5958db981b7a268f8cc2b7ccc69
 packt	bound	principal	0	01798598c991889fd02e8525209f666191768fd1
 packt	bound	principal	1	8dd50b2e6107e8fe6f41ed162381f814bb3a0555
+packt	bound	tax_rate	1	f53fe76cc0d1a204d2e5e04378b8c67c3d46113b
 packt	not_applicable	-	0	4023a187f2a7209a7b77fed0356bf88b7b14af6a
 packt	not_applicable	-	0	4c028439b901eb85a0e373cb7ec1e5c341774d73
 packt	not_applicable	-	0	a58127a904a02e50a4e835f520ad3a8b59b5a1c3
@@ -36,7 +38,6 @@ packt	unknown	-	0	21003792400cdc414dfd9003b021d24bf56de276
 packt	unknown	-	0	24270f10ed7c1d158ec5e35721e1237efc9a9909
 packt	unknown	-	0	24f9c7cb65dec3a6eb7ae9b233fc2e01ce412777
 packt	unknown	-	0	2c34f4790b0f9d5d93370b08fc1a27cac70c531d
-packt	unknown	-	0	2c8c5d280261b5958db981b7a268f8cc2b7ccc69
 packt	unknown	-	0	34121d8638cb9c95c609c65cc8a1363c283378e6
 packt	unknown	-	0	3d334cb463f433d0fd3b66a43522d9c0f36b0038
 packt	unknown	-	0	3dbdab6b5dc0dfb797366e2cf700b5c13acd0c97
@@ -93,15 +94,14 @@ packt	unknown	-	0	ee2d51c6d9a0062a4c65f3fc8d81451388572392
 packt	unknown	-	0	ee59aad7559f073cc6895c669a2e8311fafc4866
 packt	unknown	-	0	f34cfaa021295564a106d2faf93f5ef51f2b1458
 packt	unknown	-	0	f3c6b40fa8f6ab8ac80f9547defca377917b501d
-packt	unknown	-	0	f53fe76cc0d1a204d2e5e04378b8c67c3d46113b
 packt	unknown	-	0	f6a9854352c3d59a9e5d4c723eb88e69326a0f39
 packt	unknown	-	0	fd6090330385bfada8a68a7cf1d1e26785cff76c
 packt	unknown	-	0	ffe9e41786b466b18ce6880a635f59cfa84b64d8
 packt	unknown	-	0	ffed3727bcab6eb319420a2b8954ef9d4815556e
 packt	unknown	-	0	fff8316aaeabdc54ab10034e528df10bcbd89646
-rvi	bound	10
+rvi	bound	11
 rvi	ambiguous	6
-rvi	unknown	213
+rvi	unknown	212
 rvi	not_applicable	9
 rvi	ambiguous	interest	0	0a6b4aa07a3801c87f3d3a57125dfacb86530f6c
 rvi	ambiguous	interest	0	747473cfb8a5d71300fcd5bf391c5351c0dcc5a7
@@ -109,6 +109,7 @@ rvi	ambiguous	interest	0	89155c240915d2c2e85c5b5e1274e38b50498bab
 rvi	ambiguous	principal	0	0cb8c6bc688ba7f564763616162b29fbd1752687
 rvi	ambiguous	principal	0	3627b842a93558a9080f6b5a532ae92836bb3b36
 rvi	ambiguous	principal	0	68f5c2252c1bd5b046d72f84aae9e3165a98e929
+rvi	bound	cash_net	1	9a36d0f631ab91384f357395c7fd25da65c02412
 rvi	bound	cfads	1	26c58519e73e96803d94a1143ee1009ca8d2440b
 rvi	bound	debt_service	1	66aef14c5604c66141c87365e348e9586066f807
 rvi	bound	dscr	1	8d4b1c8b863bf40e90acb3487a343ede423ae0f7
@@ -259,7 +260,6 @@ rvi	unknown	-	0	95c5d0903d1cf1a40b7efb61a5a1644416a6927a
 rvi	unknown	-	0	95e9ceada773b699c34f742d205c33ea3d763eb3
 rvi	unknown	-	0	985ed1afefb3ce987c64db4a1f65205db43cc9a4
 rvi	unknown	-	0	99da78483d1f07e7c201dee56a7c07ec12de7996
-rvi	unknown	-	0	9a36d0f631ab91384f357395c7fd25da65c02412
 rvi	unknown	-	0	9a6cab8f5177c8e9808756f6df8b0d99e367e151
 rvi	unknown	-	0	9c1c2dbc2a40d18cdcb8aeb9e3cc6de5bad78463
 rvi	unknown	-	0	9c39cd19127ac2be9c773dd9387e8f4979800f37

@@ -303,8 +303,9 @@ def test_citation_stays_out_of_the_ratio_matrix():
     assert "exit_enterprise_value" not in RATIO_METRICS
     catalog = load_model_types()
     for metric in RATIO_METRICS:
-        assert applicability(catalog, ("lbo_ma",), metric) == "not_applicable", metric
-        assert catalog.types["lbo_ma"].metrics[metric] == "not_applicable"
+        expected = "optional" if metric in {"ncf", "ncf_period"} else "not_applicable"
+        assert applicability(catalog, ("lbo_ma",), metric) == expected, metric
+        assert catalog.types["lbo_ma"].metrics[metric] == expected
     spec = catalog.types["lbo_ma"]
     assert spec.required_concepts == frozenset(
         {"sources_and_uses", "exit_enterprise_value", "moic"}

@@ -73,7 +73,7 @@ _HALYARD_FREE = (
 
 
 def test_halyard_resolves_only_its_exact_labels():
-    """Книга отдаёт семь понятий. Соседние подписи LBO, включая IRR, не привязываются."""
+    """Книга отдаёт девять понятий. Соседние подписи LBO, включая IRR, не привязываются."""
 
     bound, _sheets = resolved_workbook(
         "halyard/project_halyard.recalc_libreoffice.xlsx"
@@ -87,6 +87,8 @@ def test_halyard_resolves_only_its_exact_labels():
             "ebit",
             "capex",
             "net_debt",
+            "tax_rate",
+            "total_debt",
         }
     )
     package = load_catalog()

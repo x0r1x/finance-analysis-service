@@ -1,0 +1,11 @@
+concept: total_debt
+pref:
+  en: "Total debt"
+  ru: "Совокупный долг"
+alt:
+  ru:
+    - "Долг"
+    - "Долгосрочные и краткосрочные кредиты и займы"
+definition:
+  en: "Interest-bearing borrowings, long-term and short-term. Not other liabilities and not the project-loan balance."
+  ru: "Процентный долг: долгосрочные и краткосрочные кредиты и займы. Не прочие обязательства и не остаток проектного кредита."

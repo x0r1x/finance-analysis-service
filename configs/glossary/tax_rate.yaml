@@ -1,0 +1,10 @@
+concept: tax_rate
+pref:
+  en: "Profit tax rate"
+  ru: "Цитируемая ставка налога на прибыль"
+alt:
+  en: ["tax rate"]
+  ru: ["ставка налога", "эффективная ставка налога на прибыль"]
+definition:
+  en: "Profit tax rate as a share of one, not the tax amount. Cited for the FCFF interest shield. Not calculated from the book."
+  ru: "Ставка налога на прибыль как доля единицы, не сумма налога. Цитируется для налогового щита в сверке FCFF. Из книги не выводится."

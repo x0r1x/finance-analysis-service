@@ -1,0 +1,7 @@
+concept: off_balance_lease
+pref:
+  en: "Off-balance finance lease obligations"
+  ru: "Забалансовые обязательства по договорам финансового лизинга"
+definition:
+  en: "Lease payments that FSBU 25 did not recognize as a lease liability. A recognized lease liability is not included again."
+  ru: "Платежи по аренде и лизингу, которые ФСБУ 25 не признал обязательством. Признанное обязательство по аренде сюда не входит."

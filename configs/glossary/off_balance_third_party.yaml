@@ -1,0 +1,7 @@
+concept: off_balance_third_party
+pref:
+  en: "Off-balance third-party obligations"
+  ru: "Забалансовые обязательства по обязательствам третьих лиц"
+definition:
+  en: "Unrecognized issued guarantees and sureties (account 009). Amounts already recognized on the balance sheet are not included again."
+  ru: "Непризнанные выданные поручительства и гарантии (счет 009). Сумма, уже отраженная в пассиве, сюда не входит."

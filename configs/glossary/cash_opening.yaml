@@ -1,0 +1,12 @@
+concept: cash_opening
+pref:
+  en: "Cash at beginning"
+  ru: "Остаток денежных средств на начало периода"
+alt:
+  en:
+    - "Opening cash balance"
+  ru:
+    - "Остаток денежных средств и денежных эквивалентов на начало отчетного периода"
+definition:
+  en: "Opening cash of the period. This release checks the roll-forward and does not replace the book line."
+  ru: "Остаток на начало периода. В этом релизе проверяется тождество, строка книги не подменяется."

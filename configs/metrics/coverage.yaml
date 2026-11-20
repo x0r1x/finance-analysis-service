@@ -1,12 +1,7 @@
 # DSCR и ICR. Частное считает Python Decimal, не SQL.
-# interest_paid — не понятие таксономии, а row_fallback (решение 40).
-# binding_key / matching.rule — декларативные метаданные; lookup по id в interest_order.
-row_fallbacks:
-  interest_paid:
-    canonical: interest
-    binding_key: interest_paid
-    matching:
-      rule: interest_basis_paid
+# interest_paid — понятие таксономии и кандидат interest_order. row_fallback с этим id нет.
+# Порядок ICR на main: сначала interest, затем interest_paid.
+row_fallbacks: {}
 interest_order:
   icr: [interest, interest_paid]
   icr_ebit: [interest, interest_paid]
@@ -38,6 +33,11 @@ metrics:
         numerator: {plus: [cfo_statement, cfi_statement, financing_inflows]}
         denominator: {plus: [senior_principal, senior_interest_paid]}
         window: period
+      cash_covenant:
+        numerator: {plus: [operating_cash_flow, interest_paid], minus: [capex]}
+        denominator: {plus: [principal, interest_paid, other_financial_debt_service]}
+        window: period
+        definition: "Кассовый DSCR года i. Числитель: знак OCF плюс модуль процентов, уплаченных внутри OCF (РСБУ 4123), минус модуль кассовых капзатрат (4221, без вычета НДС). Знаменатель: модуль выплат тела по кредитам плюс модуль тех же процентов плюс модуль выплат по прочей финансовой задолженности. Прочая финансовая задолженность — не итоги строк 1520, 1530 и 1550. Источник надбавки процентов: ПБУ 23/2011. Это не SF_2.24_V1 (начисление 2330, окно четырёх кварталов и новые кредиты), не постановление № 158 и не DSCR Forvis Mazars (CFADS / плановое обслуживание)."
   icr:
     definition: "ICR: EBITDA или EBIT, делённые на проценты. Если в книге один числитель, частное считается по нему. Если оба, Python берёт EBITDA и ставит предупреждение icr_numerator."
     numerator: [ebitda, ebit]
@@ -127,8 +127,49 @@ metrics:
   irr:
     definition: "IRR: ставка, обнуляющая NPV потока project_fcf. Степень дисконта - period_index, результат - отношение."
     numerator: [project_fcf]
+  debt_incl_off_balance:
+    aggregate: sum
+    numerator: {plus: [long_term_borrowings, short_term_borrowings, other_financial_debt, off_balance_third_party, off_balance_lease]}
+    window: period
+    definition: "Долг = строки 1410 и 1510 + кредитная доля строк 1450, 1520 и 1550 + непризнанные выданные обеспечения за третьих лиц + аренда, не признанная обязательством по ФСБУ 25. Строка 1530 входит только при заимствовании. Одно обязательство не прибавляется дважды."
   fcff:
     definition: "FCFF: корпоративный свободный поток для всех источников капитала, не project_fcf, не FCFE и не CFO. Число считает domain/free_cash_flow.py: operating_cash_flow + щит − capex. Щит — уплаченные проценты × (1 − income_tax_rate) только когда проценты уже вычтены из этого OCF. Запись ниже ставку не перемножает. Годовая сверка fcff_book_mismatch пишется только по цитатам вызывающего. Разбор коэффициентов цитату книги не ищет."
     numerator: {plus: [operating_cash_flow], minus: [capex]}
     rate: income_tax_rate
+  ncf:
+    definition: "NCF: сальдо трёх денежных потоков на интервале планирования, CFO + CFI + CFF. Это не FCFF, не project_fcf и не остаток денег. Число считает domain/net_cash_flow.py. Запись ниже сумму не исполняет. Строка 4400 — цитата вызывающего, не вход. Разбор коэффициентов цитату не ищет."
+    numerator: {plus: [operating_cash_flow, investing_cash_flow, financing_cash_flow]}
+  icr_lease:
+    definition: "EBITDA / (проценты + проценты в составе лизингового платежа). Считает lease_interest_coverage: пара «платёж − долг» и запрет двойного счёта."
+    numerator: {plus: [ebitda]}
+    denominator: {plus: [interest, lease_interest]}
+    window: period
+  total_debt_ebitda:
+    definition: "Долг на конец периода / EBITDA, окно LTM. Числитель — остаток, не сумма кварталов."
+    numerator: {plus: [total_debt]}
+    denominator: {plus: [ebitda]}
+    window: LTM
+  debt_off_balance_ebitda:
+    definition: "Долг на конец периода плюс забалансовые обязательства / EBITDA, окно LTM. Нет строки забаланса — показатель не считается."
+    numerator: {plus: [total_debt, off_balance_obligations]}
+    denominator: {plus: [ebitda]}
+    window: LTM
+  fcf_identity:
+    numerator: {plus: [operating_cash_flow], minus: [capex]}
+    compare_with: project_fcf
+    definition: "Сверка строки project_fcf. Без названного варианта не считается. vk477 — операционный поток минус капзатраты. fcff_after_interest добавляет чистые проценты, умноженные на (1 − ставка налога)."
+    variants:
+      vk477:
+        numerator: {plus: [operating_cash_flow], minus: [capex]}
+        compare_with: project_fcf
+      fcff_after_interest:
+        numerator: {plus: [operating_cash_flow], minus: [capex]}
+        compare_with: project_fcf
+        add_back:
+          concept: net_interest
+          tax_complement: tax_rate
+  ncf_period:
+    definition: "Чистый денежный поток за период: приток денежных средств минус отток денежных средств."
+    numerator: {plus: [cash_inflow], minus: [cash_outflow]}
+    window: period
 tolerance: "0.005"

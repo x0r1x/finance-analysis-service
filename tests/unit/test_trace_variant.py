@@ -189,3 +189,73 @@ async def test_profile_variant_overrides_omitted_query():
     explicit_concepts = [step["concept"] for step in explicit["steps"]]
     assert explicit["variant"] == "corporate_covenant"
     assert "cash_taxes" in explicit_concepts
+
+
+async def test_profile_dscr_variant_selects_the_cash_covenant_trace():
+    body = await _traced({"dscr_variant": "cash_covenant", "dscr_definition": {"variant": "ocf_covenant"}})
+    concepts = [step["concept"] for step in body["steps"]]
+    assert body["variant"] == "cash_covenant"
+    assert "operating_cash_flow" in concepts
+    assert "cash_taxes" not in concepts
+
+
+async def test_definition_cash_covenant_does_not_select_the_cash_trace():
+    body = await _traced({"dscr_definition": {"variant": "cash_covenant"}})
+    concepts = [step["concept"] for step in body["steps"]]
+    assert body["variant"] == "corporate_covenant"
+    assert "cash_taxes" in concepts
+    assert "operating_cash_flow" not in concepts
+
+
+@pytest.mark.parametrize("name", ["housing", "pf"])
+async def test_definition_keeps_a_composed_variant(name):
+    body = await _traced({"dscr_definition": {"variant": name}})
+    assert body["variant"] == name
+
+
+async def _traced(profile: dict) -> dict:
+    service = FasService.__new__(FasService)
+    service.financial_catalog = load_financial_catalog()
+    service.model_types = load_model_types()
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+
+    async def head_ready(*_args, **_kwargs):
+        return head
+
+    async def rows_or_accepted(*_args, **_kwargs):
+        return []
+
+    async def dataset_rows(_job_id, _head, dataset):
+        if dataset in {"dim_row", "fact_observation"}:
+            return []
+        raise NotFound(dataset)
+
+    async def resolve_model_type(_job_id, _head):
+        return Effective(
+            labels=("corporate",),
+            primary="corporate",
+            source="inferred",
+            reason=None,
+            seq=None,
+            profile_version=None,
+            score=1.0,
+            scores={"corporate": 1.0},
+            candidates=(),
+        )
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return [{"seq": 1, "type": "profile.set", "target": "book", "value": "desk@1"}]
+
+    class _Glossary:
+        async def profile_body(self, profile_id):
+            assert profile_id == "desk@1"
+            return profile
+
+    service._head_ready = head_ready
+    service._rows_or_accepted = rows_or_accepted
+    service._dataset_rows = dataset_rows
+    service.resolve_model_type = resolve_model_type
+    service.guard = _Guard()
+    service.glossary = _Glossary()
+    return await service.metric_trace_view("job", "dscr", Actor(), wait_sec=0, variant=None)

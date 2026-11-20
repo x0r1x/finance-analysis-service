@@ -48,6 +48,7 @@ CONFIG_SOURCES = (
     "configs/concepts/core.yaml",
     "configs/glossary/dictionaries.yaml",
     "configs/model_types",
+    "configs/identities",
 )
 
 

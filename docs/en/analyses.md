@@ -12,6 +12,8 @@ Enqueue pins `build_key`, `state_seq`, `derive_key`, and `analysis_semantic_mode
 
 `total_debt` is the stock `borrowings_lt + borrowings_st + lease_liability` on one date (RSBU lines 1410 and 1510 plus the FSBU 25 / IFRS 16 lease liability). It is not a ratio. Ask for it by name in `metrics`. The profile fields are `debt_standard` (`ras`, `ifrs`, `gaap`; default `ras`) and `include_operating_lease_liability` (default true, US GAAP only). A missing lease source returns `not_computed` rather than borrowings alone. Corporate books treat it as optional; project finance does not use it.
 
+The catalog metric `ncf` is the interval sum of the operating, investing, and financing section totals. [ncf.md](../ncf.md) describes period net cash flow, inflows minus outflows. That note is not a cash balance and it does not replace `project_fcf`.
+
 ## What each type does
 
 `audit` runs the selected rules. Omit `rules` and every rule runs. An empty `rules` list runs none.

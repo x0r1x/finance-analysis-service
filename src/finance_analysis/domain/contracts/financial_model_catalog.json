@@ -69,7 +69,28 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
-        "rate": { "type": "string", "minLength": 1 }
+        "rate": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "array",
+              "minItems": 2,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          ]
+        },
+        "terminal": { "type": "string", "minLength": 1 },
+        "compare_with": { "type": "string", "minLength": 1 },
+        "add_back": { "$ref": "#/$defs/addBack" }
+      }
+    },
+    "addBack": {
+      "type": "object",
+      "required": ["concept", "tax_complement"],
+      "additionalProperties": false,
+      "properties": {
+        "concept": { "type": "string", "minLength": 1 },
+        "tax_complement": { "type": "string", "minLength": 1 }
       }
     },
     "modelTypeUse": {

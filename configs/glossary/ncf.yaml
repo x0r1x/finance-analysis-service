@@ -1,0 +1,10 @@
+concept: ncf
+pref:
+  ru: "Чистый денежный поток"
+  en: "Net cash flow"
+alt:
+  ru:
+    - "Сальдо денежных потоков за период"
+definition:
+  ru: "Сальдо денежных потоков за период. Строка книги сверяется с расчётом и в формулу не входит."
+  en: "Period net cash flow. A cited book line is compared with the calculation and is not a formula input."

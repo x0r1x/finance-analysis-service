@@ -98,7 +98,14 @@ RATIO_METRICS = (
     "escrow_blended_rate",
     "npv",
     "irr",
+    "debt_incl_off_balance",
     "fcff",
+    "ncf",
+    "icr_lease",
+    "total_debt_ebitda",
+    "debt_off_balance_ebitda",
+    "fcf_identity",
+    "ncf_period",
 )
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs", "ebitda_sign")
@@ -111,7 +118,10 @@ TRACE_DEPTH = 8
 TRACE_DEPTH_MAX = 32
 
 
-def _dscr_variant(catalog, verdict) -> str | None:
+def _dscr_variant(catalog, verdict, profile: dict | None = None) -> str | None:
+    named = (profile or {}).get("dscr_variant")
+    if isinstance(named, str) and named:
+        return named
     return confirmed_variants(catalog, verdict).get("dscr")
 
 
@@ -125,6 +135,15 @@ def _attach_book_rows(envelope: dict, got: dict) -> None:
     rows = got.get("book_rows") or []
     if rows:
         envelope["result_data"]["book_rows"] = rows
+
+
+def _identity_variant_absent(result: dict) -> bool:
+    warnings = result.get("warnings") or []
+    return (
+        result.get("status") == "not_computed"
+        and len(warnings) == 1
+        and warnings[0].get("code") == "fcf_identity_variant_absent"
+    )
 
 
 def _absent_params(metric: str, result: dict) -> dict:
@@ -620,6 +639,7 @@ class Analyses:
 
         catalog = load_dimensions()
         pricing, billing = await self.service.glossary.concept_price_facts(target.head.versions.get("glossary"))
+        profile = await self._profile(target.head)
         return AuditInput(
             rows=dim_rows,
             periods=periods,
@@ -637,10 +657,10 @@ class Analyses:
             dimension_pricing=dict(catalog.pricing_basis),
             unit_currency=dict(catalog.unit_currency),
             unit_billing=dict(catalog.unit_billing_period),
-            profile=await self._profile(target.head),
+            profile=profile,
             absent=await self._absent(job_id, target),
             applicable_metrics=live,
-            dscr_variant=_dscr_variant(self.service.model_types, verdict),
+            dscr_variant=_dscr_variant(self.service.model_types, verdict, profile),
             statement_sheets=frozenset(load_sheet_roles().statement),
             actuals_end=await self._actuals_end(job_id, target),
         )
@@ -856,6 +876,7 @@ class Analyses:
         money = frozenset(name for name, item in svc.catalog.concepts.items() if item.unit == "money")
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
+        dscr_variant = _dscr_variant(svc.model_types, verdict, body)
         for metric in metrics:
             use = applicability(svc.model_types, labels, metric)
             if use == "not_applicable":
@@ -871,7 +892,7 @@ class Analyses:
             routed = dispatch_cover(
                 metric,
                 metric_variant=variant_of.get(metric),
-                dscr_variant=variant_of.get("dscr"),
+                dscr_variant=dscr_variant,
                 profile=body,
                 basis=basis,
                 direction=direction,
@@ -888,7 +909,7 @@ class Analyses:
             else:
                 result = select_ratio(
                     metric,
-                    variant_of.get(metric),
+                    dscr_variant if metric == "dscr" else variant_of.get(metric),
                     common,
                     profile=body,
                     profile_ref=profile_ref if isinstance(profile_ref, str) else None,
@@ -903,6 +924,10 @@ class Analyses:
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
                 warnings.append({"code": "input_absent", "params": _absent_params(metric, result)})
+                continue
+            if use == "optional" and _identity_variant_absent(result):
+                uses.append({"metric": metric, "applicability": "optional", "skipped": "variant_absent"})
+                warnings.extend(result["warnings"])
                 continue
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
@@ -1170,7 +1195,7 @@ class Analyses:
             profile=profile or {},
             absent=absent,
             applicable_metrics=live,
-            dscr_variant=_dscr_variant(self.service.model_types, verdict),
+            dscr_variant=_dscr_variant(self.service.model_types, verdict, profile),
             statement_sheets=frozenset(load_sheet_roles().statement),
         )
         found = run_rules(rules, data)

@@ -9,6 +9,8 @@ alt:
     - "Капитальные вложения"
     - "Капитальные затраты без учета приобретений"
     - "Капитальные затраты без учета приобретений с учетом НДС"
+hidden:
+  ru: ["4221", "стр. 4221"]
 definition:
-  en: "Capital expenditure"
-  ru: "Капитальные затраты"
+  en: "Capital expenditure. In the cash DSCR this is cash spent, statement line 4221, not the whole investing section 4200. Input VAT is not stripped from the book row."
+  ru: "Капитальные затраты. В кассовом DSCR это касса, код 4221, а не весь инвестиционный раздел 4200 и не начисление. Входящий НДС из строки книги не вычитается."

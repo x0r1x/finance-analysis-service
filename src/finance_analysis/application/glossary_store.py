@@ -51,6 +51,7 @@ _PROFILE_FIELDS = frozenset(
         "marker_class",
         "model_type_default",
         "dscr_definition",
+        "dscr_variant",
         "ebitda_definition",
         "icr_definition",
         "debt_standard",
@@ -65,6 +66,7 @@ _PROFILE_FIELDS = frozenset(
         "sheet_class",
     }
 )
+_DSCR_VARIANTS = frozenset({"cash_covenant"})
 _SHEET_CLASS = {"reporting": "reporting", "отчетность": "reporting", "assumptions": "assumptions", "предпосылки": "assumptions"}
 _SIGNS = frozenset({"outflow_negative", "outflow_positive"})
 _MARKERS = frozenset({None, "actual", "plan"})
@@ -531,7 +533,7 @@ class GlossaryStore:
         extra = set(body) - _PROFILE_FIELDS
         if extra:
             raise InvalidArgument(
-                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, ebitda_definition, icr_definition, debt_standard, include_operating_lease_liability, interest_addback, include_senior_fees, include_senior_swaps, guaranteed_funds_none, escrow_rate_scale, llcr_definition, actuals_end и sheet_class",
+                "в профиле только sign_convention, marker_class, model_type_default, dscr_definition, dscr_variant, ebitda_definition, icr_definition, debt_standard, include_operating_lease_liability, interest_addback, include_senior_fees, include_senior_swaps, guaranteed_funds_none, escrow_rate_scale, llcr_definition, actuals_end и sheet_class",
                 extra={"fields": sorted(extra)},
             )
         if "model_type_default" in body:
@@ -562,6 +564,8 @@ class GlossaryStore:
             )
             if problem:
                 raise InvalidArgument(problem)
+        if "dscr_variant" in body and body["dscr_variant"] is not None and body["dscr_variant"] not in _DSCR_VARIANTS:
+            raise InvalidArgument("dscr_variant: cash_covenant")
         if "icr_definition" in body and body["icr_definition"] is not None:
             from finance_analysis.domain.covenant import icr_definition_error
 
@@ -632,6 +636,8 @@ class GlossaryStore:
                     saved["model_type_default"] = body["model_type_default"]
                 if "dscr_definition" in body:
                     saved["dscr_definition"] = body["dscr_definition"]
+                if body.get("dscr_variant"):
+                    saved["dscr_variant"] = body["dscr_variant"]
                 if body.get("icr_definition"):
                     saved["icr_definition"] = body["icr_definition"]
                 if body.get("ebitda_definition"):
@@ -666,6 +672,11 @@ class GlossaryStore:
                 saved["dscr_definition"] = body["dscr_definition"]
             elif "dscr_definition" in current["body"]:
                 saved["dscr_definition"] = current["body"]["dscr_definition"]
+            if "dscr_variant" in body:
+                if body.get("dscr_variant"):
+                    saved["dscr_variant"] = body["dscr_variant"]
+            elif current["body"].get("dscr_variant"):
+                saved["dscr_variant"] = current["body"]["dscr_variant"]
             if "icr_definition" in body:
                 if body.get("icr_definition"):
                     saved["icr_definition"] = body["icr_definition"]

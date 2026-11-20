@@ -17,6 +17,7 @@
 | units / dimensions | `dimensions.id` + `dimensions.stamp` | `configs/dimensions.yaml` |
 | rules | `rules` | sha канонического `{code → version}` реестра аудита |
 | schema | `schema` | `fas_schema_version` (`FAS_SCHEMA_VERSION`) |
+| cash corkscrew | `cash_corkscrew` | sha256 `configs/identities/cash_corkscrew.yaml`, первые 16 hex |
 
 ```text
 components = canonical{
@@ -26,7 +27,8 @@ components = canonical{
   model_types,
   dimensions: {id, stamp},
   rules,
-  schema
+  schema,
+  cash_corkscrew
 }
 SemanticModelVersion = sha256(canonical_json(components))[:16]
 ```
@@ -96,7 +98,9 @@ SMV учитывает `Rule.version`. Изменение реализации �
 }
 ```
 
-Инвариант: `version == sha256(canonical_json(components))[:16]`. Все компоненты §1 обязательны и непусты; `taxonomy` / `dimensions` / `metrics` — объекты с полями id|version и stamp (`validate_manifest`).
+Инвариант: `version == sha256(canonical_json(components))[:16]`. Компоненты §1, кроме `cash_corkscrew`, обязательны и непусты; `taxonomy` / `dimensions` / `metrics` — объекты с полями id|version и stamp (`validate_manifest`).
+
+`cash_corkscrew` пишут манифесты этого релиза. Манифест без ключа, записанный раньше, остаётся годным: ключ не дописывается задним числом. Если ключ есть, это 16-hex отпечаток файла.
 
 **Указатель** `semantic_models/_head.json`: `{ "active", "glossary", "glossary_seq", "seq", "updated_at_utc" }` — только CAS + guard по active/`glossary_seq`.
 

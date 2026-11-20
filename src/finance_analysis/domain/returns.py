@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from decimal import Decimal, localcontext
 
-from finance_analysis.domain.metrics import MONEY, _primaries, quantize_ratio
+from finance_analysis.domain.metrics import MONEY, _payment, _primaries, quantize_ratio
 
 _NPV_TOL = Decimal("0.01")
 _IRR_TOL = Decimal("1e-9")
+_IDENTITY = frozenset({"vk477", "fcff_after_interest"})
 
 
 def project_return(
@@ -30,6 +31,8 @@ def project_return(
     points, problem = _points(facts, flow, periods)
     if problem == "series_gap":
         return _warned(metric, "project_return_incomplete")
+    if problem == "axis_ambiguous":
+        return _warned(metric, "axis_ambiguous")
     if points is None:
         return _empty(metric, "missing_input")
     rate = None
@@ -49,6 +52,13 @@ def project_return(
             return _empty(metric, "not_computed")
         shown = quantize_ratio(solved)
     home = points[-1][2]
+    warnings = _book(metric, shown, facts, primaries.get(metric))
+    if metric == "irr":
+        changes = _sign_changes(points)
+        if changes > 1:
+            warnings.append(
+                {"code": "irr_multiple_roots", "params": {"metric": "irr", "sign_changes": changes}}
+            )
     return {
         "metric": metric,
         "rows": [
@@ -66,16 +76,102 @@ def project_return(
             }
         ],
         "needs_input": [],
-        "warnings": _book(metric, shown, facts, primaries.get(metric)),
+        "warnings": warnings,
         "status": "succeeded",
     }
+
+
+def fcf_identity(
+    variant: str | None,
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    absent: frozenset[str] = frozenset(),
+    sign_convention: str = "outflow_negative",
+) -> dict:
+    """Сверка названного варианта с процитированным project_fcf. Ряд NPV не подменяется."""
+
+    metric = "fcf_identity"
+    if variant not in _IDENTITY:
+        return _warned(metric, "fcf_identity_variant_absent")
+    primaries = _primaries(bindings, absent)
+    flow = primaries.get("project_fcf")
+    operating = primaries.get("operating_cash_flow")
+    spent = primaries.get("capex")
+    if flow is None:
+        return _missing(metric, "project_fcf")
+    if operating is None:
+        return _missing(metric, "operating_cash_flow")
+    if spent is None:
+        return _missing(metric, "capex")
+    points, problem = _points(facts, flow, periods)
+    if problem == "series_gap":
+        return _warned(metric, "project_return_incomplete")
+    if problem == "axis_ambiguous":
+        return _warned(metric, "axis_ambiguous")
+    if points is None:
+        return _empty(metric, "missing_input")
+    shield = variant == "fcff_after_interest"
+    tax = None
+    interest = primaries.get("net_interest") if shield else None
+    if shield:
+        if interest is None:
+            return _missing(metric, "net_interest")
+        tax_row = primaries.get("tax_rate")
+        if tax_row is None:
+            return _missing(metric, "tax_rate")
+        tax = _one_rate(facts, tax_row)
+        if tax == "not_unique":
+            return _warned(metric, "tax_rate_not_unique")
+        if not isinstance(tax, Decimal):
+            return _empty(metric, "missing_input")
+    warnings = []
+    for _index, step_flow, period in points:
+        earned = _at(facts, operating["row_key"], period)
+        capex = _at(facts, spent["row_key"], period)
+        if earned is None:
+            return _missing(metric, "operating_cash_flow")
+        if capex is None:
+            return _missing(metric, "capex")
+        built = earned - _payment(capex, sign_convention)
+        cells = [
+            _cell(facts, operating["row_key"], period),
+            _cell(facts, spent["row_key"], period),
+        ]
+        if shield and interest is not None and isinstance(tax, Decimal):
+            paid = _at(facts, interest["row_key"], period)
+            if paid is None:
+                return _missing(metric, "net_interest")
+            built += paid * (Decimal(1) - tax)
+            cells.append(_cell(facts, interest["row_key"], period))
+        if abs(built - step_flow) > _NPV_TOL:
+            warnings.append(
+                {
+                    "code": "fcf_identity_mismatch",
+                    "params": {
+                        "metric": metric,
+                        "period_id": period["period_id"],
+                        "fas": str(built),
+                        "model": str(step_flow),
+                        "cells": [item for item in cells if item],
+                    },
+                }
+            )
+    return {"metric": metric, "rows": [], "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
 def _points(
     facts: list[dict], binding: dict, periods: list[dict]
 ) -> tuple[list[tuple[int, Decimal, dict]] | None, str | None]:
     row = binding["row_key"]
-    axes = {fact["axis_id"] for fact in facts if fact.get("row_key") == row}
+    axes = {
+        fact["axis_id"]
+        for fact in facts
+        if fact.get("row_key") == row and fact.get("normalized_value") is not None
+    }
+    if len(axes) > 1:
+        return None, "axis_ambiguous"
     filled: dict[int, tuple[Decimal, dict]] = {}
     for period in periods:
         if period.get("axis_id") not in axes or period.get("period_index") is None:
@@ -124,6 +220,19 @@ def _npv(points: list[tuple[int, Decimal, dict]], rate: Decimal) -> Decimal:
         ctx.rounding = "ROUND_HALF_EVEN"
         base = Decimal(1) + rate
         return sum((flow / base**index for index, flow, _period in points), Decimal(0))
+
+
+def _sign_changes(points: list[tuple[int, Decimal, dict]]) -> int:
+    previous = 0
+    changes = 0
+    for _index, flow, _period in points:
+        if flow == 0:
+            continue
+        sign = 1 if flow > 0 else -1
+        if previous and sign != previous:
+            changes += 1
+        previous = sign
+    return changes
 
 
 def _irr(points: list[tuple[int, Decimal, dict]]) -> Decimal | None:
@@ -185,3 +294,35 @@ def _warned(metric: str, code: str) -> dict:
         "warnings": [{"code": code, "params": {"metric": metric}}],
         "status": "not_computed",
     }
+
+
+def _cell(facts: list[dict], row: str, period: dict) -> str | None:
+    for fact in facts:
+        if (
+            fact.get("row_key") == row
+            and fact.get("axis_id") == period.get("axis_id")
+            and fact.get("period_id") == period.get("period_id")
+        ):
+            return fact.get("cell_id")
+    return None
+
+
+def _one_rate(facts: list[dict], binding: dict) -> Decimal | str | None:
+    found = [
+        Decimal(str(fact["normalized_value"]))
+        for fact in facts
+        if fact.get("row_key") == binding["row_key"] and fact.get("normalized_value") is not None
+    ]
+    if not found:
+        return None
+    if _spread(found):
+        return "not_unique"
+    if found[0] <= -1:
+        return "missing"
+    return found[0]
+
+
+def _spread(values: list[Decimal]) -> bool:
+    if len(values) < 2:
+        return False
+    return any(abs(item - values[0]) > Decimal("1e-12") for item in values)

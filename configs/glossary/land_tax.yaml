@@ -1,0 +1,9 @@
+concept: land_tax
+pref:
+  en: "Land tax"
+  ru: "Налог на землю"
+alt:
+  ru: ["Земельный налог"]
+definition:
+  en: "Land tax borne by the landlord. Not added together with land rent."
+  ru: "Налог на землю, который несёт арендодатель. Вместе с арендной платой за землю не складывается."

@@ -133,11 +133,17 @@ def _stated_digits(code: str | None) -> str | None:
 
 
 def _line_code_assignment(row: dict, glossary: GlossaryPackage) -> Assignment | None:
-    """Код формы выбирает роль ОДДС. 4323 и 4224 без признака старшинства роль не получают."""
+    """Код формы выбирает роль ОДДС. 4323 и 4224 без признака старшинства роль не получают.
 
-    code = marked_line_code(row.get("line_code"))
+    Голые 4100 и 4200 остаются сальдо отчёта. Явная подпись «стр.», «код» или
+    «строка» этой таблицей не забирается: её читает глоссарий раздела.
+    """
+
+    raw = row.get("line_code")
+    code = marked_line_code(raw)
     digits = _stated_digits(code)
-    if digits in _STATEMENT_CODE:
+    stated = isinstance(raw, str) and _STATED_LINE_CODE.match(raw.strip()) is not None
+    if digits in _STATEMENT_CODE and not stated:
         concept, role = _STATEMENT_CODE[digits]
         return _coded_assignment(row, glossary, concept, code or digits, role)
     if digits in _SENIOR_CASH_CODE and debt_seniority(row) == "senior":
@@ -657,6 +663,11 @@ def _one_primary(
                     continue
                 row, item = draft[index]
                 draft[index] = (row, _drop_primary(item, ambiguous=True))
+            concept = draft[exact[0]][1].concept
+            # Три итога разделов одной подписи — вход NCF, не ничья одной строки.
+            if concept in {"cash_inflow", "cash_outflow"}:
+                _keep(draft, exact, exact[0], "ncf_aggregate")
+                continue
             marks = {
                 str(draft[index][0].get("row_key")): {
                     "role": draft[index][1].evidence.get("role"),

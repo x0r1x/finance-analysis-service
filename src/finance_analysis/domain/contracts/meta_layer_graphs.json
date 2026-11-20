@@ -105,7 +105,8 @@
         "excel_links": {
           "type": "array",
           "items": { "$ref": "#/$defs/excelLink" }
-        }
+        },
+        "note": { "type": "string", "minLength": 1 }
       }
     },
     "metricTrace": {

@@ -1,0 +1,11 @@
+# Corkscrew остатка денежных средств. Ключ identities не используется:
+# lf.identity собирает только суммы. Это проверка, строка книги не подменяется.
+# Курс — отдельное слагаемое, не приток и не отток. Из остатка он не выводится.
+corkscrew:
+  closing: cash_balance
+  opening: cash_opening
+  inflow: cash_inflow
+  outflow: cash_outflow
+  net: cash_net
+  fx: fx_on_cash
+  tolerance: "0.005"

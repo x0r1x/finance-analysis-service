@@ -22,4 +22,11 @@ metrics:
   irr: {use: not_applicable}
   total_debt: {use: not_applicable}
   fcff: {use: not_applicable}
+  ncf: {use: optional}
   escrow_blended_rate: {use: not_applicable}
+  debt_incl_off_balance: {use: not_applicable}
+  icr_lease: {use: not_applicable}
+  total_debt_ebitda: {use: not_applicable}
+  debt_off_balance_ebitda: {use: not_applicable}
+  fcf_identity: {use: optional}
+  ncf_period: {use: optional}

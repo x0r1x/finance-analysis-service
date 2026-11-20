@@ -1,0 +1,10 @@
+concept: property_management
+pref:
+  en: "Property management expense"
+  ru: "Расходы на управление"
+alt:
+  en: ["Management fee"]
+  ru: ["Управленческие расходы"]
+definition:
+  en: "Management expense, including when the owner manages. A missing row is not replaced by a market percentage."
+  ru: "Расходы на управление, в том числе когда управляет собственник. Пустая строка рыночным процентом не заменяется."

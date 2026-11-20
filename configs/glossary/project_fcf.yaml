@@ -3,5 +3,5 @@ pref:
   en: "Unlevered project free cash flow"
   ru: "Свободный денежный поток проекта без долга"
 definition:
-  en: "Project cash flow before debt service, cited for NPV and IRR"
-  ru: "Денежный поток проекта до обслуживания долга, цитируется для NPV и IRR"
+  en: "Free cash flow to all investors on the interval. Cited for NPV and IRR. Not rebuilt from operating cash flow, capex, and interest."
+  ru: "Свободный денежный поток всех инвесторов на интервале. Цитируется для NPV и IRR и не собирается из операционного потока, капзатрат и процентов."

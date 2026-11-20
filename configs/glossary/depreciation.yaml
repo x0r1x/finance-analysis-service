@@ -1,0 +1,10 @@
+concept: depreciation
+pref:
+  en: "Depreciation and amortisation"
+  ru: "Бухгалтерская амортизация"
+alt:
+  en: ["Depreciation"]
+  ru: ["Амортизация основных средств", "Амортизация материальных и нематериальных активов"]
+definition:
+  en: "Accounting depreciation of property and amortisation of intangibles. Not an operating expense of NOI."
+  ru: "Бухгалтерская амортизация недвижимости и нематериальных активов. В чистый операционный доход не входит."

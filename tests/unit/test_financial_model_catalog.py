@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from finance_analysis.application.analyses import RATIO_METRICS
+from finance_analysis.application.catalog import load_catalog, load_dimensions
 from finance_analysis.application.financial_catalog import load_financial_catalog
 from finance_analysis.application.model_types import (
     load_metric_catalog,
@@ -21,6 +22,8 @@ from finance_analysis.domain.financial_catalog import (
     IndicatorInputs,
     ModelTypeUse,
     catalog_version_for,
+    formula_from_expression,
+    result_unit,
     validate_catalog_schema,
     validate_financial_catalog_integrity,
     validate_indicator_records,
@@ -141,7 +144,48 @@ def test_dscr_preserves_model_type_variant_and_formula():
     assert base_formula["denominator"]["plus"] == ["debt_service"]
     assert catalog.indicators["npv"].unit == "money"
     assert catalog.indicators["npv"].formula.rate == "discount_rate"
-    assert "interest_paid" in catalog.row_fallback_ids
+    assert "interest_paid" not in catalog.row_fallback_ids
+
+
+def test_rate_list_and_comparisons_stay_on_the_formula(tmp_path: Path):
+    body = yaml.safe_load(metrics_file().read_text(encoding="utf-8"))
+    body["metrics"]["npv"]["rate"] = ["wacc", "discount_rate"]
+    body["metrics"]["npv"]["terminal"] = "terminal_value"
+    body["metrics"]["fcff"]["variants"] = {
+        "identity": {
+            "numerator": {"plus": ["operating_cash_flow"], "minus": ["capex"]},
+            "compare_with": "project_fcf",
+            "add_back": {"concept": "net_interest", "tax_complement": "tax_rate"},
+        }
+    }
+    # safe_dump сортирует ключи и ставит adscr раньше base dscr.
+    path = tmp_path / "coverage.yaml"
+    path.write_text(yaml.safe_dump(body, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    inputs, variants, _composed, _bases, _rates, expressions = load_metric_catalog(path)
+    published = formula_from_expression(expressions["npv"])
+    assert published.rate == ("wacc", "discount_rate")
+    assert published.as_dict()["rate"] == ["wacc", "discount_rate"]
+    assert published.terminal == "terminal_value"
+    assert published.as_dict()["terminal"] == "terminal_value"
+    assert "wacc" not in inputs["npv"].one_of
+    assert "discount_rate" not in inputs["npv"].one_of
+    assert "project_fcf" in inputs["npv"].all_of
+    assert "terminal_value" in inputs["npv"].all_of
+
+    identity = formula_from_expression(expressions["fcff.identity"])
+    assert identity.compare_with == "project_fcf"
+    assert identity.add_back == ("net_interest", "tax_rate")
+    assert identity.as_dict()["add_back"] == {"concept": "net_interest", "tax_complement": "tax_rate"}
+    assert variants["fcff"]["identity"].one_of == frozenset()
+    assert {"project_fcf", "net_interest", "tax_rate"} <= variants["fcff"]["identity"].all_of
+    package = load_catalog()
+    assert result_unit(
+        "fcff.identity",
+        expressions["fcff.identity"],
+        expressions,
+        {name: item.dimension for name, item in package.concepts.items()},
+        load_dimensions(),
+    ) == "money"
 
 
 def test_inputs_preserve_all_of_and_one_of():

@@ -1,0 +1,10 @@
+concept: fx_on_cash
+pref:
+  en: "Effect of exchange rate changes on cash"
+  ru: "Величина влияния изменения курса иностранной валюты по отношению к рублю"
+alt:
+  ru:
+    - "Величина влияния изменений курса иностранной валюты по отношению к рублю"
+definition:
+  en: "Reconciling exchange difference on cash, line 4490. It is neither an inflow nor an outflow. This release does not infer it from the residual."
+  ru: "Курсовая разница по денежным средствам, строка 4490. Это не приток и не отток. Из остатка она не выводится."

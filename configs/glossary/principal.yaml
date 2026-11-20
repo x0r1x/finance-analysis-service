@@ -10,5 +10,5 @@ alt:
     - "Погашение обязательств по привлеченным кредитам"
     - "Погашено займов и кредитов"
 definition:
-  en: "Scheduled principal repayment"
-  ru: "Плановое погашение основного долга"
+  en: "Scheduled or actual repayment of loans and borrowings, without other financial debt."
+  ru: "Плановое или фактическое погашение кредитов и займов, без прочей финансовой задолженности."

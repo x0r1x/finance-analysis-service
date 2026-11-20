@@ -26,8 +26,12 @@ def test_marked_line_code_accepts_only_an_explicit_form():
     unknown = {"kind": "fact", "binding_key": "u", "row_key": "u", "label": "Прочая строка без кода", "unit": "money"}
     unknown["line_code"] = "стр. 4123"
     missed = assign_rows([unknown], [], glossary)["u"]
-    assert missed.concept is None
-    assert "line_code" not in missed.evidence
+    # «стр. 4123» — скрытая метка interest_paid. Голое 4123 кодом не является.
+    assert missed.concept == "interest_paid"
+    assert missed.matched_label == "стр. 4123"
+    assert missed.evidence["line_code"] == "стр. 4123"
+    bare_row = {**unknown, "binding_key": "bare", "row_key": "bare", "line_code": "4123"}
+    assert assign_rows([bare_row], [], glossary)["bare"].concept is None
 
     labeled = {
         "kind": "fact",

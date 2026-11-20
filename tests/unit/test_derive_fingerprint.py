@@ -35,9 +35,11 @@ def _checkout(root: Path, label: str) -> Path:
 def _seed(root: Path, *, newline: bytes) -> None:
     for item in (*PACKAGE_SOURCES, *CONFIG_SOURCES):
         path = _checkout(root, item)
-        if item.endswith((".yaml", "model_types")):
+        if item.endswith((".yaml", "model_types", "identities")):
             if item.endswith("model_types"):
                 path = path / "corporate.yaml"
+            elif item.endswith("identities"):
+                path = path / "noi.yaml"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"id: core" + newline)
             continue
@@ -79,6 +81,19 @@ def test_dictionaries_yaml_change_changes_the_fingerprint(tmp_path: Path):
     dictionaries = _checkout(tmp_path, "configs/glossary/dictionaries.yaml")
     dictionaries.write_bytes(dictionaries.read_bytes() + b"\n# marker edit\n")
     assert derive_fingerprint(tmp_path) != left
+
+
+def test_noi_yaml_changes_the_fingerprint(tmp_path: Path):
+    assert "configs/identities" in CONFIG_SOURCES
+    _seed(tmp_path, newline=b"\n")
+    left = derive_fingerprint(tmp_path)
+    noi = _checkout(tmp_path, "configs/identities") / "noi.yaml"
+    noi.write_bytes(noi.read_bytes() + b"\n# marker\n")
+    assert derive_fingerprint(tmp_path) != left
+    untouched = derive_fingerprint(tmp_path)
+    note = tmp_path / "README.md"
+    note.write_text("вне каталога\n", encoding="utf-8")
+    assert derive_fingerprint(tmp_path) == untouched
 
 
 def test_unrelated_file_does_not_change_the_fingerprint(tmp_path: Path):

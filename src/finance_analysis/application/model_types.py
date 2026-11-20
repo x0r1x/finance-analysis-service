@@ -44,7 +44,8 @@ def metrics_file() -> Path:
     return catalog_file().parent.parent / "metrics" / "coverage.yaml"
 
 
-_BASE_EXCLUSIVE = frozenset({"numerator", "denominator", "rate"})
+_BASE_EXCLUSIVE = frozenset({"numerator", "denominator", "rate", "terminal", "add_back", "compare_with"})
+_ADD_BACK_KEYS = frozenset({"concept", "tax_complement"})
 
 
 def _assert_base_standalone(body: dict, name: str) -> None:
@@ -79,10 +80,18 @@ def _inputs(body: dict, refs: dict[str, MetricInputs], name: str) -> MetricInput
         all_of.update(den_all)
         all_of.update(den_one)
     if "rate" in body:
-        rate = body.get("rate")
-        if not isinstance(rate, str) or not rate:
-            raise ModelTypeInvalid(f"{name}: rate — непустая строка")
-        all_of.add(rate)
+        names = _rate_names(body.get("rate"), name)
+        # Одна ставка — обязательный вход. Список приоритета живёт на формуле, не в one_of.
+        if len(names) == 1:
+            all_of.add(names[0])
+    if "terminal" in body:
+        all_of.add(_concept_name(body.get("terminal"), name, "terminal"))
+    if "compare_with" in body:
+        all_of.add(_concept_name(body.get("compare_with"), name, "compare_with"))
+    if "add_back" in body:
+        concept, tax = _add_back(body.get("add_back"), name)
+        all_of.add(concept)
+        all_of.add(tax)
     return MetricInputs(frozenset(all_of), frozenset(one_of))
 
 
@@ -130,7 +139,25 @@ def _side(raw: dict) -> Side:
     return Side(tuple(str(item) for item in raw.get("plus") or []), tuple(str(item) for item in raw.get("minus") or []))
 
 
+def _aggregate_value(body: dict, name: str) -> str | None:
+    if "aggregate" not in body:
+        return None
+    value = body.get("aggregate")
+    if value != "sum":
+        raise ModelTypeInvalid(f"{name}: aggregate — sum")
+    return value
+
+
 def _composed(body: dict, name: str) -> Composed | None:
+    if body.get("aggregate") == "sum":
+        numerator = body.get("numerator")
+        window = body.get("window")
+        if not isinstance(numerator, dict) or window not in {"period", "LTM"} or "denominator" in body:
+            raise ModelTypeInvalid(f"{name}: сумма — числитель, окно period или LTM, без знаменателя")
+        side = _side(numerator)
+        if not side.plus and not side.minus:
+            raise ModelTypeInvalid(f"{name}: сумма пуста")
+        return Composed(side, Side((), ()), str(window))
     if body.get("aggregation") == "stock":
         numerator = body.get("numerator")
         if not isinstance(numerator, dict) or body.get("window") != "period" or "denominator" in body:
@@ -142,8 +169,8 @@ def _composed(body: dict, name: str) -> Composed | None:
     numerator = body.get("numerator")
     if not isinstance(numerator, dict):
         return None
-    # FCFF объявляет plus/minus без окна и знаменателя: это не частное.
-    if "window" not in body and "denominator" not in body:
+    # Плюс и минус без знаменателя — разность или сверка, не частное.
+    if "denominator" not in body:
         return None
     window = body.get("window")
     denominator = body.get("denominator")
@@ -159,17 +186,15 @@ def _composed(body: dict, name: str) -> Composed | None:
 
 def _expression(body: dict, name: str) -> MetricExpression:
     _assert_base_standalone(body, name)
+    aggregate = _aggregate_value(body, name)
     if "base" in body:
         base = body.get("base")
         if not isinstance(base, str) or not base:
             raise ModelTypeInvalid(f"{name}: base — непустая строка")
-        return MetricExpression(base=base)
-    rate = None
+        return MetricExpression(base=base, aggregate=aggregate)
+    rates: tuple[str, ...] = ()
     if "rate" in body:
-        raw_rate = body.get("rate")
-        if not isinstance(raw_rate, str) or not raw_rate:
-            raise ModelTypeInvalid(f"{name}: rate — непустая строка")
-        rate = raw_rate
+        rates = _rate_names(body.get("rate"), name)
     one_of: set[str] = set()
     num_plus: tuple[str, ...] = ()
     num_minus: tuple[str, ...] = ()
@@ -188,8 +213,44 @@ def _expression(body: dict, name: str) -> MetricExpression:
         denominator_plus=den_plus,
         denominator_minus=den_minus,
         one_of=frozenset(one_of),
-        rate=rate,
+        rate=rates[0] if rates else None,
         base=None,
+        aggregate=aggregate,
+        rates=rates,
+        terminal=_optional_concept(body, name, "terminal"),
+        compare_with=_optional_concept(body, name, "compare_with"),
+        add_back=_add_back(body.get("add_back"), name) if "add_back" in body else None,
+    )
+
+
+def _rate_names(value: object, name: str) -> tuple[str, ...]:
+    if isinstance(value, str) and value:
+        return (value,)
+    if isinstance(value, list) and value and all(isinstance(item, str) and item for item in value):
+        names = tuple(str(item) for item in value)
+        if len(set(names)) != len(names):
+            raise ModelTypeInvalid(f"{name}: rate повторяет понятие")
+        return names
+    raise ModelTypeInvalid(f"{name}: rate — непустая строка или список строк")
+
+
+def _concept_name(value: object, name: str, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ModelTypeInvalid(f"{name}: {field} — непустая строка")
+    return value
+
+
+def _optional_concept(body: dict, name: str, field: str) -> str | None:
+    if field not in body:
+        return None
+    return _concept_name(body.get(field), name, field)
+
+
+def _add_back(value: object, name: str) -> tuple[str, str]:
+    if not isinstance(value, dict) or set(value) != _ADD_BACK_KEYS:
+        raise ModelTypeInvalid(f"{name}: add_back — ровно concept и tax_complement")
+    return _concept_name(value.get("concept"), name, "add_back.concept"), _concept_name(
+        value.get("tax_complement"), name, "add_back.tax_complement"
     )
 
 
@@ -232,7 +293,7 @@ def load_metric_catalog(
     dict[str, str],
     dict[str, MetricExpression],
 ]:
-    document = yaml.safe_load((path or metrics_file()).read_text(encoding="utf-8")) or {}
+    document = load_coverage_document(path)
     raw = document.get("metrics") if isinstance(document, dict) else None
     if not isinstance(raw, dict) or not raw:
         raise ModelTypeInvalid("configs/metrics: нет metrics")
@@ -252,10 +313,8 @@ def load_metric_catalog(
                 raise ModelTypeInvalid(f"{metric}: base — непустая строка")
             bases[metric] = base
         if "rate" in body:
-            rate = body.get("rate")
-            if not isinstance(rate, str) or not rate:
-                raise ModelTypeInvalid(f"{metric}: rate — непустая строка")
-            rates[metric] = rate
+            named = _rate_names(body.get("rate"), metric)
+            rates[metric] = named[0]
         inputs[metric] = _inputs(body, inputs, metric)
         expressions[metric] = _expression(body, metric)
         own = _composed(body, metric)
@@ -284,10 +343,8 @@ def load_metric_catalog(
             if item is not None:
                 composed[key] = item
             if "rate" in spec:
-                rate = spec.get("rate")
-                if not isinstance(rate, str) or not rate:
-                    raise ModelTypeInvalid(f"{key}: rate — непустая строка")
-                rates[key] = rate
+                named = _rate_names(spec.get("rate"), key)
+                rates[key] = named[0]
         if found:
             variants[metric] = found
     return inputs, variants, composed, bases, rates, expressions
@@ -306,11 +363,46 @@ def _use(body) -> str:
     return str(body["use"])
 
 
-def load_coverage_document(path: Path | None = None) -> dict:
-    document = yaml.safe_load((path or metrics_file()).read_text(encoding="utf-8")) or {}
+def _read_metrics_yaml(path: Path) -> dict:
+    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(document, dict):
         raise ModelTypeInvalid("configs/metrics: документ должен быть объектом")
     return document
+
+
+def load_coverage_document(path: Path | None = None) -> dict:
+    """Один файл, если путь задан. Иначе все `configs/metrics/*.yaml`.
+
+    `coverage.yaml` идёт первым, чтобы прежние показатели остались впереди.
+    Повтор id метрики или прочего ключа — ошибка.
+    """
+
+    if path is not None:
+        return _read_metrics_yaml(path)
+    folder = metrics_file().parent
+    files = sorted(folder.glob("*.yaml"), key=lambda item: (item.name != "coverage.yaml", item.name))
+    if not files:
+        raise ModelTypeInvalid("configs/metrics: нет документа")
+    merged: dict = {}
+    metrics: dict = {}
+    for file in files:
+        document = _read_metrics_yaml(file)
+        for key, value in document.items():
+            if key == "metrics":
+                if not isinstance(value, dict):
+                    raise ModelTypeInvalid("configs/metrics: metrics должен быть объектом")
+                overlap = sorted(set(metrics) & set(value))
+                if overlap:
+                    raise ModelTypeInvalid("configs/metrics: повтор метрики " + ", ".join(overlap))
+                metrics.update(value)
+                continue
+            if key in merged:
+                raise ModelTypeInvalid(f"configs/metrics: повтор ключа {key}")
+            merged[key] = value
+    if not metrics:
+        raise ModelTypeInvalid("configs/metrics: нет metrics")
+    merged["metrics"] = metrics
+    return merged
 
 
 def load_row_fallbacks(path: Path | None = None) -> dict[str, RowFallback]:

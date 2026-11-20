@@ -1,0 +1,15 @@
+concept: off_balance_obligations
+pref:
+  en: "Off-balance obligations"
+  ru: "Забалансовые обязательства"
+alt:
+  en:
+    - "Guarantees and sureties"
+    - "Off-balance sheet debt"
+  ru:
+    - "Поручительства и гарантии"
+    - "Обязательства за балансом"
+    - "Аренда за балансом"
+definition:
+  en: "Guarantees, sureties, leases that stay off the balance sheet, and other off-balance debt named in the book. A recognised lease liability is not this row."
+  ru: "Гарантии, поручительства, аренда, которая остаётся за балансом, и иной забалансовый долг, названный в книге. Признанное обязательство по аренде сюда не входит."
