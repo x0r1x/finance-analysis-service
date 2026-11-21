@@ -38,6 +38,7 @@ from finance_analysis.domain.metrics import (
     aligned_keys,
     confirm_paid_interest,
     coverage_ratio,
+    dscr_pf,
     ebitda_definition,
     interest_choice,
     lease_interest_coverage,
@@ -1731,6 +1732,13 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             composed=composed,
             aggregations=aggregations,
+        )
+    if metric == "dscr" and variant == "pf":
+        return dscr_pf(
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            profile=profile,
+            **common,
         )
     if metric == "icr" and bank_requested(variant, profile):
         return bank_icr(

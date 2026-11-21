@@ -8,8 +8,10 @@ from finance_analysis.application.model_types import load_coverage_document
 from finance_analysis.domain.metric_contract import (
     COMMON_ROUTE,
     REGISTRY,
+    BoundInputs,
     DuplicateImplementation,
     ImplementationContractError,
+    UndeclaredInput,
     check_registry,
     formula_id_of,
     implements,
@@ -19,6 +21,12 @@ from finance_analysis.domain.metric_contract import (
 # Ключ → модуль, функция, version, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
 _ROUTE = {
     ("dscr", "dscr"): ("metrics", "coverage_ratio", "dscr@1", ()),
+    ("dscr", "dscr.pf"): (
+        "metrics",
+        "dscr_pf",
+        "",
+        ("cfads", "debt_service", "interest", "interest_paid", "principal"),
+    ),
     ("dscr", "dscr.corporate_covenant"): ("covenant", "covenant_dscr", "", ()),
     ("dscr", "dscr.housing"): ("housing_dscr", "housing_dscr", "", ()),
     ("dscr", "dscr.cash_covenant"): ("covenant", "cash_covenant_dscr", "", ()),
@@ -181,10 +189,7 @@ def test_common_route_does_not_need_an_implementation():
             "dscr": {
                 "numerator": ["cfads"],
                 "denominator": "debt_service",
-                "variants": {
-                    "ocf_covenant": {"numerator": {"plus": ["operating_cash_flow"]}},
-                    "pf": {"numerator": ["cfads"], "denominator": "debt_service"},
-                },
+                "variants": {"ocf_covenant": {"numerator": {"plus": ["operating_cash_flow"]}}},
             }
         }
     )
@@ -232,6 +237,44 @@ def test_base_is_inheritance_not_an_input():
         check_registry({"__probe__": {"base": "dscr"}})
     finally:
         REGISTRY.pop(key, None)
+
+
+def test_bound_inputs_rejects_an_undeclared_name():
+    bound = BoundInputs(("cfads", "debt_service"), {"cfads": 1, "ebit": 2})
+    assert bound.get("cfads") == 1
+    assert bound["cfads"] == 1
+    assert "cfads" in bound
+    assert "debt_service" not in bound
+    with pytest.raises(UndeclaredInput, match="вход не объявлен: ebit"):
+        bound.get("ebit")
+    with pytest.raises(UndeclaredInput):
+        bound["ebit"]
+    with pytest.raises(UndeclaredInput):
+        assert "ebit" in bound
+
+
+def test_dscr_pf_reads_through_bound_inputs(monkeypatch):
+    from finance_analysis.domain.metrics import dscr_pf
+
+    seen: list[str] = []
+    real = BoundInputs.__contains__
+
+    def spy(self: BoundInputs, name: object) -> bool:
+        if isinstance(name, str):
+            seen.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(BoundInputs, "__contains__", spy)
+    got = dscr_pf(
+        facts=[],
+        bindings=[],
+        periods=[],
+        period_phase={},
+        explicit_phases=False,
+    )
+    assert got["status"] == "missing_input"
+    assert "cfads" in seen
+    assert "debt_service" in seen
 
 
 def test_check_config_prints_registry_problems(capsys, monkeypatch):

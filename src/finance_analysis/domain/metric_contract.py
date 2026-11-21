@@ -14,6 +14,45 @@ class ImplementationContractError(ValueError):
     """Формула каталога не сходится с реестром."""
 
 
+class UndeclaredInput(KeyError):
+    """Имя не входит в объявленные входы формулы."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.name = name
+
+    def __str__(self) -> str:
+        return f"вход не объявлен: {self.name}"
+
+
+class BoundInputs:
+    """Чтение входов формулы. Имя вне объявленного набора — ошибка."""
+
+    __slots__ = ("_declared", "_values")
+
+    def __init__(self, declared: tuple[str, ...], values: Mapping[str, object]) -> None:
+        self._declared = frozenset(declared)
+        self._values = values
+
+    def get(self, name: str, default: object = None) -> object:
+        self._require(name)
+        return self._values.get(name, default)
+
+    def __contains__(self, name: object) -> bool:
+        if not isinstance(name, str):
+            return False
+        self._require(name)
+        return name in self._values
+
+    def __getitem__(self, name: str) -> object:
+        self._require(name)
+        return self._values[name]
+
+    def _require(self, name: str) -> None:
+        if name not in self._declared:
+            raise UndeclaredInput(name)
+
+
 @dataclass(frozen=True, slots=True)
 class Implementation:
     metric_id: str
@@ -51,12 +90,10 @@ def implements(
 
 
 # Нет отдельной функции: лестница считает формулу общим маршрутом.
-# dscr.pf — ветки variant == "pf" нет, считает та же coverage_ratio, что базовая dscr.
 # dscr.ocf_covenant — имени в коде нет; названный профиль отдаёт запись каталога в composed_ratio.
 # Четыре метрики ниже — select_ratio → composed_ratio, состав целиком из каталога.
 COMMON_ROUTE: frozenset[tuple[str, str]] = frozenset(
     {
-        ("dscr", "dscr.pf"),
         ("dscr", "dscr.ocf_covenant"),
         ("net_debt_ebitda", "net_debt_ebitda"),
         ("escrow_coverage", "escrow_coverage"),
