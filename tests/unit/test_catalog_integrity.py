@@ -255,6 +255,17 @@ def test_formula_id_must_match_metric_or_variant():
         validate_catalog_integrity(**payload)
 
 
+def test_definition_version_suffix_is_an_integer():
+    for version in ("dscr@1.0", "dscr@v1", "dscr@01", "dscr@-1", "dscr@ 1"):
+        payload = _cover(_repo_payload(), "dscr", formula_id="dscr", definition_version=version)
+        with pytest.raises(CatalogIntegrityError, match="целое"):
+            validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", formula_id="dscr", definition_version="dscr@2")
+    validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", formula_id="dscr", definition_version="dscr@0")
+    validate_catalog_integrity(**payload)
+
+
 def test_definition_version_must_be_formula_id_at_version():
     broken = (
         {"formula_id": "dscr", "definition_version": "dscr"},
