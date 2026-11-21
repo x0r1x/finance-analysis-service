@@ -25,6 +25,7 @@ from pathlib import Path
 PACKAGE_SOURCES = (
     "domain/derive_fingerprint.py",
     "domain/mapping.py",
+    "domain/semantic_compatibility.py",
     "domain/period_basis.py",
     "domain/components.py",
     "domain/references.py",

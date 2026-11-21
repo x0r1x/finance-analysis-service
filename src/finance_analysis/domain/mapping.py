@@ -276,6 +276,36 @@ def structure_pass(row: dict, concept, *, label: str) -> bool:
     return not structure_failures(row, concept, label=label)
 
 
+def _stamp_compatibility(
+    row: dict,
+    glossary: GlossaryPackage,
+    name: str | None,
+    evidence: dict,
+    *,
+    probability: float | None,
+    candidate: Candidate | None = None,
+    lexical: bool = False,
+    notes: tuple[str, ...] = (),
+) -> dict:
+    """Кладёт три ответа в evidence. Статус, confidence и понятие не меняет."""
+
+    concept = glossary.concepts.get(name) if name else None
+    if concept is None:
+        return evidence
+    from finance_analysis.domain.semantic_compatibility import assess, basis_of
+
+    basis = ("lexical",) if lexical else basis_of(candidate) if candidate is not None else ()
+    report = assess(
+        concept,
+        row=row,
+        label=str(row.get("label") or ""),
+        probability=probability,
+        basis=basis,
+        notes=notes,
+    )
+    return {**evidence, "compatibility": report.as_dict()}
+
+
 def decide(
     row: dict,
     found: RowEvidence,
@@ -304,9 +334,15 @@ def decide(
     alive = [(p, candidate) for p, candidate in scored if candidate.structure_pass]
     if not alive:
         reason = "structure_filtered" if scored else "no_candidates"
+        if scored:
+            dropped_p, dropped = scored[0]
+            evidence = _stamp_compatibility(
+                row, glossary, dropped.concept, evidence, probability=dropped_p, candidate=dropped
+            )
         return Assignment(None, "unknown", "inferred", False, None, "peripheral", None, {**evidence, "nil": reason})
     top_p, top = alive[0]
     second_p = alive[1][0] if len(alive) > 1 else 0.0
+    evidence = _stamp_compatibility(row, glossary, top.concept, evidence, probability=top_p, candidate=top)
     if found.clm_choice == "none" and (found.clm_none_prob or 0.0) >= thresholds.clm_none:
         return Assignment(None, "unknown", "inferred", False, None, "peripheral", top_p, {**evidence, "nil": "clm_none"})
     nil_p = calibrator.nil_probability(found, top_p) if calibrator else None
@@ -389,13 +425,18 @@ def _one(
         evidence["line_code"] = code
     if hit.concept == "borrowings_total":
         evidence["granularity"] = "total"
+    notes: tuple[str, ...] = ()
     if strength == "section_heading":
         evidence["match_provenance"] = "section_heading"
         evidence["section_heading"] = _nearest_heading(row)
+        notes = ("section",)
     terms, source = _price_terms(row, strength)
     if terms and source:
         evidence["price_terms"] = terms
         evidence["price_terms_source"] = source
+    evidence = _stamp_compatibility(
+        row, glossary, hit.concept, evidence, probability=None, lexical=True, notes=notes
+    )
     return Assignment(hit.concept, status, "inferred", True, hit.text, "normal", None, evidence)
 
 
