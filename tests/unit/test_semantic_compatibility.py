@@ -75,7 +75,7 @@ def test_missing_nature_is_unknown_not_incompatible():
     assert _codes(report)["flow_stock"] == "unknown"
 
 
-def test_flow_stock_clash_is_hard_without_touching_likelihood():
+def test_flow_stock_clash_is_soft_without_touching_likelihood():
     report = assess(
         CATALOG.concepts["interest"],
         row=_row("Проценты", nature="stock"),
@@ -84,8 +84,16 @@ def test_flow_stock_clash_is_hard_without_touching_likelihood():
         basis=("recall",),
     )
     assert report.likelihood.probability == 0.88
-    assert report.compatibility.verdict == "incompatible"
-    assert _codes(report)["flow_stock"] == "hard"
+    assert report.compatibility.verdict == "soft"
+    assert _codes(report)["flow_stock"] == "soft"
+    use = metric_use(
+        "interest",
+        "icr",
+        primaries={"interest": {"is_primary": True}},
+        interest_order=("interest", "interest_paid"),
+        compatibility=report.compatibility,
+    )
+    assert use.verdict == "usable"
 
 
 def _binding(key: str, label: str, **extra) -> dict:
@@ -204,7 +212,7 @@ def test_metric_use_rejects_an_empty_formula():
 def test_section_and_graph_are_context():
     report = assess(
         CATALOG.concepts["interest"],
-        row=_row("Проценты", section="ОДДС", role="component", period_basis="period"),
+        row=_row("Проценты", section="ОДДС", role="component"),
         label="Проценты",
         probability=0.9,
         notes=("section",),
@@ -213,4 +221,76 @@ def test_section_and_graph_are_context():
     codes = _codes(report)
     assert codes["section"] == "context"
     assert codes["graph_component"] == "context"
-    assert codes["period_basis"] == "context"
+    assert "period_basis" not in codes
+    assert "model_type" not in codes
+
+
+def test_period_basis_mismatch_is_soft():
+    report = assess(
+        CATALOG.concepts["interest"],
+        row=_row("Проценты", period_basis="ytd"),
+        label="Проценты",
+        probability=0.9,
+        expected_period_basis="period",
+    )
+    assert report.likelihood.probability == 0.9
+    assert report.compatibility.verdict == "soft"
+    check = next(item for item in report.compatibility.checks if item.code == "period_basis")
+    assert check.severity == "soft" and check.expected == "period" and check.observed == "ytd"
+    same = assess(
+        CATALOG.concepts["interest"],
+        row=_row("Проценты", period_basis="period"),
+        label="Проценты",
+        probability=0.9,
+        expected_period_basis="period",
+    )
+    assert same.compatibility.verdict == "compatible"
+    unknown = assess(
+        CATALOG.concepts["interest"],
+        row=_row("Проценты", period_basis="unknown"),
+        label="Проценты",
+        probability=0.9,
+        expected_period_basis="period",
+    )
+    assert "period_basis" not in _codes(unknown)
+
+
+def test_model_type_mismatch_is_soft():
+    report = assess(
+        CATALOG.concepts["interest"],
+        row=_row("Проценты", model_type="project_finance"),
+        label="Проценты",
+        probability=0.86,
+        expected_model_type="corporate",
+    )
+    assert report.likelihood.probability == 0.86
+    assert report.compatibility.verdict == "soft"
+    check = next(item for item in report.compatibility.checks if item.code == "model_type")
+    assert check.severity == "soft" and check.expected == "corporate" and check.observed == "project_finance"
+    same = assess(
+        CATALOG.concepts["interest"],
+        row=_row("Проценты", model_type="corporate"),
+        label="Проценты",
+        probability=0.86,
+        expected_model_type="corporate",
+    )
+    assert same.compatibility.verdict == "compatible"
+
+
+def test_hard_incompatibility_blocks_metric_use():
+    report = assess(
+        CATALOG.concepts["interest"],
+        row=_row("Проценты %", unit="%"),
+        label="Проценты %",
+        probability=0.91,
+    )
+    assert report.compatibility.verdict == "incompatible"
+    use = metric_use(
+        "interest",
+        "icr",
+        primaries={"interest": {"is_primary": True}},
+        interest_order=("interest", "interest_paid"),
+        compatibility=report.compatibility,
+    )
+    assert use.verdict == "blocked" and use.role == "input"
+    assert use.codes[0] == "unit_mismatch"

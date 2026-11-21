@@ -1,9 +1,9 @@
 """Три ответа о строке и понятии. В одну вероятность они не складываются.
 
 Likelihood — число, которое уже посчитал калибратор, либо пусто на лексическом пути.
-Compatibility — единица, поток или остаток, знак. Жёсткий гейт единицы остаётся
-внутри вероятности и здесь только подписывается. Положение в графе и раздел листа
-объясняют строку и понятие не выбирают.
+Жёсткие коды — только единица и отрицательная метка; они по-прежнему обнуляют
+вероятность в калибраторе. Несовпадение природы, способа показа и типа модели
+мягкое. Раздел и граф только объясняют.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ class MetricUse:
     usable — выбранный вход. fallback — запасной вход interest_order.
     declared_inactive — имя объявлено, но сейчас не выбрано.
     undeclared — имени нет в кортежах реализации.
+    blocked — жёсткая несовместимость строки и понятия.
     """
 
     formula_id: str
@@ -121,19 +122,28 @@ def assess(
     basis: tuple[str, ...] = (),
     notes: tuple[str, ...] = (),
     uses: tuple[MetricUse, ...] = (),
+    expected_model_type: str | None = None,
+    expected_period_basis: str | None = None,
 ) -> SemanticCompatibility:
     """Собирает три ответа. Вероятность не пересчитывает и понятие не подменяет."""
 
-    checks = _economic(concept, row, label) + _context(row, notes)
+    checks = _economic(concept, row, label, expected_model_type, expected_period_basis) + _context(row, notes)
+    compatibility = Compatibility(_verdict(checks), checks)
     return SemanticCompatibility(
         concept.id,
         Likelihood(probability, basis),
-        Compatibility(_verdict(checks), checks),
-        uses,
+        compatibility,
+        tuple(_blocked(item, compatibility) for item in uses),
     )
 
 
-def _economic(concept: Concept, row: dict, label: str) -> tuple[Check, ...]:
+def _economic(
+    concept: Concept,
+    row: dict,
+    label: str,
+    expected_model_type: str | None,
+    expected_period_basis: str | None,
+) -> tuple[Check, ...]:
     found: list[Check] = []
     for code in structure_failures(row, concept, label=label):
         if code == "unit_mismatch":
@@ -144,11 +154,35 @@ def _economic(concept: Concept, row: dict, label: str) -> tuple[Check, ...]:
     if not nature:
         found.append(Check("flow_stock", "unknown", concept.temporal_nature, None))
     elif nature != concept.temporal_nature:
-        found.append(Check("flow_stock", "hard", concept.temporal_nature, str(nature)))
+        found.append(Check("flow_stock", "soft", concept.temporal_nature, str(nature)))
     sign = row.get("sign")
     if concept.sign_conflict(sign if isinstance(sign, str) else None):
         found.append(Check("sign", "soft", concept.expected_sign, str(sign) if sign else None))
+    period = _mismatch("period_basis", expected_period_basis or _text(row.get("expected_period_basis")), row.get("period_basis"))
+    if period is not None:
+        found.append(period)
+    model = _mismatch("model_type", expected_model_type or _text(row.get("expected_model_type")), row.get("model_type"))
+    if model is not None:
+        found.append(model)
     return tuple(found)
+
+
+def _mismatch(code: str, expected: str | None, observed: object) -> Check | None:
+    """Мягкое расхождение двух известных значений. Пустое и unknown не расхождение."""
+
+    if not expected:
+        return None
+    if not isinstance(observed, str) or not observed or observed == "unknown":
+        return None
+    if observed == expected:
+        return None
+    return Check(code, "soft", expected, observed)
+
+
+def _text(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 def _unit_observed(row: dict, label: str) -> str:
@@ -159,7 +193,7 @@ def _unit_observed(row: dict, label: str) -> str:
 
 
 def _context(row: dict, notes: tuple[str, ...]) -> tuple[Check, ...]:
-    """Раздел, граф и способ показа. На вердикт не влияют."""
+    """Раздел и граф. На вердикт не влияют и понятие не выбирают."""
 
     found: list[Check] = []
     section = row.get("section")
@@ -170,9 +204,6 @@ def _context(row: dict, notes: tuple[str, ...]) -> tuple[Check, ...]:
         found.append(Check("graph_component", "context", None, str(role) if role else "component"))
     if role == "reference" or "graph_reference" in notes:
         found.append(Check("graph_reference", "context", None, str(role) if role else "reference"))
-    period = row.get("period_basis")
-    if period:
-        found.append(Check("period_basis", "context", None, str(period)))
     return tuple(found)
 
 
@@ -194,6 +225,7 @@ def metric_use(
     primaries: Mapping[str, object],
     interest_order: Sequence[str] = (),
     row: dict | None = None,
+    compatibility: Compatibility | None = None,
 ) -> MetricUse:
     """Отчёт о пригодности имени для формулы.
 
@@ -204,29 +236,45 @@ def metric_use(
 
     if not formula_id:
         raise ValueError("formula_id пуст")
-    from finance_analysis.domain.metric_contract import REGISTRY, load_implementations
-    from finance_analysis.domain.metrics import _paid_interest_row, interest_choice
+    from finance_analysis.domain.metric_contract import (
+        REGISTRY,
+        dynamic_names,
+        load_implementations,
+    )
+    from finance_analysis.domain.metrics import interest_choice, paid_interest_row
 
     load_implementations()
     item = _implementation(formula_id, REGISTRY)
-    codes = _paid_codes(concept, row, _paid_interest_row)
+    codes = _paid_codes(concept, row, paid_interest_row)
     if item is None:
-        return MetricUse(formula_id, "undeclared", None, codes)
-    role = _role(concept, item, REGISTRY)
+        return _blocked(MetricUse(formula_id, "undeclared", None, codes), compatibility)
+    role = _role(concept, item, REGISTRY, dynamic_names)
     if role is None:
-        return MetricUse(formula_id, "undeclared", None, codes)
+        return _blocked(MetricUse(formula_id, "undeclared", None, codes), compatibility)
     if role == "dynamic_branch":
-        return MetricUse(formula_id, "declared_inactive", "dynamic", codes)
+        return _blocked(MetricUse(formula_id, "declared_inactive", "dynamic", codes), compatibility)
     if concept in set(interest_order):
         chosen, warning = interest_choice(primaries, interest_order)
         if concept == chosen and isinstance(warning, dict) and warning.get("code") == "interest_basis_fallback":
-            return MetricUse(formula_id, "fallback", role, ("interest_basis_fallback", *codes))
+            return _blocked(MetricUse(formula_id, "fallback", role, ("interest_basis_fallback", *codes)), compatibility)
         if concept == chosen:
-            return MetricUse(formula_id, "usable", role, codes)
-        return MetricUse(formula_id, "declared_inactive", role, codes)
+            return _blocked(MetricUse(formula_id, "usable", role, codes), compatibility)
+        return _blocked(MetricUse(formula_id, "declared_inactive", role, codes), compatibility)
     if concept in primaries:
-        return MetricUse(formula_id, "usable", role, codes)
-    return MetricUse(formula_id, "declared_inactive", role, codes)
+        return _blocked(MetricUse(formula_id, "usable", role, codes), compatibility)
+    return _blocked(MetricUse(formula_id, "declared_inactive", role, codes), compatibility)
+
+
+def _blocked(use: MetricUse, compatibility: Compatibility | None) -> MetricUse:
+    """Жёсткая несовместимость закрывает вход. Мягкая сверка вердикт не меняет."""
+
+    if compatibility is None or compatibility.verdict != "incompatible":
+        return use
+    hard = tuple(check.code for check in compatibility.checks if check.severity == "hard")
+    if not hard:
+        return use
+    rest = tuple(code for code in use.codes if code not in hard)
+    return MetricUse(use.formula_id, "blocked", use.role, hard + rest)
 
 
 def _implementation(formula_id: str, registry: Mapping) -> object | None:
@@ -241,7 +289,7 @@ def _implementation(formula_id: str, registry: Mapping) -> object | None:
     return found[0]
 
 
-def _role(concept: str, item, registry: Mapping) -> str | None:
+def _role(concept: str, item, registry: Mapping, names_of) -> str | None:
     if concept in item.inputs:
         return "input"
     if concept in item.optional_inputs:
@@ -257,9 +305,7 @@ def _role(concept: str, item, registry: Mapping) -> str | None:
     dependent = {name for branch in spec.dependencies for name in branch.concepts}
     if concept in dependent:
         return "dynamic_branch"
-    from finance_analysis.domain.metric_contract import _dynamic_names
-
-    names, _missing = _dynamic_names(item, registry, set())
+    names, _missing = names_of(item, registry, set())
     if concept in names:
         return "dynamic_branch"
     return None

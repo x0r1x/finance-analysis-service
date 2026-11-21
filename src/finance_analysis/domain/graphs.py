@@ -18,7 +18,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from finance_analysis.domain.metrics import _paid_interest_row
+from finance_analysis.domain.metrics import paid_interest_row
 from finance_analysis.domain.net_cash_flow import DASH_NOTE, dashed_lines
 
 _SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "meta_layer_graphs.json"
@@ -418,7 +418,7 @@ def _fcff_paid_row(
 
     if metric_id != "fcff":
         return None
-    paid = [row for row in bindings if _paid_interest_row(row, absent)]
+    paid = [row for row in bindings if paid_interest_row(row, absent)]
     if len(paid) != 1:
         return None
     return paid[0]
