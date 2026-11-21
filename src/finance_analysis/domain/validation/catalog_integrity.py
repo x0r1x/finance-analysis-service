@@ -165,12 +165,23 @@ def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -
 
 
 def _formula_contract(name: str, body: Mapping[str, object]) -> None:
-    """Декларативные formula_id и definition_version. Расчёт их не читает."""
+    """Идентичность формулы: formula_id и definition_version.
 
-    if "formula_id" in body and body.get("formula_id") != name:
-        raise CatalogIntegrityError(f"{name}: formula_id должен быть {name}")
-    if "definition_version" not in body:
+    Оба поля или ни одного, отдельно у метрики и у варианта. Вариант —
+    самостоятельное определение: поля родителя ему не достаются, смена версии
+    родителя не меняет версию варианта и наоборот. Суффикс после @ — произвольная
+    непустая строка. Это идентичность, не полноценное версионирование: формат
+    версии и правило её смены будут позже. Расчёт эти поля не читает.
+    """
+
+    has_id = "formula_id" in body
+    has_version = "definition_version" in body
+    if has_id != has_version:
+        raise CatalogIntegrityError(f"{name}: formula_id и definition_version объявляются вместе")
+    if not has_id:
         return
+    if body.get("formula_id") != name:
+        raise CatalogIntegrityError(f"{name}: formula_id должен быть {name}")
     version = body.get("definition_version")
     prefix = f"{name}@"
     suffix = ""
