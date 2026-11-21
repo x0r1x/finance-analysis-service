@@ -104,8 +104,12 @@ def _compatible_units(data: LabelingInput, row_keys: list[str]) -> bool:
     Цена и составная денежная единица (currency_per_energy и т.п.) — воздержание:
     отдельного правила сверки нет. Конвертации и приведения масштаба нет.
     Повтор row_key — воздержание: первая строка не выбирается.
-    Ряд LF — одно число и может уже быть базовой величиной, поэтому разный scale
-    не сверяется умножением.
+    Неизвестный масштаб — воздержание, это не 1. Календарные единицы
+    (year, month, …) числового масштаба не имеют: смешение и повтор одной
+    такой единицы оба воздерживаются, пока масштаб не задан.
+    Ряд LF — `normalized_value`, а если его нет, `value_dec`. Проекция копирует
+    число ячейки, когда builder не прислал нормализацию, и каталожный scale
+    не применяет. Поэтому ряд нельзя считать базовой величиной и умножать.
     """
 
     found = []
@@ -118,7 +122,9 @@ def _compatible_units(data: LabelingInput, row_keys: list[str]) -> bool:
             return False
         found.append((rows[0], spec))
     specs = [spec for _, spec in found]
-    if len({spec.dimension for spec in specs}) != 1 or len({spec.scale for spec in specs}) != 1:
+    if len({spec.dimension for spec in specs}) != 1:
+        return False
+    if any(spec.scale is None for spec in specs) or len({spec.scale for spec in specs}) != 1:
         return False
     dimension = specs[0].dimension
     if dimension != "money" and any(_catalog_currency(spec) for spec in specs):

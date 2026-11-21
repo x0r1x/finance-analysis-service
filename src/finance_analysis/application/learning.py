@@ -711,6 +711,8 @@ def labeling_input(prepared, bindings, facts, links, package, identities) -> Lab
         order.setdefault((fact["axis_id"], fact["period_id"]), len(order))
         if fact.get("cell_id"):
             cell_row[fact["cell_id"]] = fact["row_key"]
+        # normalized_value — поле builder, если оно есть. Иначе это копия value_dec:
+        # проекция не приводит ряд к базовой единице каталога.
         number = fact.get("normalized_value")
         if number is None:
             number = fact.get("value_dec")

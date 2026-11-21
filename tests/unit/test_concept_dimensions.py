@@ -588,8 +588,9 @@ def test_unit_catalog_rejects_unknown_dimension_currency_and_scale():
     assert catalog.units["thousand_rub"] == "money"
     assert catalog.unit_specs["thousand_rub"].scale == 1000
     assert catalog.unit_specs["MW"].currency is None
-    assert catalog.unit_specs["MW"].scale == 1
+    assert catalog.unit_specs["MW"].scale is None
     assert catalog.unit_specs["RUB/MWh"].currency == "RUB"
+    assert catalog.unit_specs["RUB/MWh"].scale is None
     assert catalog.unit_currency["RUB/MWh"] == "RUB"
 
 
@@ -613,3 +614,54 @@ def test_money_units_name_their_currency():
         "а правило конвертации в каталог не входит."
     )
     assert sentence in text
+    assert catalog.unit_specs["MW"].scale == Decimal(1)
+    assert catalog.unit_specs["kW"].scale == Decimal("0.001")
+    assert catalog.unit_specs["MWh"].scale == Decimal(1)
+    assert catalog.unit_specs["kWh"].scale == Decimal("0.001")
+    assert catalog.unit_specs["year"].scale is None
+    assert catalog.unit_specs["month"].scale is None
+
+
+def test_scale_accepts_a_fraction_and_calendar_units_stay_unscaled():
+    from decimal import Decimal
+
+    catalog = parse_catalog(
+        {
+            "dimensions": {
+                "power": {
+                    "base": True,
+                    "base_unit": "MW",
+                    "units": [
+                        {"unit": "MW", "scale": 1},
+                        {"unit": "kW", "scale": "0.001"},
+                        {"unit": "mW", "scale": 0.001},
+                    ],
+                }
+            }
+        }
+    )
+    assert catalog.unit_specs["kW"].scale == Decimal("0.001")
+    assert catalog.unit_specs["mW"].scale == Decimal("0.001")
+    with pytest.raises(ValueError, match="масштаб единицы tiny должен быть больше нуля"):
+        parse_catalog(
+            {
+                "dimensions": {
+                    "power": {
+                        "base": True,
+                        "units": [{"unit": "tiny", "scale": "-0.001"}],
+                    }
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="календарная единица year не масштабируется"):
+        parse_catalog(
+            {
+                "dimensions": {
+                    "duration": {
+                        "base": True,
+                        "calendar": True,
+                        "units": [{"unit": "year", "scale": 365}],
+                    }
+                }
+            }
+        )

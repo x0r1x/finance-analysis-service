@@ -15,6 +15,7 @@ from finance_analysis.application.examples import ExampleStore
 from finance_analysis.application.glossary_store import GlossaryStore
 from finance_analysis.application.learning import Learning
 from finance_analysis.application.ports import Models
+from finance_analysis.domain.dimensions import UnitSpec
 from finance_analysis.domain.signals import LabelingInput, lexical_relation, mine
 from finance_analysis.plugins.labeling import (
     identity,
@@ -51,8 +52,6 @@ def _input(values, precedents, bindings, rows=None, currency=None, units=None):
 
 
 def _money_units():
-    from finance_analysis.domain.dimensions import UnitSpec
-
     return {
         "USD": UnitSpec("money", "USD", 1),
         "RUB": UnitSpec("money", "RUB", 1),
@@ -326,6 +325,48 @@ def test_identity_abstains_when_a_plain_unit_names_a_currency():
         units={"MWh": UnitSpec("energy", None, 1)},
     )
     assert identity(data) == []
+
+
+def test_identity_abstains_when_power_units_differ():
+    data = _identity_book(
+        {"int": "MW", "prn": "kW", "total": "MW"},
+        units={"MW": UnitSpec("power", None, 1), "kW": UnitSpec("power", None, "0.001")},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_energy_units_differ():
+    from decimal import Decimal
+
+    data = _identity_book(
+        {"int": "MWh", "prn": "kWh", "total": "MWh"},
+        units={"MWh": UnitSpec("energy", None, 1), "kWh": UnitSpec("energy", None, Decimal("0.001"))},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_calendar_units_differ():
+    data = _identity_book(
+        {"int": "year", "prn": "month", "total": "year"},
+        units={"year": UnitSpec("duration"), "month": UnitSpec("duration")},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_the_scale_is_unknown():
+    data = _identity_book(
+        {"int": "kW", "prn": "kW", "total": "kW"},
+        units={"kW": UnitSpec("power")},
+    )
+    assert identity(data) == []
+
+
+def test_identity_votes_when_the_same_unit_has_one_scale():
+    data = _identity_book(
+        {"int": "MW", "prn": "MW", "total": "MW"},
+        units={"MW": UnitSpec("power", None, 1)},
+    )
+    assert [(vote.binding_key, vote.polarity) for vote in identity(data)] == [("total", "+")]
 
 
 def test_identity_abstains_for_a_price_unit_without_a_rule():

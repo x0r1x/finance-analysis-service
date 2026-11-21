@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 
 ROLES = frozenset({"measure", "assumption", "parameter"})
 TEMPORAL = frozenset({"stock", "flow", "rate", "point_in_time"})
@@ -34,11 +35,20 @@ _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 @dataclass(frozen=True)
 class UnitSpec:
-    """Единица каталога: размерность, валюта денежной единицы и масштаб к базе."""
+    """Единица каталога: размерность, валюта денежной единицы и масштаб к базе.
+
+    `scale is None` — масштаб не определён. Это не 1. Календарная единица
+    масштаба не имеет: год и месяц не равны фиксированному числу дней.
+    """
 
     dimension: str
     currency: str | None = None
-    scale: int = 1
+    scale: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.scale is None:
+            return
+        object.__setattr__(self, "scale", _parse_scale(self.scale, self.dimension))
 
 
 @dataclass(frozen=True)
@@ -86,8 +96,10 @@ def parse_catalog(document: dict) -> DimensionCatalog:
     pricing: dict[str, str] = {}
     currencies: dict[str, str] = {}
     billing: dict[str, str] = {}
-    pending: list[tuple[str, str, str | None, str | None, int]] = []
+    pending: list[tuple[str, str, str | None, str | None, Decimal | None]] = []
     compounds: list[tuple[str, dict]] = []
+    bases: dict[str, str] = {}
+    calendars: set[str] = set()
     for key, body in raw.items():
         name = str(key)
         if not _NAME.fullmatch(name) or not isinstance(body, dict):
@@ -97,6 +109,13 @@ def parse_catalog(document: dict) -> DimensionCatalog:
             raise ValueError(name)
         if isinstance(basis, str):
             pricing[name] = basis
+        if body.get("calendar") is True:
+            calendars.add(name)
+        base_unit = body.get("base_unit")
+        if base_unit is not None:
+            if name in calendars or not isinstance(base_unit, str) or not base_unit:
+                raise ValueError(f"базовая единица размерности {name}")
+            bases[name] = base_unit
         for unit, currency, period, scale in _unit_facts(body.get("units"), name):
             if unit in units:
                 raise ValueError(unit)
@@ -123,6 +142,8 @@ def parse_catalog(document: dict) -> DimensionCatalog:
         exponents[name] = cleaned
     specs: dict[str, UnitSpec] = {}
     for unit, name, currency, period, scale in pending:
+        if name in calendars and scale is not None:
+            raise ValueError(f"календарная единица {unit} не масштабируется")
         powers = exponents.get(name)
         if powers is None:
             raise ValueError(f"неизвестная размерность: {name}")
@@ -136,6 +157,10 @@ def parse_catalog(document: dict) -> DimensionCatalog:
             currencies[unit] = currency
         if period is not None:
             billing[unit] = period
+    for name, base_unit in bases.items():
+        spec = specs.get(base_unit)
+        if spec is None or spec.dimension != name or spec.scale != Decimal(1):
+            raise ValueError(f"базовая единица {base_unit} размерности {name} должна иметь масштаб 1")
     return DimensionCatalog(exponents, units, pricing, currencies, billing, specs)
 
 
@@ -145,30 +170,40 @@ def default_aggregation(temporal: str) -> str:
     return _AGGREGATION[temporal]
 
 
-def _unit_facts(raw: object, name: str) -> list[tuple[str, str | None, str | None, int]]:
+def _parse_scale(value: object, unit: str) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal, str)):
+        raise TypeError(f"масштаб единицы {unit} должен быть больше нуля")
+    try:
+        number = Decimal(value) if isinstance(value, int) else Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"масштаб единицы {unit} должен быть больше нуля") from None
+    if not number.is_finite() or number <= 0:
+        raise ValueError(f"масштаб единицы {unit} должен быть больше нуля")
+    return number
+
+
+def _unit_facts(raw: object, name: str) -> list[tuple[str, str | None, str | None, Decimal | None]]:
     if raw is None:
         return []
     if not isinstance(raw, list):
         raise TypeError(name)
-    found: list[tuple[str, str | None, str | None, int]] = []
+    found: list[tuple[str, str | None, str | None, Decimal | None]] = []
     for item in raw:
         if isinstance(item, str) and item:
-            found.append((item, None, None, 1))
+            found.append((item, None, None, None))
             continue
         if not isinstance(item, dict):
             raise TypeError(name)
         unit = item.get("unit")
         currency = item.get("currency")
         period = item.get("billing_period")
-        scale = item.get("scale", 1)
         if not isinstance(unit, str) or not unit:
             raise ValueError(name)
         if isinstance(currency, str):
             currency = currency.strip() or None
         elif currency is not None:
             raise ValueError(f"валюта единицы {unit} должна быть строкой")
-        if isinstance(scale, bool) or not isinstance(scale, int) or scale <= 0:
-            raise ValueError(f"масштаб единицы {unit} должен быть больше нуля")
+        scale = None if "scale" not in item or item.get("scale") is None else _parse_scale(item.get("scale"), unit)
         if period is not None and (not isinstance(period, str) or period not in BILLING_PERIODS):
             raise ValueError(name)
         found.append((unit, currency, period, scale))
