@@ -13,7 +13,7 @@ from decimal import Decimal, localcontext
 from itertools import pairwise
 
 from finance_analysis.domain.coverage import is_coverage_test_period
-from finance_analysis.domain.metric_contract import implements
+from finance_analysis.domain.metric_contract import BoundInputs, implements
 from finance_analysis.domain.metrics import (
     RATIO,
     _assume_sheet_units,
@@ -319,16 +319,11 @@ def dscr_reductions(
     return _result(metric, rows, warnings=dscr["warnings"])
 
 
-@implements(
-    "llcr",
-    "llcr",
-    inputs=("debt_service", "cfads", "debt_outstanding", "discount_rate"),
-)
-@implements(
-    "plcr",
-    "plcr",
-    inputs=("debt_service", "cfads", "debt_outstanding", "discount_rate"),
-)
+LOAN_LIFE_INPUTS = ("debt_service", "cfads", "debt_outstanding", "discount_rate")
+
+
+@implements("llcr", "llcr", inputs=LOAN_LIFE_INPUTS)
+@implements("plcr", "plcr", inputs=LOAN_LIFE_INPUTS)
 def loan_life_ratio(
     metric: str,
     *,
@@ -354,11 +349,10 @@ def loan_life_ratio(
     меняется по периодам; без дат — по длине `grain` с предупреждением.
     """
 
-    needed = ("debt_service", "cfads", "debt_outstanding", "discount_rate")
-    missing = _missing(metric, bindings, needed, absent)
+    missing = _missing(metric, bindings, LOAN_LIFE_INPUTS, absent)
     if missing is not None:
         return missing
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(LOAN_LIFE_INPUTS, _primaries(bindings, absent))
     aligned = aligned_keys(periods)
     warnings: list[dict] = []
     sheet = _assume_sheet_units(facts, [primaries["cfads"], primaries["debt_outstanding"]], warnings)

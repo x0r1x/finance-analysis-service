@@ -341,6 +341,38 @@ def test_icr_lease_reads_through_bound_inputs(monkeypatch):
     assert "ebitda" in seen
 
 
+def test_loan_life_ratio_reads_through_bound_inputs(monkeypatch):
+    from finance_analysis.domain.cover_metrics import loan_life_ratio
+
+    seen: list[str] = []
+    real = BoundInputs.__getitem__
+
+    def spy(self: BoundInputs, name: str) -> object:
+        seen.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(BoundInputs, "__getitem__", spy)
+    bindings = [
+        {
+            "effective_concept": name,
+            "row_key": name,
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        }
+        for name in ("debt_service", "cfads", "debt_outstanding", "discount_rate")
+    ]
+    loan_life_ratio(
+        "llcr",
+        facts=[],
+        bindings=bindings,
+        periods=[],
+        period_phase={},
+        explicit_phases=False,
+    )
+    assert {"cfads", "debt_service", "debt_outstanding", "discount_rate"} <= set(seen)
+
+
 def test_check_config_prints_registry_problems(capsys, monkeypatch):
     from finance_analysis.cli import _check_config
 
