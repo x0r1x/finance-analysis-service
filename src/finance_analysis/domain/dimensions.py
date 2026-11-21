@@ -33,6 +33,15 @@ _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 @dataclass(frozen=True)
+class UnitSpec:
+    """Единица каталога: размерность, валюта денежной единицы и масштаб к базе."""
+
+    dimension: str
+    currency: str | None = None
+    scale: int = 1
+
+
+@dataclass(frozen=True)
 class DimensionCatalog:
     """Показатели степеней базовых величин и какие единицы к какой размерности относятся."""
 
@@ -41,6 +50,7 @@ class DimensionCatalog:
     pricing_basis: Mapping[str, str] = field(default_factory=dict)
     unit_currency: Mapping[str, str] = field(default_factory=dict)
     unit_billing_period: Mapping[str, str] = field(default_factory=dict)
+    unit_specs: Mapping[str, UnitSpec] = field(default_factory=dict)
 
     def same(self, left: str, right: str) -> bool:
         one, other = self.exponents.get(left), self.exponents.get(right)
@@ -76,24 +86,22 @@ def parse_catalog(document: dict) -> DimensionCatalog:
     pricing: dict[str, str] = {}
     currencies: dict[str, str] = {}
     billing: dict[str, str] = {}
+    pending: list[tuple[str, str, str | None, str | None, int]] = []
     compounds: list[tuple[str, dict]] = []
     for key, body in raw.items():
         name = str(key)
         if not _NAME.fullmatch(name) or not isinstance(body, dict):
-            raise ValueError(name)
+            raise ValueError(f"неизвестная размерность: {name}")
         basis = body.get("pricing_basis")
         if basis is not None and (not isinstance(basis, str) or basis not in PRICING_BASES):
             raise ValueError(name)
         if isinstance(basis, str):
             pricing[name] = basis
-        for unit, currency, period in _unit_facts(body.get("units"), name):
+        for unit, currency, period, scale in _unit_facts(body.get("units"), name):
             if unit in units:
                 raise ValueError(unit)
             units[unit] = name
-            if currency is not None:
-                currencies[unit] = currency
-            if period is not None:
-                billing[unit] = period
+            pending.append((unit, name, currency, period, scale))
         if body.get("dimensionless") is True or name == "ratio":
             exponents[name] = {}
             continue
@@ -104,16 +112,31 @@ def parse_catalog(document: dict) -> DimensionCatalog:
     for name, body in compounds:
         powers = body.get("exponents")
         if not isinstance(powers, dict) or not powers:
-            raise ValueError(name)
+            raise ValueError(f"неизвестная размерность: {name}")
         cleaned: dict[str, int] = {}
         for base, power in powers.items():
             if base not in exponents or exponents[base] != {base: 1}:
-                raise ValueError(f"{name}:{base}")
+                raise ValueError(f"неизвестная размерность: {base}")
             if isinstance(power, bool) or not isinstance(power, int) or power == 0:
                 raise ValueError(name)
             cleaned[str(base)] = power
         exponents[name] = cleaned
-    return DimensionCatalog(exponents, units, pricing, currencies, billing)
+    specs: dict[str, UnitSpec] = {}
+    for unit, name, currency, period, scale in pending:
+        powers = exponents.get(name)
+        if powers is None:
+            raise ValueError(f"неизвестная размерность: {name}")
+        monetary = powers.get("money", 0) != 0
+        if name == "money" and not currency:
+            raise ValueError(f"денежная единица {unit} без валюты")
+        if currency and not monetary:
+            raise ValueError(f"валюта у единицы {unit}: размерность {name} не денежная")
+        specs[unit] = UnitSpec(name, currency, scale)
+        if currency is not None:
+            currencies[unit] = currency
+        if period is not None:
+            billing[unit] = period
+    return DimensionCatalog(exponents, units, pricing, currencies, billing, specs)
 
 
 def default_aggregation(temporal: str) -> str:
@@ -122,28 +145,33 @@ def default_aggregation(temporal: str) -> str:
     return _AGGREGATION[temporal]
 
 
-def _unit_facts(raw: object, name: str) -> list[tuple[str, str | None, str | None]]:
+def _unit_facts(raw: object, name: str) -> list[tuple[str, str | None, str | None, int]]:
     if raw is None:
         return []
     if not isinstance(raw, list):
         raise TypeError(name)
-    found: list[tuple[str, str | None, str | None]] = []
+    found: list[tuple[str, str | None, str | None, int]] = []
     for item in raw:
         if isinstance(item, str) and item:
-            found.append((item, None, None))
+            found.append((item, None, None, 1))
             continue
         if not isinstance(item, dict):
             raise TypeError(name)
         unit = item.get("unit")
         currency = item.get("currency")
         period = item.get("billing_period")
+        scale = item.get("scale", 1)
         if not isinstance(unit, str) or not unit:
             raise ValueError(name)
-        if currency is not None and not isinstance(currency, str):
-            raise ValueError(name)
+        if isinstance(currency, str):
+            currency = currency.strip() or None
+        elif currency is not None:
+            raise ValueError(f"валюта единицы {unit} должна быть строкой")
+        if isinstance(scale, bool) or not isinstance(scale, int) or scale <= 0:
+            raise ValueError(f"масштаб единицы {unit} должен быть больше нуля")
         if period is not None and (not isinstance(period, str) or period not in BILLING_PERIODS):
             raise ValueError(name)
-        found.append((unit, currency, period))
+        found.append((unit, currency, period, scale))
     return found
 
 

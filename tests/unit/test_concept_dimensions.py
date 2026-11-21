@@ -141,7 +141,7 @@ def test_dimension_algebra_covers_ratio_energy_and_tariff():
     catalog = parse_catalog(
         {
             "dimensions": {
-                "money": {"base": True, "units": ["RUB"]},
+                "money": {"base": True, "units": [{"unit": "RUB", "currency": "RUB"}]},
                 "power": {"base": True, "units": ["MW"]},
                 "duration": {"base": True, "units": ["year"]},
                 "ratio": {"dimensionless": True, "units": ["1", "%"]},
@@ -542,6 +542,57 @@ def test_concrete_unit_and_scale_follow_the_same_source_walk():
     assert "unit" not in bare or bare.get("unit") in (None, "")
 
 
+def test_unit_catalog_rejects_unknown_dimension_currency_and_scale():
+    with pytest.raises(ValueError, match="неизвестная размерность: nope"):
+        parse_catalog({"dimensions": {"energy": {"exponents": {"nope": 1}}}})
+    with pytest.raises(ValueError, match="неизвестная размерность: Bad-Name"):
+        parse_catalog({"dimensions": {"Bad-Name": {"base": True}}})
+    with pytest.raises(ValueError, match="валюта у единицы MW: размерность power не денежная"):
+        parse_catalog({"dimensions": {"power": {"base": True, "units": [{"unit": "MW", "currency": "USD"}]}}})
+    with pytest.raises(ValueError, match="денежная единица RUB без валюты"):
+        parse_catalog({"dimensions": {"money": {"base": True, "units": ["RUB"]}}})
+    with pytest.raises(ValueError, match="масштаб единицы thousand_rub должен быть больше нуля"):
+        parse_catalog(
+            {
+                "dimensions": {
+                    "money": {
+                        "base": True,
+                        "units": [{"unit": "thousand_rub", "currency": "RUB", "scale": 0}],
+                    }
+                }
+            }
+        )
+    catalog = parse_catalog(
+        {
+            "dimensions": {
+                "money": {
+                    "base": True,
+                    "units": [
+                        {"unit": "USD", "currency": "USD", "scale": 1},
+                        {"unit": "thousand_rub", "currency": "RUB", "scale": 1000},
+                    ],
+                },
+                "power": {"base": True, "units": ["MW"]},
+                "currency_per_energy": {
+                    "pricing_basis": "energy",
+                    "exponents": {"money": 1, "power": -1},
+                    "units": [{"unit": "RUB/MWh", "currency": "RUB"}],
+                },
+            }
+        }
+    )
+    assert catalog.unit_specs["USD"].dimension == "money"
+    assert catalog.unit_specs["USD"].currency == "USD"
+    assert catalog.unit_specs["USD"].scale == 1
+    assert catalog.unit_currency["USD"] == "USD"
+    assert catalog.units["thousand_rub"] == "money"
+    assert catalog.unit_specs["thousand_rub"].scale == 1000
+    assert catalog.unit_specs["MW"].currency is None
+    assert catalog.unit_specs["MW"].scale == 1
+    assert catalog.unit_specs["RUB/MWh"].currency == "RUB"
+    assert catalog.unit_currency["RUB/MWh"] == "RUB"
+
+
 def test_money_units_name_their_currency():
     from pathlib import Path
 
@@ -552,6 +603,10 @@ def test_money_units_name_their_currency():
     assert catalog.unit_currency["EUR"] == "EUR"
     assert catalog.unit_currency["GBP"] == "GBP"
     assert catalog.unit_currency["руб"] == "RUB"
+    assert catalog.unit_specs["USD"].scale == 1
+    assert catalog.unit_currency["thousand_rub"] == "RUB"
+    assert catalog.unit_specs["thousand_rub"].scale == 1000
+    assert catalog.units["thousand_rub"] == "money"
     text = (Path(__file__).resolve().parents[2] / "docs" / "dimensions.md").read_text(encoding="utf-8")
     sentence = (
         "У денежной единицы каталога валюта пишется так же, как у ценовой, "

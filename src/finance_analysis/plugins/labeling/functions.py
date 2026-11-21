@@ -72,18 +72,46 @@ def _identity_parts(data: LabelingInput) -> dict[str, tuple[str, ...]]:
     return found
 
 
-def _known_currency(data: LabelingInput, row_key: str) -> str | None:
-    """Валюта строки книги. Пустое поле — неизвестная валюта, из единицы не выводится."""
-
+def _row(data: LabelingInput, row_key: str) -> dict | None:
     for row in data.rows:
-        if row.get("row_key") != row_key:
-            continue
-        raw = row.get("currency")
-        if not isinstance(raw, str):
-            return None
-        text = raw.strip()
-        return text.casefold() if text else None
+        if row.get("row_key") == row_key:
+            return row
     return None
+
+
+def _explicit_currency(row: dict) -> str | None:
+    raw = row.get("currency")
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text.casefold() if text else None
+
+
+def _unit_spec(data: LabelingInput, row: dict):
+    token = row.get("unit")
+    if not isinstance(token, str) or not token:
+        return None
+    return data.units.get(token)
+
+
+def _known_currency(data: LabelingInput, row_key: str) -> str | None:
+    """Валюта строки. Пустое поле берётся из денежной единицы каталога.
+
+    Неизвестная единица валюту не получает. Явная валюта, которая не совпала
+    с валютой единицы, тоже не считается известной: сверка воздерживается.
+    """
+
+    row = _row(data, row_key)
+    if row is None:
+        return None
+    explicit = _explicit_currency(row)
+    spec = _unit_spec(data, row)
+    catalog = None
+    if spec is not None and isinstance(spec.currency, str) and spec.currency.strip():
+        catalog = spec.currency.strip().casefold()
+    if explicit and catalog and explicit != catalog:
+        return None
+    return explicit or catalog
 
 
 def _one_currency(data: LabelingInput, row_keys: list[str]) -> bool:
@@ -95,12 +123,31 @@ def _one_currency(data: LabelingInput, row_keys: list[str]) -> bool:
     return len(set(found)) == 1
 
 
+def _scales_match(data: LabelingInput, row_keys: list[str]) -> bool:
+    """Разный масштаб каталога при одной валюте не даёт сверить числа как есть.
+
+    Ряд LF — одно число. Это может быть уже базовая величина, а может быть
+    число на листе. Второй раз умножать на scale нельзя, а равные числа
+    в тысячах и в рублях — ложный «за». Сверка воздерживается.
+    """
+
+    found: list[int] = []
+    for key in row_keys:
+        row = _row(data, key)
+        spec = _unit_spec(data, row or {})
+        if spec is None:
+            continue
+        found.append(spec.scale)
+    return len(set(found)) <= 1
+
+
 def identity(data: LabelingInput) -> list[Vote]:
     """Строка по формуле и значениям равна сумме привязанных людьми слагаемых → голос за левую часть.
 
-    Голос только если у итога и всех частей одна известная валюта строки.
-    Разные валюты и неизвестная валюта — воздержание, не голос «против»:
-    совпавшие числа в разных валютах левую часть не опровергают.
+    Голос только если у итога и всех частей одна известная валюта и один масштаб
+    каталога. Валюта строки — явное поле, иначе валюта её денежной единицы.
+    Разные валюты, расхождение явной валюты с единицей, разный масштаб и
+    неизвестная валюта — воздержание, не голос «против».
     """
 
     keys = _key_of(data)
@@ -114,7 +161,8 @@ def identity(data: LabelingInput) -> list[Vote]:
                 continue
             if not set(rows) <= data.precedents.get(row_key, set()):
                 continue
-            if not _one_currency(data, [row_key, *rows]):
+            watched = [row_key, *rows]
+            if not _one_currency(data, watched) or not _scales_match(data, watched):
                 continue
             series = data.values[row_key]
             pairs = []

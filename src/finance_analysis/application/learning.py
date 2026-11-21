@@ -16,6 +16,7 @@ from decimal import Decimal
 from ulid import ULID
 
 from finance_analysis.application import keys
+from finance_analysis.application.catalog import load_dimensions
 from finance_analysis.application.examples import (
     AppendOnlyParquet,
     pack_vector,
@@ -729,4 +730,5 @@ def labeling_input(prepared, bindings, facts, links, package, identities) -> Lab
         concepts=dict(package.concepts),
         identities=identities,
         order=order,
+        units=dict(load_dimensions().unit_specs),
     )

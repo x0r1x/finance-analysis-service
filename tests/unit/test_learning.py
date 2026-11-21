@@ -34,7 +34,7 @@ def _binding(key, concept, source="inferred", status="bound"):
     return {"binding_key": key, "row_key": key, "effective_concept": concept, "is_primary": True, "status": status, "source": source}
 
 
-def _input(values, precedents, bindings, rows=None, currency=None):
+def _input(values, precedents, bindings, rows=None, currency=None, units=None):
     if rows is None:
         extra = {"currency": currency} if currency else {}
         rows = [{"binding_key": key, "row_key": key, "label": key, **extra} for key in values]
@@ -46,7 +46,18 @@ def _input(values, precedents, bindings, rows=None, currency=None):
         concepts=dict(CATALOG.concepts),
         identities=load_identities(),
         order={period: index for index, period in enumerate(P)},
+        units=units or {},
     )
+
+
+def _money_units():
+    from finance_analysis.domain.dimensions import UnitSpec
+
+    return {
+        "USD": UnitSpec("money", "USD", 1),
+        "RUB": UnitSpec("money", "RUB", 1),
+        "thousand_rub": UnitSpec("money", "RUB", 1000),
+    }
 
 
 def test_ratio_numerator_and_sum_component():
@@ -129,6 +140,92 @@ def test_identity_abstains_unless_one_known_currency():
     assert identity(mixed) == []
     unknown = _input(values, precedents, bindings)
     assert identity(unknown) == []
+
+
+def test_identity_reads_usd_from_the_unit_when_the_row_currency_is_empty():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    rows = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "USD"}
+        for key in values
+    ]
+    data = _input(values, precedents, bindings, rows=rows, units=_money_units())
+    assert [(vote.binding_key, vote.polarity) for vote in identity(data)] == [("total", "+")]
+
+
+def test_identity_abstains_when_rub_and_usd_units_differ():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    rows = [
+        {"binding_key": "int", "row_key": "int", "label": "int", "unit": "RUB"},
+        {"binding_key": "prn", "row_key": "prn", "label": "prn", "unit": "USD"},
+        {"binding_key": "total", "row_key": "total", "label": "total", "unit": "RUB"},
+    ]
+    data = _input(values, precedents, bindings, rows=rows, units=_money_units())
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_thousand_rub_and_rub_share_a_currency():
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    rows = [
+        {"binding_key": "int", "row_key": "int", "label": "int", "unit": "RUB", "currency": "RUB"},
+        {"binding_key": "prn", "row_key": "prn", "label": "prn", "unit": "RUB", "currency": "RUB"},
+        {"binding_key": "total", "row_key": "total", "label": "total", "unit": "thousand_rub", "currency": "RUB"},
+    ]
+    same_numbers = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    false_match = _input(same_numbers, precedents, bindings, rows=rows, units=_money_units())
+    assert identity(false_match) == []
+    scaled = {
+        "int": [10000, 10000, 10000, 10000, 10000],
+        "prn": [5000, 5000, 5000, 5000, 5000],
+        "total": [15, 15, 15, 15, 15],
+    }
+    true_base = _input(scaled, precedents, bindings, rows=rows, units=_money_units())
+    assert identity(true_base) == []
+
+
+def test_identity_abstains_when_explicit_currency_disagrees_with_the_unit():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    rows = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "USD", "currency": "EUR"}
+        for key in values
+    ]
+    data = _input(values, precedents, bindings, rows=rows, units=_money_units())
+    assert identity(data) == []
+
+
+def test_unknown_unit_does_not_become_a_catalog_currency():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    blank = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "FOO"}
+        for key in values
+    ]
+    assert identity(_input(values, precedents, bindings, rows=blank, units=_money_units())) == []
+    named = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "FOO", "currency": "RUB"}
+        for key in values
+    ]
+    voted = _input(values, precedents, bindings, rows=named, units=_money_units())
+    assert [(vote.binding_key, vote.polarity) for vote in identity(voted)] == [("total", "+")]
+
+
+def test_labeling_input_passes_the_unit_catalog():
+    from finance_analysis.application.learning import labeling_input
+
+    data = labeling_input([], [], [], [], CATALOG, {})
+    assert data.units["USD"].currency == "USD"
+    assert data.units["USD"].scale == 1
+    assert data.units["thousand_rub"].currency == "RUB"
+    assert data.units["thousand_rub"].scale == 1000
+    assert data.units["MWh"].currency is None
+    assert data.units["RUB/MWh"].currency == "RUB"
 
 
 def test_unit_sign_votes_against():

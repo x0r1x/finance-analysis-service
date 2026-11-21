@@ -7,11 +7,12 @@ dimensions:
   money:
     base: true
     units:
-      - {unit: RUB, currency: RUB}
-      - {unit: USD, currency: USD}
-      - {unit: EUR, currency: EUR}
-      - {unit: GBP, currency: GBP}
-      - {unit: руб, currency: RUB}
+      - {unit: RUB, currency: RUB, scale: 1}
+      - {unit: USD, currency: USD, scale: 1}
+      - {unit: EUR, currency: EUR, scale: 1}
+      - {unit: GBP, currency: GBP, scale: 1}
+      - {unit: руб, currency: RUB, scale: 1}
+      - {unit: thousand_rub, currency: RUB, scale: 1000}
   power:
     base: true
     units: [MW, kW, GW, МВт]

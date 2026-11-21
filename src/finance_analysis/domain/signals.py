@@ -6,6 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from finance_analysis.domain.dimensions import UnitSpec
 from finance_analysis.domain.glossary import normalize_label
 
 # Уровни доверия §5.11.1 [допущение по весам].
@@ -50,6 +51,7 @@ class LabelingInput:
     concepts: dict
     identities: dict[str, list[str]] = field(default_factory=dict)
     order: dict[tuple[str, str], int] = field(default_factory=dict)
+    units: dict[str, UnitSpec] = field(default_factory=dict)
 
     def consecutive(self, series: dict[tuple[str, str], Decimal]) -> list[tuple[tuple[str, str], tuple[str, str]]]:
         """Пары (предыдущий, текущий) период одной оси по порядку временной оси."""
