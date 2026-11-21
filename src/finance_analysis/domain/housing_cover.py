@@ -174,7 +174,11 @@ def housing_cover(
 
 
 _LLCR_CASH = ConceptGroup("проектный поток", _LLCR_FLOWS)
-_LLCR_DEBT = ConceptGroup("старший долг", ("senior_principal", "senior_interest_paid"))
+# collect_interval читает тот же _DEBT, что и жилищный DSCR.
+_LLCR_DEBT = ConceptGroup(
+    "старший долг",
+    ("senior_principal", "senior_interest_paid", "principal", "interest", "debt_service"),
+)
 _CBR_DYNAMIC = DynamicInputs(
     groups=(_LLCR_CASH, _LLCR_DEBT),
     dependencies=(ConceptDependency("profile", "guaranteed_funds_none", ("guaranteed_funds",)),),

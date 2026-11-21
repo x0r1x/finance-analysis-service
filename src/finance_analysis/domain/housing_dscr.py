@@ -81,10 +81,14 @@ def interest_addback(profile: dict | None) -> bool | None:
 
 
 # interest_addback читает коды строк 4123 и 4224, отдельного понятия не добавляет.
+# _denominator перебирает весь _DEBT, не только старшие имена формулы.
 _HOUSING_DYNAMIC = DynamicInputs(
     groups=(
         ConceptGroup("оддс", _NUMERATOR),
-        ConceptGroup("старший долг", ("senior_principal", "senior_interest_paid")),
+        ConceptGroup(
+            "старший долг",
+            ("senior_principal", "senior_interest_paid", "principal", "interest", "debt_service"),
+        ),
     ),
     dependencies=(
         ConceptDependency("profile", "include_senior_fees", ("senior_fees",)),

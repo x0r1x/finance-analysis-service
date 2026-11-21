@@ -13,6 +13,7 @@ from finance_analysis.domain.metric_contract import (
     DuplicateImplementation,
     ImplementationContractError,
     UndeclaredInput,
+    _dynamic_names,
     check_registry,
     formula_id_of,
     implements,
@@ -487,6 +488,269 @@ def test_dynamic_dependency_and_component_are_allowed():
         }
     )
     check_registry({"icr": {"variants": {"bank": {"numerator": {"plus": ["profit_from_sales", "ebitda"]}}}}})
+
+
+class _Sought:
+    """Имя, с которым код сравнивает effective_concept. Запоминает искомое понятие.
+
+    Подкласс str здесь не годится: сравнение строк идёт мимо переопределённого __eq__.
+    """
+
+    def __init__(self, found: set[str]) -> None:
+        self.found = found
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str) and other:
+            self.found.add(other)
+        return False
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+class _Asked(dict):
+    """primaries.get и `in` запоминают понятие, даже если строки нет."""
+
+    def __init__(self, raw: dict, found: set[str]) -> None:
+        super().__init__(raw)
+        self.found = found
+
+    def _note(self, key: object) -> None:
+        if isinstance(key, str) and key and not isinstance(key, _Sought):
+            self.found.add(key)
+
+    def get(self, key: object, default: object = None) -> object:
+        self._note(key)
+        return super().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        self._note(key)
+        return super().__contains__(key)
+
+    def __getitem__(self, key: object) -> object:
+        self._note(key)
+        return super().__getitem__(key)
+
+
+def _watch(found: set[str]):
+    from finance_analysis.domain import covenant, cover_metrics, metrics, returns
+
+    modules = (cover_metrics, covenant, returns)
+    saved = [module._primaries for module in modules]
+
+    def wrapped(bindings, absent=frozenset()):
+        return _Asked(metrics._primaries(bindings, absent), found)
+
+    for module in modules:
+        module._primaries = wrapped
+    try:
+        yield
+    finally:
+        for module, original in zip(modules, saved, strict=True):
+            module._primaries = original
+
+
+def _probe(found: set[str]) -> dict:
+    return {
+        "effective_concept": _Sought(found),
+        "is_primary": True,
+        "status": "bound",
+        "row_key": "probe",
+        "source": "confirmed",
+    }
+
+
+_PERIOD = {"axis_id": "axis", "period_id": "p1", "grain": "year", "index": 0}
+
+
+def _housing_profile() -> dict:
+    return {"include_senior_fees": True, "include_senior_swaps": True, "interest_addback": True}
+
+
+def _read_housing(found: set[str]) -> None:
+    from finance_analysis.domain.housing_dscr import housing_dscr
+
+    housing_dscr(facts=[], bindings=[_probe(found)], periods=[_PERIOD], profile=_housing_profile())
+
+
+def _read_family(metric: str):
+    def read(found: set[str]) -> None:
+        from finance_analysis.domain.housing_cover import housing_cover
+
+        housing_cover(
+            metric,
+            facts=[],
+            bindings=[_probe(found)],
+            periods=[_PERIOD],
+            profile=_housing_profile(),
+        )
+
+    return read
+
+
+def _read_llcr(variant: str):
+    def read(found: set[str]) -> None:
+        import finance_analysis.domain.housing_cover as cover
+        from finance_analysis.domain.housing_cover import _LLCR_FLOWS, housing_cover
+
+        housing_cover("llcr", facts=[], bindings=[_probe(found)], periods=[_PERIOD], variant=variant)
+        ready = {
+            "flows": {name: Decimal(1) for name in _LLCR_FLOWS},
+            "missing": [],
+            "principal": Decimal(1),
+            "interest": Decimal(1),
+            "denominator": Decimal(2),
+            "denom_reason": None,
+            "cells": [],
+            "notes": [],
+        }
+        real = cover.collect_interval
+        cover.collect_interval = lambda *_args, **_kwargs: ready
+        try:
+            housing_cover("llcr", facts=[], bindings=[_probe(found)], periods=[_PERIOD], variant=variant)
+        finally:
+            cover.collect_interval = real
+
+    return read
+
+
+def _read_escrow(found: set[str]) -> None:
+    from finance_analysis.domain.housing_cover import housing_cover
+
+    housing_cover(
+        "escrow_blended_rate",
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+        profile={"escrow_rate_scale": {"base_rate": "0.10", "special_rate": "0.05"}},
+    )
+
+
+def _read_total_debt(found: set[str]) -> None:
+    from finance_analysis.domain.total_debt import total_debt_result
+
+    total_debt_result(facts=[], bindings=[_probe(found)], periods=[_PERIOD])
+    total_debt_result(
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+        profile={"debt_standard": "gaap", "include_operating_lease_liability": True},
+    )
+    total_debt_result(
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+        profile={"debt_standard": "ifrs", "include_operating_lease_liability": False},
+    )
+
+
+def _read_off_balance(found: set[str]) -> None:
+    from finance_analysis.domain.debt_incl_off_balance import debt_incl_off_balance
+
+    arguments = REGISTRY[("debt_incl_off_balance", "debt_incl_off_balance")].dynamic_inputs.arguments
+    debt_incl_off_balance(
+        components=arguments,
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+    )
+
+
+def _read_fcf(found: set[str]) -> None:
+    from finance_analysis.domain.returns import fcf_identity
+
+    fcf_identity(None, facts=[], bindings=[_probe(found)], periods=[_PERIOD])
+
+
+def _read_bank(found: set[str]) -> None:
+    from finance_analysis.domain.covenant import bank_icr
+
+    opened = [
+        _probe(found),
+        {
+            "effective_concept": "interest",
+            "is_primary": True,
+            "status": "bound",
+            "row_key": "interest",
+            "source": "confirmed",
+        },
+        {
+            "effective_concept": "ebitda",
+            "is_primary": True,
+            "status": "bound",
+            "row_key": "ebitda",
+            "source": "confirmed",
+        },
+    ]
+    profiles = (
+        {"icr_definition": {"lease_mode": "in_interest"}},
+        {"icr_definition": {"lease_mode": "add_interest"}},
+        {"icr_definition": {"lease_mode": "in_interest"}, "ebitda_definition": "ras"},
+        {"icr_definition": {"lease_mode": "in_interest"}, "ebitda_definition": "ifrs"},
+        {"icr_definition": {"lease_mode": "add_interest"}, "finance_costs_confirmed": True},
+    )
+    for profile in profiles:
+        bank_icr(facts=[], bindings=opened, periods=[_PERIOD], profile=profile)
+
+
+def _read_corporate(found: set[str]) -> None:
+    from finance_analysis.domain.covenant import covenant_dscr
+    from finance_analysis.domain.model_type import Composed, Side
+
+    covenant_dscr(
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+        default=Composed(
+            Side(("ebitda",), ("cash_taxes", "capex")),
+            Side(("interest", "principal"), ()),
+            "LTM",
+        ),
+        concepts=frozenset(),
+        money=frozenset(),
+    )
+
+
+_DYNAMIC_READS = {
+    "dscr.housing": _read_housing,
+    "dscr_min.housing": _read_family("dscr_min"),
+    "dscr_avg.housing": _read_family("dscr_avg"),
+    "adscr.housing": _read_family("adscr"),
+    "llcr.cbr590": _read_llcr("cbr590"),
+    "llcr.domrf": _read_llcr("domrf"),
+    "escrow_blended_rate": _read_escrow,
+    "total_debt": _read_total_debt,
+    "debt_incl_off_balance": _read_off_balance,
+    "fcf_identity": _read_fcf,
+    "icr.bank": _read_bank,
+    "dscr.corporate_covenant": _read_corporate,
+}
+
+
+def test_dynamic_code_reads_only_declared_concepts():
+    """Понятие, которое код спрашивает у привязок, есть в допустимом наборе.
+
+    Сверка со строкой книги после успешного числа сюда не входит: пустые факты
+    до неё не доходят. Надбавка процентов читает коды строк, не понятие.
+    """
+
+    from contextlib import contextmanager
+
+    load_implementations()
+    watch = contextmanager(_watch)
+    gaps = []
+    dynamic = [item for item in REGISTRY.values() if item.mode == "dynamic"]
+    unread = sorted(item.formula_id for item in dynamic if item.formula_id not in _DYNAMIC_READS)
+    assert unread == []
+    for item in dynamic:
+        found: set[str] = set()
+        with watch(found):
+            _DYNAMIC_READS[item.formula_id](found)
+        allowed, _missing = _dynamic_names(item, REGISTRY, set())
+        extra = sorted(found - allowed)
+        if extra:
+            gaps.append(f"{item.formula_id}: {', '.join(extra)}")
+    assert gaps == []
 
 
 def test_dynamic_without_an_allowed_set_fails():
