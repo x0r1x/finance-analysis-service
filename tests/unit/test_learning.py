@@ -225,7 +225,7 @@ def test_unknown_unit_does_not_become_a_catalog_currency():
     assert identity(voted) == []
 
 
-def _identity_book(unit_of, *, currency_of=None, units=None, extra_rows=()):
+def _identity_book(unit_of, *, currency_of=None, units=None, extra_rows=(), scale_of=None):
     values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
     rows = []
     for key in values:
@@ -233,6 +233,8 @@ def _identity_book(unit_of, *, currency_of=None, units=None, extra_rows=()):
         named = (currency_of or {}).get(key)
         if named:
             row["currency"] = named
+        if scale_of and key in scale_of and scale_of[key] is not None:
+            row["scale_factor"] = scale_of[key]
         rows.append(row)
     rows.extend(extra_rows)
     return _input(
@@ -359,6 +361,41 @@ def test_identity_abstains_when_the_scale_is_unknown():
         units={"kW": UnitSpec("power")},
     )
     assert identity(data) == []
+
+
+def test_identity_abstains_when_scale_factors_differ():
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+        scale_of={"int": 1, "prn": 1, "total": 1000},
+    )
+    assert identity(data) == []
+
+
+def test_identity_votes_when_scale_factors_match():
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+        scale_of={"int": 1000, "prn": 1000, "total": 1000},
+    )
+    assert [(vote.binding_key, vote.polarity) for vote in identity(data)] == [("total", "+")]
+
+
+def test_identity_abstains_when_scale_factor_is_missing_next_to_a_stated_one():
+    units = {"int": "RUB", "prn": "RUB", "total": "RUB"}
+    currency = {"int": "RUB", "prn": "RUB", "total": "RUB"}
+    beside_thousand = _identity_book(units, currency_of=currency, scale_of={"int": 1000, "prn": 1000})
+    beside_one = _identity_book(units, currency_of=currency, scale_of={"int": 1, "prn": 1})
+    assert identity(beside_thousand) == []
+    assert identity(beside_one) == []
+
+
+def test_labeling_input_keeps_the_row_scale_factor():
+    from finance_analysis.application.learning import labeling_input
+
+    prepared = [{"binding_key": "r", "row_key": "r", "label": "r", "unit": "RUB", "scale_factor": 1000}]
+    data = labeling_input(prepared, [], [], [], CATALOG, {})
+    assert data.rows[0]["scale_factor"] == 1000
 
 
 def test_identity_votes_when_the_same_unit_has_one_scale():

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from finance_analysis.domain.signals import LabelingInput, Vote
 
@@ -87,6 +87,43 @@ def _unit_spec(data: LabelingInput, row: dict):
     return data.units.get(token)
 
 
+_BAD_FACTOR = object()
+
+
+def _row_factor(row: dict):
+    """Коэффициент строки. Пропуск — не 1. Нечитаемое значение — отказ."""
+
+    if "scale_factor" not in row or row.get("scale_factor") in (None, ""):
+        return None
+    raw = row.get("scale_factor")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, Decimal, str)):
+        return _BAD_FACTOR
+    try:
+        number = Decimal(raw) if isinstance(raw, int) else Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
+        return _BAD_FACTOR
+    if not number.is_finite() or number <= 0:
+        return _BAD_FACTOR
+    return number
+
+
+def _factors_agree(rows: list[dict]) -> bool:
+    """Одинаковый scale_factor у всех строк, либо его нет ни у одной.
+
+    Нормализация не подтверждена, поэтому разный коэффициент не сверяется
+    умножением. Пропуск рядом с названным коэффициентом — тоже отказ:
+    пустое поле не доказывает 1.
+    """
+
+    found = [_row_factor(row) for row in rows]
+    if any(item is _BAD_FACTOR for item in found):
+        return False
+    stated = [item for item in found if item is not None]
+    if not stated:
+        return True
+    return len(stated) == len(found) and len(set(stated)) == 1
+
+
 def _catalog_currency(spec) -> str | None:
     raw = spec.currency
     if not isinstance(raw, str):
@@ -108,8 +145,10 @@ def _compatible_units(data: LabelingInput, row_keys: list[str]) -> bool:
     (year, month, …) числового масштаба не имеют: смешение и повтор одной
     такой единицы оба воздерживаются, пока масштаб не задан.
     Ряд LF — `normalized_value`, а если его нет, `value_dec`. Проекция копирует
-    число ячейки, когда builder не прислал нормализацию, и каталожный scale
-    не применяет. Поэтому ряд нельзя считать базовой величиной и умножать.
+    число ячейки, когда builder не прислал нормализацию, и не умножает его
+    ни на каталожный scale, ни на scale_factor строки. Подтверждения
+    нормализации нет, поэтому разный или частично заданный scale_factor —
+    воздержание. Значения LF не умножает.
     """
 
     found = []
@@ -125,6 +164,8 @@ def _compatible_units(data: LabelingInput, row_keys: list[str]) -> bool:
     if len({spec.dimension for spec in specs}) != 1:
         return False
     if any(spec.scale is None for spec in specs) or len({spec.scale for spec in specs}) != 1:
+        return False
+    if not _factors_agree([row for row, _ in found]):
         return False
     dimension = specs[0].dimension
     if dimension != "money" and any(_catalog_currency(spec) for spec in specs):
