@@ -255,6 +255,17 @@ def test_formula_id_must_match_metric_or_variant():
         validate_catalog_integrity(**payload)
 
 
+def test_definition_version_suffix_is_an_integer():
+    for version in ("dscr@1.0", "dscr@v1", "dscr@01", "dscr@-1", "dscr@ 1"):
+        payload = _cover(_repo_payload(), "dscr", formula_id="dscr", definition_version=version)
+        with pytest.raises(CatalogIntegrityError, match="целое"):
+            validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", formula_id="dscr", definition_version="dscr@2")
+    validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", formula_id="dscr", definition_version="dscr@0")
+    validate_catalog_integrity(**payload)
+
+
 def test_definition_version_must_be_formula_id_at_version():
     broken = (
         {"formula_id": "dscr", "definition_version": "dscr"},
@@ -294,6 +305,20 @@ def test_nested_unknown_keys_are_rejected():
     payload = _cover(_repo_payload(), "dscr", variant="pf", surprise=True)
     with pytest.raises(CatalogIntegrityError, match="surprise"):
         validate_catalog_integrity(**payload)
+
+
+def test_coverage_tolerance_is_not_a_catalog_key():
+    from decimal import Decimal
+
+    from finance_analysis.domain.covenant import _MISMATCH
+
+    payload = _repo_payload()
+    document = dict(payload["coverage_document"])
+    document["tolerance"] = "0.005"
+    payload["coverage_document"] = document
+    with pytest.raises(CatalogIntegrityError, match="tolerance"):
+        validate_catalog_integrity(**payload)
+    assert _MISMATCH == Decimal("0.005")
 
 
 def test_unused_row_fallback_is_rejected():

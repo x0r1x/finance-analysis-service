@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, localcontext
 
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     _BOUND,
     HUMAN_SOURCES,
@@ -38,6 +39,11 @@ _SECTIONS = (
 _DASH_TEXT = frozenset({"", "-", "—", "–", "−"})
 
 
+@implements(
+    "ncf",
+    "ncf",
+    inputs=("operating_cash_flow", "investing_cash_flow", "financing_cash_flow"),
+)
 def net_cash_flow(
     *,
     facts: list[dict],

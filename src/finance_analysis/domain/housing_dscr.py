@@ -9,6 +9,7 @@ import re
 from decimal import Decimal, localcontext
 
 from finance_analysis.domain.mapping import debt_seniority, marked_line_code
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     _BOUND,
     HUMAN_SOURCES,
@@ -74,6 +75,7 @@ def interest_addback(profile: dict | None) -> bool | None:
     return None
 
 
+@implements("dscr", "dscr.housing")
 def housing_dscr(
     *,
     facts: list[dict],

@@ -9,6 +9,7 @@ import json
 import re
 from decimal import Decimal
 
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import _figure
 
 _STANDARDS = frozenset({"ras", "ifrs", "gaap"})
@@ -58,6 +59,7 @@ def include_operating_lease(profile: dict | None) -> bool | None:
     return None
 
 
+@implements("total_debt", "total_debt")
 def total_debt_result(
     *,
     facts: list[dict],

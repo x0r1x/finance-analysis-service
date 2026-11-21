@@ -13,6 +13,7 @@ from decimal import Decimal, localcontext
 from itertools import pairwise
 
 from finance_analysis.domain.coverage import is_coverage_test_period
+from finance_analysis.domain.metric_contract import BoundInputs, implements
 from finance_analysis.domain.metrics import (
     RATIO,
     _assume_sheet_units,
@@ -148,6 +149,10 @@ def _missing(metric: str, bindings: list[dict], needed: tuple[str, ...], absent:
     return None
 
 
+_DSCR_CORE = ("cfads", "debt_service")
+
+
+@implements("adscr", "adscr", inputs=_DSCR_CORE)
 def adscr(
     *,
     facts: list[dict],
@@ -181,7 +186,7 @@ def adscr(
     )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": "adscr"}
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(_DSCR_CORE, _primaries(bindings, absent))
     aligned = aligned_keys(periods)
     sheet = _scale_policy(facts, [primaries["cfads"], primaries["debt_service"]]) == "sheet"
     cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
@@ -248,6 +253,8 @@ def _window(ordered: list[dict], period: dict, direction: str) -> list[dict] | N
     return window
 
 
+@implements("dscr_min", "dscr_min", inputs=_DSCR_CORE)
+@implements("dscr_avg", "dscr_avg", inputs=_DSCR_CORE)
 def dscr_reductions(
     metric: str,
     *,
@@ -280,7 +287,7 @@ def dscr_reductions(
     )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": metric}
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(_DSCR_CORE, _primaries(bindings, absent))
     aligned = aligned_keys(periods)
     sheet = _scale_policy(facts, [primaries["cfads"], primaries["debt_service"]]) == "sheet"
     cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
@@ -315,6 +322,11 @@ def dscr_reductions(
     return _result(metric, rows, warnings=dscr["warnings"])
 
 
+LOAN_LIFE_INPUTS = ("debt_service", "cfads", "debt_outstanding", "discount_rate")
+
+
+@implements("llcr", "llcr", inputs=LOAN_LIFE_INPUTS)
+@implements("plcr", "plcr", inputs=LOAN_LIFE_INPUTS)
 def loan_life_ratio(
     metric: str,
     *,
@@ -340,11 +352,10 @@ def loan_life_ratio(
     меняется по периодам; без дат — по длине `grain` с предупреждением.
     """
 
-    needed = ("debt_service", "cfads", "debt_outstanding", "discount_rate")
-    missing = _missing(metric, bindings, needed, absent)
+    missing = _missing(metric, bindings, LOAN_LIFE_INPUTS, absent)
     if missing is not None:
         return missing
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(LOAN_LIFE_INPUTS, _primaries(bindings, absent))
     aligned = aligned_keys(periods)
     warnings: list[dict] = []
     sheet = _assume_sheet_units(facts, [primaries["cfads"], primaries["debt_outstanding"]], warnings)

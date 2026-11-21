@@ -23,7 +23,7 @@ INTEREST_ORDER_CONCEPTS = frozenset({INTEREST_CANONICAL, "interest_paid"})
 # Декларативные rule id. Рантайм по ним не диспатчит (выбор B).
 MATCHING_RULES = frozenset({"interest_basis_paid"})
 
-_COVERAGE_KEYS = frozenset({"row_fallbacks", "interest_order", "metrics", "tolerance"})
+_COVERAGE_KEYS = frozenset({"row_fallbacks", "interest_order", "metrics"})
 _FALLBACK_KEYS = frozenset({"canonical", "binding_key", "matching"})
 _MATCHING_KEYS = frozenset({"rule"})
 _METRIC_KEYS = frozenset(
@@ -168,10 +168,10 @@ def _formula_contract(name: str, body: Mapping[str, object]) -> None:
     """Идентичность формулы: formula_id и definition_version.
 
     Оба поля или ни одного, отдельно у метрики и у варианта. Вариант —
-    самостоятельное определение: поля родителя ему не достаются, смена версии
-    родителя не меняет версию варианта и наоборот. Суффикс после @ — произвольная
-    непустая строка. Это идентичность, не полноценное версионирование: формат
-    версии и правило её смены будут позже. Расчёт эти поля не читает.
+    самостоятельное определение: поля родителя ему не достаются. Версия —
+    `<formula_id>@<целое>` без знака и ведущих нулей. Новое целое нужно, когда
+    меняется экономический смысл, состав числителя или знаменателя, окно или
+    правило агрегации. Расчёт эти поля не читает.
     """
 
     has_id = "formula_id" in body
@@ -184,11 +184,15 @@ def _formula_contract(name: str, body: Mapping[str, object]) -> None:
         raise CatalogIntegrityError(f"{name}: formula_id должен быть {name}")
     version = body.get("definition_version")
     prefix = f"{name}@"
-    suffix = ""
-    if isinstance(version, str) and version.startswith(prefix):
-        suffix = version[len(prefix):]
-    if not suffix.strip():
-        raise CatalogIntegrityError(f"{name}: definition_version — непустая строка {name}@<версия>")
+    suffix = version[len(prefix):] if isinstance(version, str) and version.startswith(prefix) else ""
+    if not _canonical_integer(suffix):
+        raise CatalogIntegrityError(f"{name}: definition_version — {name}@<целое>")
+
+
+def _canonical_integer(suffix: str) -> bool:
+    if not suffix.isascii() or not suffix.isdigit():
+        return False
+    return str(int(suffix)) == suffix
 
 
 def _rate_names(owner: str, value: object) -> tuple[str, ...]:

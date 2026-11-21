@@ -13,6 +13,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
 from finance_analysis.domain.mapping import marked_line_code
+from finance_analysis.domain.metric_contract import BoundInputs, implements
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import _year_of, basis_of, restate_series
 
@@ -237,6 +238,16 @@ def _methodology_message(kind: str) -> str:
     return "Пометка определения: book, ras, ifrs или gaap."
 
 
+# Запасной знаменатель DSCR читает interest, interest_paid и principal, хотя каталог называет только cfads и debt_service.
+DSCR_INPUTS = ("cfads", "debt_service", "interest", "interest_paid", "principal")
+ICR_INPUTS = ("ebitda", "ebit", "interest", "interest_paid")
+ICR_EBIT_INPUTS = ("ebit", "interest", "interest_paid")
+_COVERAGE_INPUTS = {"dscr": DSCR_INPUTS, "icr": ICR_INPUTS, "icr_ebit": ICR_EBIT_INPUTS}
+
+
+@implements("dscr", "dscr", version="dscr@1", inputs=DSCR_INPUTS)
+@implements("icr", "icr", inputs=ICR_INPUTS)
+@implements("icr_ebit", "icr_ebit", inputs=ICR_EBIT_INPUTS)
 def coverage_ratio(
     *,
     metric: str,
@@ -251,6 +262,7 @@ def coverage_ratio(
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
     profile: dict | None = None,
+    declared: tuple[str, ...] | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -266,6 +278,9 @@ def coverage_ratio(
             return blocked
     primaries = _primaries(bindings, absent)
     confirm_paid_interest(primaries, bindings, absent)
+    guarded = declared if declared is not None else _COVERAGE_INPUTS.get(metric)
+    if guarded:
+        primaries = BoundInputs(guarded, primaries)
     order = interest_order or {}
     warnings: list[dict] = []
     fallback_parts: tuple[str, str] | None = None
@@ -458,6 +473,44 @@ def coverage_ratio(
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
+@implements("dscr", "dscr.pf", inputs=DSCR_INPUTS)
+def dscr_pf(
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    period_phase: dict[tuple[str, str], str | None],
+    explicit_phases: bool,
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+    interest_order: dict | None = None,
+    row_fallbacks: dict | None = None,
+    profile: dict | None = None,
+) -> dict:
+    """Проектный DSCR. Те же числа, что coverage_ratio для metric=dscr."""
+
+    return coverage_ratio(
+        metric="dscr",
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase=period_phase,
+        explicit_phases=explicit_phases,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        absent=absent,
+        interest_order=interest_order,
+        row_fallbacks=row_fallbacks,
+        profile=profile,
+        declared=DSCR_INPUTS,
+    )
+
+
+ICR_LEASE_INPUTS = ("ebitda", "interest", "lease_interest", "lease_payment", "lease_principal")
+
+
+@implements("icr_lease", "icr_lease", inputs=ICR_LEASE_INPUTS)
 def lease_interest_coverage(
     *,
     facts: list[dict],
@@ -476,7 +529,7 @@ def lease_interest_coverage(
     """
 
     metric = "icr_lease"
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(ICR_LEASE_INPUTS, _primaries(bindings, absent))
     warnings: list[dict] = []
     if "ebitda" not in primaries or "interest" not in primaries:
         subject = "ebitda" if "ebitda" not in primaries else "interest"

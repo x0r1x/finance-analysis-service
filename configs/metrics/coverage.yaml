@@ -27,6 +27,8 @@ metrics:
         denominator: {plus: [interest, principal]}
         window: LTM
       ocf_covenant:
+        formula_id: dscr.ocf_covenant
+        definition_version: dscr.ocf_covenant@1
         numerator: {plus: [operating_cash_flow, interest], minus: [capex]}
         denominator: {plus: [interest, principal]}
         window: LTM
@@ -174,4 +176,3 @@ metrics:
     definition: "Чистый денежный поток за период: приток денежных средств минус отток денежных средств."
     numerator: {plus: [cash_inflow], minus: [cash_outflow]}
     window: period
-tolerance: "0.005"

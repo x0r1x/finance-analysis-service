@@ -24,6 +24,7 @@ from finance_analysis.domain.housing_dscr import (
     collect_interval,
     housing_dscr,
 )
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import aligned_keys, quantize_ratio
 
 _FAMILY = frozenset({"adscr", "dscr_min", "dscr_avg"})
@@ -167,6 +168,8 @@ def housing_cover(
     return _family(metric, facts, bindings, periods, sign_convention, absent, profile, direction, basis)
 
 
+@implements("llcr", "llcr.cbr590")
+@implements("llcr", "llcr.domrf")
 def _llcr(facts, bindings, periods, convention, absent, profile, variant):
     choice = profile_variant(profile, "llcr_definition") or variant or "cbr590"
     if choice not in _NOMINAL:
@@ -274,6 +277,7 @@ def _family(metric, facts, bindings, periods, convention, absent, profile, direc
     return _envelope(metric, rows, _status(rows), variant="housing", warnings=series.get("warnings") or [])
 
 
+@implements("dscr_min", "dscr_min.housing")
 def _minimum(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
     if blocked:
@@ -308,6 +312,7 @@ def _minimum(axis, members):
     )
 
 
+@implements("dscr_avg", "dscr_avg.housing")
 def _average(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
     excluded = [row["period_id"] for row in members if row["status"] == "no_debt_service"]
@@ -358,6 +363,7 @@ def _average(axis, members):
     ]
 
 
+@implements("adscr", "adscr.housing")
 def _adscr(axis, members, ordered, direction):
     by_period = {row["period_id"]: row for row in members}
     months = grain_months(ordered[0].get("grain") if ordered else None)
@@ -401,6 +407,7 @@ def _adscr(axis, members, ordered, direction):
     return rows
 
 
+@implements("escrow_blended_rate", "escrow_blended_rate")
 def _rate(facts, bindings, periods, convention, absent, profile):
     scale = (profile or {}).get("escrow_rate_scale")
     problem = None if scale is None else scale_error(scale)

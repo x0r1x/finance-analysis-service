@@ -23,6 +23,7 @@ from finance_analysis.domain.cover_metrics import (
 )
 from finance_analysis.domain.free_cash_flow import free_cash_flow
 from finance_analysis.domain.mapping import marked_line_code
+from finance_analysis.domain.metric_contract import BoundInputs, implements
 from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
@@ -37,6 +38,7 @@ from finance_analysis.domain.metrics import (
     aligned_keys,
     confirm_paid_interest,
     coverage_ratio,
+    dscr_pf,
     ebitda_definition,
     interest_choice,
     lease_interest_coverage,
@@ -189,6 +191,7 @@ def resolve_covenant(
     return _parse(raw), "profile", ref, []
 
 
+@implements("dscr", "dscr.corporate_covenant")
 def covenant_dscr(
     *,
     facts: list[dict],
@@ -242,6 +245,57 @@ def covenant_dscr(
     if source == "default" and result["status"] == "succeeded":
         notes = [*notes, *_mismatch(result["rows"], facts, bindings, periods, absent)]
     return {**result, "warnings": [*notes, *result["warnings"]], "definition_source": source, "definition_ref": ref}
+
+
+# Состав каталога dscr.ocf_covenant. interest_paid — запасной вход по interest_order, а не синоним interest: это разные понятия.
+OCF_COVENANT_INPUTS = ("operating_cash_flow", "interest", "capex", "principal")
+OCF_COVENANT_OPTIONAL = ("interest_paid",)
+
+
+@implements(
+    "dscr",
+    "dscr.ocf_covenant",
+    version="dscr.ocf_covenant@1",
+    inputs=OCF_COVENANT_INPUTS,
+    optional_inputs=OCF_COVENANT_OPTIONAL,
+)
+def dscr_ocf_covenant(
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    default: Composed,
+    concepts: frozenset[str],
+    money: frozenset[str],
+    profile: dict | None = None,
+    profile_ref: str | None = None,
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+    interest_order: dict | None = None,
+    row_fallbacks: dict | None = None,
+    composed: dict[str, Composed] | None = None,
+    aggregations: Mapping[str, str] | None = None,
+) -> dict:
+    """OCF-ковенант по составу каталога. Нет входов состава — метрика не считается, CFADS не подставляется."""
+
+    return covenant_dscr(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        default=default,
+        concepts=concepts,
+        money=money,
+        profile=profile,
+        profile_ref=profile_ref,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        absent=absent,
+        interest_order=interest_order,
+        row_fallbacks=row_fallbacks,
+        composed=composed,
+        aggregations=aggregations,
+    )
 
 
 def composed_ratio(
@@ -1121,6 +1175,7 @@ def _depreciation_grain_mismatch(grains: set[int], period: dict) -> bool:
     return months not in grains
 
 
+@implements("icr", "icr.bank")
 def bank_icr(
     *,
     facts: list[dict],
@@ -1427,6 +1482,7 @@ def _concept_amount(name, series, period, ordered, aligned, basis, quarter: bool
     return total, None
 
 
+@implements("dscr", "dscr.cash_covenant", inputs=_CASH_CORE, optional_inputs=(_CASH_OTHER,))
 def cash_covenant_dscr(
     *,
     facts: list[dict],
@@ -1451,7 +1507,7 @@ def cash_covenant_dscr(
         if note:
             missing["warnings"] = [*missing["warnings"], note]
         return missing
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(_CASH_CORE, _primaries(bindings, absent), optional=(_CASH_OTHER,))
     inputs = list(needed)
     if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
         return _refused("dscr", periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)
@@ -1710,6 +1766,24 @@ def select_ratio(
             absent=common.get("absent") or frozenset(),
             profile=profile,
         )
+    if metric == "dscr" and (variant == "ocf_covenant" or named == "ocf_covenant"):
+        return dscr_ocf_covenant(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common["sign_convention"],
+            marker_class=common["marker_class"],
+            absent=common["absent"],
+            profile=profile,
+            profile_ref=profile_ref,
+            default=composed["dscr.ocf_covenant"],
+            concepts=concepts,
+            money=money,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            composed=composed,
+            aggregations=aggregations,
+        )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         return covenant_dscr(
             facts=common["facts"],
@@ -1727,6 +1801,13 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             composed=composed,
             aggregations=aggregations,
+        )
+    if metric == "dscr" and variant == "pf":
+        return dscr_pf(
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            profile=profile,
+            **common,
         )
     if metric == "icr" and bank_requested(variant, profile):
         return bank_icr(

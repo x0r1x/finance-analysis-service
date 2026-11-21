@@ -1432,6 +1432,160 @@ def test_select_ratio_uses_named_profile_variant_for_any_book():
     assert all(row.get("value") != Decimal("2.2000000000") for row in plain["rows"])
 
 
+def test_ocf_covenant_uses_the_catalog_formula_without_a_profile(monkeypatch):
+    """OCF не равен CFADS: без профиля считается состав каталога, не coverage_ratio."""
+
+    from finance_analysis.domain import covenant
+    from finance_analysis.domain.metrics import coverage_ratio, quantize_ratio
+
+    called: list[str] = []
+
+    def watch(name, real):
+        def wrapped(*args, **kwargs):
+            called.append(name)
+            return real(*args, **kwargs)
+
+        return wrapped
+
+    monkeypatch.setattr(covenant, "cash_covenant_dscr", watch("cash_covenant_dscr", covenant.cash_covenant_dscr))
+    monkeypatch.setattr(covenant, "covenant_dscr", watch("covenant_dscr", covenant.covenant_dscr))
+    monkeypatch.setattr(covenant, "dscr_ocf_covenant", watch("dscr_ocf_covenant", covenant.dscr_ocf_covenant))
+    monkeypatch.setattr(covenant, "coverage_ratio", watch("coverage_ratio", coverage_ratio))
+    monkeypatch.setattr(covenant, "dscr_pf", watch("dscr_pf", covenant.dscr_pf))
+
+    catalog = _catalog()
+    route = {
+        "profile_ref": None,
+        "composed": catalog.composed,
+        "concepts": _CONCEPTS | {"operating_cash_flow", "cfads", "debt_service", "interest_paid"},
+        "money": _MONEY | {"cfads", "debt_service", "interest_paid"},
+        "interest_order": catalog.interest_order,
+        "row_fallbacks": catalog.row_fallbacks,
+    }
+    base = {
+        "facts": [_fact("cf", "Y1", "100"), _fact("ds", "Y1", "40")],
+        "bindings": [_bind("cfads", "cf"), _bind("debt_service", "ds")],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    profile_book = {
+        "facts": [
+            _fact("o", "Y1", "100"),
+            _fact("i", "Y1", "-20"),
+            _fact("c", "Y1", "-10"),
+            _fact("p", "Y1", "-30"),
+        ],
+        "bindings": [
+            _bind("operating_cash_flow", "o"),
+            _bind("interest", "i"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    called.clear()
+    plain = select_ratio("dscr", "ocf_covenant", profile_book, profile=None, **route)
+    assert called[0] == "dscr_ocf_covenant"
+    assert "coverage_ratio" not in called
+    assert plain["rows"][0]["value"] == Decimal("2.2000000000")
+
+    called.clear()
+    missing = select_ratio("dscr", "ocf_covenant", base, profile=None, **route)
+    assert "coverage_ratio" not in called
+    assert missing["status"] == "missing_input"
+    assert missing["needs_input"][0]["subject"] == "operating_cash_flow"
+    assert "cfads" not in missing.get("missing_inputs", [])
+    assert all(row.get("value") != Decimal("2.5000000000") for row in missing["rows"])
+
+    called.clear()
+    named = select_ratio(
+        "dscr",
+        "ocf_covenant",
+        profile_book,
+        profile={"dscr_definition": {"variant": "ocf_covenant"}},
+        **route,
+    )
+    assert called[0] == "dscr_ocf_covenant"
+    assert "coverage_ratio" not in called
+    assert named["definition_source"] == "profile"
+    assert named["rows"][0]["value"] == Decimal("2.2000000000")
+
+    called.clear()
+    cash = select_ratio(
+        "dscr",
+        "cash_covenant",
+        _cash_common(_cash_facts("Y1"), _cash_bindings(), [_year()]),
+        profile=None,
+        **route,
+    )
+    assert called == ["cash_covenant_dscr"]
+    assert cash["rows"][0]["variant"] == "cash_covenant"
+    assert cash["rows"][0]["value"] == quantize_ratio(Decimal(90) / Decimal(70))
+
+
+def test_ocf_covenant_falls_back_to_interest_paid():
+    """interest_paid — запасной вход порядка, не синоним interest."""
+
+    catalog = _catalog()
+    route = {
+        "profile_ref": None,
+        "composed": catalog.composed,
+        "concepts": _CONCEPTS | {"operating_cash_flow", "interest_paid"},
+        "money": _MONEY | {"interest_paid"},
+        "interest_order": catalog.interest_order,
+        "row_fallbacks": catalog.row_fallbacks,
+    }
+    paid = {
+        "facts": [
+            _fact("o", "Y1", "100"),
+            _fact("paid", "Y1", "-20"),
+            _fact("c", "Y1", "-10"),
+            _fact("p", "Y1", "-30"),
+        ],
+        "bindings": [
+            _bind("operating_cash_flow", "o"),
+            _bind("interest_paid", "paid"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    got = select_ratio("dscr", "ocf_covenant", paid, profile=None, **route)
+    assert got["rows"][0]["value"] == Decimal("2.2000000000")
+    assert "interest_paid" in got["rows"][0]["inputs"]
+    assert "interest" not in got["rows"][0]["inputs"]
+    fallback = next(item for item in got["warnings"] if item["code"] == "interest_basis_fallback")
+    assert fallback["params"]["concept"] == "interest_paid"
+
+    neither = {
+        **paid,
+        "facts": [_fact("o", "Y1", "100"), _fact("c", "Y1", "-10"), _fact("p", "Y1", "-30")],
+        "bindings": [
+            _bind("operating_cash_flow", "o"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+    }
+    missing = select_ratio("dscr", "ocf_covenant", neither, profile=None, **route)
+    assert missing["status"] == "missing_input"
+    assert missing["needs_input"][0]["subject"] == "interest"
+    assert all(row.get("value") is None for row in missing["rows"])
+
+
 async def test_window_fold_follows_concept_aggregation(monkeypatch):
     from pathlib import Path
 

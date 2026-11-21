@@ -137,7 +137,15 @@ async def _learn(command: str) -> None:
 
 def _check_config() -> None:
     from finance_analysis.application.financial_catalog import load_financial_catalog
-    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.application.model_types import (
+        load_coverage_document,
+        load_model_types,
+    )
+    from finance_analysis.domain.metric_contract import (
+        ImplementationContractError,
+        check_registry,
+        load_implementations,
+    )
     from finance_analysis.domain.validation.catalog_integrity import (
         CatalogIntegrityError,
     )
@@ -146,7 +154,9 @@ def _check_config() -> None:
     try:
         catalog = load_model_types()
         financial = load_financial_catalog(model_types=catalog)
-    except (ModelTypeInvalid, CatalogIntegrityError) as exc:
+        load_implementations()
+        check_registry(load_coverage_document()["metrics"])
+    except (ModelTypeInvalid, CatalogIntegrityError, ImplementationContractError) as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
     print(
