@@ -6,7 +6,7 @@ import pytest
 
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.domain.glossary import GlossaryInvalid, build_package
-from finance_analysis.domain.relations import RELATION_TYPES, permits
+from finance_analysis.domain.relations import RELATION_TYPES, RelationType, permits
 
 _DICTS = {
     "flows": {"inflow": ["приток"]},
@@ -53,9 +53,10 @@ def test_registry_declares_every_type_and_keeps_substitution_closed():
         "requires",
     }
     assert set(RELATION_TYPES) == names
+    # Вид конца не хранится: узел и так понятие пакета, отдельная константа concept сверяла бы себя с собой.
+    assert "source_kind" not in RelationType.__dataclass_fields__
+    assert "target_kind" not in RelationType.__dataclass_fields__
     for spec in RELATION_TYPES.values():
-        assert spec.source_kind == "concept"
-        assert spec.target_kind == "concept"
         assert spec.direction in {"directed", "symmetric"}
         assert spec.allows_substitution is False
         assert spec.participates_in_aggregation is False

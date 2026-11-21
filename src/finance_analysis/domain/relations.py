@@ -31,7 +31,12 @@ _MEASURE = frozenset({"measure"})
 
 @dataclass(frozen=True)
 class RelationType:
-    """Один тип отношения. Неактивный тип в данные каталога не принимается."""
+    """Один тип отношения. Неактивный тип в данные каталога не принимается.
+
+    Отдельного вида конца нет. Источник и цель — понятия пакета: чужая цель
+    отвергается как отсутствующее понятие. Поля вида ставили бы на каждый
+    узел константу ``concept`` и сравнивали её саму с собой.
+    """
 
     name: str
     title: str
@@ -47,8 +52,6 @@ class RelationType:
     source_roles: frozenset[str]
     target_roles: frozenset[str]
     same_dimension: bool
-    source_kind: str = "concept"
-    target_kind: str = "concept"
 
     @property
     def direction(self) -> str:
@@ -196,8 +199,9 @@ def constraint_errors(
 ) -> list[str]:
     """Метки нарушений схемы. Узлы — id → (роль, размерность), рёбра — (источник, тип, цель).
 
-    Здесь цель, роль, размерность, направление и обязательное обратное ребро.
-    Циклы и опубликованное поле `broader` проверяются отдельно.
+    Узел этой карты — понятие. Здесь цель, роль, размерность, направление и
+    обязательное обратное ребро. Циклы и опубликованное поле `broader`
+    проверяются отдельно.
     """
 
     catalog = RELATION_TYPES if types is None else types
