@@ -148,6 +148,9 @@ def test_same_key_cannot_register_twice():
     def sample() -> int:
         return 1
 
+    def other() -> int:
+        return 2
+
     key = ("__probe__", "__probe__")
     marked = implements(*key, version="probe", inputs=("left",))(sample)
     try:
@@ -156,6 +159,41 @@ def test_same_key_cannot_register_twice():
         assert REGISTRY[key].function is sample
         assert REGISTRY[key].inputs == ("left",)
         with pytest.raises(DuplicateImplementation):
-            implements(*key)(sample)
+            implements(*key)(other)
     finally:
         REGISTRY.pop(key, None)
+
+
+def test_same_qualified_name_registers_again():
+    def sample() -> int:
+        return 1
+
+    def reloaded() -> int:
+        return 2
+
+    reloaded.__module__ = sample.__module__
+    reloaded.__qualname__ = sample.__qualname__
+    key = ("__probe__", "__probe__.reload")
+    implements(*key, version="1")(sample)
+    try:
+        implements(*key, version="2", inputs=("cfads",))(sample)
+        assert REGISTRY[key].function is sample
+        assert REGISTRY[key].version == "2"
+        implements(*key)(reloaded)
+        assert REGISTRY[key].function is reloaded
+        assert REGISTRY[key].function() == 2
+    finally:
+        REGISTRY.pop(key, None)
+
+
+def test_reload_of_implementation_module_keeps_the_key():
+    import importlib
+
+    import finance_analysis.domain.cash_flow as cash_flow
+
+    _load_implementations()
+    importlib.reload(cash_flow)
+    item = REGISTRY[("ncf_period", "ncf_period")]
+    assert item.function.__module__ == "finance_analysis.domain.cash_flow"
+    assert item.function.__name__ == "net_cash_flow"
+    assert item.inputs == ("cash_inflow", "cash_outflow")

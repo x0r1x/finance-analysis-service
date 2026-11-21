@@ -22,6 +22,10 @@ class Implementation:
 REGISTRY: dict[tuple[str, str], Implementation] = {}
 
 
+def _qualified(function: Callable[..., object]) -> str:
+    return f"{function.__module__}.{function.__qualname__}"
+
+
 def implements(
     metric_id: str,
     formula_id: str,
@@ -29,11 +33,12 @@ def implements(
     version: str = "",
     inputs: tuple[str, ...] = (),
 ):
-    """Помечает функцию реализации. Повтор того же ключа — ошибка."""
+    """Помечает функцию реализации. Другая функция на том же ключе — ошибка."""
 
     def decorate(function: Callable[..., object]) -> Callable[..., object]:
         key = (metric_id, formula_id)
-        if key in REGISTRY:
+        current = REGISTRY.get(key)
+        if current is not None and _qualified(current.function) != _qualified(function):
             raise DuplicateImplementation(f"реализация уже зарегистрирована: {metric_id} {formula_id}")
         REGISTRY[key] = Implementation(metric_id, formula_id, version, function, tuple(inputs))
         return function
