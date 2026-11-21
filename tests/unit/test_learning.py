@@ -34,8 +34,10 @@ def _binding(key, concept, source="inferred", status="bound"):
     return {"binding_key": key, "row_key": key, "effective_concept": concept, "is_primary": True, "status": status, "source": source}
 
 
-def _input(values, precedents, bindings, rows=None):
-    rows = rows or [{"binding_key": key, "row_key": key, "label": key} for key in values]
+def _input(values, precedents, bindings, rows=None, currency=None):
+    if rows is None:
+        extra = {"currency": currency} if currency else {}
+        rows = [{"binding_key": key, "row_key": key, "label": key, **extra} for key in values]
     return LabelingInput(
         rows=rows,
         values={key: dict(zip(P, map(Decimal, series), strict=True)) for key, series in values.items()},
@@ -62,7 +64,12 @@ def test_identity_needs_human_components_and_rollforward():
     precedents = {"total": {"int", "prn"}, "bal": {"bal", "prn"}}
     machine = _input(values, precedents, [_binding("int", "interest"), _binding("prn", "principal")])
     assert identity(machine) == []
-    human = _input(values, precedents, [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")])
+    human = _input(
+        values,
+        precedents,
+        [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")],
+        currency="RUB",
+    )
     assert [(v.binding_key, v.concept) for v in identity(human)] == [("total", "debt_service")]
     assert [(v.binding_key, v.concept) for v in rollforward(human)] == [("bal", "debt_outstanding")]
     cash = _input(
@@ -90,7 +97,7 @@ def test_identity_follows_composed_of_when_the_identity_file_is_longer():
         "both": [15, 15, 15, 15, 15],
     }
     data = LabelingInput(
-        rows=[{"binding_key": key, "row_key": key, "label": key} for key in values],
+        rows=[{"binding_key": key, "row_key": key, "label": key, "currency": "RUB"} for key in values],
         values={key: dict(zip(P, map(Decimal, series), strict=True)) for key, series in values.items()},
         precedents={"only": {"int"}, "both": {"int", "prn"}},
         bindings={
@@ -105,6 +112,23 @@ def test_identity_follows_composed_of_when_the_identity_file_is_longer():
         order={period: index for index, period in enumerate(P)},
     )
     assert [(vote.binding_key, vote.concept) for vote in identity(data)] == [("only", "debt_service")]
+
+
+def test_identity_abstains_unless_one_known_currency():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    same = _input(values, precedents, bindings, currency="RUB")
+    assert [(vote.binding_key, vote.polarity) for vote in identity(same)] == [("total", "+")]
+    mixed_rows = [
+        {"binding_key": "int", "row_key": "int", "label": "int", "currency": "RUB"},
+        {"binding_key": "prn", "row_key": "prn", "label": "prn", "currency": "USD"},
+        {"binding_key": "total", "row_key": "total", "label": "total", "currency": "RUB"},
+    ]
+    mixed = _input(values, precedents, bindings, rows=mixed_rows)
+    assert identity(mixed) == []
+    unknown = _input(values, precedents, bindings)
+    assert identity(unknown) == []
 
 
 def test_unit_sign_votes_against():

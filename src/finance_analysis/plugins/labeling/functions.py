@@ -72,8 +72,36 @@ def _identity_parts(data: LabelingInput) -> dict[str, tuple[str, ...]]:
     return found
 
 
+def _known_currency(data: LabelingInput, row_key: str) -> str | None:
+    """Валюта строки книги. Пустое поле — неизвестная валюта, из единицы не выводится."""
+
+    for row in data.rows:
+        if row.get("row_key") != row_key:
+            continue
+        raw = row.get("currency")
+        if not isinstance(raw, str):
+            return None
+        text = raw.strip()
+        return text.casefold() if text else None
+    return None
+
+
+def _one_currency(data: LabelingInput, row_keys: list[str]) -> bool:
+    """Итог и части в одной известной валюте. Иначе сверка воздерживается."""
+
+    found = [_known_currency(data, key) for key in row_keys]
+    if any(item is None for item in found):
+        return False
+    return len(set(found)) == 1
+
+
 def identity(data: LabelingInput) -> list[Vote]:
-    """Строка по формуле и значениям равна сумме привязанных людьми слагаемых → голос за левую часть."""
+    """Строка по формуле и значениям равна сумме привязанных людьми слагаемых → голос за левую часть.
+
+    Голос только если у итога и всех частей одна известная валюта строки.
+    Разные валюты и неизвестная валюта — воздержание, не голос «против»:
+    совпавшие числа в разных валютах левую часть не опровергают.
+    """
 
     keys = _key_of(data)
     votes = []
@@ -85,6 +113,8 @@ def identity(data: LabelingInput) -> list[Vote]:
             if row_key in rows or row_key not in keys:
                 continue
             if not set(rows) <= data.precedents.get(row_key, set()):
+                continue
+            if not _one_currency(data, [row_key, *rows]):
                 continue
             series = data.values[row_key]
             pairs = []
