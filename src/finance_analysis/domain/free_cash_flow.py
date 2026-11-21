@@ -45,7 +45,12 @@ _FINANCING_SECTION = (
 _GUARDED = ("operating_cash_flow", "capex")
 
 
-@implements("fcff", "fcff")
+@implements(
+    "fcff",
+    "fcff",
+    inputs=("operating_cash_flow", "capex"),
+    optional_inputs=("interest", "interest_paid", "income_tax_rate"),
+)
 def free_cash_flow(
     *,
     facts: list[dict],

@@ -7,6 +7,7 @@ import pytest
 from finance_analysis.application.model_types import load_coverage_document
 from finance_analysis.domain.metric_contract import (
     COMMON_ROUTE,
+    DYNAMIC_INPUTS,
     REGISTRY,
     BoundInputs,
     DuplicateImplementation,
@@ -44,16 +45,16 @@ _ROUTE = {
         "covenant",
         "cash_covenant_dscr",
         "",
-        ("operating_cash_flow", "interest_paid", "capex", "principal", "other_financial_debt_service"),
+        ("operating_cash_flow", "interest_paid", "capex", "principal"),
     ),
     ("icr", "icr"): ("metrics", "coverage_ratio", "", ("ebitda", "ebit", "interest", "interest_paid")),
     ("icr", "icr.bank"): ("covenant", "bank_icr", "", ()),
     ("icr_ebit", "icr_ebit"): ("metrics", "coverage_ratio", "", ("ebit", "interest", "interest_paid")),
-    ("adscr", "adscr"): ("cover_metrics", "adscr", "", ()),
+    ("adscr", "adscr"): ("cover_metrics", "adscr", "", ("cfads", "debt_service")),
     ("adscr", "adscr.housing"): ("housing_cover", "_adscr", "", ()),
-    ("dscr_min", "dscr_min"): ("cover_metrics", "dscr_reductions", "", ()),
+    ("dscr_min", "dscr_min"): ("cover_metrics", "dscr_reductions", "", ("cfads", "debt_service")),
     ("dscr_min", "dscr_min.housing"): ("housing_cover", "_minimum", "", ()),
-    ("dscr_avg", "dscr_avg"): ("cover_metrics", "dscr_reductions", "", ()),
+    ("dscr_avg", "dscr_avg"): ("cover_metrics", "dscr_reductions", "", ("cfads", "debt_service")),
     ("dscr_avg", "dscr_avg.housing"): ("housing_cover", "_average", "", ()),
     ("llcr", "llcr"): (
         "cover_metrics",
@@ -79,7 +80,7 @@ _ROUTE = {
         "",
         (),
     ),
-    ("fcff", "fcff"): ("free_cash_flow", "free_cash_flow", "", ()),
+    ("fcff", "fcff"): ("free_cash_flow", "free_cash_flow", "", ("operating_cash_flow", "capex")),
     ("ncf", "ncf"): (
         "net_cash_flow",
         "net_cash_flow",
@@ -108,6 +109,12 @@ _ROUTE = {
     ("ncf_period", "ncf_period"): ("cash_flow", "net_cash_flow", "", ("cash_inflow", "cash_outflow")),
 }
 
+# Условные входы: профиль, concept.absent, щит процентов. Остальные реализации — пусто.
+_OPTIONAL = {
+    ("dscr", "dscr.cash_covenant"): ("other_financial_debt_service",),
+    ("fcff", "fcff"): ("interest", "interest_paid", "income_tax_rate"),
+}
+
 
 def _catalog_keys() -> set[tuple[str, str]]:
     document = load_coverage_document()
@@ -134,6 +141,7 @@ def test_registry_keys_match_coverage_formulas():
         assert item.function.__name__ == name
         assert item.version == version
         assert item.inputs == inputs
+        assert item.optional_inputs == _OPTIONAL.get(key, ())
 
 
 def test_same_key_cannot_register_twice():
@@ -241,6 +249,48 @@ def test_declared_inputs_may_exceed_the_catalog():
     check_registry(
         {"llcr": {"numerator": ["cfads"], "denominator": "debt_outstanding", "rate": "discount_rate"}}
     )
+
+
+def test_empty_inputs_outside_dynamic_inputs_fail():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__")
+    implements(*key, optional_inputs=("capex",))(sample)
+    try:
+        with pytest.raises(ImplementationContractError, match="__probe__: пустые inputs вне DYNAMIC_INPUTS"):
+            check_registry({"__probe__": {"numerator": ["cfads"]}})
+    finally:
+        REGISTRY.pop(key, None)
+
+
+def test_optional_input_covers_a_catalog_concept():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__")
+    implements(*key, inputs=("cfads",), optional_inputs=("capex",))(sample)
+    try:
+        check_registry({"__probe__": {"numerator": {"plus": ["cfads"], "minus": ["capex"]}}})
+        with pytest.raises(ImplementationContractError, match="__probe__: необъявленные входы: mystery"):
+            check_registry({"__probe__": {"numerator": ["cfads", "mystery"]}})
+    finally:
+        REGISTRY.pop(key, None)
+
+
+def test_dynamic_inputs_names_every_empty_declaration():
+    load_implementations()
+    empty = {key for key, item in REGISTRY.items() if not item.inputs}
+    assert empty == set(DYNAMIC_INPUTS)
+    assert all(isinstance(reason, str) and reason.strip() for reason in DYNAMIC_INPUTS.values())
+
+
+def test_bound_inputs_allows_an_optional_name():
+    bound = BoundInputs(("cfads",), {"cfads": 1, "capex": 2}, optional=("capex",))
+    assert bound.get("capex") == 2
+    assert "capex" in bound
+    with pytest.raises(UndeclaredInput, match="вход не объявлен: ebit"):
+        bound["ebit"]
 
 
 def test_empty_inputs_skip_the_catalog_composition():

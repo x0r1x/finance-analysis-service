@@ -26,12 +26,17 @@ class UndeclaredInput(KeyError):
 
 
 class BoundInputs:
-    """Чтение входов формулы. Имя вне объявленного набора — ошибка."""
+    """Чтение входов формулы. Имя вне обязательных и условных — ошибка."""
 
     __slots__ = ("_declared", "_values")
 
-    def __init__(self, declared: tuple[str, ...], values: Mapping[str, object]) -> None:
-        self._declared = frozenset(declared)
+    def __init__(
+        self,
+        declared: tuple[str, ...],
+        values: Mapping[str, object],
+        optional: tuple[str, ...] = (),
+    ) -> None:
+        self._declared = frozenset(declared) | frozenset(optional)
         self._values = values
 
     def get(self, name: str, default: object = None) -> object:
@@ -60,6 +65,7 @@ class Implementation:
     version: str
     function: Callable[..., object]
     inputs: tuple[str, ...]
+    optional_inputs: tuple[str, ...] = ()
 
 
 REGISTRY: dict[tuple[str, str], Implementation] = {}
@@ -75,6 +81,7 @@ def implements(
     *,
     version: str = "",
     inputs: tuple[str, ...] = (),
+    optional_inputs: tuple[str, ...] = (),
 ):
     """Помечает функцию реализации. Другая функция на том же ключе — ошибка."""
 
@@ -83,11 +90,34 @@ def implements(
         current = REGISTRY.get(key)
         if current is not None and _qualified(current.function) != _qualified(function):
             raise DuplicateImplementation(f"реализация уже зарегистрирована: {metric_id} {formula_id}")
-        REGISTRY[key] = Implementation(metric_id, formula_id, version, function, tuple(inputs))
+        REGISTRY[key] = Implementation(
+            metric_id,
+            formula_id,
+            version,
+            function,
+            tuple(inputs),
+            tuple(optional_inputs),
+        )
         return function
 
     return decorate
 
+
+# Пустые inputs законны только здесь: состав зависит от профиля, стандарта или аргумента.
+DYNAMIC_INPUTS: dict[tuple[str, str], str] = {
+    ("dscr", "dscr.corporate_covenant"): "состав заменяет профиль",
+    ("dscr", "dscr.housing"): "флаги профиля меняют знаменатель",
+    ("icr", "icr.bank"): "стандарт и флаг аренды меняют числитель",
+    ("adscr", "adscr.housing"): "ряд считает housing_dscr, состав зависит от профиля",
+    ("dscr_min", "dscr_min.housing"): "ряд считает housing_dscr",
+    ("dscr_avg", "dscr_avg.housing"): "ряд считает housing_dscr",
+    ("llcr", "llcr.cbr590"): "гарантированные деньги зависят от профиля, долг читается шире формулы",
+    ("llcr", "llcr.domrf"): "лимит и старшее тело читаются по правилу варианта",
+    ("total_debt", "total_debt"): "набор зависит от debt_standard и флага аренды",
+    ("escrow_blended_rate", "escrow_blended_rate"): "входы читаются только при шкале профиля",
+    ("debt_incl_off_balance", "debt_incl_off_balance"): "слагаемые приходят аргументом из каталога",
+    ("fcf_identity", "fcf_identity"): "без названного варианта ряд не читается",
+}
 
 # Нет отдельной функции: лестница считает формулу общим маршрутом.
 # Четыре метрики ниже — select_ratio → composed_ratio, состав целиком из каталога.
@@ -180,8 +210,11 @@ def _check_formula(
         problems.append(f"{formula_id}: нет реализации в реестре")
         return
     if not item.inputs:
+        if (metric_id, formula_id) not in DYNAMIC_INPUTS:
+            problems.append(f"{formula_id}: пустые inputs вне DYNAMIC_INPUTS")
         return
-    extra = sorted(composition_concepts(body) - set(item.inputs))
+    declared = set(item.inputs) | set(item.optional_inputs)
+    extra = sorted(composition_concepts(body) - declared)
     if extra:
         problems.append(f"{formula_id}: необъявленные входы: {', '.join(extra)}")
 

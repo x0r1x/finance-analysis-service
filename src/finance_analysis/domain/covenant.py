@@ -59,8 +59,6 @@ _CYCLE = frozenset({"dscr", "dscr_covenant"})
 _MISMATCH = Decimal("0.005")
 _CASH_OTHER = "other_financial_debt_service"
 _CASH_CORE = ("operating_cash_flow", "interest_paid", "capex", "principal")
-# other объявлен, чтобы чтение было законным. concept.absent по-прежнему убирает слагаемое.
-CASH_COVENANT_INPUTS = (*_CASH_CORE, _CASH_OTHER)
 _CAPITALIZED_INTEREST = re.compile(r"(?<!\d)4224(?!\d)")
 CAPITALIZED_INTEREST = (
     "Проценты в стоимости инвестиционного актива, в надбавку к OCF не входят."
@@ -1482,7 +1480,7 @@ def _concept_amount(name, series, period, ordered, aligned, basis, quarter: bool
     return total, None
 
 
-@implements("dscr", "dscr.cash_covenant", inputs=CASH_COVENANT_INPUTS)
+@implements("dscr", "dscr.cash_covenant", inputs=_CASH_CORE, optional_inputs=(_CASH_OTHER,))
 def cash_covenant_dscr(
     *,
     facts: list[dict],
@@ -1507,7 +1505,7 @@ def cash_covenant_dscr(
         if note:
             missing["warnings"] = [*missing["warnings"], note]
         return missing
-    primaries = BoundInputs(CASH_COVENANT_INPUTS, _primaries(bindings, absent))
+    primaries = BoundInputs(_CASH_CORE, _primaries(bindings, absent), optional=(_CASH_OTHER,))
     inputs = list(needed)
     if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
         return _refused("dscr", periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)

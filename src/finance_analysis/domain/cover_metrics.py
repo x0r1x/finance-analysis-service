@@ -149,7 +149,10 @@ def _missing(metric: str, bindings: list[dict], needed: tuple[str, ...], absent:
     return None
 
 
-@implements("adscr", "adscr")
+_DSCR_CORE = ("cfads", "debt_service")
+
+
+@implements("adscr", "adscr", inputs=_DSCR_CORE)
 def adscr(
     *,
     facts: list[dict],
@@ -250,8 +253,8 @@ def _window(ordered: list[dict], period: dict, direction: str) -> list[dict] | N
     return window
 
 
-@implements("dscr_min", "dscr_min")
-@implements("dscr_avg", "dscr_avg")
+@implements("dscr_min", "dscr_min", inputs=_DSCR_CORE)
+@implements("dscr_avg", "dscr_avg", inputs=_DSCR_CORE)
 def dscr_reductions(
     metric: str,
     *,
