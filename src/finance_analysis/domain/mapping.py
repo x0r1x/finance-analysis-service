@@ -252,16 +252,28 @@ def assign_rows(
     return assigned
 
 
+def structure_failures(row: dict, concept, *, label: str) -> tuple[str, ...]:
+    """Коды жёсткого отсева стадии 4. Пустой кортеж — та же проверка, что `structure_pass`.
+
+    Вероятность по-прежнему обнуляется в калибраторе. Здесь только имена причин.
+    """
+
+    found: list[str] = []
+    unit = str(row.get("unit_decision") or row.get("unit") or "").lower()
+    if concept.unit == "money" and ("%" in label or unit in _NOT_MONEY):
+        found.append("unit_mismatch")
+    if concept.unit == "ratio" and unit in _MONEY:
+        found.append("unit_mismatch")
+    scanned = label_scan(label)
+    if any(label_scan(item) in scanned for item in concept.negative):
+        found.append("negative_label")
+    return tuple(found)
+
+
 def structure_pass(row: dict, concept, *, label: str) -> bool:
     """Стадия 4: единица, отсев %-строк и отрицательных меток понятия."""
 
-    unit = str(row.get("unit_decision") or row.get("unit") or "").lower()
-    if concept.unit == "money" and ("%" in label or unit in _NOT_MONEY):
-        return False
-    if concept.unit == "ratio" and unit in _MONEY:
-        return False
-    scanned = label_scan(label)
-    return not any(label_scan(item) in scanned for item in concept.negative)
+    return not structure_failures(row, concept, label=label)
 
 
 def decide(
