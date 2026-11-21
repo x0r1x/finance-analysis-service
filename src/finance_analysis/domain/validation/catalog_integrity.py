@@ -23,7 +23,7 @@ INTEREST_ORDER_CONCEPTS = frozenset({INTEREST_CANONICAL, "interest_paid"})
 # Декларативные rule id. Рантайм по ним не диспатчит (выбор B).
 MATCHING_RULES = frozenset({"interest_basis_paid"})
 
-_COVERAGE_KEYS = frozenset({"row_fallbacks", "interest_order", "metrics", "tolerance"})
+_COVERAGE_KEYS = frozenset({"row_fallbacks", "interest_order", "metrics"})
 _FALLBACK_KEYS = frozenset({"canonical", "binding_key", "matching"})
 _MATCHING_KEYS = frozenset({"rule"})
 _METRIC_KEYS = frozenset(

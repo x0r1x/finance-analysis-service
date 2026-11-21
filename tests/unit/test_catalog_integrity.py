@@ -296,6 +296,20 @@ def test_nested_unknown_keys_are_rejected():
         validate_catalog_integrity(**payload)
 
 
+def test_coverage_tolerance_is_not_a_catalog_key():
+    from decimal import Decimal
+
+    from finance_analysis.domain.covenant import _MISMATCH
+
+    payload = _repo_payload()
+    document = dict(payload["coverage_document"])
+    document["tolerance"] = "0.005"
+    payload["coverage_document"] = document
+    with pytest.raises(CatalogIntegrityError, match="tolerance"):
+        validate_catalog_integrity(**payload)
+    assert _MISMATCH == Decimal("0.005")
+
+
 def test_unused_row_fallback_is_rejected():
     payload = _repo_payload()
     payload["row_fallbacks"] = {

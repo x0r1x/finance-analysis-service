@@ -174,4 +174,3 @@ metrics:
     definition: "Чистый денежный поток за период: приток денежных средств минус отток денежных средств."
     numerator: {plus: [cash_inflow], minus: [cash_outflow]}
     window: period
-tolerance: "0.005"
