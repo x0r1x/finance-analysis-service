@@ -9,32 +9,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - name: Redis 8.6.7
-        uses: actions/cache@v4
+      - name: Redis 8.6.8
+        uses: actions/cache@v6
         with:
-          path: /tmp/redis-8.6.7
-          key: redis-8.6.7-${{ runner.os }}-v1
+          path: /tmp/redis-8.6.8
+          key: redis-8.6.8-${{ runner.os }}-v1
 
-      - name: Build Redis 8.6.7
+      - name: Build Redis 8.6.8
         run: |
           set -euo pipefail
-          if [[ ! -x /tmp/redis-8.6.7/src/redis-server ]]; then
+          if [[ ! -x /tmp/redis-8.6.8/src/redis-server ]]; then
             sudo apt-get update
             sudo apt-get install -y build-essential
-            curl -fsSL -o /tmp/redis-8.6.7.tar.gz https://github.com/redis/redis/archive/refs/tags/8.6.7.tar.gz
-            rm -rf /tmp/redis-8.6.7
-            tar -C /tmp -xzf /tmp/redis-8.6.7.tar.gz
+            curl -fsSL -o /tmp/redis-8.6.8.tar.gz https://github.com/redis/redis/archive/refs/tags/8.6.8.tar.gz
+            rm -rf /tmp/redis-8.6.8
+            tar -C /tmp -xzf /tmp/redis-8.6.8.tar.gz
             libdir="$(dirname "$(gcc -print-file-name=libstdc++.so)")"
-            make -C /tmp/redis-8.6.7 -j"$(nproc)" BUILD_TLS=no LDFLAGS="-L${libdir}"
+            make -C /tmp/redis-8.6.8 -j"$(nproc)" BUILD_TLS=no LDFLAGS="-L${libdir}"
           fi
-          /tmp/redis-8.6.7/src/redis-server --version
-          echo "FAS_REDIS_SERVER=/tmp/redis-8.6.7/src/redis-server" >> "$GITHUB_ENV"
+          /tmp/redis-8.6.8/src/redis-server --version
+          echo "FAS_REDIS_SERVER=/tmp/redis-8.6.8/src/redis-server" >> "$GITHUB_ENV"
 
       - name: Memory cgroup for chaos
         run: |
