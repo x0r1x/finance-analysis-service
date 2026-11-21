@@ -130,10 +130,11 @@ def _catalog_keys() -> set[tuple[str, str]]:
 def test_registry_keys_match_coverage_formulas():
     load_implementations()
     catalog = _catalog_keys()
-    assert COMMON_ROUTE.isdisjoint(_ROUTE)
-    assert COMMON_ROUTE <= catalog
-    assert set(_ROUTE) | COMMON_ROUTE == catalog
-    assert set(REGISTRY) == catalog - COMMON_ROUTE
+    route = set(COMMON_ROUTE)
+    assert route.isdisjoint(_ROUTE)
+    assert route <= catalog
+    assert set(_ROUTE) | route == catalog
+    assert set(REGISTRY) == catalog - route
     for key, (module, name, version, inputs) in _ROUTE.items():
         item = REGISTRY[key]
         assert (item.metric_id, item.formula_id) == key
@@ -209,6 +210,60 @@ def test_missing_formula_is_named_in_russian():
     metrics = {"probe_metric": {"numerator": ["cfads"], "denominator": "debt_service"}}
     with pytest.raises(ImplementationContractError, match="probe_metric: нет реализации в реестре"):
         check_registry(metrics)
+
+
+_COMPOSED = (
+    "net_debt_ebitda",
+    "escrow_coverage",
+    "total_debt_ebitda",
+    "debt_off_balance_ebitda",
+)
+
+
+@pytest.mark.parametrize("metric_id", _COMPOSED)
+def test_common_route_is_composed_ratio(metric_id, monkeypatch):
+    from finance_analysis.domain import covenant
+    from finance_analysis.domain.model_type import Composed, Side
+
+    called: list[str] = []
+
+    def fake(metric: str, _formula: object, **_kwargs: object) -> dict:
+        called.append(metric)
+        return {"status": "probe", "metric": metric}
+
+    def coverage(**_kwargs: object) -> dict:
+        raise AssertionError("coverage_ratio")
+
+    monkeypatch.setattr(covenant, "composed_ratio", fake)
+    monkeypatch.setattr(covenant, "coverage_ratio", coverage)
+    formula = Composed(Side(("left",), ()), Side(("right",), ()), "LTM")
+    got = covenant.select_ratio(
+        metric_id,
+        None,
+        {
+            "facts": [],
+            "bindings": [],
+            "periods": [],
+            "sign_convention": "outflow_negative",
+            "marker_class": None,
+            "absent": frozenset(),
+        },
+        profile=None,
+        profile_ref=None,
+        composed={metric_id: formula},
+        concepts=frozenset(),
+        money=frozenset(),
+    )
+    assert called == [metric_id]
+    assert got["metric"] == metric_id
+
+
+def test_common_route_without_a_composed_case_fails():
+    assert {(metric, metric) for metric in _COMPOSED} == set(COMMON_ROUTE)
+
+
+def test_common_route_records_a_reason():
+    assert all(isinstance(reason, str) and reason.strip() for reason in COMMON_ROUTE.values())
 
 
 def test_common_route_does_not_need_an_implementation():

@@ -119,16 +119,13 @@ DYNAMIC_INPUTS: dict[tuple[str, str], str] = {
     ("fcf_identity", "fcf_identity"): "без названного варианта ряд не читается",
 }
 
-# Нет отдельной функции: лестница считает формулу общим маршрутом.
-# Четыре метрики ниже — select_ratio → composed_ratio, состав целиком из каталога.
-COMMON_ROUTE: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("net_debt_ebitda", "net_debt_ebitda"),
-        ("escrow_coverage", "escrow_coverage"),
-        ("total_debt_ebitda", "total_debt_ebitda"),
-        ("debt_off_balance_ebitda", "debt_off_balance_ebitda"),
-    }
-)
+# Нет отдельной функции: лестница считает формулу общим маршрутом select_ratio → composed_ratio.
+COMMON_ROUTE: dict[tuple[str, str], str] = {
+    ("net_debt_ebitda", "net_debt_ebitda"): "состав целиком из каталога",
+    ("escrow_coverage", "escrow_coverage"): "состав целиком из каталога",
+    ("total_debt_ebitda", "total_debt_ebitda"): "состав целиком из каталога",
+    ("debt_off_balance_ebitda", "debt_off_balance_ebitda"): "состав из каталога, забаланс только снимает обязательность",
+}
 
 _IMPLEMENTATION_MODULES = (
     "finance_analysis.domain.cash_flow",
