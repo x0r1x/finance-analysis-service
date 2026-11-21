@@ -160,6 +160,80 @@ def test_composed_side_rejects_incompatible_units():
         validate_catalog_integrity(**payload)
 
 
+def _cover(payload, metric: str, variant: str | None = None, **fields):
+    document = dict(payload["coverage_document"])
+    metrics = dict(document["metrics"])
+    body = dict(metrics[metric])
+    if variant is None:
+        body.update(fields)
+    else:
+        variants = dict(body["variants"])
+        spec = dict(variants[variant])
+        spec.update(fields)
+        variants[variant] = spec
+        body["variants"] = variants
+    metrics[metric] = body
+    document["metrics"] = metrics
+    patched = dict(payload)
+    patched["coverage_document"] = document
+    return patched
+
+
+def test_formula_contract_fields_pass_on_metric_and_variant():
+    payload = _cover(
+        _repo_payload(),
+        "dscr",
+        formula_id="dscr",
+        definition_version="dscr@1",
+    )
+    validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", definition_version="dscr@1")
+    validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", formula_id="dscr")
+    validate_catalog_integrity(**payload)
+    payload = _cover(
+        _repo_payload(),
+        "dscr",
+        variant="pf",
+        formula_id="dscr.pf",
+        definition_version="dscr.pf@1",
+    )
+    validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", variant="housing", definition_version="dscr.housing@1")
+    validate_catalog_integrity(**payload)
+
+
+def test_formula_id_must_match_metric_or_variant():
+    payload = _cover(_repo_payload(), "dscr", formula_id="icr")
+    with pytest.raises(CatalogIntegrityError, match="formula_id должен быть dscr"):
+        validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", formula_id="")
+    with pytest.raises(CatalogIntegrityError, match="formula_id должен быть dscr"):
+        validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", variant="pf", formula_id="dscr")
+    with pytest.raises(CatalogIntegrityError, match="formula_id должен быть dscr.pf"):
+        validate_catalog_integrity(**payload)
+
+
+def test_definition_version_must_be_formula_id_at_version():
+    broken = (
+        {"definition_version": "dscr"},
+        {"definition_version": "dscr@"},
+        {"definition_version": "dscr@ "},
+        {"definition_version": ""},
+        {"definition_version": "icr@1"},
+        {"definition_version": 1},
+        {"formula_id": "dscr", "definition_version": "dscr.pf@1"},
+    )
+    for fields in broken:
+        payload = _cover(_repo_payload(), "dscr", **fields)
+        with pytest.raises(CatalogIntegrityError, match="definition_version —"):
+            validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", variant="pf", definition_version="dscr@1")
+    with pytest.raises(CatalogIntegrityError, match="definition_version —"):
+        validate_catalog_integrity(**payload)
+
+
 def test_nested_unknown_keys_are_rejected():
     payload = _repo_payload()
     document = dict(payload["coverage_document"])
@@ -169,6 +243,9 @@ def test_nested_unknown_keys_are_rejected():
     metrics["dscr"] = dscr
     document["metrics"] = metrics
     payload["coverage_document"] = document
+    with pytest.raises(CatalogIntegrityError, match="surprise"):
+        validate_catalog_integrity(**payload)
+    payload = _cover(_repo_payload(), "dscr", variant="pf", surprise=True)
     with pytest.raises(CatalogIntegrityError, match="surprise"):
         validate_catalog_integrity(**payload)
 

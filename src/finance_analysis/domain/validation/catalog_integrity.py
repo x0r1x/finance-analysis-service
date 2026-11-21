@@ -38,6 +38,8 @@ _METRIC_KEYS = frozenset(
         "compare_with",
         "window",
         "definition",
+        "definition_version",
+        "formula_id",
         "status",
         "aggregation",
         "aggregate",
@@ -123,6 +125,7 @@ def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -
     bad = sorted(set(body) - _METRIC_KEYS)
     if bad:
         raise CatalogIntegrityError(f"{name}: неизвестные ключи: {', '.join(bad)}")
+    _formula_contract(name, body)
     if "base" in body:
         base = body.get("base")
         if not isinstance(base, str) or not base:
@@ -159,6 +162,22 @@ def _metric_body_keys(name: str, body: object, *, allow_variants: bool = True) -
             raise CatalogIntegrityError(f"{name}.variants: объект")
         for variant, spec in variants.items():
             _metric_body_keys(f"{name}.{variant}", spec, allow_variants=False)
+
+
+def _formula_contract(name: str, body: Mapping[str, object]) -> None:
+    """Декларативные formula_id и definition_version. Расчёт их не читает."""
+
+    if "formula_id" in body and body.get("formula_id") != name:
+        raise CatalogIntegrityError(f"{name}: formula_id должен быть {name}")
+    if "definition_version" not in body:
+        return
+    version = body.get("definition_version")
+    prefix = f"{name}@"
+    suffix = ""
+    if isinstance(version, str) and version.startswith(prefix):
+        suffix = version[len(prefix):]
+    if not suffix.strip():
+        raise CatalogIntegrityError(f"{name}: definition_version — непустая строка {name}@<версия>")
 
 
 def _rate_names(owner: str, value: object) -> tuple[str, ...]:

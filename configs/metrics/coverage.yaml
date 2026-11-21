@@ -10,6 +10,8 @@ interest_order:
   pf: [interest_paid, interest]
 metrics:
   dscr:
+    formula_id: dscr
+    definition_version: dscr@1
     definition: "CFADS / обслуживание долга. Вариант pf считает это за период. Вариант corporate_covenant считает другой состав и окно LTM."
     numerator: [cfads]
     denominator: debt_service
