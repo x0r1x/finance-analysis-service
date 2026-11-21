@@ -1929,9 +1929,11 @@ def _part(
     """Складывает окно. `ltm` и `last` берутся на конец. `none` и `average` не сворачиваются."""
 
     fold = None if not aggregations else aggregations.get(name)
+    if fold == "average" and len(keys) > 1:
+        return None, "not_folded"
     if keys and ((basis and basis.get(name) == "ltm") or fold == "last"):
         chosen = keys[-1:]
-    elif fold in {"none", "average"} and len(keys) > 1:
+    elif fold == "none" and len(keys) > 1:
         return None, "not_folded"
     else:
         chosen = keys

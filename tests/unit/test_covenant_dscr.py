@@ -1599,3 +1599,39 @@ async def test_window_fold_follows_concept_aggregation(monkeypatch):
     assert final_metric["value"] == Decimal("10.0000000000")
     text = (Path(__file__).resolve().parents[2] / "docs" / "dimensions.md").read_text(encoding="utf-8")
     assert "Окно метрики читает `effective_aggregation`; `average` само не считается." in text
+
+
+def test_named_average_is_not_last_when_the_row_is_ltm():
+    from finance_analysis.domain.covenant import composed_ratio
+    from finance_analysis.domain.model_type import Composed, Side
+
+    periods = [
+        _quarter(1, date(2024, 1, 1), date(2024, 3, 31)),
+        _quarter(2, date(2024, 4, 1), date(2024, 6, 30)),
+        _quarter(3, date(2024, 7, 1), date(2024, 9, 30)),
+        _quarter(4, date(2024, 10, 1), date(2024, 12, 31)),
+    ]
+    formula = Composed(
+        Side(("avg_balance",), ()),
+        Side(("energy_generation",), ()),
+        "LTM",
+    )
+    facts = []
+    for index, balance in ((1, "10"), (2, "20"), (3, "30"), (4, "40")):
+        facts.append(_fact("bal", f"Q{index}", balance))
+        facts.append(_fact("gen", f"Q{index}", "1"))
+    opening = _bind("avg_balance", "bal")
+    opening["evidence"] = {"period_basis": "ltm", "period_basis_source": "header"}
+    got = composed_ratio(
+        "average_cover",
+        formula,
+        facts=facts,
+        bindings=[opening, _bind("energy_generation", "gen")],
+        periods=periods,
+        aggregations={"avg_balance": "average", "energy_generation": "sum"},
+    )
+    final = next(row for row in got["rows"] if row["period_id"] == "Q4")
+    assert got["status"] == "not_computed"
+    assert final["status"] == "not_computed"
+    assert final["reason"] == "not_folded"
+    assert final["value"] is None
