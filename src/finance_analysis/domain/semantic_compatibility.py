@@ -8,6 +8,7 @@ Compatibility — единица, поток или остаток, знак. Ж
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from finance_analysis.domain.candidates import Candidate
@@ -184,3 +185,91 @@ def _verdict(checks: tuple[Check, ...]) -> str:
     if "unknown" in severities:
         return "unknown"
     return "compatible"
+
+
+def metric_use(
+    concept: str,
+    formula_id: str,
+    *,
+    primaries: Mapping[str, object],
+    interest_order: Sequence[str] = (),
+    row: dict | None = None,
+) -> MetricUse:
+    """Отчёт о пригодности имени для формулы.
+
+    Читает кортежи `Implementation` и `interest_choice`. `confirm_paid_interest`
+    не вызывает и основную строку не подменяет. `interest_paid` не становится
+    синонимом `interest`.
+    """
+
+    if not formula_id:
+        raise ValueError("formula_id пуст")
+    from finance_analysis.domain.metric_contract import REGISTRY, load_implementations
+    from finance_analysis.domain.metrics import _paid_interest_row, interest_choice
+
+    load_implementations()
+    item = _implementation(formula_id, REGISTRY)
+    codes = _paid_codes(concept, row, _paid_interest_row)
+    if item is None:
+        return MetricUse(formula_id, "undeclared", None, codes)
+    role = _role(concept, item, REGISTRY)
+    if role is None:
+        return MetricUse(formula_id, "undeclared", None, codes)
+    if role == "dynamic_branch":
+        return MetricUse(formula_id, "declared_inactive", "dynamic", codes)
+    if concept in set(interest_order):
+        chosen, warning = interest_choice(primaries, interest_order)
+        if concept == chosen and isinstance(warning, dict) and warning.get("code") == "interest_basis_fallback":
+            return MetricUse(formula_id, "fallback", role, ("interest_basis_fallback", *codes))
+        if concept == chosen:
+            return MetricUse(formula_id, "usable", role, codes)
+        return MetricUse(formula_id, "declared_inactive", role, codes)
+    if concept in primaries:
+        return MetricUse(formula_id, "usable", role, codes)
+    return MetricUse(formula_id, "declared_inactive", role, codes)
+
+
+def _implementation(formula_id: str, registry: Mapping) -> object | None:
+    exact = registry.get((formula_id, formula_id))
+    if exact is not None:
+        return exact
+    found = [item for (_metric_id, name), item in registry.items() if name == formula_id]
+    if not found:
+        return None
+    if len(found) > 1:
+        raise ValueError(f"formula_id {formula_id} отвечает нескольким реализациям")
+    return found[0]
+
+
+def _role(concept: str, item, registry: Mapping) -> str | None:
+    if concept in item.inputs:
+        return "input"
+    if concept in item.optional_inputs:
+        return "optional"
+    if item.profile_inputs and concept in item.profile_inputs:
+        return "profile"
+    spec = item.dynamic_inputs
+    if spec is None:
+        return None
+    grouped = {name for group in spec.groups for name in group.concepts}
+    if concept in grouped or concept in spec.arguments:
+        return "dynamic"
+    dependent = {name for branch in spec.dependencies for name in branch.concepts}
+    if concept in dependent:
+        return "dynamic_branch"
+    from finance_analysis.domain.metric_contract import _dynamic_names
+
+    names, _missing = _dynamic_names(item, registry, set())
+    if concept in names:
+        return "dynamic_branch"
+    return None
+
+
+def _paid_codes(concept: str, row: dict | None, paid_row) -> tuple[str, ...]:
+    """Код 4123 объясняет строку. 4224 этим кодом не является."""
+
+    if concept not in {"interest", "interest_paid"} or row is None:
+        return ()
+    if paid_row(row, frozenset()):
+        return ("paid_line_4123",)
+    return ()

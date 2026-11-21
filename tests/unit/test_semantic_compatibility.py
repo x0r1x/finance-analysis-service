@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from finance_analysis.application.catalog import load_catalog
 from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.mapping import assign_rows, decide
-from finance_analysis.domain.semantic_compatibility import assess
+from finance_analysis.domain.semantic_compatibility import assess, metric_use
 
 CATALOG = load_catalog()
 
@@ -147,6 +149,56 @@ def test_graph_note_does_not_change_the_stored_concept():
     codes = {check["code"]: check["severity"] for check in item.evidence["compatibility"]["compatibility"]["checks"]}
     assert codes["section"] == "context"
     assert codes["graph_component"] == "context"
+
+
+def test_interest_paid_is_not_a_synonym_and_fallback_keeps_its_code():
+    order = ("interest", "interest_paid")
+    both = {"interest": {"is_primary": True}, "interest_paid": {"is_primary": True}}
+    assert metric_use("interest", "icr", primaries=both, interest_order=order).verdict == "usable"
+    held = metric_use("interest_paid", "icr", primaries=both, interest_order=order)
+    assert held.role == "input" and held.verdict == "declared_inactive"
+    assert "interest_basis_fallback" not in held.codes
+    only_paid = {"interest_paid": {"is_primary": True}}
+    fallen = metric_use("interest_paid", "icr", primaries=only_paid, interest_order=order)
+    assert fallen.verdict == "fallback"
+    assert fallen.codes == ("interest_basis_fallback",)
+    foreign = metric_use("interest_paid", "total_debt", primaries=only_paid, interest_order=order)
+    assert foreign.verdict == "undeclared" and foreign.role is None
+
+
+def test_paid_line_4123_explains_without_replacing_interest():
+    row = {
+        "effective_concept": "interest",
+        "status": "bound",
+        "source": "inferred",
+        "is_primary": True,
+        "line_code": "стр. 4123",
+    }
+    primaries = {"interest": row}
+    order = ("interest", "interest_paid")
+    interest = metric_use("interest", "icr", primaries=primaries, interest_order=order, row=row)
+    paid = metric_use("interest_paid", "icr", primaries=primaries, interest_order=order, row=row)
+    assert list(primaries) == ["interest"]
+    assert interest.verdict == "usable" and interest.codes == ("paid_line_4123",)
+    assert paid.verdict == "declared_inactive" and paid.codes == ("paid_line_4123",)
+    coded = {**row, "line_code": "стр. 4224"}
+    skipped = metric_use("interest", "icr", primaries={"interest": coded}, interest_order=order, row=coded)
+    assert skipped.codes == ()
+    bare = {**row, "line_code": "4123"}
+    assert metric_use("interest", "icr", primaries={"interest": bare}, interest_order=order, row=bare).codes == ()
+
+
+def test_dynamic_branch_stays_inactive():
+    present = {"operating_lease_liability": {"is_primary": True}}
+    branch = metric_use("operating_lease_liability", "total_debt", primaries=present, interest_order=())
+    assert branch.role == "dynamic" and branch.verdict == "declared_inactive"
+    group = metric_use("borrowings_lt", "total_debt", primaries={"borrowings_lt": {}}, interest_order=())
+    assert group.role == "dynamic" and group.verdict == "usable"
+
+
+def test_metric_use_rejects_an_empty_formula():
+    with pytest.raises(ValueError, match="formula_id пуст"):
+        metric_use("interest", "", primaries={})
 
 
 def test_section_and_graph_are_context():
