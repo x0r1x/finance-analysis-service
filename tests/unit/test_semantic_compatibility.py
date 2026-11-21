@@ -258,10 +258,11 @@ def test_period_basis_mismatch_is_soft():
 def test_model_type_mismatch_is_soft():
     report = assess(
         CATALOG.concepts["interest"],
-        row=_row("Проценты", model_type="project_finance"),
+        row=_row("Проценты"),
         label="Проценты",
         probability=0.86,
         expected_model_type="corporate",
+        observed_model_type="project_finance",
     )
     assert report.likelihood.probability == 0.86
     assert report.compatibility.verdict == "soft"
@@ -269,12 +270,52 @@ def test_model_type_mismatch_is_soft():
     assert check.severity == "soft" and check.expected == "corporate" and check.observed == "project_finance"
     same = assess(
         CATALOG.concepts["interest"],
-        row=_row("Проценты", model_type="corporate"),
+        row=_row("Проценты"),
         label="Проценты",
         probability=0.86,
         expected_model_type="corporate",
+        observed_model_type="corporate",
     )
     assert same.compatibility.verdict == "compatible"
+
+
+def test_decide_does_not_promise_uses_or_row_expectations():
+    row = _binding(
+        "a",
+        "Debt payment",
+        unit="money",
+        sign="outflow",
+        period_basis="ytd",
+        expected_period_basis="period",
+        model_type="project_finance",
+        expected_model_type="corporate",
+    )
+    item = decide(row, RowEvidence(candidates=(_strong("interest"),)), CATALOG, None)
+    body = item.evidence["compatibility"]
+    assert "uses" not in body
+    codes = {check["code"] for check in body["compatibility"]["checks"]}
+    assert "period_basis" not in codes and "model_type" not in codes
+    assert item.status == "bound"
+    assert item.confidence is not None and item.confidence > 0.6
+    lexical = assign_rows(
+        [
+            _binding(
+                "b",
+                "Проценты",
+                unit="money",
+                period_basis="ytd",
+                expected_period_basis="period",
+                model_type="project_finance",
+                expected_model_type="corporate",
+            )
+        ],
+        [],
+        CATALOG,
+    )["b"]
+    lexical_body = lexical.evidence["compatibility"]
+    assert "uses" not in lexical_body
+    lexical_codes = {check["code"] for check in lexical_body["compatibility"]["checks"]}
+    assert "period_basis" not in lexical_codes and "model_type" not in lexical_codes
 
 
 def test_hard_incompatibility_blocks_metric_use():

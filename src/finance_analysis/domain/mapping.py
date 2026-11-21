@@ -287,7 +287,11 @@ def _stamp_compatibility(
     lexical: bool = False,
     notes: tuple[str, ...] = (),
 ) -> dict:
-    """Кладёт три ответа в evidence. Статус, confidence и понятие не меняет."""
+    """Кладёт likelihood и compatibility в evidence. Статус и понятие не меняет.
+
+    `uses` сюда не входит: формула на привязке ещё не выбрана. Ожидаемый тип
+    модели и ожидаемый способ показа тоже. Их даст расчёт метрики.
+    """
 
     concept = glossary.concepts.get(name) if name else None
     if concept is None:
@@ -303,7 +307,9 @@ def _stamp_compatibility(
         basis=basis,
         notes=notes,
     )
-    return {**evidence, "compatibility": report.as_dict()}
+    body = report.as_dict()
+    body.pop("uses", None)
+    return {**evidence, "compatibility": body}
 
 
 def decide(

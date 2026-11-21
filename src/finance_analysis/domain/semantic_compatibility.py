@@ -123,11 +123,21 @@ def assess(
     notes: tuple[str, ...] = (),
     uses: tuple[MetricUse, ...] = (),
     expected_model_type: str | None = None,
+    observed_model_type: str | None = None,
     expected_period_basis: str | None = None,
 ) -> SemanticCompatibility:
-    """Собирает три ответа. Вероятность не пересчитывает и понятие не подменяет."""
+    """Собирает три ответа. Вероятность не пересчитывает и понятие не подменяет.
 
-    checks = _economic(concept, row, label, expected_model_type, expected_period_basis) + _context(row, notes)
+    `uses` строит расчёт конкретной метрики через `metric_use`. `decide` этот
+    кортеж не заполняет и в evidence привязки не пишет. Ожидаемый тип модели и
+    ожидаемый способ показа тоже приходят из расчёта метрики, не из полей строки.
+    Наблюдаемый способ показа — `period_basis`, который ставит привязка.
+    Расхождение способа показа мягкое.
+    """
+
+    checks = _economic(
+        concept, row, label, expected_model_type, observed_model_type, expected_period_basis
+    ) + _context(row, notes)
     compatibility = Compatibility(_verdict(checks), checks)
     return SemanticCompatibility(
         concept.id,
@@ -142,6 +152,7 @@ def _economic(
     row: dict,
     label: str,
     expected_model_type: str | None,
+    observed_model_type: str | None,
     expected_period_basis: str | None,
 ) -> tuple[Check, ...]:
     found: list[Check] = []
@@ -158,10 +169,10 @@ def _economic(
     sign = row.get("sign")
     if concept.sign_conflict(sign if isinstance(sign, str) else None):
         found.append(Check("sign", "soft", concept.expected_sign, str(sign) if sign else None))
-    period = _mismatch("period_basis", expected_period_basis or _text(row.get("expected_period_basis")), row.get("period_basis"))
+    period = _mismatch("period_basis", expected_period_basis, row.get("period_basis"))
     if period is not None:
         found.append(period)
-    model = _mismatch("model_type", expected_model_type or _text(row.get("expected_model_type")), row.get("model_type"))
+    model = _mismatch("model_type", expected_model_type, observed_model_type)
     if model is not None:
         found.append(model)
     return tuple(found)
@@ -177,12 +188,6 @@ def _mismatch(code: str, expected: str | None, observed: object) -> Check | None
     if observed == expected:
         return None
     return Check(code, "soft", expected, observed)
-
-
-def _text(value: object) -> str | None:
-    if isinstance(value, str) and value:
-        return value
-    return None
 
 
 def _unit_observed(row: dict, label: str) -> str:
@@ -227,8 +232,9 @@ def metric_use(
     row: dict | None = None,
     compatibility: Compatibility | None = None,
 ) -> MetricUse:
-    """Отчёт о пригодности имени для формулы.
+    """Отчёт о пригодности имени для одной формулы. Строится при её расчёте.
 
+    `decide` этот отчёт не вызывает: на привязке формула ещё не выбрана.
     Читает кортежи `Implementation` и `interest_choice`. `confirm_paid_interest`
     не вызывает и основную строку не подменяет. `interest_paid` не становится
     синонимом `interest`.
