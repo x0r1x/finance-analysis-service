@@ -2115,47 +2115,177 @@ GROUP BY axis_id, period_id, period_start, effective_concept ORDER BY axis_id, p
 finance-analysis-service/
 ├── pyproject.toml                    # entry points: finance_analysis.rules/.metrics/.renderers; extras: [s3]
 ├── src/finance_analysis/
-│   ├── domain/
-│   │   ├── book.py                   # BuilderRef, BuildKey, RowDescriptor, Period(base, marker), CellRef, binding_key
-│   │   ├── validation/               # чистые проверки записей в семантику (§5.12)
-│   │   ├── semantic/                 # concept, glossary (SKOS-модель, релиз, инварианты), binding (+status), coverage, row_semantics, period_semantics, units, metric, profile
-│   │   ├── state/                    # журнал решений с номерами (seq), fold()
-│   │   ├── analytics/                # finding, rule, ratio_result, expression, scenario, impact, analysis(state machine)
-│   │   └── errors.py
-│   ├── application/
-│   │   ├── ports/                    # BuilderPort, ObjectStorePort, SemanticQueryPort, GraphPort, ML-порты, repos, cache, lock, queue
-│   │   ├── commands/                 # load_book, run_analysis, infer_mapping, submit_decisions, evaluate_expression, compare
-│   │   ├── queries/                  # get_series, get_slice, get_semantics, get_analysis, get_capabilities
-│   │   ├── loader/                   # snapshot → Arrow-таблицы звезды, dates, ремап binding_key, publish(_head CAS)
-│   │   ├── semantics/                # фазы (только phase.set), знаки, исключения, маркеры
-│   │   ├── semantic_guard.py         # SemanticWriteGuard (async): единственный вход записи в журнал, derived/, профили, глоссарий (§5.12)
-│   │   ├── mapping_pipeline/         # stages/* (+ nil_decision), calibrator, coverage_report
-│   │   ├── glossary/                 # compile_release, publish (CAS+fence), proposals, cluster_unmapped, glossary.remap (diff-driven)
-│   │   │                             # + signals, label_model, glossary_mine, shadow_eval, transitions (canary/active/rollback), operations, provenance (§5.11)
-│   │   │                             # + api_state (GlossaryState, история, diff, impact по _index/labels.parquet) (§5.9.1); reembed_examples
-│   │   └── rule_engine.py · metric_evaluator.py · expression.py · registry.py
+│   ├── domain/                       # плоские модули
+│   │   ├── audit.py
+│   │   ├── binding_evidence.py
+│   │   ├── book.py
+│   │   ├── book_cite.py
+│   │   ├── calibration.py
+│   │   ├── candidates.py
+│   │   ├── cash_flow.py
+│   │   ├── cash_rollforward.py
+│   │   ├── components.py
+│   │   ├── contracts/
+│   │   │   ├── financial_model_catalog.json
+│   │   │   ├── meta_layer_graphs.json
+│   │   │   └── published_parquet.json
+│   │   ├── covenant.py
+│   │   ├── cover_metrics.py
+│   │   ├── coverage.py
+│   │   ├── currency.py
+│   │   ├── deadline.py
+│   │   ├── debt_incl_off_balance.py
+│   │   ├── derive_fingerprint.py
+│   │   ├── dictionaries.py
+│   │   ├── dimensions.py
+│   │   ├── errors.py
+│   │   ├── evaluation.py
+│   │   ├── expression.py
+│   │   ├── financial_catalog.py
+│   │   ├── formulas.py
+│   │   ├── free_cash_flow.py
+│   │   ├── glossary.py
+│   │   ├── glossary_release.py
+│   │   ├── graphs.py
+│   │   ├── housing_cover.py
+│   │   ├── housing_dscr.py
+│   │   ├── ids.py
+│   │   ├── lbo_cite.py
+│   │   ├── mapping.py
+│   │   ├── measure.py
+│   │   ├── metrics.py
+│   │   ├── model_type.py
+│   │   ├── model_type_eval.py
+│   │   ├── net_cash_flow.py
+│   │   ├── noi_identity.py
+│   │   ├── operational_year.py
+│   │   ├── period_basis.py
+│   │   ├── periods.py
+│   │   ├── phases.py
+│   │   ├── provenance.py
+│   │   ├── published_parquet.py
+│   │   ├── questions.py
+│   │   ├── references.py
+│   │   ├── relations.py
+│   │   ├── rematch.py
+│   │   ├── returns.py
+│   │   ├── semantic_model.py
+│   │   ├── semantics.py
+│   │   ├── signals.py
+│   │   ├── state.py
+│   │   ├── total_debt.py
+│   │   └── validation/
+│   │       ├── catalog_integrity.py
+│   │       ├── model_types.py
+│   │       └── semantics.py
+│   ├── application/                  # плоские модули
+│   │   ├── analyses.py
+│   │   ├── builds.py
+│   │   ├── calibrators.py
+│   │   ├── catalog.py
+│   │   ├── compare.py
+│   │   ├── derived_store.py
+│   │   ├── evaluation.py
+│   │   ├── examples.py
+│   │   ├── explain.py
+│   │   ├── financial_catalog.py
+│   │   ├── gc.py
+│   │   ├── glossary_store.py
+│   │   ├── impact.py
+│   │   ├── journal.py
+│   │   ├── keys.py
+│   │   ├── learning.py
+│   │   ├── mapping_pipeline.py
+│   │   ├── metrics.py
+│   │   ├── model_types.py
+│   │   ├── operations.py
+│   │   ├── ports.py                  # все порты в одном модуле
+│   │   ├── project.py
+│   │   ├── report.py
+│   │   ├── rule_engine.py
+│   │   ├── semantic_guard.py
+│   │   ├── service.py
+│   │   ├── sheet_roles.py
+│   │   └── tools.py
 │   ├── adapters/
-│   │   ├── api/                      # FastAPI, problem+json, OpenAPI, /health/live|ready, /metrics, capabilities/tool-схемы
-│   │   ├── builder/                  # httpx, ACL (shape check, @marker, cell_id, ranges), ETag cache
+│   │   ├── api/
+│   │   │   ├── app.py
+│   │   │   ├── http.py
+│   │   │   ├── problems.py
+│   │   │   └── route/
+│   │   │       ├── analyses.py
+│   │   │       ├── book_views.py
+│   │   │       ├── books.py
+│   │   │       ├── glossary.py
+│   │   │       ├── metrics_catalog.py
+│   │   │       ├── operations.py
+│   │   │       └── profiles.py
+│   │   ├── builder/
+│   │   │   ├── acl.py
+│   │   │   ├── etag.py
+│   │   │   ├── fixture.py
+│   │   │   └── http.py
+│   │   ├── ml/
+│   │   │   ├── cluster.py
+│   │   │   ├── http.py
+│   │   │   └── resilience.py
+│   │   ├── queue/
+│   │   │   ├── broker.py
+│   │   │   ├── embedded.py
+│   │   │   ├── fairness.py
+│   │   │   ├── isolated.py
+│   │   │   ├── jobs.py
+│   │   │   ├── learning_tasks.py
+│   │   │   ├── names.py
+│   │   │   ├── requeue.py
+│   │   │   ├── retry.py
+│   │   │   ├── runtime.py
+│   │   │   ├── scheduler.py
+│   │   │   ├── tasks.py
+│   │   │   └── worker.py
+│   │   ├── redis/
+│   │   │   └── runtime.py
 │   │   ├── storage/
-│   │   │   ├── base.py               # OpendalStore: get/put/list, ошибки → NotFound/AlreadyExists/PreconditionFailed; самотест при старте
-│   │   │   ├── local.py              # LocalStore: fs, tmp+os.replace, O_EXCL, CAS = sha256-сверка + os.replace (под fcntl.flock); KeyBuilder и проверка пути внутри корня
-│   │   │   ├── s3.py                 # S3Store: MinIO (endpoint) | AWS, If-None-Match / If-Match
-│   │   │   ├── factory.py            # build_storage(settings) → один бэкенд; описание для /health/ready
-│   │   │   ├── parquet.py            # Arrow ⇄ bytes, схемы @version
-│   │   │   ├── repos/                # book, state, result, example, profile, calibrator, glossary, unmapped
-│   │   │   ├── schemas/              # schemas/{dataset}.json → Arrow-схема @MAJOR.MINOR, writer с zstd и метаданными (§4.12)
-│   │   │   └── sync.py               # fas storage sync (CLI)
-│   │   ├── wren/                     # WrenSourceFactory, MdlGenerator(head → пути), WrenQuery + пул движков
-│   │   ├── graph/                    # graph.json/trace → networkx, кэш
-│   │   ├── redis/                    # lock.py (SET NX PX + Lua release), cache.py
-│   │   ├── vector/                   # numpy_bruteforce.py (VectorIndexPort); lancedb.py (позже)
-│   │   ├── ml/{http,local}/          # embed, rerank, clm_systemone, LLM
-│   │   └── reports/ · worker/        # рендеры; Taskiq: прогоны, scheduler (sweep, gc_builds, отложенные повторы), compact_learning;
-│   │                                 #   broker.py (FasStreamBroker), retry.py (FasRetryMiddleware), isolated.py (run_isolated) — с 0.22
-│   ├── plugins/{rules,ratios,labeling}/   # labeling: LF по графу и тождествам (§5.11.1)
-│   ├── cli.py                        # fas storage sync|gc|verify, fas book load, fas glossary validate|upload|release|export|rollback, fas learn export (только датасет; обучения в FAS нет)
-│   └── settings.py · main.py         # composition root, фабрики по конфигу
+│   │   │   ├── parquet_io.py
+│   │   │   ├── schemas/
+│   │   │   │   ├── bindings.json
+│   │   │   │   ├── book_rows.json
+│   │   │   │   ├── candidates.json
+│   │   │   │   ├── coverage.json
+│   │   │   │   ├── dim_period.json
+│   │   │   │   ├── dim_row.json
+│   │   │   │   ├── examples.json
+│   │   │   │   ├── fact_observation.json
+│   │   │   │   ├── findings.json
+│   │   │   │   ├── graph_links.json
+│   │   │   │   ├── period_semantics.json
+│   │   │   │   ├── ratios.json
+│   │   │   │   ├── row_semantics.json
+│   │   │   │   ├── run.json
+│   │   │   │   ├── signals.json
+│   │   │   │   └── unmapped.json
+│   │   │   ├── store.py
+│   │   │   └── sync.py
+│   │   ├── vector/
+│   │   │   └── numpy_index.py
+│   │   └── wren/
+│   │       └── query.py
+│   ├── plugins/
+│   │   ├── labeling/
+│   │   │   └── functions.py
+│   │   └── rules/
+│   │       ├── cash.py
+│   │       ├── checks.py
+│   │       ├── coverage.py
+│   │       ├── cycles.py
+│   │       ├── formulas.py
+│   │       ├── noi.py
+│   │       ├── ratios.py
+│   │       ├── refs.py
+│   │       └── structure.py
+│   ├── cli.py
+│   ├── main.py
+│   └── settings.py
 ├── configs/{concepts,glossary,identities,metrics,model_types,profiles,mdl}/
 ├── eval/                             # размеченные книги, top-1/ECE, обучение калибратора
 ├── tests/
