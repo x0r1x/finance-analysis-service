@@ -20,7 +20,12 @@ from finance_analysis.domain.metric_contract import (
 
 # Ключ → модуль, функция, version, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
 _ROUTE = {
-    ("dscr", "dscr"): ("metrics", "coverage_ratio", "dscr@1", ()),
+    ("dscr", "dscr"): (
+        "metrics",
+        "coverage_ratio",
+        "dscr@1",
+        ("cfads", "debt_service", "interest", "interest_paid", "principal"),
+    ),
     ("dscr", "dscr.pf"): (
         "metrics",
         "dscr_pf",
@@ -30,9 +35,9 @@ _ROUTE = {
     ("dscr", "dscr.corporate_covenant"): ("covenant", "covenant_dscr", "", ()),
     ("dscr", "dscr.housing"): ("housing_dscr", "housing_dscr", "", ()),
     ("dscr", "dscr.cash_covenant"): ("covenant", "cash_covenant_dscr", "", ()),
-    ("icr", "icr"): ("metrics", "coverage_ratio", "", ()),
+    ("icr", "icr"): ("metrics", "coverage_ratio", "", ("ebitda", "ebit", "interest", "interest_paid")),
     ("icr", "icr.bank"): ("covenant", "bank_icr", "", ()),
-    ("icr_ebit", "icr_ebit"): ("metrics", "coverage_ratio", "", ()),
+    ("icr_ebit", "icr_ebit"): ("metrics", "coverage_ratio", "", ("ebit", "interest", "interest_paid")),
     ("adscr", "adscr"): ("cover_metrics", "adscr", "", ()),
     ("adscr", "adscr.housing"): ("housing_cover", "_adscr", "", ()),
     ("dscr_min", "dscr_min"): ("cover_metrics", "dscr_reductions", "", ()),
@@ -224,7 +229,44 @@ def test_declared_inputs_may_exceed_the_catalog():
 
 def test_empty_inputs_skip_the_catalog_composition():
     load_implementations()
-    check_registry({"dscr": {"numerator": ["not_declared"], "denominator": "also_not"}})
+    check_registry(
+        {
+            "dscr": {
+                "numerator": ["cfads"],
+                "denominator": "debt_service",
+                "variants": {"corporate_covenant": {"numerator": {"plus": ["not_declared"]}}},
+            }
+        }
+    )
+
+
+def test_coverage_ratio_reads_through_bound_inputs(monkeypatch):
+    from finance_analysis.domain.metrics import coverage_ratio
+
+    seen: list[str] = []
+    real = BoundInputs.__contains__
+
+    def spy(self: BoundInputs, name: object) -> bool:
+        if isinstance(name, str):
+            seen.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(BoundInputs, "__contains__", spy)
+    call = {
+        "facts": [],
+        "bindings": [],
+        "periods": [],
+        "period_phase": {},
+        "explicit_phases": False,
+    }
+    assert coverage_ratio(metric="dscr", **call)["status"] == "missing_input"
+    assert {"cfads", "debt_service"} <= set(seen)
+    seen.clear()
+    assert coverage_ratio(metric="icr", **call)["status"] == "missing_input"
+    assert {"ebitda", "ebit", "interest"} <= set(seen)
+    seen.clear()
+    assert coverage_ratio(metric="icr_ebit", **call)["status"] == "missing_input"
+    assert {"ebit", "interest"} <= set(seen)
 
 
 def test_base_is_inheritance_not_an_input():

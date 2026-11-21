@@ -238,9 +238,16 @@ def _methodology_message(kind: str) -> str:
     return "Пометка определения: book, ras, ifrs или gaap."
 
 
-@implements("dscr", "dscr", version="dscr@1")
-@implements("icr", "icr")
-@implements("icr_ebit", "icr_ebit")
+# Запасной знаменатель DSCR читает interest, interest_paid и principal, хотя каталог называет только cfads и debt_service.
+DSCR_INPUTS = ("cfads", "debt_service", "interest", "interest_paid", "principal")
+ICR_INPUTS = ("ebitda", "ebit", "interest", "interest_paid")
+ICR_EBIT_INPUTS = ("ebit", "interest", "interest_paid")
+_COVERAGE_INPUTS = {"dscr": DSCR_INPUTS, "icr": ICR_INPUTS, "icr_ebit": ICR_EBIT_INPUTS}
+
+
+@implements("dscr", "dscr", version="dscr@1", inputs=DSCR_INPUTS)
+@implements("icr", "icr", inputs=ICR_INPUTS)
+@implements("icr_ebit", "icr_ebit", inputs=ICR_EBIT_INPUTS)
 def coverage_ratio(
     *,
     metric: str,
@@ -271,8 +278,9 @@ def coverage_ratio(
             return blocked
     primaries = _primaries(bindings, absent)
     confirm_paid_interest(primaries, bindings, absent)
-    if declared:
-        primaries = BoundInputs(declared, primaries)
+    guarded = declared if declared is not None else _COVERAGE_INPUTS.get(metric)
+    if guarded:
+        primaries = BoundInputs(guarded, primaries)
     order = interest_order or {}
     warnings: list[dict] = []
     fallback_parts: tuple[str, str] | None = None
@@ -465,11 +473,7 @@ def coverage_ratio(
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
-# Запасной путь кода читает interest, interest_paid и principal, хотя каталог называет только cfads и debt_service.
-DSCR_PF_INPUTS = ("cfads", "debt_service", "interest", "interest_paid", "principal")
-
-
-@implements("dscr", "dscr.pf", inputs=DSCR_PF_INPUTS)
+@implements("dscr", "dscr.pf", inputs=DSCR_INPUTS)
 def dscr_pf(
     *,
     facts: list[dict],
@@ -499,7 +503,7 @@ def dscr_pf(
         interest_order=interest_order,
         row_fallbacks=row_fallbacks,
         profile=profile,
-        declared=DSCR_PF_INPUTS,
+        declared=DSCR_INPUTS,
     )
 
 
