@@ -40,7 +40,12 @@ _ROUTE = {
         ("operating_cash_flow", "interest", "capex", "principal"),
     ),
     ("dscr", "dscr.housing"): ("housing_dscr", "housing_dscr", "", ()),
-    ("dscr", "dscr.cash_covenant"): ("covenant", "cash_covenant_dscr", "", ()),
+    ("dscr", "dscr.cash_covenant"): (
+        "covenant",
+        "cash_covenant_dscr",
+        "",
+        ("operating_cash_flow", "interest_paid", "capex", "principal", "other_financial_debt_service"),
+    ),
     ("icr", "icr"): ("metrics", "coverage_ratio", "", ("ebitda", "ebit", "interest", "interest_paid")),
     ("icr", "icr.bank"): ("covenant", "bank_icr", "", ()),
     ("icr_ebit", "icr_ebit"): ("metrics", "coverage_ratio", "", ("ebit", "interest", "interest_paid")),
@@ -377,6 +382,43 @@ def test_loan_life_ratio_reads_through_bound_inputs(monkeypatch):
         explicit_phases=False,
     )
     assert {"cfads", "debt_service", "debt_outstanding", "discount_rate"} <= set(seen)
+
+
+def test_cash_covenant_reads_through_bound_inputs(monkeypatch):
+    from finance_analysis.domain.covenant import cash_covenant_dscr
+
+    seen: list[str] = []
+    real = BoundInputs.__getitem__
+
+    def spy(self: BoundInputs, name: str) -> object:
+        seen.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(BoundInputs, "__getitem__", spy)
+    bindings = [
+        {
+            "effective_concept": name,
+            "row_key": name,
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        }
+        for name in (
+            "operating_cash_flow",
+            "interest_paid",
+            "capex",
+            "principal",
+            "other_financial_debt_service",
+        )
+    ]
+    cash_covenant_dscr(facts=[], bindings=bindings, periods=[])
+    assert {
+        "operating_cash_flow",
+        "interest_paid",
+        "capex",
+        "principal",
+        "other_financial_debt_service",
+    } <= set(seen)
 
 
 def test_check_config_prints_registry_problems(capsys, monkeypatch):
