@@ -422,6 +422,98 @@ def test_semantic_targets_read_both_sides_without_writing_edges():
     assert incoming.semantic_targets("c", "related_to") == ("a", "b")
 
 
+def _scan(package, concept_id: str, kind: str) -> tuple[str, ...]:
+    """Прежний обход: прямые цели, затем входящие источники по id."""
+
+    concept = package.concepts.get(concept_id)
+    spec = RELATION_TYPES.get(kind)
+    if concept is None or spec is None:
+        return ()
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        if name == concept_id or name in seen:
+            return
+        seen.add(name)
+        found.append(name)
+
+    for target in concept.relation_targets(kind):
+        add(target)
+    incoming: list[str] = []
+    if spec.symmetric:
+        incoming.append(kind)
+    inverse = spec.inverse
+    if inverse and inverse != kind:
+        incoming.append(inverse)
+    if not incoming:
+        return tuple(found)
+    for other_id in sorted(package.concepts):
+        if other_id == concept_id:
+            continue
+        other = package.concepts[other_id]
+        for edge_kind in incoming:
+            if concept_id in other.relation_targets(edge_kind):
+                add(other_id)
+                break
+    return tuple(found)
+
+
+def test_incoming_index_matches_the_previous_scan():
+    contradicts = _concepts(
+        {
+            "left": _measure(relations={"contradicts": ["right"]}),
+            "right": _measure(),
+        }
+    )
+    hierarchy = _concepts(
+        {
+            "parent": _measure(relations={"broader_than": ["child"]}),
+            "child": _measure(),
+        }
+    )
+    both_ways = _concepts(
+        {
+            "child": _measure(relations={"narrower_than": ["parent"]}),
+            "parent": _measure(),
+        }
+    )
+    incoming = _concepts(
+        {
+            "b": _measure(relations={"related_to": ["c"]}),
+            "a": _measure(relations={"related_to": ["c"]}),
+            "c": _measure(relations={"related_to": ["a"]}),
+        }
+    )
+    agreed = _concepts(
+        {
+            "parent": _measure(relations={"broader_than": ["child"]}),
+            "child": _measure(),
+        },
+        {
+            "parent": _gloss("parent"),
+            "child": _gloss("child", broader="parent"),
+        },
+    )
+    packages = [load_catalog(), contradicts, hierarchy, both_ways, incoming, agreed]
+    for package in packages:
+        assert isinstance(package._incoming, MappingProxyType)
+        for concept_id in package.concepts:
+            for kind in RELATION_TYPES:
+                assert package.semantic_targets(concept_id, kind) == _scan(package, concept_id, kind)
+    assert hierarchy.semantic_targets("child", "narrower_than") == ("parent",)
+    assert hierarchy.semantic_targets("parent", "broader_than") == ("child",)
+    assert hierarchy.concepts["child"].relation_targets("narrower_than") == ()
+    assert hierarchy.concepts["child"].relations == ()
+    assert contradicts.semantic_targets("right", "contradicts") == ("left",)
+    assert incoming.semantic_targets("c", "related_to") == ("a", "b")
+    assert agreed.concepts["child"].broader == "parent"
+    assert agreed.semantic_targets("child", "narrower_than") == ("parent",)
+    assert agreed.concepts["parent"].relation_targets("broader_than") == ("child",)
+    with pytest.raises(TypeError):
+        load_catalog()._incoming[("cfads", "related_to")] = ()
+
+
 def test_formula_relation_types_grant_no_calculation():
     for name in ("calculated_from", "derived_from", "equivalent_to"):
         assert permits(name, "substitution") is False

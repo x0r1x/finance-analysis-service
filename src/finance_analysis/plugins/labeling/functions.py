@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from finance_analysis.domain.signals import LabelingInput, Vote
 
@@ -72,35 +72,122 @@ def _identity_parts(data: LabelingInput) -> dict[str, tuple[str, ...]]:
     return found
 
 
-def _known_currency(data: LabelingInput, row_key: str) -> str | None:
-    """Валюта строки книги. Пустое поле — неизвестная валюта, из единицы не выводится."""
-
-    for row in data.rows:
-        if row.get("row_key") != row_key:
-            continue
-        raw = row.get("currency")
-        if not isinstance(raw, str):
-            return None
-        text = raw.strip()
-        return text.casefold() if text else None
-    return None
+def _explicit_currency(row: dict) -> str | None:
+    raw = row.get("currency")
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text.casefold() if text else None
 
 
-def _one_currency(data: LabelingInput, row_keys: list[str]) -> bool:
-    """Итог и части в одной известной валюте. Иначе сверка воздерживается."""
+def _unit_spec(data: LabelingInput, row: dict):
+    token = row.get("unit")
+    if not isinstance(token, str) or not token:
+        return None
+    return data.units.get(token)
 
-    found = [_known_currency(data, key) for key in row_keys]
-    if any(item is None for item in found):
+
+_BAD_FACTOR = object()
+
+
+def _row_factor(row: dict):
+    """Коэффициент строки. Пропуск — не 1. Нечитаемое значение — отказ."""
+
+    if "scale_factor" not in row or row.get("scale_factor") in (None, ""):
+        return None
+    raw = row.get("scale_factor")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, Decimal, str)):
+        return _BAD_FACTOR
+    try:
+        number = Decimal(raw) if isinstance(raw, int) else Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
+        return _BAD_FACTOR
+    if not number.is_finite() or number <= 0:
+        return _BAD_FACTOR
+    return number
+
+
+def _factors_agree(rows: list[dict]) -> bool:
+    """Одинаковый scale_factor у всех строк, либо его нет ни у одной.
+
+    Нормализация не подтверждена, поэтому разный коэффициент не сверяется
+    умножением. Пропуск рядом с названным коэффициентом — тоже отказ:
+    пустое поле не доказывает 1.
+    """
+
+    found = [_row_factor(row) for row in rows]
+    if any(item is _BAD_FACTOR for item in found):
         return False
-    return len(set(found)) == 1
+    stated = [item for item in found if item is not None]
+    if not stated:
+        return True
+    return len(stated) == len(found) and len(set(stated)) == 1
+
+
+def _catalog_currency(spec) -> str | None:
+    raw = spec.currency
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text.casefold() if text else None
+
+
+def _compatible_units(data: LabelingInput, row_keys: list[str]) -> bool:
+    """Итог и все части согласованы по размерности, валюте и масштабу.
+
+    Деньги: у каждой строки известная единица money, одна валюта и один scale.
+    Явная валюта не заменяет неизвестную единицу и не расходится с валютой единицы.
+    Размерность без валюты (MWh): та же размерность и тот же scale, явной валюты нет.
+    Цена и составная денежная единица (currency_per_energy и т.п.) — воздержание:
+    отдельного правила сверки нет. Конвертации и приведения масштаба нет.
+    Повтор row_key — воздержание: первая строка не выбирается.
+    Неизвестный масштаб — воздержание, это не 1. Календарные единицы
+    (year, month, …) числового масштаба не имеют: смешение и повтор одной
+    такой единицы оба воздерживаются, пока масштаб не задан.
+    Ряд LF — `normalized_value`, а если его нет, `value_dec`. Проекция копирует
+    число ячейки, когда builder не прислал нормализацию, и не умножает его
+    ни на каталожный scale, ни на scale_factor строки. Подтверждения
+    нормализации нет, поэтому разный или частично заданный scale_factor —
+    воздержание. Значения LF не умножает.
+    """
+
+    found = []
+    for key in row_keys:
+        rows = [row for row in data.rows if row.get("row_key") == key]
+        if len(rows) != 1:
+            return False
+        spec = _unit_spec(data, rows[0])
+        if spec is None:
+            return False
+        found.append((rows[0], spec))
+    specs = [spec for _, spec in found]
+    if len({spec.dimension for spec in specs}) != 1:
+        return False
+    if any(spec.scale is None for spec in specs) or len({spec.scale for spec in specs}) != 1:
+        return False
+    if not _factors_agree([row for row, _ in found]):
+        return False
+    dimension = specs[0].dimension
+    if dimension != "money" and any(_catalog_currency(spec) for spec in specs):
+        return False
+    currencies = []
+    for row, spec in found:
+        explicit = _explicit_currency(row)
+        catalog = _catalog_currency(spec)
+        if dimension == "money":
+            if catalog is None or (explicit is not None and explicit != catalog):
+                return False
+            currencies.append(explicit or catalog)
+        elif explicit is not None:
+            return False
+    return len(set(currencies)) == 1 if dimension == "money" else True
 
 
 def identity(data: LabelingInput) -> list[Vote]:
     """Строка по формуле и значениям равна сумме привязанных людьми слагаемых → голос за левую часть.
 
-    Голос только если у итога и всех частей одна известная валюта строки.
-    Разные валюты и неизвестная валюта — воздержание, не голос «против»:
-    совпавшие числа в разных валютах левую часть не опровергают.
+    Голос только если итог и все части проходят _compatible_units. Иначе
+    воздержание, не голос «против».
     """
 
     keys = _key_of(data)
@@ -114,7 +201,8 @@ def identity(data: LabelingInput) -> list[Vote]:
                 continue
             if not set(rows) <= data.precedents.get(row_key, set()):
                 continue
-            if not _one_currency(data, [row_key, *rows]):
+            watched = [row_key, *rows]
+            if not _compatible_units(data, watched):
                 continue
             series = data.values[row_key]
             pairs = []

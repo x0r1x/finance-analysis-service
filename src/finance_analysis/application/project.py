@@ -158,6 +158,8 @@ def project(
                 )
                 value_dec = parse_decimal_text(None if raw is None else str(raw))
                 normalized = parse_decimal_text(None if normalized_raw is None else str(normalized_raw))
+                # scale_factor остаётся на dim_row. В число факта он не входит:
+                # нет normalized_values — в поле копируется value_dec.
                 facts.append(
                     {
                         "model_id": model_id,

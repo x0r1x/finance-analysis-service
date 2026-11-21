@@ -2,34 +2,61 @@
 # energy = power × duration, поэтому валюта за энергию и валюта за мощность-время
 # имеют одни и те же физические показатели. Это не одна цена: основу тарифа
 # и расчётный период мощности хранит понятие, не показатели.
+# scale — множитель к базовой единице размерности. Пропуск не равен 1.
+# Базы: power MW, energy MWh, count шт, area m2, ratio "1".
+# money: масштаб к основной единице той же валюты, не к одной общей базе.
+# duration: календарные единицы без числового масштаба, между собой не сравниваются.
 taxonomy: dimensions-1
 dimensions:
   money:
     base: true
     units:
-      - {unit: RUB, currency: RUB}
-      - {unit: USD, currency: USD}
-      - {unit: EUR, currency: EUR}
-      - {unit: GBP, currency: GBP}
-      - {unit: руб, currency: RUB}
+      - {unit: RUB, currency: RUB, scale: 1}
+      - {unit: USD, currency: USD, scale: 1}
+      - {unit: EUR, currency: EUR, scale: 1}
+      - {unit: GBP, currency: GBP, scale: 1}
+      - {unit: руб, currency: RUB, scale: 1}
+      - {unit: thousand_rub, currency: RUB, scale: 1000}
   power:
     base: true
-    units: [MW, kW, GW, МВт]
+    base_unit: MW
+    units:
+      - {unit: MW, scale: 1}
+      - {unit: kW, scale: "0.001"}
+      - {unit: GW, scale: 1000}
+      - {unit: МВт, scale: 1}
   duration:
     base: true
+    calendar: true
     units: [year, years, quarter, month, day, год, лет]
   count:
     base: true
-    units: [шт]
+    base_unit: шт
+    units:
+      - {unit: шт, scale: 1}
   area:
     base: true
-    units: [m2, ha, м2, га]
+    base_unit: m2
+    units:
+      - {unit: m2, scale: 1}
+      - {unit: м2, scale: 1}
+      - {unit: ha, scale: 10000}
+      - {unit: га, scale: 10000}
   ratio:
     dimensionless: true
-    units: ["1", "%", x]
+    base_unit: "1"
+    units:
+      - {unit: "1", scale: 1}
+      - {unit: "%", scale: "0.01"}
+      - {unit: x, scale: 1}
   energy:
     exponents: {power: 1, duration: 1}
-    units: [MWh, kWh, GWh, "МВт·ч"]
+    base_unit: MWh
+    units:
+      - {unit: MWh, scale: 1}
+      - {unit: kWh, scale: "0.001"}
+      - {unit: GWh, scale: 1000}
+      - {unit: "МВт·ч", scale: 1}
   currency_per_energy:
     pricing_basis: energy
     exponents: {money: 1, power: -1, duration: -1}

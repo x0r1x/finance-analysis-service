@@ -15,6 +15,7 @@ from finance_analysis.application.examples import ExampleStore
 from finance_analysis.application.glossary_store import GlossaryStore
 from finance_analysis.application.learning import Learning
 from finance_analysis.application.ports import Models
+from finance_analysis.domain.dimensions import UnitSpec
 from finance_analysis.domain.signals import LabelingInput, lexical_relation, mine
 from finance_analysis.plugins.labeling import (
     identity,
@@ -34,7 +35,7 @@ def _binding(key, concept, source="inferred", status="bound"):
     return {"binding_key": key, "row_key": key, "effective_concept": concept, "is_primary": True, "status": status, "source": source}
 
 
-def _input(values, precedents, bindings, rows=None, currency=None):
+def _input(values, precedents, bindings, rows=None, currency=None, units=None):
     if rows is None:
         extra = {"currency": currency} if currency else {}
         rows = [{"binding_key": key, "row_key": key, "label": key, **extra} for key in values]
@@ -46,7 +47,16 @@ def _input(values, precedents, bindings, rows=None, currency=None):
         concepts=dict(CATALOG.concepts),
         identities=load_identities(),
         order={period: index for index, period in enumerate(P)},
+        units=units or {},
     )
+
+
+def _money_units():
+    return {
+        "USD": UnitSpec("money", "USD", 1),
+        "RUB": UnitSpec("money", "RUB", 1),
+        "thousand_rub": UnitSpec("money", "RUB", 1000),
+    }
 
 
 def test_ratio_numerator_and_sum_component():
@@ -64,11 +74,16 @@ def test_identity_needs_human_components_and_rollforward():
     precedents = {"total": {"int", "prn"}, "bal": {"bal", "prn"}}
     machine = _input(values, precedents, [_binding("int", "interest"), _binding("prn", "principal")])
     assert identity(machine) == []
+    rows = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "RUB", "currency": "RUB"}
+        for key in values
+    ]
     human = _input(
         values,
         precedents,
         [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")],
-        currency="RUB",
+        rows=rows,
+        units=_money_units(),
     )
     assert [(v.binding_key, v.concept) for v in identity(human)] == [("total", "debt_service")]
     assert [(v.binding_key, v.concept) for v in rollforward(human)] == [("bal", "debt_outstanding")]
@@ -97,7 +112,7 @@ def test_identity_follows_composed_of_when_the_identity_file_is_longer():
         "both": [15, 15, 15, 15, 15],
     }
     data = LabelingInput(
-        rows=[{"binding_key": key, "row_key": key, "label": key, "currency": "RUB"} for key in values],
+        rows=[{"binding_key": key, "row_key": key, "label": key, "unit": "RUB", "currency": "RUB"} for key in values],
         values={key: dict(zip(P, map(Decimal, series), strict=True)) for key, series in values.items()},
         precedents={"only": {"int"}, "both": {"int", "prn"}},
         bindings={
@@ -110,6 +125,7 @@ def test_identity_follows_composed_of_when_the_identity_file_is_longer():
         concepts=concepts,
         identities={"debt_service": ["interest", "principal"]},
         order={period: index for index, period in enumerate(P)},
+        units=_money_units(),
     )
     assert [(vote.binding_key, vote.concept) for vote in identity(data)] == [("only", "debt_service")]
 
@@ -118,7 +134,11 @@ def test_identity_abstains_unless_one_known_currency():
     values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
     precedents = {"total": {"int", "prn"}}
     bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
-    same = _input(values, precedents, bindings, currency="RUB")
+    rows = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "RUB", "currency": "RUB"}
+        for key in values
+    ]
+    same = _input(values, precedents, bindings, rows=rows, units=_money_units())
     assert [(vote.binding_key, vote.polarity) for vote in identity(same)] == [("total", "+")]
     mixed_rows = [
         {"binding_key": "int", "row_key": "int", "label": "int", "currency": "RUB"},
@@ -129,6 +149,284 @@ def test_identity_abstains_unless_one_known_currency():
     assert identity(mixed) == []
     unknown = _input(values, precedents, bindings)
     assert identity(unknown) == []
+
+
+def test_identity_reads_usd_from_the_unit_when_the_row_currency_is_empty():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    rows = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "USD"}
+        for key in values
+    ]
+    data = _input(values, precedents, bindings, rows=rows, units=_money_units())
+    assert [(vote.binding_key, vote.polarity) for vote in identity(data)] == [("total", "+")]
+
+
+def test_identity_abstains_when_rub_and_usd_units_differ():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    rows = [
+        {"binding_key": "int", "row_key": "int", "label": "int", "unit": "RUB"},
+        {"binding_key": "prn", "row_key": "prn", "label": "prn", "unit": "USD"},
+        {"binding_key": "total", "row_key": "total", "label": "total", "unit": "RUB"},
+    ]
+    data = _input(values, precedents, bindings, rows=rows, units=_money_units())
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_thousand_rub_and_rub_share_a_currency():
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    rows = [
+        {"binding_key": "int", "row_key": "int", "label": "int", "unit": "RUB", "currency": "RUB"},
+        {"binding_key": "prn", "row_key": "prn", "label": "prn", "unit": "RUB", "currency": "RUB"},
+        {"binding_key": "total", "row_key": "total", "label": "total", "unit": "thousand_rub", "currency": "RUB"},
+    ]
+    same_numbers = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    false_match = _input(same_numbers, precedents, bindings, rows=rows, units=_money_units())
+    assert identity(false_match) == []
+    scaled = {
+        "int": [10000, 10000, 10000, 10000, 10000],
+        "prn": [5000, 5000, 5000, 5000, 5000],
+        "total": [15, 15, 15, 15, 15],
+    }
+    true_base = _input(scaled, precedents, bindings, rows=rows, units=_money_units())
+    assert identity(true_base) == []
+
+
+def test_identity_abstains_when_explicit_currency_disagrees_with_the_unit():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    rows = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "USD", "currency": "EUR"}
+        for key in values
+    ]
+    data = _input(values, precedents, bindings, rows=rows, units=_money_units())
+    assert identity(data) == []
+
+
+def test_unknown_unit_does_not_become_a_catalog_currency():
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    precedents = {"total": {"int", "prn"}}
+    bindings = [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")]
+    blank = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "FOO"}
+        for key in values
+    ]
+    assert identity(_input(values, precedents, bindings, rows=blank, units=_money_units())) == []
+    named = [
+        {"binding_key": key, "row_key": key, "label": key, "unit": "FOO", "currency": "RUB"}
+        for key in values
+    ]
+    voted = _input(values, precedents, bindings, rows=named, units=_money_units())
+    assert identity(voted) == []
+
+
+def _identity_book(unit_of, *, currency_of=None, units=None, extra_rows=(), scale_of=None):
+    values = {"int": [10, 10, 10, 10, 10], "prn": [5, 5, 5, 5, 5], "total": [15, 15, 15, 15, 15]}
+    rows = []
+    for key in values:
+        row = {"binding_key": key, "row_key": key, "label": key, "unit": unit_of[key]}
+        named = (currency_of or {}).get(key)
+        if named:
+            row["currency"] = named
+        if scale_of and key in scale_of and scale_of[key] is not None:
+            row["scale_factor"] = scale_of[key]
+        rows.append(row)
+    rows.extend(extra_rows)
+    return _input(
+        values,
+        {"total": {"int", "prn"}},
+        [_binding("int", "interest", "confirmed"), _binding("prn", "principal", "confirmed")],
+        rows=rows,
+        units=_money_units() if units is None else units,
+    )
+
+
+def test_identity_abstains_when_dimension_differs_at_the_same_currency_and_scale():
+    from finance_analysis.domain.dimensions import UnitSpec
+
+    units = _money_units()
+    units["RUB/MWh"] = UnitSpec("currency_per_energy", "RUB", 1)
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB/MWh", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+        units=units,
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_a_component_unit_is_unknown():
+    data = _identity_book(
+        {"int": "FOO", "prn": "RUB", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_the_total_unit_is_unknown():
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB", "total": "FOO"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_row_key_is_duplicated():
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+        extra_rows=[{"binding_key": "int-copy", "row_key": "int", "label": "int", "unit": "RUB", "currency": "RUB"}],
+    )
+    assert identity(data) == []
+
+
+def test_identity_votes_when_dimension_currency_and_scale_agree():
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+    )
+    assert [(vote.binding_key, vote.polarity) for vote in identity(data)] == [("total", "+")]
+
+
+def test_identity_abstains_when_currencies_differ():
+    data = _identity_book(
+        {"int": "RUB", "prn": "USD", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "USD", "total": "RUB"},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_scales_differ():
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB", "total": "thousand_rub"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+    )
+    assert identity(data) == []
+
+
+def test_identity_votes_when_plain_units_share_dimension_and_scale():
+    from finance_analysis.domain.dimensions import UnitSpec
+
+    data = _identity_book(
+        {"int": "MWh", "prn": "MWh", "total": "MWh"},
+        units={"MWh": UnitSpec("energy", None, 1)},
+    )
+    assert [(vote.binding_key, vote.polarity) for vote in identity(data)] == [("total", "+")]
+
+
+def test_identity_abstains_when_a_plain_unit_names_a_currency():
+    from finance_analysis.domain.dimensions import UnitSpec
+
+    data = _identity_book(
+        {"int": "MWh", "prn": "MWh", "total": "MWh"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+        units={"MWh": UnitSpec("energy", None, 1)},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_power_units_differ():
+    data = _identity_book(
+        {"int": "MW", "prn": "kW", "total": "MW"},
+        units={"MW": UnitSpec("power", None, 1), "kW": UnitSpec("power", None, "0.001")},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_energy_units_differ():
+    from decimal import Decimal
+
+    data = _identity_book(
+        {"int": "MWh", "prn": "kWh", "total": "MWh"},
+        units={"MWh": UnitSpec("energy", None, 1), "kWh": UnitSpec("energy", None, Decimal("0.001"))},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_calendar_units_differ():
+    data = _identity_book(
+        {"int": "year", "prn": "month", "total": "year"},
+        units={"year": UnitSpec("duration"), "month": UnitSpec("duration")},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_the_scale_is_unknown():
+    data = _identity_book(
+        {"int": "kW", "prn": "kW", "total": "kW"},
+        units={"kW": UnitSpec("power")},
+    )
+    assert identity(data) == []
+
+
+def test_identity_abstains_when_scale_factors_differ():
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+        scale_of={"int": 1, "prn": 1, "total": 1000},
+    )
+    assert identity(data) == []
+
+
+def test_identity_votes_when_scale_factors_match():
+    data = _identity_book(
+        {"int": "RUB", "prn": "RUB", "total": "RUB"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+        scale_of={"int": 1000, "prn": 1000, "total": 1000},
+    )
+    assert [(vote.binding_key, vote.polarity) for vote in identity(data)] == [("total", "+")]
+
+
+def test_identity_abstains_when_scale_factor_is_missing_next_to_a_stated_one():
+    units = {"int": "RUB", "prn": "RUB", "total": "RUB"}
+    currency = {"int": "RUB", "prn": "RUB", "total": "RUB"}
+    beside_thousand = _identity_book(units, currency_of=currency, scale_of={"int": 1000, "prn": 1000})
+    beside_one = _identity_book(units, currency_of=currency, scale_of={"int": 1, "prn": 1})
+    assert identity(beside_thousand) == []
+    assert identity(beside_one) == []
+
+
+def test_labeling_input_keeps_the_row_scale_factor():
+    from finance_analysis.application.learning import labeling_input
+
+    prepared = [{"binding_key": "r", "row_key": "r", "label": "r", "unit": "RUB", "scale_factor": 1000}]
+    data = labeling_input(prepared, [], [], [], CATALOG, {})
+    assert data.rows[0]["scale_factor"] == 1000
+
+
+def test_identity_votes_when_the_same_unit_has_one_scale():
+    data = _identity_book(
+        {"int": "MW", "prn": "MW", "total": "MW"},
+        units={"MW": UnitSpec("power", None, 1)},
+    )
+    assert [(vote.binding_key, vote.polarity) for vote in identity(data)] == [("total", "+")]
+
+
+def test_identity_abstains_for_a_price_unit_without_a_rule():
+    from finance_analysis.domain.dimensions import UnitSpec
+
+    data = _identity_book(
+        {"int": "RUB/MWh", "prn": "RUB/MWh", "total": "RUB/MWh"},
+        currency_of={"int": "RUB", "prn": "RUB", "total": "RUB"},
+        units={"RUB/MWh": UnitSpec("currency_per_energy", "RUB", 1)},
+    )
+    assert identity(data) == []
+
+
+def test_labeling_input_passes_the_unit_catalog():
+    from finance_analysis.application.learning import labeling_input
+
+    data = labeling_input([], [], [], [], CATALOG, {})
+    assert data.units["USD"].currency == "USD"
+    assert data.units["USD"].scale == 1
+    assert data.units["thousand_rub"].currency == "RUB"
+    assert data.units["thousand_rub"].scale == 1000
+    assert data.units["MWh"].currency is None
+    assert data.units["RUB/MWh"].currency == "RUB"
 
 
 def test_unit_sign_votes_against():

@@ -16,6 +16,7 @@ from decimal import Decimal
 from ulid import ULID
 
 from finance_analysis.application import keys
+from finance_analysis.application.catalog import load_dimensions
 from finance_analysis.application.examples import (
     AppendOnlyParquet,
     pack_vector,
@@ -710,6 +711,8 @@ def labeling_input(prepared, bindings, facts, links, package, identities) -> Lab
         order.setdefault((fact["axis_id"], fact["period_id"]), len(order))
         if fact.get("cell_id"):
             cell_row[fact["cell_id"]] = fact["row_key"]
+        # normalized_value — поле builder, если оно есть. Иначе это копия value_dec.
+        # scale_factor приходит на строке dim_row и здесь не умножается.
         number = fact.get("normalized_value")
         if number is None:
             number = fact.get("value_dec")
@@ -729,4 +732,5 @@ def labeling_input(prepared, bindings, facts, links, package, identities) -> Lab
         concepts=dict(package.concepts),
         identities=identities,
         order=order,
+        units=dict(load_dimensions().unit_specs),
     )
