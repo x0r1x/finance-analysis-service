@@ -186,7 +186,7 @@ def adscr(
     )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": "adscr"}
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(_DSCR_CORE, _primaries(bindings, absent))
     aligned = aligned_keys(periods)
     sheet = _scale_policy(facts, [primaries["cfads"], primaries["debt_service"]]) == "sheet"
     cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
@@ -287,7 +287,7 @@ def dscr_reductions(
     )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": metric}
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(_DSCR_CORE, _primaries(bindings, absent))
     aligned = aligned_keys(periods)
     sheet = _scale_policy(facts, [primaries["cfads"], primaries["debt_service"]]) == "sheet"
     cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)

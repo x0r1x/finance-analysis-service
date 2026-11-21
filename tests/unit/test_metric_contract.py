@@ -434,6 +434,48 @@ def test_loan_life_ratio_reads_through_bound_inputs(monkeypatch):
     assert {"cfads", "debt_service", "debt_outstanding", "discount_rate"} <= set(seen)
 
 
+def _bindings(*names: str) -> list[dict]:
+    return [
+        {
+            "effective_concept": name,
+            "row_key": name,
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        }
+        for name in names
+    ]
+
+
+def test_adscr_and_dscr_reductions_read_through_bound_inputs(monkeypatch):
+    from finance_analysis.domain import cover_metrics
+
+    seen: list[tuple[str, ...]] = []
+    real = BoundInputs.__init__
+
+    def spy(self: BoundInputs, declared: tuple[str, ...], values: object, optional: tuple[str, ...] = ()) -> None:
+        seen.append(tuple(declared))
+        real(self, declared, values, optional)
+
+    monkeypatch.setattr(BoundInputs, "__init__", spy)
+    monkeypatch.setattr(
+        cover_metrics,
+        "coverage_ratio",
+        lambda **_kwargs: {"status": "succeeded", "rows": [], "warnings": [], "metric": "dscr"},
+    )
+    call = {
+        "facts": [],
+        "bindings": _bindings("cfads", "debt_service"),
+        "periods": [],
+        "period_phase": {},
+        "explicit_phases": False,
+    }
+    assert cover_metrics.adscr(**call)["status"] == "succeeded"
+    cover_metrics.dscr_reductions("dscr_min", **call)
+    cover_metrics.dscr_reductions("dscr_avg", **call)
+    assert seen.count(("cfads", "debt_service")) == 3
+
+
 def test_cash_covenant_reads_through_bound_inputs(monkeypatch):
     from finance_analysis.domain.covenant import cash_covenant_dscr
 
