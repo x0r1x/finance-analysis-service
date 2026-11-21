@@ -373,6 +373,16 @@ class Concept:
         return self.temporal_nature == "stock" and row_sign in {"inflow", "outflow"}
 
 
+def _incoming_index(concepts: Mapping[str, Concept]) -> Mapping[tuple[str, str], tuple[str, ...]]:
+    """Источники рёбер, указывающих на понятие. Порядок id фиксируется здесь."""
+
+    buckets: dict[tuple[str, str], list[str]] = {}
+    for source, concept in concepts.items():
+        for relation in concept.relations:
+            buckets.setdefault((relation.target, relation.type), []).append(source)
+    return MappingProxyType({key: tuple(sorted(sources)) for key, sources in buckets.items()})
+
+
 @dataclass(frozen=True)
 class GlossaryPackage:
     taxonomy: str
@@ -385,6 +395,11 @@ class GlossaryPackage:
     _ambiguous: Mapping[str, tuple[LabelHit, ...]] = field(default_factory=dict)
     # Несколько исходных текстов одного ключа. Хвост в скобках ключ не меняет.
     _surfaces: Mapping[str, tuple[LabelHit, ...]] = field(default_factory=dict)
+    # (цель, тип ребра) → источники. Собирается один раз, обратные рёбра не хранит.
+    _incoming: Mapping[tuple[str, str], tuple[str, ...]] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_incoming", _incoming_index(self.concepts))
 
     @property
     def ids(self) -> frozenset[str]:
@@ -397,8 +412,9 @@ class GlossaryPackage:
         симметричного типа затем источники входящих рёбер того же типа.
         Если обратное имя другое, затем источники рёбер этого обратного типа,
         которые указывают сюда. Повторы отбрасываются, входящие источники
-        идут по id. Транзитивное замыкание не строится. Расчётные права
-        это чтение не даёт: их по-прежнему смотрит `targets_for` по записи.
+        идут по id. Индекс входящих рёбер собран при сборке пакета: этот
+        метод понятия заново не перебирает. Транзитивное замыкание не строится.
+        Расчётные права это чтение не даёт: их по-прежнему смотрит `targets_for`.
         """
 
         concept = self.concepts.get(concept_id)
@@ -424,14 +440,11 @@ class GlossaryPackage:
             incoming.append(inverse)
         if not incoming:
             return tuple(found)
-        for other_id in sorted(self.concepts):
-            if other_id == concept_id:
-                continue
-            other = self.concepts[other_id]
-            for edge_kind in incoming:
-                if concept_id in other.relation_targets(edge_kind):
-                    add(other_id)
-                    break
+        sources: set[str] = set()
+        for edge_kind in incoming:
+            sources.update(self._incoming.get((concept_id, edge_kind), ()))
+        for other_id in sorted(sources):
+            add(other_id)
         return tuple(found)
 
     def resolve(self, text: str) -> LabelHit | None:
