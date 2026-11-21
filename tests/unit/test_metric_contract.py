@@ -6,38 +6,15 @@ import pytest
 
 from finance_analysis.application.model_types import load_coverage_document
 from finance_analysis.domain.metric_contract import (
+    COMMON_ROUTE,
     REGISTRY,
     DuplicateImplementation,
+    ImplementationContractError,
+    check_registry,
+    formula_id_of,
     implements,
+    load_implementations,
 )
-
-# Импорт модулей вешает @implements. Диспетчер расчёта эти метки не вызывает.
-_IMPLEMENTATION_MODULES = (
-    "finance_analysis.domain.cash_flow",
-    "finance_analysis.domain.cover_metrics",
-    "finance_analysis.domain.covenant",
-    "finance_analysis.domain.debt_incl_off_balance",
-    "finance_analysis.domain.free_cash_flow",
-    "finance_analysis.domain.housing_cover",
-    "finance_analysis.domain.housing_dscr",
-    "finance_analysis.domain.metrics",
-    "finance_analysis.domain.net_cash_flow",
-    "finance_analysis.domain.returns",
-    "finance_analysis.domain.total_debt",
-)
-
-# Нет отдельной функции: лестница не отличает формулу и считает её общим маршрутом.
-# dscr.pf — ветки variant == "pf" нет, считает та же coverage_ratio, что базовая dscr.
-# dscr.ocf_covenant — имени в коде нет; названный профиль отдаёт запись каталога в composed_ratio.
-# Четыре метрики ниже — select_ratio → composed_ratio, состав целиком из каталога.
-_COMMON_ROUTE = {
-    ("dscr", "dscr.pf"),
-    ("dscr", "dscr.ocf_covenant"),
-    ("net_debt_ebitda", "net_debt_ebitda"),
-    ("escrow_coverage", "escrow_coverage"),
-    ("total_debt_ebitda", "total_debt_ebitda"),
-    ("debt_off_balance_ebitda", "debt_off_balance_ebitda"),
-}
 
 # Ключ → модуль, функция, version, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
 _ROUTE = {
@@ -108,33 +85,19 @@ def _catalog_keys() -> set[tuple[str, str]]:
     metrics = document["metrics"]
     found: set[tuple[str, str]] = set()
     for metric_id, body in metrics.items():
-        found.add((str(metric_id), _formula_id(str(metric_id), None, body)))
+        found.add((str(metric_id), formula_id_of(str(metric_id), None, body)))
         for variant, spec in (body.get("variants") or {}).items():
-            found.add((str(metric_id), _formula_id(str(metric_id), str(variant), spec)))
+            found.add((str(metric_id), formula_id_of(str(metric_id), str(variant), spec)))
     return found
 
 
-def _formula_id(metric_id: str, variant: str | None, body: dict) -> str:
-    declared = body.get("formula_id")
-    if isinstance(declared, str) and declared:
-        return declared
-    if variant is None:
-        return metric_id
-    return f"{metric_id}.{variant}"
-
-
-def _load_implementations() -> None:
-    for name in _IMPLEMENTATION_MODULES:
-        __import__(name)
-
-
 def test_registry_keys_match_coverage_formulas():
-    _load_implementations()
+    load_implementations()
     catalog = _catalog_keys()
-    assert _COMMON_ROUTE.isdisjoint(_ROUTE)
-    assert _COMMON_ROUTE <= catalog
-    assert set(_ROUTE) | _COMMON_ROUTE == catalog
-    assert set(REGISTRY) == catalog - _COMMON_ROUTE
+    assert COMMON_ROUTE.isdisjoint(_ROUTE)
+    assert COMMON_ROUTE <= catalog
+    assert set(_ROUTE) | COMMON_ROUTE == catalog
+    assert set(REGISTRY) == catalog - COMMON_ROUTE
     for key, (module, name, version, inputs) in _ROUTE.items():
         item = REGISTRY[key]
         assert (item.metric_id, item.formula_id) == key
@@ -189,11 +152,95 @@ def test_same_qualified_name_registers_again():
 def test_reload_of_implementation_module_keeps_the_key():
     import importlib
 
-    import finance_analysis.domain.cash_flow as cash_flow
+    from finance_analysis.domain import cash_flow
 
-    _load_implementations()
+    load_implementations()
     importlib.reload(cash_flow)
     item = REGISTRY[("ncf_period", "ncf_period")]
     assert item.function.__module__ == "finance_analysis.domain.cash_flow"
     assert item.function.__name__ == "net_cash_flow"
     assert item.inputs == ("cash_inflow", "cash_outflow")
+
+
+def test_catalog_formulas_have_implementations():
+    load_implementations()
+    check_registry(load_coverage_document()["metrics"])
+
+
+def test_missing_formula_is_named_in_russian():
+    load_implementations()
+    metrics = {"probe_metric": {"numerator": ["cfads"], "denominator": "debt_service"}}
+    with pytest.raises(ImplementationContractError, match="probe_metric: нет реализации в реестре"):
+        check_registry(metrics)
+
+
+def test_common_route_does_not_need_an_implementation():
+    load_implementations()
+    check_registry(
+        {
+            "dscr": {
+                "numerator": ["cfads"],
+                "denominator": "debt_service",
+                "variants": {
+                    "ocf_covenant": {"numerator": {"plus": ["operating_cash_flow"]}},
+                    "pf": {"numerator": ["cfads"], "denominator": "debt_service"},
+                },
+            }
+        }
+    )
+
+
+def test_every_gap_is_listed():
+    with pytest.raises(ImplementationContractError) as caught:
+        check_registry({"zeta": {"numerator": "a"}, "alpha": {"numerator": "b"}})
+    text = str(caught.value)
+    assert text.index("alpha: нет реализации в реестре") < text.index("zeta: нет реализации в реестре")
+
+
+def test_undeclared_catalog_concept_is_named():
+    load_implementations()
+    metrics = {
+        "llcr": {
+            "numerator": ["mystery_b", "cfads", "mystery_a"],
+            "denominator": "debt_outstanding",
+            "rate": "discount_rate",
+        }
+    }
+    with pytest.raises(ImplementationContractError, match="llcr: необъявленные входы: mystery_a, mystery_b"):
+        check_registry(metrics)
+
+
+def test_declared_inputs_may_exceed_the_catalog():
+    load_implementations()
+    check_registry(
+        {"llcr": {"numerator": ["cfads"], "denominator": "debt_outstanding", "rate": "discount_rate"}}
+    )
+
+
+def test_empty_inputs_skip_the_catalog_composition():
+    load_implementations()
+    check_registry({"dscr": {"numerator": ["not_declared"], "denominator": "also_not"}})
+
+
+def test_base_is_inheritance_not_an_input():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__")
+    implements(*key, inputs=("cfads",))(sample)
+    try:
+        check_registry({"__probe__": {"base": "dscr"}})
+    finally:
+        REGISTRY.pop(key, None)
+
+
+def test_check_config_prints_registry_problems(capsys, monkeypatch):
+    from finance_analysis.cli import _check_config
+
+    def fail(_metrics: object) -> None:
+        raise ImplementationContractError("probe: нет реализации в реестре")
+
+    monkeypatch.setattr("finance_analysis.domain.metric_contract.check_registry", fail)
+    with pytest.raises(SystemExit):
+        _check_config()
+    assert "probe: нет реализации в реестре" in capsys.readouterr().err
