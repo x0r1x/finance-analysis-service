@@ -90,11 +90,9 @@ def implements(
 
 
 # Нет отдельной функции: лестница считает формулу общим маршрутом.
-# dscr.ocf_covenant — имени в коде нет; названный профиль отдаёт запись каталога в composed_ratio.
 # Четыре метрики ниже — select_ratio → composed_ratio, состав целиком из каталога.
 COMMON_ROUTE: frozenset[tuple[str, str]] = frozenset(
     {
-        ("dscr", "dscr.ocf_covenant"),
         ("net_debt_ebitda", "net_debt_ebitda"),
         ("escrow_coverage", "escrow_coverage"),
         ("total_debt_ebitda", "total_debt_ebitda"),

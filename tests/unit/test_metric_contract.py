@@ -33,6 +33,12 @@ _ROUTE = {
         ("cfads", "debt_service", "interest", "interest_paid", "principal"),
     ),
     ("dscr", "dscr.corporate_covenant"): ("covenant", "covenant_dscr", "", ()),
+    ("dscr", "dscr.ocf_covenant"): (
+        "covenant",
+        "dscr_ocf_covenant",
+        "dscr.ocf_covenant@1",
+        ("operating_cash_flow", "interest", "capex", "principal"),
+    ),
     ("dscr", "dscr.housing"): ("housing_dscr", "housing_dscr", "", ()),
     ("dscr", "dscr.cash_covenant"): ("covenant", "cash_covenant_dscr", "", ()),
     ("icr", "icr"): ("metrics", "coverage_ratio", "", ("ebitda", "ebit", "interest", "interest_paid")),
@@ -196,10 +202,10 @@ def test_common_route_does_not_need_an_implementation():
     load_implementations()
     check_registry(
         {
-            "dscr": {
-                "numerator": ["cfads"],
-                "denominator": "debt_service",
-                "variants": {"ocf_covenant": {"numerator": {"plus": ["operating_cash_flow"]}}},
+            "net_debt_ebitda": {
+                "numerator": {"plus": ["net_debt"]},
+                "denominator": {"plus": ["ebitda"]},
+                "window": "LTM",
             }
         }
     )

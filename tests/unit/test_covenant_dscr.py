@@ -1432,8 +1432,8 @@ def test_select_ratio_uses_named_profile_variant_for_any_book():
     assert all(row.get("value") != Decimal("2.2000000000") for row in plain["rows"])
 
 
-def test_ocf_and_cash_routes_keep_their_current_functions(monkeypatch):
-    """Закрепляет текущий маршрут. Логику не меняет: решение по ocf — за владельцем."""
+def test_ocf_covenant_uses_the_catalog_formula_without_a_profile(monkeypatch):
+    """OCF не равен CFADS: без профиля считается состав каталога, не coverage_ratio."""
 
     from finance_analysis.domain import covenant
     from finance_analysis.domain.metrics import coverage_ratio, quantize_ratio
@@ -1449,6 +1449,7 @@ def test_ocf_and_cash_routes_keep_their_current_functions(monkeypatch):
 
     monkeypatch.setattr(covenant, "cash_covenant_dscr", watch("cash_covenant_dscr", covenant.cash_covenant_dscr))
     monkeypatch.setattr(covenant, "covenant_dscr", watch("covenant_dscr", covenant.covenant_dscr))
+    monkeypatch.setattr(covenant, "dscr_ocf_covenant", watch("dscr_ocf_covenant", covenant.dscr_ocf_covenant))
     monkeypatch.setattr(covenant, "coverage_ratio", watch("coverage_ratio", coverage_ratio))
     monkeypatch.setattr(covenant, "dscr_pf", watch("dscr_pf", covenant.dscr_pf))
 
@@ -1471,11 +1472,6 @@ def test_ocf_and_cash_routes_keep_their_current_functions(monkeypatch):
         "marker_class": None,
         "absent": frozenset(),
     }
-    called.clear()
-    plain = select_ratio("dscr", "ocf_covenant", base, profile=None, **route)
-    assert called == ["coverage_ratio"]
-    assert plain["rows"][0]["value"] == Decimal("2.5000000000")
-
     profile_book = {
         "facts": [
             _fact("o", "Y1", "100"),
@@ -1497,6 +1493,20 @@ def test_ocf_and_cash_routes_keep_their_current_functions(monkeypatch):
         "absent": frozenset(),
     }
     called.clear()
+    plain = select_ratio("dscr", "ocf_covenant", profile_book, profile=None, **route)
+    assert called[0] == "dscr_ocf_covenant"
+    assert "coverage_ratio" not in called
+    assert plain["rows"][0]["value"] == Decimal("2.2000000000")
+
+    called.clear()
+    missing = select_ratio("dscr", "ocf_covenant", base, profile=None, **route)
+    assert "coverage_ratio" not in called
+    assert missing["status"] == "missing_input"
+    assert missing["needs_input"][0]["subject"] == "operating_cash_flow"
+    assert "cfads" not in missing.get("missing_inputs", [])
+    assert all(row.get("value") != Decimal("2.5000000000") for row in missing["rows"])
+
+    called.clear()
     named = select_ratio(
         "dscr",
         "ocf_covenant",
@@ -1504,7 +1514,8 @@ def test_ocf_and_cash_routes_keep_their_current_functions(monkeypatch):
         profile={"dscr_definition": {"variant": "ocf_covenant"}},
         **route,
     )
-    assert called == ["covenant_dscr"]
+    assert called[0] == "dscr_ocf_covenant"
+    assert "coverage_ratio" not in called
     assert named["definition_source"] == "profile"
     assert named["rows"][0]["value"] == Decimal("2.2000000000")
 

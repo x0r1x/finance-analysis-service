@@ -247,6 +247,55 @@ def covenant_dscr(
     return {**result, "warnings": [*notes, *result["warnings"]], "definition_source": source, "definition_ref": ref}
 
 
+# Состав каталога dscr.ocf_covenant. interest_paid сюда не входит: это запасной порядок процентов внутри covenant_dscr.
+OCF_COVENANT_INPUTS = ("operating_cash_flow", "interest", "capex", "principal")
+
+
+@implements(
+    "dscr",
+    "dscr.ocf_covenant",
+    version="dscr.ocf_covenant@1",
+    inputs=OCF_COVENANT_INPUTS,
+)
+def dscr_ocf_covenant(
+    *,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    default: Composed,
+    concepts: frozenset[str],
+    money: frozenset[str],
+    profile: dict | None = None,
+    profile_ref: str | None = None,
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+    interest_order: dict | None = None,
+    row_fallbacks: dict | None = None,
+    composed: dict[str, Composed] | None = None,
+    aggregations: Mapping[str, str] | None = None,
+) -> dict:
+    """OCF-ковенант по составу каталога. Нет входов состава — метрика не считается, CFADS не подставляется."""
+
+    return covenant_dscr(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        default=default,
+        concepts=concepts,
+        money=money,
+        profile=profile,
+        profile_ref=profile_ref,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        absent=absent,
+        interest_order=interest_order,
+        row_fallbacks=row_fallbacks,
+        composed=composed,
+        aggregations=aggregations,
+    )
+
+
 def composed_ratio(
     metric: str,
     formula: Composed,
@@ -1714,6 +1763,24 @@ def select_ratio(
             sign_convention=common.get("sign_convention") or "outflow_negative",
             absent=common.get("absent") or frozenset(),
             profile=profile,
+        )
+    if metric == "dscr" and (variant == "ocf_covenant" or named == "ocf_covenant"):
+        return dscr_ocf_covenant(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common["sign_convention"],
+            marker_class=common["marker_class"],
+            absent=common["absent"],
+            profile=profile,
+            profile_ref=profile_ref,
+            default=composed["dscr.ocf_covenant"],
+            concepts=concepts,
+            money=money,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            composed=composed,
+            aggregations=aggregations,
         )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         return covenant_dscr(
