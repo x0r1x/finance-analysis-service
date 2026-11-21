@@ -475,6 +475,30 @@ def test_dynamic_variant_keeps_its_own_conditional_concepts():
         check_registry({"llcr": {"variants": {"cbr590": {"numerator": {"plus": ["credit_limit"]}}}}})
 
 
+def test_dynamic_dependency_is_a_union_of_branches():
+    """Допустимый набор — объединение веток. Выбранный стандарт реестр не читает."""
+
+    load_implementations()
+    check_registry(
+        {
+            "total_debt": {
+                "numerator": {
+                    "plus": ["lease_liability", "finance_lease_liability", "operating_lease_liability"],
+                }
+            }
+        }
+    )
+    check_registry(
+        {
+            "icr": {
+                "variants": {
+                    "bank": {"numerator": {"plus": ["profit_from_sales", "ifrs_operating_profit"]}},
+                }
+            }
+        }
+    )
+
+
 def test_dynamic_dependency_and_component_are_allowed():
     load_implementations()
     check_registry(
