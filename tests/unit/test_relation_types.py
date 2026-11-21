@@ -1,12 +1,20 @@
 """Реестр типов отношений понятий и проверка каталога при загрузке."""
 
 from dataclasses import replace
+from types import MappingProxyType
 
 import pytest
 
 from finance_analysis.application.catalog import load_catalog
+from finance_analysis.domain import relations
 from finance_analysis.domain.glossary import GlossaryInvalid, build_package
-from finance_analysis.domain.relations import RELATION_TYPES, RelationType, permits
+from finance_analysis.domain.relations import (
+    ACTIVE_RELATION_TYPES,
+    RELATION_TYPES,
+    RESERVED_RELATION_TYPES,
+    RelationType,
+    permits,
+)
 
 _DICTS = {
     "flows": {"inflow": ["приток"]},
@@ -36,6 +44,15 @@ def _concepts(bodies: dict[str, dict], glossaries: dict | None = None):
 
 def _labels(caught: pytest.ExceptionInfo[GlossaryInvalid]) -> list[str]:
     return caught.value.labels
+
+
+def _replace_type(monkeypatch: pytest.MonkeyPatch, name: str, **fields: object) -> None:
+    """Подмена одного типа на время теста. Запись в реестр закрыта."""
+
+    catalog = MappingProxyType(
+        {**relations.RELATION_TYPES, name: replace(relations.RELATION_TYPES[name], **fields)}
+    )
+    monkeypatch.setattr(relations, "RELATION_TYPES", catalog)
 
 
 def test_registry_declares_every_type_and_keeps_substitution_closed():
@@ -101,6 +118,13 @@ def test_registry_declares_every_type_and_keeps_substitution_closed():
     assert permits("equivalent_to", "substitution") is False
 
 
+def test_relation_registry_rejects_writes():
+    with pytest.raises(TypeError):
+        RELATION_TYPES["composed_of"] = RELATION_TYPES["composed_of"]
+    assert isinstance(ACTIVE_RELATION_TYPES, frozenset)
+    assert isinstance(RESERVED_RELATION_TYPES, frozenset)
+
+
 def test_catalog_relations_stay_and_do_not_derive_inverses():
     package = load_catalog()
     debt = package.concepts["debt_service"]
@@ -137,11 +161,7 @@ def test_reconciliation_view_follows_the_registry_not_the_stored_edge(monkeypatc
     assert debt.composed_of == ("interest",)
     assert debt.targets_for("reconciliation") == ("interest",)
     assert package.concepts["cfads"].targets_for("reconciliation") == ()
-    monkeypatch.setitem(
-        RELATION_TYPES,
-        "composed_of",
-        replace(RELATION_TYPES["composed_of"], participates_in_reconciliation=False),
-    )
+    _replace_type(monkeypatch, "composed_of", participates_in_reconciliation=False)
     assert debt.composed_of == ("interest",)
     assert debt.targets_for("reconciliation") == ()
     assert debt.targets_for("substitution") == ()
@@ -266,11 +286,7 @@ def test_inverse_direction_conflict_and_optional_reverse_edge():
 
 
 def test_missing_required_inverse_is_reported(monkeypatch):
-    monkeypatch.setitem(
-        RELATION_TYPES,
-        "broader_than",
-        replace(RELATION_TYPES["broader_than"], inverse_required=True),
-    )
+    _replace_type(monkeypatch, "broader_than", inverse_required=True)
     with pytest.raises(GlossaryInvalid) as missing:
         _concepts(
             {

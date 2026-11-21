@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from finance_analysis.domain.dimensions import ROLES
 
@@ -99,7 +100,7 @@ def _spec(
     )
 
 
-RELATION_TYPES: dict[str, RelationType] = {
+_RELATION_TYPES: dict[str, RelationType] = {
     spec.name: spec
     for spec in (
         _spec(
@@ -172,14 +173,17 @@ RELATION_TYPES: dict[str, RelationType] = {
     )
 }
 
+RELATION_TYPES: Mapping[str, RelationType] = MappingProxyType(_RELATION_TYPES)
 ACTIVE_RELATION_TYPES = frozenset(name for name, spec in RELATION_TYPES.items() if spec.active)
 RESERVED_RELATION_TYPES = frozenset(name for name, spec in RELATION_TYPES.items() if not spec.active)
 
-_USES = {
-    "substitution": "allows_substitution",
-    "aggregation": "participates_in_aggregation",
-    "reconciliation": "participates_in_reconciliation",
-}
+_USES: Mapping[str, str] = MappingProxyType(
+    {
+        "substitution": "allows_substitution",
+        "aggregation": "participates_in_aggregation",
+        "reconciliation": "participates_in_reconciliation",
+    }
+)
 
 
 def permits(type_name: str, use: str) -> bool:
