@@ -189,15 +189,8 @@ def composition_concepts(body: Mapping[str, object]) -> frozenset[str]:
     return frozenset(found)
 
 
-def check_registry(
-    metrics: Mapping[str, object],
-    profiles: Mapping[str, Mapping[str, object]] | None = None,
-) -> None:
-    """Каждая формула каталога есть в реестре, состав не шире объявленных входов.
-
-    У реализации с profile_inputs состав ковенанта в профиле не выходит
-    за inputs, optional_inputs и profile_inputs вместе.
-    """
+def check_registry(metrics: Mapping[str, object]) -> None:
+    """Каждая формула каталога есть в реестре, состав не шире объявленных входов."""
 
     problems: list[str] = []
     for metric_id, body in metrics.items():
@@ -209,54 +202,34 @@ def check_registry(
             for variant, spec in variants.items():
                 if isinstance(spec, dict):
                     _check_formula(str(metric_id), str(variant), spec, problems)
-    if profiles:
-        _check_profile_formulas(profiles, problems)
     if problems:
         raise ImplementationContractError("\n".join(sorted(problems)))
 
 
-def _check_profile_formulas(
-    profiles: Mapping[str, Mapping[str, object]],
-    problems: list[str],
-) -> None:
-    # shortcut: поле профиля только dscr_definition, следующее договорное поле — свой ключ на Implementation
-    for key in sorted(REGISTRY):
-        item = REGISTRY[key]
-        if item.profile_inputs is None:
-            continue
-        allowed = set(item.inputs) | set(item.optional_inputs) | set(item.profile_inputs)
-        variant = item.formula_id.removeprefix(f"{item.metric_id}.")
-        for profile_id in sorted(profiles):
-            raw = _profile_covenant(profiles[profile_id], variant)
-            if raw is None:
-                continue
-            extra = sorted(composition_concepts(raw) - allowed)
-            if extra:
-                names = ", ".join(extra)
-                problems.append(f"{item.formula_id}: профиль {profile_id}: необъявленные профильные входы: {names}")
+def profile_definition_problems(
+    definitions: Mapping[tuple[str, str], Mapping[str, object]],
+    registry: Mapping[tuple[str, str], Implementation],
+) -> list[str]:
+    """Состав договорных формул против реестра. Пустой список — нарушений нет.
 
-
-def _profile_covenant(body: object, variant: str) -> Mapping[str, object] | None:
-    """Состав dscr_definition, если он относится к этой реализации.
-
-    Имя варианта относит профиль к формуле dscr.<variant>. Состав без имени
-    подставляет resolve_covenant, поэтому его проверяет каждая реализация,
-    у которой задан profile_inputs.
+    Ключ определения — (metric_id, formula_id). Тело — числитель и знаменатель,
+    уже без полей профиля. Реализация без profile_inputs состав не принимает.
     """
 
-    if not isinstance(body, Mapping):
-        return None
-    raw = body.get("dscr_definition")
-    if not isinstance(raw, dict):
-        return None
-    named = raw.get("variant")
-    if isinstance(named, str) and named:
-        if named != variant:
-            return None
-        return raw
-    if "numerator" in raw or "denominator" in raw:
-        return raw
-    return None
+    problems: list[str] = []
+    for metric_id, formula_id in sorted(definitions):
+        item = registry.get((metric_id, formula_id))
+        if item is None:
+            problems.append(f"{formula_id}: нет реализации в реестре")
+            continue
+        if item.profile_inputs is None:
+            problems.append(f"{formula_id}: профильный состав не объявлен")
+            continue
+        allowed = set(item.inputs) | set(item.optional_inputs) | set(item.profile_inputs)
+        extra = sorted(composition_concepts(definitions[(metric_id, formula_id)]) - allowed)
+        if extra:
+            problems.append(f"{formula_id}: необъявленные профильные входы: {', '.join(extra)}")
+    return problems
 
 
 def _check_formula(

@@ -74,6 +74,49 @@ PROPOSAL_TYPES = frozenset({"synonym_of", "new_concept_under", "not_a_concept", 
 _ORIGIN = {"git_base": "base_git", "auto": "auto"}
 
 
+# Состав без имени варианта подставляют эти формулы. Новый вызов resolve_covenant — добавить ключ.
+_UNNAMED_COVENANT = (
+    ("dscr", "dscr.corporate_covenant"),
+    ("dscr", "dscr.ocf_covenant"),
+)
+
+
+def profile_covenant_definitions(body: object) -> dict[tuple[str, str], dict]:
+    """Переводит поле профиля dscr_definition в определения реестра.
+
+    Имя варианта без состава — формула каталога, проверять нечего.
+    Состав без имени относится к формулам, которые вызывает resolve_covenant.
+    """
+
+    raw = body.get("dscr_definition") if isinstance(body, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    named = raw.get("variant")
+    composed = "numerator" in raw or "denominator" in raw
+    if isinstance(named, str) and named and not composed:
+        return {}
+    if isinstance(named, str) and named:
+        return {("dscr", f"dscr.{named}"): raw}
+    if not composed:
+        return {}
+    return {key: raw for key in _UNNAMED_COVENANT}
+
+
+def _reject_undeclared_covenant(body: dict) -> None:
+    """До записи версии: состав договора не шире объявленных входов реализации."""
+
+    from finance_analysis.domain.metric_contract import (
+        REGISTRY,
+        load_implementations,
+        profile_definition_problems,
+    )
+
+    load_implementations()
+    problems = profile_definition_problems(profile_covenant_definitions(body), REGISTRY)
+    if problems:
+        raise InvalidArgument("договорный состав выходит за объявленные входы: " + "; ".join(problems))
+
+
 def _clean_sheet_class(value) -> dict:
     """Имя листа → reporting или assumptions. Класс по подписи листа не угадывается."""
 
@@ -584,6 +627,7 @@ class GlossaryStore:
             )
             if problem:
                 raise InvalidArgument(problem)
+            _reject_undeclared_covenant(body)
         if "dscr_variant" in body and body["dscr_variant"] is not None and body["dscr_variant"] not in _DSCR_VARIANTS:
             raise InvalidArgument("dscr_variant: cash_covenant")
         if "icr_definition" in body and body["icr_definition"] is not None:
