@@ -23,6 +23,7 @@ from finance_analysis.domain.cover_metrics import (
 )
 from finance_analysis.domain.free_cash_flow import free_cash_flow
 from finance_analysis.domain.mapping import marked_line_code
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
@@ -189,6 +190,7 @@ def resolve_covenant(
     return _parse(raw), "profile", ref, []
 
 
+@implements("dscr", "dscr.corporate_covenant")
 def covenant_dscr(
     *,
     facts: list[dict],
@@ -1121,6 +1123,7 @@ def _depreciation_grain_mismatch(grains: set[int], period: dict) -> bool:
     return months not in grains
 
 
+@implements("icr", "icr.bank")
 def bank_icr(
     *,
     facts: list[dict],
@@ -1427,6 +1430,7 @@ def _concept_amount(name, series, period, ordered, aligned, basis, quarter: bool
     return total, None
 
 
+@implements("dscr", "dscr.cash_covenant")
 def cash_covenant_dscr(
     *,
     facts: list[dict],

@@ -10,6 +10,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from finance_analysis.domain.glossary import normalize_label
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     MONEY,
     _flow_basis,
@@ -40,6 +41,7 @@ _COMPANY_OUT = _folded(
 _SECTION_OUT = _folded(("Платежи — всего", "Платежи - всего"))
 
 
+@implements("ncf_period", "ncf_period", inputs=("cash_inflow", "cash_outflow"))
 def net_cash_flow(
     *,
     facts: list[dict],

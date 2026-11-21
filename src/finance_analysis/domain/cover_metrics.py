@@ -13,6 +13,7 @@ from decimal import Decimal, localcontext
 from itertools import pairwise
 
 from finance_analysis.domain.coverage import is_coverage_test_period
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     RATIO,
     _assume_sheet_units,
@@ -148,6 +149,7 @@ def _missing(metric: str, bindings: list[dict], needed: tuple[str, ...], absent:
     return None
 
 
+@implements("adscr", "adscr")
 def adscr(
     *,
     facts: list[dict],
@@ -248,6 +250,8 @@ def _window(ordered: list[dict], period: dict, direction: str) -> list[dict] | N
     return window
 
 
+@implements("dscr_min", "dscr_min")
+@implements("dscr_avg", "dscr_avg")
 def dscr_reductions(
     metric: str,
     *,
@@ -315,6 +319,16 @@ def dscr_reductions(
     return _result(metric, rows, warnings=dscr["warnings"])
 
 
+@implements(
+    "llcr",
+    "llcr",
+    inputs=("debt_service", "cfads", "debt_outstanding", "discount_rate"),
+)
+@implements(
+    "plcr",
+    "plcr",
+    inputs=("debt_service", "cfads", "debt_outstanding", "discount_rate"),
+)
 def loan_life_ratio(
     metric: str,
     *,

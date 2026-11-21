@@ -13,6 +13,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
 from finance_analysis.domain.mapping import marked_line_code
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import _year_of, basis_of, restate_series
 
@@ -237,6 +238,9 @@ def _methodology_message(kind: str) -> str:
     return "Пометка определения: book, ras, ifrs или gaap."
 
 
+@implements("dscr", "dscr", version="dscr@1")
+@implements("icr", "icr")
+@implements("icr_ebit", "icr_ebit")
 def coverage_ratio(
     *,
     metric: str,
@@ -458,6 +462,7 @@ def coverage_ratio(
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
+@implements("icr_lease", "icr_lease")
 def lease_interest_coverage(
     *,
     facts: list[dict],

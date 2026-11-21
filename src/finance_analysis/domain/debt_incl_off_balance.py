@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from finance_analysis.domain.metric_contract import implements
+
 _METRIC = "debt_incl_off_balance"
 _BOUND = frozenset({"bound", "bound_with_warning"})
 _VALUED = frozenset({"cached", "zero_explicit"})
@@ -11,6 +13,7 @@ _VALUED = frozenset({"cached", "zero_explicit"})
 _HUMAN = frozenset({"confirmed", "profile"})
 
 
+@implements("debt_incl_off_balance", "debt_incl_off_balance")
 def debt_incl_off_balance(
     *,
     components: tuple[str, ...],

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal, localcontext
 
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import MONEY, _payment, _primaries, quantize_ratio
 
 _NPV_TOL = Decimal("0.01")
@@ -16,6 +17,8 @@ _IRR_TOL = Decimal("1e-9")
 _IDENTITY = frozenset({"vk477", "fcff_after_interest"})
 
 
+@implements("npv", "npv", inputs=("project_fcf", "discount_rate"))
+@implements("irr", "irr", inputs=("project_fcf",))
 def project_return(
     metric: str,
     *,
@@ -81,6 +84,17 @@ def project_return(
     }
 
 
+@implements("fcf_identity", "fcf_identity")
+@implements(
+    "fcf_identity",
+    "fcf_identity.vk477",
+    inputs=("project_fcf", "operating_cash_flow", "capex"),
+)
+@implements(
+    "fcf_identity",
+    "fcf_identity.fcff_after_interest",
+    inputs=("project_fcf", "operating_cash_flow", "capex", "net_interest", "tax_rate"),
+)
 def fcf_identity(
     variant: str | None,
     *,

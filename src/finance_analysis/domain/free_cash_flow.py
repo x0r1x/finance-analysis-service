@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, localcontext
 
+from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     HUMAN_SOURCES,
     MONEY,
@@ -44,6 +45,7 @@ _FINANCING_SECTION = (
 _GUARDED = ("operating_cash_flow", "capex")
 
 
+@implements("fcff", "fcff")
 def free_cash_flow(
     *,
     facts: list[dict],
