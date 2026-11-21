@@ -192,6 +192,7 @@ _FROM_HOUSING = DynamicInputs(components=(("dscr", "dscr.housing"),))
     mode="dynamic",
     reason="гарантированные деньги зависят от профиля, долг читается шире формулы",
     dynamic_inputs=_CBR_DYNAMIC,
+    implementation_version="llcr.cbr590@1",
 )
 @implements(
     "llcr",
@@ -199,6 +200,7 @@ _FROM_HOUSING = DynamicInputs(components=(("dscr", "dscr.housing"),))
     mode="dynamic",
     reason="лимит и старшее тело читаются по правилу варианта",
     dynamic_inputs=_DOMRF_DYNAMIC,
+    implementation_version="llcr.domrf@1",
 )
 def _llcr(facts, bindings, periods, convention, absent, profile, variant):
     choice = profile_variant(profile, "llcr_definition") or variant or "cbr590"
@@ -313,6 +315,7 @@ def _family(metric, facts, bindings, periods, convention, absent, profile, direc
     mode="dynamic",
     reason="ряд считает housing_dscr",
     dynamic_inputs=_FROM_HOUSING,
+    implementation_version="dscr_min.housing@1",
 )
 def _minimum(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
@@ -354,6 +357,7 @@ def _minimum(axis, members):
     mode="dynamic",
     reason="ряд считает housing_dscr",
     dynamic_inputs=_FROM_HOUSING,
+    implementation_version="dscr_avg.housing@1",
 )
 def _average(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
@@ -411,6 +415,7 @@ def _average(axis, members):
     mode="dynamic",
     reason="ряд считает housing_dscr, состав зависит от профиля",
     dynamic_inputs=_FROM_HOUSING,
+    implementation_version="adscr.housing@1",
 )
 def _adscr(axis, members, ordered, direction):
     by_period = {row["period_id"]: row for row in members}
@@ -461,6 +466,7 @@ def _adscr(axis, members, ordered, direction):
     mode="dynamic",
     reason="входы читаются только при шкале профиля",
     dynamic_inputs=DynamicInputs(groups=(ConceptGroup("покрытие", ("escrow_balance", "debt_outstanding")),)),
+    implementation_version="escrow_blended_rate@1",
 )
 def _rate(facts, bindings, periods, convention, absent, profile):
     scale = (profile or {}).get("escrow_rate_scale")

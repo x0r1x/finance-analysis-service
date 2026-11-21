@@ -20,94 +20,84 @@ from finance_analysis.domain.metric_contract import (
     profile_definition_problems,
 )
 
-# Ключ → модуль, функция, version, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
+# Ключ → модуль, функция, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
+# implementation_version равен formula_id@1 и с definition_version не сравнивается.
 _ROUTE = {
     ("dscr", "dscr"): (
         "metrics",
         "coverage_ratio",
-        "dscr@1",
         ("cfads", "debt_service", "interest", "interest_paid", "principal"),
     ),
     ("dscr", "dscr.pf"): (
         "metrics",
         "dscr_pf",
-        "",
         ("cfads", "debt_service", "interest", "interest_paid", "principal"),
     ),
-    ("dscr", "dscr.corporate_covenant"): ("covenant", "covenant_dscr", "", ()),
+    ("dscr", "dscr.corporate_covenant"): ("covenant", "covenant_dscr", ()),
     ("dscr", "dscr.ocf_covenant"): (
         "covenant",
         "dscr_ocf_covenant",
-        "dscr.ocf_covenant@1",
         ("operating_cash_flow", "interest", "capex", "principal"),
     ),
-    ("dscr", "dscr.housing"): ("housing_dscr", "housing_dscr", "", ()),
+    ("dscr", "dscr.housing"): ("housing_dscr", "housing_dscr", ()),
     ("dscr", "dscr.cash_covenant"): (
         "covenant",
         "cash_covenant_dscr",
-        "",
         ("operating_cash_flow", "interest_paid", "capex", "principal"),
     ),
-    ("icr", "icr"): ("metrics", "coverage_ratio", "", ("ebitda", "ebit", "interest", "interest_paid")),
-    ("icr", "icr.bank"): ("covenant", "bank_icr", "", ()),
-    ("icr_ebit", "icr_ebit"): ("metrics", "coverage_ratio", "", ("ebit", "interest", "interest_paid")),
-    ("adscr", "adscr"): ("cover_metrics", "adscr", "", ("cfads", "debt_service")),
-    ("adscr", "adscr.housing"): ("housing_cover", "_adscr", "", ()),
-    ("dscr_min", "dscr_min"): ("cover_metrics", "dscr_reductions", "", ("cfads", "debt_service")),
-    ("dscr_min", "dscr_min.housing"): ("housing_cover", "_minimum", "", ()),
-    ("dscr_avg", "dscr_avg"): ("cover_metrics", "dscr_reductions", "", ("cfads", "debt_service")),
-    ("dscr_avg", "dscr_avg.housing"): ("housing_cover", "_average", "", ()),
+    ("icr", "icr"): ("metrics", "coverage_ratio", ("ebitda", "ebit", "interest", "interest_paid")),
+    ("icr", "icr.bank"): ("covenant", "bank_icr", ()),
+    ("icr_ebit", "icr_ebit"): ("metrics", "coverage_ratio", ("ebit", "interest", "interest_paid")),
+    ("adscr", "adscr"): ("cover_metrics", "adscr", ("cfads", "debt_service")),
+    ("adscr", "adscr.housing"): ("housing_cover", "_adscr", ()),
+    ("dscr_min", "dscr_min"): ("cover_metrics", "dscr_reductions", ("cfads", "debt_service")),
+    ("dscr_min", "dscr_min.housing"): ("housing_cover", "_minimum", ()),
+    ("dscr_avg", "dscr_avg"): ("cover_metrics", "dscr_reductions", ("cfads", "debt_service")),
+    ("dscr_avg", "dscr_avg.housing"): ("housing_cover", "_average", ()),
     ("llcr", "llcr"): (
         "cover_metrics",
         "loan_life_ratio",
-        "",
         ("debt_service", "cfads", "debt_outstanding", "discount_rate"),
     ),
-    ("llcr", "llcr.cbr590"): ("housing_cover", "_llcr", "", ()),
-    ("llcr", "llcr.domrf"): ("housing_cover", "_llcr", "", ()),
+    ("llcr", "llcr.cbr590"): ("housing_cover", "_llcr", ()),
+    ("llcr", "llcr.domrf"): ("housing_cover", "_llcr", ()),
     ("plcr", "plcr"): (
         "cover_metrics",
         "loan_life_ratio",
-        "",
         ("debt_service", "cfads", "debt_outstanding", "discount_rate"),
     ),
-    ("total_debt", "total_debt"): ("total_debt", "total_debt_result", "", ()),
-    ("escrow_blended_rate", "escrow_blended_rate"): ("housing_cover", "_rate", "", ()),
-    ("npv", "npv"): ("returns", "project_return", "", ("project_fcf", "discount_rate")),
-    ("irr", "irr"): ("returns", "project_return", "", ("project_fcf",)),
+    ("total_debt", "total_debt"): ("total_debt", "total_debt_result", ()),
+    ("escrow_blended_rate", "escrow_blended_rate"): ("housing_cover", "_rate", ()),
+    ("npv", "npv"): ("returns", "project_return", ("project_fcf", "discount_rate")),
+    ("irr", "irr"): ("returns", "project_return", ("project_fcf",)),
     ("debt_incl_off_balance", "debt_incl_off_balance"): (
         "debt_incl_off_balance",
         "debt_incl_off_balance",
-        "",
         (),
     ),
-    ("fcff", "fcff"): ("free_cash_flow", "free_cash_flow", "", ("operating_cash_flow", "capex")),
+    ("fcff", "fcff"): ("free_cash_flow", "free_cash_flow", ("operating_cash_flow", "capex")),
     ("ncf", "ncf"): (
         "net_cash_flow",
         "net_cash_flow",
-        "",
         ("operating_cash_flow", "investing_cash_flow", "financing_cash_flow"),
     ),
     ("icr_lease", "icr_lease"): (
         "metrics",
         "lease_interest_coverage",
-        "",
         ("ebitda", "interest", "lease_interest", "lease_payment", "lease_principal"),
     ),
-    ("fcf_identity", "fcf_identity"): ("returns", "fcf_identity", "", ()),
+    ("fcf_identity", "fcf_identity"): ("returns", "fcf_identity", ()),
     ("fcf_identity", "fcf_identity.vk477"): (
         "returns",
         "fcf_identity",
-        "",
         ("project_fcf", "operating_cash_flow", "capex"),
     ),
     ("fcf_identity", "fcf_identity.fcff_after_interest"): (
         "returns",
         "fcf_identity",
-        "",
         ("project_fcf", "operating_cash_flow", "capex", "net_interest", "tax_rate"),
     ),
-    ("ncf_period", "ncf_period"): ("cash_flow", "net_cash_flow", "", ("cash_inflow", "cash_outflow")),
+    ("ncf_period", "ncf_period"): ("cash_flow", "net_cash_flow", ("cash_inflow", "cash_outflow")),
 }
 
 # Условные входы: профиль, concept.absent, щит процентов. Остальные реализации — пусто.
@@ -152,12 +142,12 @@ def test_registry_keys_match_coverage_formulas():
     assert composed <= catalog
     assert set(_ROUTE) | composed == catalog
     assert set(REGISTRY) == catalog
-    for key, (module, name, version, inputs) in _ROUTE.items():
+    for key, (module, name, inputs) in _ROUTE.items():
         item = REGISTRY[key]
         assert (item.metric_id, item.formula_id) == key
         assert item.function.__module__.rsplit(".", 1)[-1] == module
         assert item.function.__name__ == name
-        assert item.version == version
+        assert item.implementation_version == f"{key[1]}@1"
         assert item.inputs == inputs
         assert item.optional_inputs == _OPTIONAL.get(key, ())
         assert item.profile_inputs == _PROFILE_INPUTS.get(key)
@@ -174,7 +164,7 @@ def test_same_key_cannot_register_twice():
         return 2
 
     key = ("__probe__", "__probe__")
-    marked = implements(*key, version="probe", inputs=("left",))(sample)
+    marked = implements(*key, implementation_version="__probe__@1", inputs=("left",))(sample)
     try:
         assert marked is sample
         assert sample() == 1
@@ -196,11 +186,11 @@ def test_same_qualified_name_registers_again():
     reloaded.__module__ = sample.__module__
     reloaded.__qualname__ = sample.__qualname__
     key = ("__probe__", "__probe__.reload")
-    implements(*key, version="1")(sample)
+    implements(*key, implementation_version="__probe__.reload@1")(sample)
     try:
-        implements(*key, version="2", inputs=("cfads",))(sample)
+        implements(*key, implementation_version="__probe__.reload@2", inputs=("cfads",))(sample)
         assert REGISTRY[key].function is sample
-        assert REGISTRY[key].version == "2"
+        assert REGISTRY[key].implementation_version == "__probe__.reload@2"
         implements(*key)(reloaded)
         assert REGISTRY[key].function is reloaded
         assert REGISTRY[key].function() == 2
@@ -359,7 +349,7 @@ def test_optional_input_covers_a_catalog_concept():
         return None
 
     key = ("__probe__", "__probe__")
-    implements(*key, inputs=("cfads",), optional_inputs=("capex",))(sample)
+    implements(*key, implementation_version="__probe__@1", inputs=("cfads",), optional_inputs=("capex",))(sample)
     try:
         check_registry({"__probe__": {"numerator": {"plus": ["cfads"], "minus": ["capex"]}}})
         with pytest.raises(ImplementationContractError, match="__probe__: необъявленные входы: mystery"):
@@ -503,10 +493,43 @@ def test_dynamic_without_an_allowed_set_fails():
         return None
 
     key = ("__probe__", "__probe__")
-    implements(*key, mode="dynamic", reason="проба")(sample)
+    implements(*key, mode="dynamic", reason="проба", implementation_version="__probe__@1")(sample)
     try:
         with pytest.raises(ImplementationContractError, match="__probe__: у dynamic нет допустимого набора"):
             check_registry({"__probe__": {}})
+    finally:
+        REGISTRY.pop(key, None)
+
+
+def test_implementation_version_stands_apart_from_definition_version():
+    load_implementations()
+    metrics = load_coverage_document()["metrics"]
+    assert "definition_version" not in metrics["icr"]
+    assert REGISTRY[("icr", "icr")].implementation_version == "icr@1"
+    assert REGISTRY[("dscr", "dscr.ocf_covenant")].implementation_version == "dscr.ocf_covenant@1"
+    composed = [item for item in REGISTRY.values() if item.mode == "composed"]
+    assert composed
+    assert all(item.implementation_version == "" for item in composed)
+
+
+def test_implementation_version_format():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__")
+    broken = ("", "1", "__probe__@01", "__probe__@-1", "other@1", "__probe__@", "__probe__@1.0")
+    try:
+        for version in broken:
+            implements(*key, implementation_version=version, inputs=("cfads",))(sample)
+            with pytest.raises(
+                ImplementationContractError,
+                match=r"implementation_version — __probe__@<целое>",
+            ):
+                check_registry({"__probe__": {"numerator": "cfads"}})
+        implements(*key, implementation_version="__probe__@2", inputs=("cfads",))(sample)
+        check_registry({"__probe__": {"numerator": "cfads"}})
+        implements(*key, implementation_version="__probe__@0", inputs=("cfads",))(sample)
+        check_registry({"__probe__": {"numerator": "cfads"}})
     finally:
         REGISTRY.pop(key, None)
 
@@ -545,7 +568,7 @@ def test_base_is_inheritance_not_an_input():
         return None
 
     key = ("__probe__", "__probe__")
-    implements(*key, inputs=("cfads",))(sample)
+    implements(*key, implementation_version="__probe__@1", inputs=("cfads",))(sample)
     try:
         check_registry({"__probe__": {"base": "dscr"}})
     finally:

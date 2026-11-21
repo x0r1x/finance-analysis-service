@@ -113,7 +113,7 @@ class Implementation:
 
     metric_id: str
     formula_id: str
-    version: str
+    implementation_version: str
     function: Callable[..., object]
     inputs: tuple[str, ...]
     optional_inputs: tuple[str, ...] = ()
@@ -134,7 +134,7 @@ def implements(
     metric_id: str,
     formula_id: str,
     *,
-    version: str = "",
+    implementation_version: str = "",
     inputs: tuple[str, ...] = (),
     optional_inputs: tuple[str, ...] = (),
     profile_inputs: tuple[str, ...] | None = None,
@@ -161,7 +161,7 @@ def implements(
         REGISTRY[key] = Implementation(
             metric_id,
             formula_id,
-            version,
+            implementation_version,
             function,
             tuple(inputs),
             tuple(optional_inputs),
@@ -311,6 +311,20 @@ def profile_definition_problems(
     return problems
 
 
+def _version_problem(formula_id: str, version: object) -> str | None:
+    """implementation_version — formula_id@целое, отдельно от definition_version.
+
+    В конверт анализа и в провенанс ячейки версия не пишется: это опубликованный
+    формат ответа. composed своей реализации не имеет, поле остаётся пустым.
+    """
+
+    prefix = f"{formula_id}@"
+    suffix = version[len(prefix) :] if isinstance(version, str) and version.startswith(prefix) else ""
+    if suffix.isascii() and suffix.isdigit() and str(int(suffix)) == suffix:
+        return None
+    return f"{formula_id}: implementation_version — {formula_id}@<целое>"
+
+
 def _check_formula(
     metric_id: str,
     variant: str | None,
@@ -322,6 +336,10 @@ def _check_formula(
     if item is None:
         problems.append(f"{formula_id}: нет реализации в реестре")
         return
+    if item.mode != "composed":
+        problem = _version_problem(formula_id, item.implementation_version)
+        if problem:
+            problems.append(problem)
     if item.mode == "composed":
         return
     if item.mode == "dynamic":

@@ -83,6 +83,7 @@ _TOTAL_DEBT_DYNAMIC = DynamicInputs(
     mode="dynamic",
     reason="набор зависит от debt_standard и флага аренды",
     dynamic_inputs=_TOTAL_DEBT_DYNAMIC,
+    implementation_version="total_debt@1",
 )
 def total_debt_result(
     *,

@@ -99,6 +99,7 @@ _HOUSING_DYNAMIC = DynamicInputs(
     mode="dynamic",
     reason="флаги профиля меняют знаменатель",
     dynamic_inputs=_HOUSING_DYNAMIC,
+    implementation_version="dscr.housing@1",
 )
 def housing_dscr(
     *,

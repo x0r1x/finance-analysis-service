@@ -215,6 +215,7 @@ _CORPORATE_PROFILE_INPUTS = (
     profile_inputs=_CORPORATE_PROFILE_INPUTS,
     mode="dynamic",
     reason="состав заменяет профиль",
+    implementation_version="dscr.corporate_covenant@1",
 )
 def covenant_dscr(
     *,
@@ -281,7 +282,7 @@ OCF_COVENANT_PROFILE = ("ebitda", "cash_taxes")
 @implements(
     "dscr",
     "dscr.ocf_covenant",
-    version="dscr.ocf_covenant@1",
+    implementation_version="dscr.ocf_covenant@1",
     inputs=OCF_COVENANT_INPUTS,
     optional_inputs=OCF_COVENANT_OPTIONAL,
     profile_inputs=OCF_COVENANT_PROFILE,
@@ -1224,6 +1225,7 @@ _BANK_DYNAMIC = DynamicInputs(
     mode="dynamic",
     reason="стандарт и флаг аренды меняют числитель",
     dynamic_inputs=_BANK_DYNAMIC,
+    implementation_version="icr.bank@1",
 )
 def bank_icr(
     *,
@@ -1531,7 +1533,13 @@ def _concept_amount(name, series, period, ordered, aligned, basis, quarter: bool
     return total, None
 
 
-@implements("dscr", "dscr.cash_covenant", inputs=_CASH_CORE, optional_inputs=(_CASH_OTHER,))
+@implements(
+    "dscr",
+    "dscr.cash_covenant",
+    implementation_version="dscr.cash_covenant@1",
+    inputs=_CASH_CORE,
+    optional_inputs=(_CASH_OTHER,),
+)
 def cash_covenant_dscr(
     *,
     facts: list[dict],

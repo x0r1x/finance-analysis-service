@@ -31,6 +31,7 @@ _OFF_BALANCE = DynamicInputs(
     mode="dynamic",
     reason="слагаемые приходят аргументом из каталога",
     dynamic_inputs=_OFF_BALANCE,
+    implementation_version="debt_incl_off_balance@1",
 )
 def debt_incl_off_balance(
     *,

@@ -152,7 +152,7 @@ def _missing(metric: str, bindings: list[dict], needed: tuple[str, ...], absent:
 _DSCR_CORE = ("cfads", "debt_service")
 
 
-@implements("adscr", "adscr", inputs=_DSCR_CORE)
+@implements("adscr", "adscr", implementation_version="adscr@1", inputs=_DSCR_CORE)
 def adscr(
     *,
     facts: list[dict],
@@ -253,8 +253,8 @@ def _window(ordered: list[dict], period: dict, direction: str) -> list[dict] | N
     return window
 
 
-@implements("dscr_min", "dscr_min", inputs=_DSCR_CORE)
-@implements("dscr_avg", "dscr_avg", inputs=_DSCR_CORE)
+@implements("dscr_min", "dscr_min", implementation_version="dscr_min@1", inputs=_DSCR_CORE)
+@implements("dscr_avg", "dscr_avg", implementation_version="dscr_avg@1", inputs=_DSCR_CORE)
 def dscr_reductions(
     metric: str,
     *,
@@ -325,8 +325,8 @@ def dscr_reductions(
 LOAN_LIFE_INPUTS = ("debt_service", "cfads", "debt_outstanding", "discount_rate")
 
 
-@implements("llcr", "llcr", inputs=LOAN_LIFE_INPUTS)
-@implements("plcr", "plcr", inputs=LOAN_LIFE_INPUTS)
+@implements("llcr", "llcr", implementation_version="llcr@1", inputs=LOAN_LIFE_INPUTS)
+@implements("plcr", "plcr", implementation_version="plcr@1", inputs=LOAN_LIFE_INPUTS)
 def loan_life_ratio(
     metric: str,
     *,

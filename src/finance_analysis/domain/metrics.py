@@ -245,9 +245,9 @@ ICR_EBIT_INPUTS = ("ebit", "interest", "interest_paid")
 _COVERAGE_INPUTS = {"dscr": DSCR_INPUTS, "icr": ICR_INPUTS, "icr_ebit": ICR_EBIT_INPUTS}
 
 
-@implements("dscr", "dscr", version="dscr@1", inputs=DSCR_INPUTS)
-@implements("icr", "icr", inputs=ICR_INPUTS)
-@implements("icr_ebit", "icr_ebit", inputs=ICR_EBIT_INPUTS)
+@implements("dscr", "dscr", implementation_version="dscr@1", inputs=DSCR_INPUTS)
+@implements("icr", "icr", implementation_version="icr@1", inputs=ICR_INPUTS)
+@implements("icr_ebit", "icr_ebit", implementation_version="icr_ebit@1", inputs=ICR_EBIT_INPUTS)
 def coverage_ratio(
     *,
     metric: str,
@@ -473,7 +473,7 @@ def coverage_ratio(
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
-@implements("dscr", "dscr.pf", inputs=DSCR_INPUTS)
+@implements("dscr", "dscr.pf", implementation_version="dscr.pf@1", inputs=DSCR_INPUTS)
 def dscr_pf(
     *,
     facts: list[dict],
@@ -510,7 +510,7 @@ def dscr_pf(
 ICR_LEASE_INPUTS = ("ebitda", "interest", "lease_interest", "lease_payment", "lease_principal")
 
 
-@implements("icr_lease", "icr_lease", inputs=ICR_LEASE_INPUTS)
+@implements("icr_lease", "icr_lease", implementation_version="icr_lease@1", inputs=ICR_LEASE_INPUTS)
 def lease_interest_coverage(
     *,
     facts: list[dict],
