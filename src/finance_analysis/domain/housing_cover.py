@@ -168,8 +168,18 @@ def housing_cover(
     return _family(metric, facts, bindings, periods, sign_convention, absent, profile, direction, basis)
 
 
-@implements("llcr", "llcr.cbr590")
-@implements("llcr", "llcr.domrf")
+@implements(
+    "llcr",
+    "llcr.cbr590",
+    mode="dynamic",
+    reason="гарантированные деньги зависят от профиля, долг читается шире формулы",
+)
+@implements(
+    "llcr",
+    "llcr.domrf",
+    mode="dynamic",
+    reason="лимит и старшее тело читаются по правилу варианта",
+)
 def _llcr(facts, bindings, periods, convention, absent, profile, variant):
     choice = profile_variant(profile, "llcr_definition") or variant or "cbr590"
     if choice not in _NOMINAL:
@@ -277,7 +287,12 @@ def _family(metric, facts, bindings, periods, convention, absent, profile, direc
     return _envelope(metric, rows, _status(rows), variant="housing", warnings=series.get("warnings") or [])
 
 
-@implements("dscr_min", "dscr_min.housing")
+@implements(
+    "dscr_min",
+    "dscr_min.housing",
+    mode="dynamic",
+    reason="ряд считает housing_dscr",
+)
 def _minimum(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
     if blocked:
@@ -312,7 +327,12 @@ def _minimum(axis, members):
     )
 
 
-@implements("dscr_avg", "dscr_avg.housing")
+@implements(
+    "dscr_avg",
+    "dscr_avg.housing",
+    mode="dynamic",
+    reason="ряд считает housing_dscr",
+)
 def _average(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
     excluded = [row["period_id"] for row in members if row["status"] == "no_debt_service"]
@@ -363,7 +383,12 @@ def _average(axis, members):
     ]
 
 
-@implements("adscr", "adscr.housing")
+@implements(
+    "adscr",
+    "adscr.housing",
+    mode="dynamic",
+    reason="ряд считает housing_dscr, состав зависит от профиля",
+)
 def _adscr(axis, members, ordered, direction):
     by_period = {row["period_id"]: row for row in members}
     months = grain_months(ordered[0].get("grain") if ordered else None)
@@ -407,7 +432,12 @@ def _adscr(axis, members, ordered, direction):
     return rows
 
 
-@implements("escrow_blended_rate", "escrow_blended_rate")
+@implements(
+    "escrow_blended_rate",
+    "escrow_blended_rate",
+    mode="dynamic",
+    reason="входы читаются только при шкале профиля",
+)
 def _rate(facts, bindings, periods, convention, absent, profile):
     scale = (profile or {}).get("escrow_rate_scale")
     problem = None if scale is None else scale_error(scale)

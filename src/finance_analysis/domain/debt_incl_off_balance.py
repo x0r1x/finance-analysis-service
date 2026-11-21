@@ -13,7 +13,12 @@ _VALUED = frozenset({"cached", "zero_explicit"})
 _HUMAN = frozenset({"confirmed", "profile"})
 
 
-@implements("debt_incl_off_balance", "debt_incl_off_balance")
+@implements(
+    "debt_incl_off_balance",
+    "debt_incl_off_balance",
+    mode="dynamic",
+    reason="слагаемые приходят аргументом из каталога",
+)
 def debt_incl_off_balance(
     *,
     components: tuple[str, ...],

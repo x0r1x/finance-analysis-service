@@ -59,7 +59,12 @@ def include_operating_lease(profile: dict | None) -> bool | None:
     return None
 
 
-@implements("total_debt", "total_debt")
+@implements(
+    "total_debt",
+    "total_debt",
+    mode="dynamic",
+    reason="набор зависит от debt_standard и флага аренды",
+)
 def total_debt_result(
     *,
     facts: list[dict],

@@ -203,7 +203,13 @@ _CORPORATE_PROFILE_INPUTS = (
 )
 
 
-@implements("dscr", "dscr.corporate_covenant", profile_inputs=_CORPORATE_PROFILE_INPUTS)
+@implements(
+    "dscr",
+    "dscr.corporate_covenant",
+    profile_inputs=_CORPORATE_PROFILE_INPUTS,
+    mode="dynamic",
+    reason="состав заменяет профиль",
+)
 def covenant_dscr(
     *,
     facts: list[dict],
@@ -1190,7 +1196,12 @@ def _depreciation_grain_mismatch(grains: set[int], period: dict) -> bool:
     return months not in grains
 
 
-@implements("icr", "icr.bank")
+@implements(
+    "icr",
+    "icr.bank",
+    mode="dynamic",
+    reason="стандарт и флаг аренды меняют числитель",
+)
 def bank_icr(
     *,
     facts: list[dict],

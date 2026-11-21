@@ -8,8 +8,6 @@ import pytest
 
 from finance_analysis.application.model_types import load_coverage_document
 from finance_analysis.domain.metric_contract import (
-    COMMON_ROUTE,
-    DYNAMIC_INPUTS,
     REGISTRY,
     BoundInputs,
     DuplicateImplementation,
@@ -149,11 +147,11 @@ def _catalog_keys() -> set[tuple[str, str]]:
 def test_registry_keys_match_coverage_formulas():
     load_implementations()
     catalog = _catalog_keys()
-    route = set(COMMON_ROUTE)
-    assert route.isdisjoint(_ROUTE)
-    assert route <= catalog
-    assert set(_ROUTE) | route == catalog
-    assert set(REGISTRY) == catalog - route
+    composed = {key for key, item in REGISTRY.items() if item.mode == "composed"}
+    assert composed.isdisjoint(_ROUTE)
+    assert composed <= catalog
+    assert set(_ROUTE) | composed == catalog
+    assert set(REGISTRY) == catalog
     for key, (module, name, version, inputs) in _ROUTE.items():
         item = REGISTRY[key]
         assert (item.metric_id, item.formula_id) == key
@@ -163,6 +161,9 @@ def test_registry_keys_match_coverage_formulas():
         assert item.inputs == inputs
         assert item.optional_inputs == _OPTIONAL.get(key, ())
         assert item.profile_inputs == _PROFILE_INPUTS.get(key)
+        assert item.mode == ("dynamic" if not inputs else "registered")
+        if item.mode == "dynamic":
+            assert item.reason.strip()
 
 
 def test_same_key_cannot_register_twice():
@@ -279,11 +280,25 @@ def test_common_route_is_composed_ratio(metric_id, monkeypatch):
 
 
 def test_common_route_without_a_composed_case_fails():
-    assert {(metric, metric) for metric in _COMPOSED} == set(COMMON_ROUTE)
+    load_implementations()
+    found = {key for key, item in REGISTRY.items() if item.mode == "composed"}
+    assert {(metric, metric) for metric in _COMPOSED} == found
 
 
 def test_common_route_records_a_reason():
-    assert all(isinstance(reason, str) and reason.strip() for reason in COMMON_ROUTE.values())
+    load_implementations()
+    composed = [item for item in REGISTRY.values() if item.mode == "composed"]
+    assert composed
+    assert all(item.reason.strip() for item in composed)
+
+
+def test_modes_replace_the_two_exception_lists():
+    import finance_analysis.domain.metric_contract as contract
+
+    assert not hasattr(contract, "COMMON_ROUTE")
+    assert not hasattr(contract, "DYNAMIC_INPUTS")
+    load_implementations()
+    assert {item.mode for item in REGISTRY.values()} == {"registered", "composed", "dynamic"}
 
 
 def test_common_route_does_not_need_an_implementation():
@@ -333,7 +348,7 @@ def test_empty_inputs_outside_dynamic_inputs_fail():
     key = ("__probe__", "__probe__")
     implements(*key, optional_inputs=("capex",))(sample)
     try:
-        with pytest.raises(ImplementationContractError, match="__probe__: пустые inputs вне DYNAMIC_INPUTS"):
+        with pytest.raises(ImplementationContractError, match="__probe__: пустые inputs у registered"):
             check_registry({"__probe__": {"numerator": ["cfads"]}})
     finally:
         REGISTRY.pop(key, None)
@@ -355,9 +370,11 @@ def test_optional_input_covers_a_catalog_concept():
 
 def test_dynamic_inputs_names_every_empty_declaration():
     load_implementations()
-    empty = {key for key, item in REGISTRY.items() if not item.inputs}
-    assert empty == set(DYNAMIC_INPUTS)
-    assert all(isinstance(reason, str) and reason.strip() for reason in DYNAMIC_INPUTS.values())
+    empty = {key for key, item in REGISTRY.items() if not item.inputs and item.mode != "composed"}
+    dynamic = {key for key, item in REGISTRY.items() if item.mode == "dynamic"}
+    assert empty == dynamic
+    assert dynamic
+    assert all(item.reason.strip() for key, item in REGISTRY.items() if key in dynamic)
 
 
 def test_bound_inputs_allows_an_optional_name():

@@ -75,7 +75,12 @@ def interest_addback(profile: dict | None) -> bool | None:
     return None
 
 
-@implements("dscr", "dscr.housing")
+@implements(
+    "dscr",
+    "dscr.housing",
+    mode="dynamic",
+    reason="флаги профиля меняют знаменатель",
+)
 def housing_dscr(
     *,
     facts: list[dict],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 
 class DuplicateImplementation(ValueError):
@@ -58,12 +59,19 @@ class BoundInputs:
             raise UndeclaredInput(name)
 
 
+Mode = Literal["registered", "composed", "dynamic"]
+_MODES = frozenset({"registered", "composed", "dynamic"})
+
+
 @dataclass(frozen=True, slots=True)
 class Implementation:
     """profile_inputs is None — профиль состав не задаёт.
 
     Кортеж, в том числе пустой, — дополнительные понятия договорной формулы
     сверх inputs и optional_inputs. interest и interest_paid этим полем не сливаются.
+
+    mode — способ реализации: registered, composed или dynamic.
+    reason обязательна у composed и dynamic.
     """
 
     metric_id: str
@@ -73,6 +81,8 @@ class Implementation:
     inputs: tuple[str, ...]
     optional_inputs: tuple[str, ...] = ()
     profile_inputs: tuple[str, ...] | None = None
+    mode: Mode = "registered"
+    reason: str = ""
 
 
 REGISTRY: dict[tuple[str, str], Implementation] = {}
@@ -90,14 +100,18 @@ def implements(
     inputs: tuple[str, ...] = (),
     optional_inputs: tuple[str, ...] = (),
     profile_inputs: tuple[str, ...] | None = None,
+    mode: Mode = "registered",
+    reason: str = "",
 ):
     """Помечает функцию реализации. Другая функция на том же ключе — ошибка.
 
     profile_inputs=None — профильной формулы нет. Кортеж объявляет
     дополнительные понятия, которые договорный состав может назвать.
+    mode — registered, composed или dynamic. У двух последних нужна причина.
     """
 
     def decorate(function: Callable[..., object]) -> Callable[..., object]:
+        _require_mode(formula_id, mode, reason)
         key = (metric_id, formula_id)
         current = REGISTRY.get(key)
         if current is not None and _qualified(current.function) != _qualified(function):
@@ -110,35 +124,57 @@ def implements(
             tuple(inputs),
             tuple(optional_inputs),
             None if profile_inputs is None else tuple(profile_inputs),
+            mode,
+            reason,
         )
         return function
 
     return decorate
 
 
-# Пустые inputs законны только здесь: состав зависит от профиля, стандарта или аргумента.
-DYNAMIC_INPUTS: dict[tuple[str, str], str] = {
-    ("dscr", "dscr.corporate_covenant"): "состав заменяет профиль",
-    ("dscr", "dscr.housing"): "флаги профиля меняют знаменатель",
-    ("icr", "icr.bank"): "стандарт и флаг аренды меняют числитель",
-    ("adscr", "adscr.housing"): "ряд считает housing_dscr, состав зависит от профиля",
-    ("dscr_min", "dscr_min.housing"): "ряд считает housing_dscr",
-    ("dscr_avg", "dscr_avg.housing"): "ряд считает housing_dscr",
-    ("llcr", "llcr.cbr590"): "гарантированные деньги зависят от профиля, долг читается шире формулы",
-    ("llcr", "llcr.domrf"): "лимит и старшее тело читаются по правилу варианта",
-    ("total_debt", "total_debt"): "набор зависит от debt_standard и флага аренды",
-    ("escrow_blended_rate", "escrow_blended_rate"): "входы читаются только при шкале профиля",
-    ("debt_incl_off_balance", "debt_incl_off_balance"): "слагаемые приходят аргументом из каталога",
-    ("fcf_identity", "fcf_identity"): "без названного варианта ряд не читается",
-}
+def _composed_placeholder(*_args: object, **_kwargs: object) -> None:
+    """Лестница эту функцию не вызывает: формулу считает select_ratio → composed_ratio."""
 
-# Нет отдельной функции: лестница считает формулу общим маршрутом select_ratio → composed_ratio.
-COMMON_ROUTE: dict[tuple[str, str], str] = {
-    ("net_debt_ebitda", "net_debt_ebitda"): "состав целиком из каталога",
-    ("escrow_coverage", "escrow_coverage"): "состав целиком из каталога",
-    ("total_debt_ebitda", "total_debt_ebitda"): "состав целиком из каталога",
-    ("debt_off_balance_ebitda", "debt_off_balance_ebitda"): "состав из каталога, забаланс только снимает обязательность",
-}
+    raise ImplementationContractError("composed считается маршрутом select_ratio, не вызовом реестра")
+
+
+def composed(metric_id: str, formula_id: str, reason: str) -> None:
+    """Формула без своей функции. Общий маршрут select_ratio → composed_ratio."""
+
+    _require_mode(formula_id, "composed", reason)
+    key = (metric_id, formula_id)
+    current = REGISTRY.get(key)
+    if current is not None and current.mode != "composed":
+        raise DuplicateImplementation(f"реализация уже зарегистрирована: {metric_id} {formula_id}")
+    REGISTRY[key] = Implementation(
+        metric_id,
+        formula_id,
+        "",
+        _composed_placeholder,
+        (),
+        (),
+        None,
+        "composed",
+        reason,
+    )
+
+
+def _require_mode(formula_id: str, mode: str, reason: str) -> None:
+    if mode not in _MODES:
+        raise ImplementationContractError(f"{formula_id}: способ реализации registered, composed или dynamic")
+    if mode != "registered" and not reason.strip():
+        raise ImplementationContractError(f"{formula_id}: у {mode} нет причины")
+
+
+# Нет своей функции: лестница считает формулу общим маршрутом select_ratio → composed_ratio.
+composed("net_debt_ebitda", "net_debt_ebitda", "состав целиком из каталога")
+composed("escrow_coverage", "escrow_coverage", "состав целиком из каталога")
+composed("total_debt_ebitda", "total_debt_ebitda", "состав целиком из каталога")
+composed(
+    "debt_off_balance_ebitda",
+    "debt_off_balance_ebitda",
+    "состав из каталога, забаланс только снимает обязательность",
+)
 
 _IMPLEMENTATION_MODULES = (
     "finance_analysis.domain.cash_flow",
@@ -239,15 +275,18 @@ def _check_formula(
     problems: list[str],
 ) -> None:
     formula_id = formula_id_of(metric_id, variant, body)
-    if (metric_id, formula_id) in COMMON_ROUTE:
-        return
     item = REGISTRY.get((metric_id, formula_id))
     if item is None:
         problems.append(f"{formula_id}: нет реализации в реестре")
         return
+    if item.mode == "composed":
+        return
+    if item.mode == "dynamic":
+        if item.inputs:
+            problems.append(f"{formula_id}: у dynamic inputs пустые")
+        return
     if not item.inputs:
-        if (metric_id, formula_id) not in DYNAMIC_INPUTS:
-            problems.append(f"{formula_id}: пустые inputs вне DYNAMIC_INPUTS")
+        problems.append(f"{formula_id}: пустые inputs у registered")
         return
     declared = set(item.inputs) | set(item.optional_inputs)
     extra = sorted(composition_concepts(body) - declared)

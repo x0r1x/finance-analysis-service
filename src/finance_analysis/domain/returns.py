@@ -84,7 +84,12 @@ def project_return(
     }
 
 
-@implements("fcf_identity", "fcf_identity")
+@implements(
+    "fcf_identity",
+    "fcf_identity",
+    mode="dynamic",
+    reason="без названного варианта ряд не читается",
+)
 @implements(
     "fcf_identity",
     "fcf_identity.vk477",
