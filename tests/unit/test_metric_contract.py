@@ -75,7 +75,12 @@ _ROUTE = {
         "",
         ("operating_cash_flow", "investing_cash_flow", "financing_cash_flow"),
     ),
-    ("icr_lease", "icr_lease"): ("metrics", "lease_interest_coverage", "", ()),
+    ("icr_lease", "icr_lease"): (
+        "metrics",
+        "lease_interest_coverage",
+        "",
+        ("ebitda", "interest", "lease_interest", "lease_payment", "lease_principal"),
+    ),
     ("fcf_identity", "fcf_identity"): ("returns", "fcf_identity", "", ()),
     ("fcf_identity", "fcf_identity.vk477"): (
         "returns",
@@ -317,6 +322,23 @@ def test_dscr_pf_reads_through_bound_inputs(monkeypatch):
     assert got["status"] == "missing_input"
     assert "cfads" in seen
     assert "debt_service" in seen
+
+
+def test_icr_lease_reads_through_bound_inputs(monkeypatch):
+    from finance_analysis.domain.metrics import lease_interest_coverage
+
+    seen: list[str] = []
+    real = BoundInputs.__contains__
+
+    def spy(self: BoundInputs, name: object) -> bool:
+        if isinstance(name, str):
+            seen.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(BoundInputs, "__contains__", spy)
+    got = lease_interest_coverage(facts=[], bindings=[], periods=[])
+    assert got["status"] == "missing_input"
+    assert "ebitda" in seen
 
 
 def test_check_config_prints_registry_problems(capsys, monkeypatch):

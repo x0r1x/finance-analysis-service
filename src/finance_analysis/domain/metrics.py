@@ -507,7 +507,10 @@ def dscr_pf(
     )
 
 
-@implements("icr_lease", "icr_lease")
+ICR_LEASE_INPUTS = ("ebitda", "interest", "lease_interest", "lease_payment", "lease_principal")
+
+
+@implements("icr_lease", "icr_lease", inputs=ICR_LEASE_INPUTS)
 def lease_interest_coverage(
     *,
     facts: list[dict],
@@ -526,7 +529,7 @@ def lease_interest_coverage(
     """
 
     metric = "icr_lease"
-    primaries = _primaries(bindings, absent)
+    primaries = BoundInputs(ICR_LEASE_INPUTS, _primaries(bindings, absent))
     warnings: list[dict] = []
     if "ebitda" not in primaries or "interest" not in primaries:
         subject = "ebitda" if "ebitda" not in primaries else "interest"
