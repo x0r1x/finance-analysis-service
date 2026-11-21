@@ -42,6 +42,7 @@ _DASH_TEXT = frozenset({"", "-", "—", "–", "−"})
 @implements(
     "ncf",
     "ncf",
+    implementation_version="ncf@1",
     inputs=("operating_cash_flow", "investing_cash_flow", "financing_cash_flow"),
 )
 def net_cash_flow(

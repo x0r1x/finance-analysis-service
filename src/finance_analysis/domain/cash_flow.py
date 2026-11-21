@@ -41,7 +41,12 @@ _COMPANY_OUT = _folded(
 _SECTION_OUT = _folded(("Платежи — всего", "Платежи - всего"))
 
 
-@implements("ncf_period", "ncf_period", inputs=("cash_inflow", "cash_outflow"))
+@implements(
+    "ncf_period",
+    "ncf_period",
+    implementation_version="ncf_period@1",
+    inputs=("cash_inflow", "cash_outflow"),
+)
 def net_cash_flow(
     *,
     facts: list[dict],

@@ -24,7 +24,12 @@ from finance_analysis.domain.housing_dscr import (
     collect_interval,
     housing_dscr,
 )
-from finance_analysis.domain.metric_contract import implements
+from finance_analysis.domain.metric_contract import (
+    ConceptDependency,
+    ConceptGroup,
+    DynamicInputs,
+    implements,
+)
 from finance_analysis.domain.metrics import aligned_keys, quantize_ratio
 
 _FAMILY = frozenset({"adscr", "dscr_min", "dscr_avg"})
@@ -168,8 +173,39 @@ def housing_cover(
     return _family(metric, facts, bindings, periods, sign_convention, absent, profile, direction, basis)
 
 
-@implements("llcr", "llcr.cbr590")
-@implements("llcr", "llcr.domrf")
+_LLCR_CASH = ConceptGroup("проектный поток", _LLCR_FLOWS)
+# collect_interval читает тот же _DEBT, что и жилищный DSCR.
+_LLCR_DEBT = ConceptGroup(
+    "старший долг",
+    ("senior_principal", "senior_interest_paid", "principal", "interest", "debt_service"),
+)
+_CBR_DYNAMIC = DynamicInputs(
+    groups=(_LLCR_CASH, _LLCR_DEBT),
+    dependencies=(ConceptDependency("profile", "guaranteed_funds_none", ("guaranteed_funds",)),),
+)
+_DOMRF_DYNAMIC = DynamicInputs(
+    groups=(_LLCR_CASH, _LLCR_DEBT),
+    dependencies=(ConceptDependency("variant", "domrf", ("credit_limit",)),),
+)
+_FROM_HOUSING = DynamicInputs(components=(("dscr", "dscr.housing"),))
+
+
+@implements(
+    "llcr",
+    "llcr.cbr590",
+    mode="dynamic",
+    reason="гарантированные деньги зависят от профиля, долг читается шире формулы",
+    dynamic_inputs=_CBR_DYNAMIC,
+    implementation_version="llcr.cbr590@1",
+)
+@implements(
+    "llcr",
+    "llcr.domrf",
+    mode="dynamic",
+    reason="лимит и старшее тело читаются по правилу варианта",
+    dynamic_inputs=_DOMRF_DYNAMIC,
+    implementation_version="llcr.domrf@1",
+)
 def _llcr(facts, bindings, periods, convention, absent, profile, variant):
     choice = profile_variant(profile, "llcr_definition") or variant or "cbr590"
     if choice not in _NOMINAL:
@@ -277,7 +313,14 @@ def _family(metric, facts, bindings, periods, convention, absent, profile, direc
     return _envelope(metric, rows, _status(rows), variant="housing", warnings=series.get("warnings") or [])
 
 
-@implements("dscr_min", "dscr_min.housing")
+@implements(
+    "dscr_min",
+    "dscr_min.housing",
+    mode="dynamic",
+    reason="ряд считает housing_dscr",
+    dynamic_inputs=_FROM_HOUSING,
+    implementation_version="dscr_min.housing@1",
+)
 def _minimum(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
     if blocked:
@@ -312,7 +355,14 @@ def _minimum(axis, members):
     )
 
 
-@implements("dscr_avg", "dscr_avg.housing")
+@implements(
+    "dscr_avg",
+    "dscr_avg.housing",
+    mode="dynamic",
+    reason="ряд считает housing_dscr",
+    dynamic_inputs=_FROM_HOUSING,
+    implementation_version="dscr_avg.housing@1",
+)
 def _average(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
     excluded = [row["period_id"] for row in members if row["status"] == "no_debt_service"]
@@ -363,7 +413,14 @@ def _average(axis, members):
     ]
 
 
-@implements("adscr", "adscr.housing")
+@implements(
+    "adscr",
+    "adscr.housing",
+    mode="dynamic",
+    reason="ряд считает housing_dscr, состав зависит от профиля",
+    dynamic_inputs=_FROM_HOUSING,
+    implementation_version="adscr.housing@1",
+)
 def _adscr(axis, members, ordered, direction):
     by_period = {row["period_id"]: row for row in members}
     months = grain_months(ordered[0].get("grain") if ordered else None)
@@ -407,7 +464,14 @@ def _adscr(axis, members, ordered, direction):
     return rows
 
 
-@implements("escrow_blended_rate", "escrow_blended_rate")
+@implements(
+    "escrow_blended_rate",
+    "escrow_blended_rate",
+    mode="dynamic",
+    reason="входы читаются только при шкале профиля",
+    dynamic_inputs=DynamicInputs(groups=(ConceptGroup("покрытие", ("escrow_balance", "debt_outstanding")),)),
+    implementation_version="escrow_blended_rate@1",
+)
 def _rate(facts, bindings, periods, convention, absent, profile):
     scale = (profile or {}).get("escrow_rate_scale")
     problem = None if scale is None else scale_error(scale)

@@ -8,108 +8,98 @@ import pytest
 
 from finance_analysis.application.model_types import load_coverage_document
 from finance_analysis.domain.metric_contract import (
-    COMMON_ROUTE,
-    DYNAMIC_INPUTS,
     REGISTRY,
     BoundInputs,
     DuplicateImplementation,
     ImplementationContractError,
     UndeclaredInput,
+    _dynamic_names,
     check_registry,
     formula_id_of,
     implements,
     load_implementations,
     profile_definition_problems,
+    profile_formula_definitions,
 )
 
-# Ключ → модуль, функция, version, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
+# Ключ → модуль, функция, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
+# implementation_version равен formula_id@1 и с definition_version не сравнивается.
 _ROUTE = {
     ("dscr", "dscr"): (
         "metrics",
         "coverage_ratio",
-        "dscr@1",
         ("cfads", "debt_service", "interest", "interest_paid", "principal"),
     ),
     ("dscr", "dscr.pf"): (
         "metrics",
         "dscr_pf",
-        "",
         ("cfads", "debt_service", "interest", "interest_paid", "principal"),
     ),
-    ("dscr", "dscr.corporate_covenant"): ("covenant", "covenant_dscr", "", ()),
+    ("dscr", "dscr.corporate_covenant"): ("covenant", "covenant_dscr", ()),
     ("dscr", "dscr.ocf_covenant"): (
         "covenant",
         "dscr_ocf_covenant",
-        "dscr.ocf_covenant@1",
         ("operating_cash_flow", "interest", "capex", "principal"),
     ),
-    ("dscr", "dscr.housing"): ("housing_dscr", "housing_dscr", "", ()),
+    ("dscr", "dscr.housing"): ("housing_dscr", "housing_dscr", ()),
     ("dscr", "dscr.cash_covenant"): (
         "covenant",
         "cash_covenant_dscr",
-        "",
         ("operating_cash_flow", "interest_paid", "capex", "principal"),
     ),
-    ("icr", "icr"): ("metrics", "coverage_ratio", "", ("ebitda", "ebit", "interest", "interest_paid")),
-    ("icr", "icr.bank"): ("covenant", "bank_icr", "", ()),
-    ("icr_ebit", "icr_ebit"): ("metrics", "coverage_ratio", "", ("ebit", "interest", "interest_paid")),
-    ("adscr", "adscr"): ("cover_metrics", "adscr", "", ("cfads", "debt_service")),
-    ("adscr", "adscr.housing"): ("housing_cover", "_adscr", "", ()),
-    ("dscr_min", "dscr_min"): ("cover_metrics", "dscr_reductions", "", ("cfads", "debt_service")),
-    ("dscr_min", "dscr_min.housing"): ("housing_cover", "_minimum", "", ()),
-    ("dscr_avg", "dscr_avg"): ("cover_metrics", "dscr_reductions", "", ("cfads", "debt_service")),
-    ("dscr_avg", "dscr_avg.housing"): ("housing_cover", "_average", "", ()),
+    ("icr", "icr"): ("metrics", "coverage_ratio", ("ebitda", "ebit", "interest", "interest_paid")),
+    ("icr", "icr.bank"): ("covenant", "bank_icr", ()),
+    ("icr_ebit", "icr_ebit"): ("metrics", "coverage_ratio", ("ebit", "interest", "interest_paid")),
+    ("adscr", "adscr"): ("cover_metrics", "adscr", ("cfads", "debt_service")),
+    ("adscr", "adscr.housing"): ("housing_cover", "_adscr", ()),
+    ("dscr_min", "dscr_min"): ("cover_metrics", "dscr_reductions", ("cfads", "debt_service")),
+    ("dscr_min", "dscr_min.housing"): ("housing_cover", "_minimum", ()),
+    ("dscr_avg", "dscr_avg"): ("cover_metrics", "dscr_reductions", ("cfads", "debt_service")),
+    ("dscr_avg", "dscr_avg.housing"): ("housing_cover", "_average", ()),
     ("llcr", "llcr"): (
         "cover_metrics",
         "loan_life_ratio",
-        "",
         ("debt_service", "cfads", "debt_outstanding", "discount_rate"),
     ),
-    ("llcr", "llcr.cbr590"): ("housing_cover", "_llcr", "", ()),
-    ("llcr", "llcr.domrf"): ("housing_cover", "_llcr", "", ()),
+    ("llcr", "llcr.cbr590"): ("housing_cover", "_llcr", ()),
+    ("llcr", "llcr.domrf"): ("housing_cover", "_llcr", ()),
     ("plcr", "plcr"): (
         "cover_metrics",
         "loan_life_ratio",
-        "",
         ("debt_service", "cfads", "debt_outstanding", "discount_rate"),
     ),
-    ("total_debt", "total_debt"): ("total_debt", "total_debt_result", "", ()),
-    ("escrow_blended_rate", "escrow_blended_rate"): ("housing_cover", "_rate", "", ()),
-    ("npv", "npv"): ("returns", "project_return", "", ("project_fcf", "discount_rate")),
-    ("irr", "irr"): ("returns", "project_return", "", ("project_fcf",)),
+    ("total_debt", "total_debt"): ("total_debt", "total_debt_result", ()),
+    ("escrow_blended_rate", "escrow_blended_rate"): ("housing_cover", "_rate", ()),
+    ("npv", "npv"): ("returns", "project_return", ("project_fcf", "discount_rate")),
+    ("irr", "irr"): ("returns", "project_return", ("project_fcf",)),
     ("debt_incl_off_balance", "debt_incl_off_balance"): (
         "debt_incl_off_balance",
         "debt_incl_off_balance",
-        "",
         (),
     ),
-    ("fcff", "fcff"): ("free_cash_flow", "free_cash_flow", "", ("operating_cash_flow", "capex")),
+    ("fcff", "fcff"): ("free_cash_flow", "free_cash_flow", ("operating_cash_flow", "capex")),
     ("ncf", "ncf"): (
         "net_cash_flow",
         "net_cash_flow",
-        "",
         ("operating_cash_flow", "investing_cash_flow", "financing_cash_flow"),
     ),
     ("icr_lease", "icr_lease"): (
         "metrics",
         "lease_interest_coverage",
-        "",
         ("ebitda", "interest", "lease_interest", "lease_payment", "lease_principal"),
     ),
-    ("fcf_identity", "fcf_identity"): ("returns", "fcf_identity", "", ()),
+    ("fcf_identity", "fcf_identity"): ("returns", "fcf_identity", ()),
     ("fcf_identity", "fcf_identity.vk477"): (
         "returns",
         "fcf_identity",
-        "",
         ("project_fcf", "operating_cash_flow", "capex"),
     ),
     ("fcf_identity", "fcf_identity.fcff_after_interest"): (
         "returns",
         "fcf_identity",
-        "",
         ("project_fcf", "operating_cash_flow", "capex", "net_interest", "tax_rate"),
     ),
-    ("ncf_period", "ncf_period"): ("cash_flow", "net_cash_flow", "", ("cash_inflow", "cash_outflow")),
+    ("ncf_period", "ncf_period"): ("cash_flow", "net_cash_flow", ("cash_inflow", "cash_outflow")),
 }
 
 # Условные входы: профиль, concept.absent, щит процентов. Остальные реализации — пусто.
@@ -149,20 +139,23 @@ def _catalog_keys() -> set[tuple[str, str]]:
 def test_registry_keys_match_coverage_formulas():
     load_implementations()
     catalog = _catalog_keys()
-    route = set(COMMON_ROUTE)
-    assert route.isdisjoint(_ROUTE)
-    assert route <= catalog
-    assert set(_ROUTE) | route == catalog
-    assert set(REGISTRY) == catalog - route
-    for key, (module, name, version, inputs) in _ROUTE.items():
+    composed = {key for key, item in REGISTRY.items() if item.mode == "composed"}
+    assert composed.isdisjoint(_ROUTE)
+    assert composed <= catalog
+    assert set(_ROUTE) | composed == catalog
+    assert set(REGISTRY) == catalog
+    for key, (module, name, inputs) in _ROUTE.items():
         item = REGISTRY[key]
         assert (item.metric_id, item.formula_id) == key
         assert item.function.__module__.rsplit(".", 1)[-1] == module
         assert item.function.__name__ == name
-        assert item.version == version
+        assert item.implementation_version == f"{key[1]}@1"
         assert item.inputs == inputs
         assert item.optional_inputs == _OPTIONAL.get(key, ())
         assert item.profile_inputs == _PROFILE_INPUTS.get(key)
+        assert item.mode == ("dynamic" if not inputs else "registered")
+        if item.mode == "dynamic":
+            assert item.reason.strip()
 
 
 def test_same_key_cannot_register_twice():
@@ -173,7 +166,7 @@ def test_same_key_cannot_register_twice():
         return 2
 
     key = ("__probe__", "__probe__")
-    marked = implements(*key, version="probe", inputs=("left",))(sample)
+    marked = implements(*key, implementation_version="__probe__@1", inputs=("left",))(sample)
     try:
         assert marked is sample
         assert sample() == 1
@@ -195,11 +188,11 @@ def test_same_qualified_name_registers_again():
     reloaded.__module__ = sample.__module__
     reloaded.__qualname__ = sample.__qualname__
     key = ("__probe__", "__probe__.reload")
-    implements(*key, version="1")(sample)
+    implements(*key, implementation_version="__probe__.reload@1")(sample)
     try:
-        implements(*key, version="2", inputs=("cfads",))(sample)
+        implements(*key, implementation_version="__probe__.reload@2", inputs=("cfads",))(sample)
         assert REGISTRY[key].function is sample
-        assert REGISTRY[key].version == "2"
+        assert REGISTRY[key].implementation_version == "__probe__.reload@2"
         implements(*key)(reloaded)
         assert REGISTRY[key].function is reloaded
         assert REGISTRY[key].function() == 2
@@ -279,11 +272,25 @@ def test_common_route_is_composed_ratio(metric_id, monkeypatch):
 
 
 def test_common_route_without_a_composed_case_fails():
-    assert {(metric, metric) for metric in _COMPOSED} == set(COMMON_ROUTE)
+    load_implementations()
+    found = {key for key, item in REGISTRY.items() if item.mode == "composed"}
+    assert {(metric, metric) for metric in _COMPOSED} == found
 
 
 def test_common_route_records_a_reason():
-    assert all(isinstance(reason, str) and reason.strip() for reason in COMMON_ROUTE.values())
+    load_implementations()
+    composed = [item for item in REGISTRY.values() if item.mode == "composed"]
+    assert composed
+    assert all(item.reason.strip() for item in composed)
+
+
+def test_modes_replace_the_two_exception_lists():
+    import finance_analysis.domain.metric_contract as contract
+
+    assert not hasattr(contract, "COMMON_ROUTE")
+    assert not hasattr(contract, "DYNAMIC_INPUTS")
+    load_implementations()
+    assert {item.mode for item in REGISTRY.values()} == {"registered", "composed", "dynamic"}
 
 
 def test_common_route_does_not_need_an_implementation():
@@ -333,7 +340,7 @@ def test_empty_inputs_outside_dynamic_inputs_fail():
     key = ("__probe__", "__probe__")
     implements(*key, optional_inputs=("capex",))(sample)
     try:
-        with pytest.raises(ImplementationContractError, match="__probe__: пустые inputs вне DYNAMIC_INPUTS"):
+        with pytest.raises(ImplementationContractError, match="__probe__: пустые inputs у registered"):
             check_registry({"__probe__": {"numerator": ["cfads"]}})
     finally:
         REGISTRY.pop(key, None)
@@ -344,7 +351,7 @@ def test_optional_input_covers_a_catalog_concept():
         return None
 
     key = ("__probe__", "__probe__")
-    implements(*key, inputs=("cfads",), optional_inputs=("capex",))(sample)
+    implements(*key, implementation_version="__probe__@1", inputs=("cfads",), optional_inputs=("capex",))(sample)
     try:
         check_registry({"__probe__": {"numerator": {"plus": ["cfads"], "minus": ["capex"]}}})
         with pytest.raises(ImplementationContractError, match="__probe__: необъявленные входы: mystery"):
@@ -355,9 +362,11 @@ def test_optional_input_covers_a_catalog_concept():
 
 def test_dynamic_inputs_names_every_empty_declaration():
     load_implementations()
-    empty = {key for key, item in REGISTRY.items() if not item.inputs}
-    assert empty == set(DYNAMIC_INPUTS)
-    assert all(isinstance(reason, str) and reason.strip() for reason in DYNAMIC_INPUTS.values())
+    empty = {key for key, item in REGISTRY.items() if not item.inputs and item.mode != "composed"}
+    dynamic = {key for key, item in REGISTRY.items() if item.mode == "dynamic"}
+    assert empty == dynamic
+    assert dynamic
+    assert all(item.reason.strip() for key, item in REGISTRY.items() if key in dynamic)
 
 
 def test_bound_inputs_allows_an_optional_name():
@@ -368,17 +377,450 @@ def test_bound_inputs_allows_an_optional_name():
         bound["ebit"]
 
 
-def test_empty_inputs_skip_the_catalog_composition():
+def test_dynamic_catalog_composition_must_be_declared():
     load_implementations()
     check_registry(
         {
             "dscr": {
                 "numerator": ["cfads"],
                 "denominator": "debt_service",
-                "variants": {"corporate_covenant": {"numerator": {"plus": ["not_declared"]}}},
+                "variants": {
+                    "corporate_covenant": {
+                        "numerator": {"plus": ["ebitda"]},
+                        "denominator": {"plus": ["interest", "principal"]},
+                    }
+                },
             }
         }
     )
+    with pytest.raises(
+        ImplementationContractError,
+        match="dscr.corporate_covenant: необъявленные входы: not_declared",
+    ):
+        check_registry(
+            {
+                "dscr": {
+                    "variants": {"corporate_covenant": {"numerator": {"plus": ["not_declared"]}}},
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("metrics", "match"),
+    [
+        (
+            {"llcr": {"variants": {"cbr590": {"numerator": {"plus": ["mystery"]}}}}},
+            "llcr.cbr590: необъявленные входы: mystery",
+        ),
+        (
+            {"llcr": {"variants": {"domrf": {"numerator": {"plus": ["mystery"]}}}}},
+            "llcr.domrf: необъявленные входы: mystery",
+        ),
+        (
+            {"total_debt": {"numerator": {"plus": ["not_a_debt"]}}},
+            "total_debt: необъявленные входы: not_a_debt",
+        ),
+        (
+            {"icr": {"variants": {"bank": {"numerator": {"plus": ["ebit"]}}}}},
+            "icr.bank: необъявленные входы: ebit",
+        ),
+        (
+            {"dscr": {"variants": {"housing": {"numerator": {"plus": ["cfads"]}}}}},
+            "dscr.housing: необъявленные входы: cfads",
+        ),
+        (
+            {"adscr": {"variants": {"housing": {"numerator": {"plus": ["cfads"]}}}}},
+            "adscr.housing: необъявленные входы: cfads",
+        ),
+        (
+            {"dscr_min": {"variants": {"housing": {"numerator": {"plus": ["cfads"]}}}}},
+            "dscr_min.housing: необъявленные входы: cfads",
+        ),
+        (
+            {"escrow_blended_rate": {"numerator": {"plus": ["discount_rate"]}}},
+            "escrow_blended_rate: необъявленные входы: discount_rate",
+        ),
+        (
+            {"debt_incl_off_balance": {"numerator": {"plus": ["mystery"]}}},
+            "debt_incl_off_balance: необъявленные входы: mystery",
+        ),
+        (
+            {"fcf_identity": {"numerator": {"plus": ["net_interest"]}}},
+            "fcf_identity: необъявленные входы: net_interest",
+        ),
+    ],
+)
+def test_dynamic_formula_rejects_a_foreign_concept(metrics, match):
+    load_implementations()
+    with pytest.raises(ImplementationContractError, match=match):
+        check_registry(metrics)
+
+
+def test_dynamic_variant_keeps_its_own_conditional_concepts():
+    load_implementations()
+    check_registry(
+        {"llcr": {"variants": {"cbr590": {"numerator": {"plus": ["guaranteed_funds", "cfo_statement"]}}}}}
+    )
+    check_registry(
+        {
+            "llcr": {
+                "variants": {
+                    "domrf": {"denominator": {"plus": ["credit_limit", "senior_interest_paid"]}},
+                }
+            }
+        }
+    )
+    with pytest.raises(ImplementationContractError, match="llcr.cbr590: необъявленные входы: credit_limit"):
+        check_registry({"llcr": {"variants": {"cbr590": {"numerator": {"plus": ["credit_limit"]}}}}})
+
+
+def test_dynamic_dependency_is_a_union_of_branches():
+    """Допустимый набор — объединение веток. Выбранный стандарт реестр не читает."""
+
+    load_implementations()
+    check_registry(
+        {
+            "total_debt": {
+                "numerator": {
+                    "plus": ["lease_liability", "finance_lease_liability", "operating_lease_liability"],
+                }
+            }
+        }
+    )
+    check_registry(
+        {
+            "icr": {
+                "variants": {
+                    "bank": {"numerator": {"plus": ["profit_from_sales", "ifrs_operating_profit"]}},
+                }
+            }
+        }
+    )
+
+
+def test_dynamic_dependency_and_component_are_allowed():
+    load_implementations()
+    check_registry(
+        {"total_debt": {"numerator": {"plus": ["borrowings_lt", "operating_lease_liability"]}}}
+    )
+    check_registry(
+        {
+            "adscr": {
+                "variants": {"housing": {"numerator": {"plus": ["cfo_statement", "senior_fees"]}}},
+            }
+        }
+    )
+    check_registry({"icr": {"variants": {"bank": {"numerator": {"plus": ["profit_from_sales", "ebitda"]}}}}})
+
+
+class _Sought:
+    """Имя, с которым код сравнивает effective_concept. Запоминает искомое понятие.
+
+    Подкласс str здесь не годится: сравнение строк идёт мимо переопределённого __eq__.
+    """
+
+    def __init__(self, found: set[str]) -> None:
+        self.found = found
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str) and other:
+            self.found.add(other)
+        return False
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+class _Asked(dict):
+    """primaries.get и `in` запоминают понятие, даже если строки нет."""
+
+    def __init__(self, raw: dict, found: set[str]) -> None:
+        super().__init__(raw)
+        self.found = found
+
+    def _note(self, key: object) -> None:
+        if isinstance(key, str) and key and not isinstance(key, _Sought):
+            self.found.add(key)
+
+    def get(self, key: object, default: object = None) -> object:
+        self._note(key)
+        return super().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        self._note(key)
+        return super().__contains__(key)
+
+    def __getitem__(self, key: object) -> object:
+        self._note(key)
+        return super().__getitem__(key)
+
+
+def _watch(found: set[str]):
+    from finance_analysis.domain import covenant, cover_metrics, metrics, returns
+
+    modules = (cover_metrics, covenant, returns)
+    saved = [module._primaries for module in modules]
+
+    def wrapped(bindings, absent=frozenset()):
+        return _Asked(metrics._primaries(bindings, absent), found)
+
+    for module in modules:
+        module._primaries = wrapped
+    try:
+        yield
+    finally:
+        for module, original in zip(modules, saved, strict=True):
+            module._primaries = original
+
+
+def _probe(found: set[str]) -> dict:
+    return {
+        "effective_concept": _Sought(found),
+        "is_primary": True,
+        "status": "bound",
+        "row_key": "probe",
+        "source": "confirmed",
+    }
+
+
+_PERIOD = {"axis_id": "axis", "period_id": "p1", "grain": "year", "index": 0}
+
+
+def _housing_profile() -> dict:
+    return {"include_senior_fees": True, "include_senior_swaps": True, "interest_addback": True}
+
+
+def _read_housing(found: set[str]) -> None:
+    from finance_analysis.domain.housing_dscr import housing_dscr
+
+    housing_dscr(facts=[], bindings=[_probe(found)], periods=[_PERIOD], profile=_housing_profile())
+
+
+def _read_family(metric: str):
+    def read(found: set[str]) -> None:
+        from finance_analysis.domain.housing_cover import housing_cover
+
+        housing_cover(
+            metric,
+            facts=[],
+            bindings=[_probe(found)],
+            periods=[_PERIOD],
+            profile=_housing_profile(),
+        )
+
+    return read
+
+
+def _read_llcr(variant: str):
+    def read(found: set[str]) -> None:
+        import finance_analysis.domain.housing_cover as cover
+        from finance_analysis.domain.housing_cover import _LLCR_FLOWS, housing_cover
+
+        housing_cover("llcr", facts=[], bindings=[_probe(found)], periods=[_PERIOD], variant=variant)
+        ready = {
+            "flows": {name: Decimal(1) for name in _LLCR_FLOWS},
+            "missing": [],
+            "principal": Decimal(1),
+            "interest": Decimal(1),
+            "denominator": Decimal(2),
+            "denom_reason": None,
+            "cells": [],
+            "notes": [],
+        }
+        real = cover.collect_interval
+        cover.collect_interval = lambda *_args, **_kwargs: ready
+        try:
+            housing_cover("llcr", facts=[], bindings=[_probe(found)], periods=[_PERIOD], variant=variant)
+        finally:
+            cover.collect_interval = real
+
+    return read
+
+
+def _read_escrow(found: set[str]) -> None:
+    from finance_analysis.domain.housing_cover import housing_cover
+
+    housing_cover(
+        "escrow_blended_rate",
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+        profile={"escrow_rate_scale": {"base_rate": "0.10", "special_rate": "0.05"}},
+    )
+
+
+def _read_total_debt(found: set[str]) -> None:
+    from finance_analysis.domain.total_debt import total_debt_result
+
+    total_debt_result(facts=[], bindings=[_probe(found)], periods=[_PERIOD])
+    total_debt_result(
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+        profile={"debt_standard": "gaap", "include_operating_lease_liability": True},
+    )
+    total_debt_result(
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+        profile={"debt_standard": "ifrs", "include_operating_lease_liability": False},
+    )
+
+
+def _read_off_balance(found: set[str]) -> None:
+    from finance_analysis.domain.debt_incl_off_balance import debt_incl_off_balance
+
+    arguments = REGISTRY[("debt_incl_off_balance", "debt_incl_off_balance")].dynamic_inputs.arguments
+    debt_incl_off_balance(
+        components=arguments,
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+    )
+
+
+def _read_fcf(found: set[str]) -> None:
+    from finance_analysis.domain.returns import fcf_identity
+
+    fcf_identity(None, facts=[], bindings=[_probe(found)], periods=[_PERIOD])
+
+
+def _read_bank(found: set[str]) -> None:
+    from finance_analysis.domain.covenant import bank_icr
+
+    opened = [
+        _probe(found),
+        {
+            "effective_concept": "interest",
+            "is_primary": True,
+            "status": "bound",
+            "row_key": "interest",
+            "source": "confirmed",
+        },
+        {
+            "effective_concept": "ebitda",
+            "is_primary": True,
+            "status": "bound",
+            "row_key": "ebitda",
+            "source": "confirmed",
+        },
+    ]
+    profiles = (
+        {"icr_definition": {"lease_mode": "in_interest"}},
+        {"icr_definition": {"lease_mode": "add_interest"}},
+        {"icr_definition": {"lease_mode": "in_interest"}, "ebitda_definition": "ras"},
+        {"icr_definition": {"lease_mode": "in_interest"}, "ebitda_definition": "ifrs"},
+        {"icr_definition": {"lease_mode": "add_interest"}, "finance_costs_confirmed": True},
+    )
+    for profile in profiles:
+        bank_icr(facts=[], bindings=opened, periods=[_PERIOD], profile=profile)
+
+
+def _read_corporate(found: set[str]) -> None:
+    from finance_analysis.domain.covenant import covenant_dscr
+    from finance_analysis.domain.model_type import Composed, Side
+
+    covenant_dscr(
+        facts=[],
+        bindings=[_probe(found)],
+        periods=[_PERIOD],
+        default=Composed(
+            Side(("ebitda",), ("cash_taxes", "capex")),
+            Side(("interest", "principal"), ()),
+            "LTM",
+        ),
+        concepts=frozenset(),
+        money=frozenset(),
+    )
+
+
+_DYNAMIC_READS = {
+    "dscr.housing": _read_housing,
+    "dscr_min.housing": _read_family("dscr_min"),
+    "dscr_avg.housing": _read_family("dscr_avg"),
+    "adscr.housing": _read_family("adscr"),
+    "llcr.cbr590": _read_llcr("cbr590"),
+    "llcr.domrf": _read_llcr("domrf"),
+    "escrow_blended_rate": _read_escrow,
+    "total_debt": _read_total_debt,
+    "debt_incl_off_balance": _read_off_balance,
+    "fcf_identity": _read_fcf,
+    "icr.bank": _read_bank,
+    "dscr.corporate_covenant": _read_corporate,
+}
+
+
+def test_dynamic_code_reads_only_declared_concepts():
+    """Понятие, которое код спрашивает у привязок, есть в допустимом наборе.
+
+    Сверка со строкой книги после успешного числа сюда не входит: пустые факты
+    до неё не доходят. Надбавка процентов читает коды строк, не понятие.
+    """
+
+    from contextlib import contextmanager
+
+    load_implementations()
+    watch = contextmanager(_watch)
+    gaps = []
+    dynamic = [item for item in REGISTRY.values() if item.mode == "dynamic"]
+    unread = sorted(item.formula_id for item in dynamic if item.formula_id not in _DYNAMIC_READS)
+    assert unread == []
+    for item in dynamic:
+        found: set[str] = set()
+        with watch(found):
+            _DYNAMIC_READS[item.formula_id](found)
+        allowed, _missing = _dynamic_names(item, REGISTRY, set())
+        extra = sorted(found - allowed)
+        if extra:
+            gaps.append(f"{item.formula_id}: {', '.join(extra)}")
+    assert gaps == []
+
+
+def test_dynamic_without_an_allowed_set_fails():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__")
+    implements(*key, mode="dynamic", reason="проба", implementation_version="__probe__@1")(sample)
+    try:
+        with pytest.raises(ImplementationContractError, match="__probe__: у dynamic нет допустимого набора"):
+            check_registry({"__probe__": {}})
+    finally:
+        REGISTRY.pop(key, None)
+
+
+def test_implementation_version_stands_apart_from_definition_version():
+    load_implementations()
+    metrics = load_coverage_document()["metrics"]
+    assert "definition_version" not in metrics["icr"]
+    assert REGISTRY[("icr", "icr")].implementation_version == "icr@1"
+    assert REGISTRY[("dscr", "dscr.ocf_covenant")].implementation_version == "dscr.ocf_covenant@1"
+    composed = [item for item in REGISTRY.values() if item.mode == "composed"]
+    assert composed
+    assert all(item.implementation_version == "" for item in composed)
+
+
+def test_implementation_version_format():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__")
+    broken = ("", "1", "__probe__@01", "__probe__@-1", "other@1", "__probe__@", "__probe__@1.0")
+    try:
+        for version in broken:
+            implements(*key, implementation_version=version, inputs=("cfads",))(sample)
+            with pytest.raises(
+                ImplementationContractError,
+                match=r"implementation_version — __probe__@<целое>",
+            ):
+                check_registry({"__probe__": {"numerator": "cfads"}})
+        implements(*key, implementation_version="__probe__@2", inputs=("cfads",))(sample)
+        check_registry({"__probe__": {"numerator": "cfads"}})
+        implements(*key, implementation_version="__probe__@0", inputs=("cfads",))(sample)
+        check_registry({"__probe__": {"numerator": "cfads"}})
+    finally:
+        REGISTRY.pop(key, None)
 
 
 def test_coverage_ratio_reads_through_bound_inputs(monkeypatch):
@@ -415,7 +857,7 @@ def test_base_is_inheritance_not_an_input():
         return None
 
     key = ("__probe__", "__probe__")
-    implements(*key, inputs=("cfads",))(sample)
+    implements(*key, implementation_version="__probe__@1", inputs=("cfads",))(sample)
     try:
         check_registry({"__probe__": {"base": "dscr"}})
     finally:
@@ -664,16 +1106,53 @@ def test_empty_profile_inputs_keep_the_union_closed():
 
 
 def test_unnamed_dscr_definition_maps_onto_both_covenant_formulas():
-    from finance_analysis.application.glossary_store import profile_covenant_definitions
-
+    load_implementations()
     raw = _definition(["revenue"])
-    found = profile_covenant_definitions({"dscr_definition": raw})
+    found = profile_formula_definitions({"dscr_definition": raw}, REGISTRY)
     assert set(found) == {
         ("dscr", "dscr.corporate_covenant"),
         ("dscr", "dscr.ocf_covenant"),
     }
     assert found[("dscr", "dscr.ocf_covenant")] is raw
-    assert profile_covenant_definitions({"dscr_definition": {"variant": "ocf_covenant"}}) == {}
+    assert profile_formula_definitions({"dscr_definition": {"variant": "ocf_covenant"}}, REGISTRY) == {}
+
+
+def test_profile_field_comes_from_the_implementation():
+    """Новая формула объявляет поле профиля сама. Отдельный список в хранилище не нужен."""
+
+    def sample() -> None:
+        return None
+
+    keep = ("__probe__", "__probe__")
+    named = ("__probe__", "__probe__.named")
+    implements(
+        *keep,
+        implementation_version="__probe__@1",
+        inputs=("a",),
+        profile_field="probe_definition",
+        unnamed_profile=True,
+    )(sample)
+    implements(
+        *named,
+        implementation_version="__probe__.named@1",
+        inputs=("a",),
+        profile_field="probe_definition",
+    )(sample)
+    raw = _definition(["a"])
+    try:
+        assert set(profile_formula_definitions({"probe_definition": raw}, REGISTRY)) == {keep}
+        assert set(profile_formula_definitions({"probe_definition": {**raw, "variant": "named"}}, REGISTRY)) == {named}
+        assert profile_formula_definitions({"probe_definition": {"variant": "named"}}, REGISTRY) == {}
+    finally:
+        REGISTRY.pop(keep, None)
+        REGISTRY.pop(named, None)
+
+
+def test_profile_store_does_not_keep_an_unnamed_list():
+    import finance_analysis.application.glossary_store as store
+
+    assert not hasattr(store, "_UNNAMED_COVENANT")
+    assert not hasattr(store, "profile_covenant_definitions")
 
 
 def test_profile_calculation_keeps_the_contract_ratio():

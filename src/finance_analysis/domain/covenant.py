@@ -23,7 +23,13 @@ from finance_analysis.domain.cover_metrics import (
 )
 from finance_analysis.domain.free_cash_flow import free_cash_flow
 from finance_analysis.domain.mapping import marked_line_code
-from finance_analysis.domain.metric_contract import BoundInputs, implements
+from finance_analysis.domain.metric_contract import (
+    BoundInputs,
+    ConceptDependency,
+    ConceptGroup,
+    DynamicInputs,
+    implements,
+)
 from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
@@ -203,7 +209,16 @@ _CORPORATE_PROFILE_INPUTS = (
 )
 
 
-@implements("dscr", "dscr.corporate_covenant", profile_inputs=_CORPORATE_PROFILE_INPUTS)
+@implements(
+    "dscr",
+    "dscr.corporate_covenant",
+    profile_inputs=_CORPORATE_PROFILE_INPUTS,
+    mode="dynamic",
+    reason="состав заменяет профиль",
+    implementation_version="dscr.corporate_covenant@1",
+    profile_field="dscr_definition",
+    unnamed_profile=True,
+)
 def covenant_dscr(
     *,
     facts: list[dict],
@@ -269,10 +284,12 @@ OCF_COVENANT_PROFILE = ("ebitda", "cash_taxes")
 @implements(
     "dscr",
     "dscr.ocf_covenant",
-    version="dscr.ocf_covenant@1",
+    implementation_version="dscr.ocf_covenant@1",
     inputs=OCF_COVENANT_INPUTS,
     optional_inputs=OCF_COVENANT_OPTIONAL,
     profile_inputs=OCF_COVENANT_PROFILE,
+    profile_field="dscr_definition",
+    unnamed_profile=True,
 )
 def dscr_ocf_covenant(
     *,
@@ -1190,7 +1207,30 @@ def _depreciation_grain_mismatch(grains: set[int], period: dict) -> bool:
     return months not in grains
 
 
-@implements("icr", "icr.bank")
+# Числитель и знаменатель bank_icr. EBIT код не подставляет.
+_BANK_DYNAMIC = DynamicInputs(
+    groups=(ConceptGroup("отчёт", ("ebitda", "interest")),),
+    dependencies=(
+        ConceptDependency("standard", "ras", ("profit_from_sales", "depreciation_notes", "depreciation_rou")),
+        ConceptDependency(
+            "standard",
+            "ifrs",
+            ("ifrs_operating_profit", "depreciation_notes", "depreciation_rou"),
+        ),
+        ConceptDependency("profile", "lease_mode", ("lease_interest", "lease_payments", "lease_principal")),
+        ConceptDependency("profile", "finance_costs_confirmed", ("finance_costs",)),
+    ),
+)
+
+
+@implements(
+    "icr",
+    "icr.bank",
+    mode="dynamic",
+    reason="стандарт и флаг аренды меняют числитель",
+    dynamic_inputs=_BANK_DYNAMIC,
+    implementation_version="icr.bank@1",
+)
 def bank_icr(
     *,
     facts: list[dict],
@@ -1497,7 +1537,13 @@ def _concept_amount(name, series, period, ordered, aligned, basis, quarter: bool
     return total, None
 
 
-@implements("dscr", "dscr.cash_covenant", inputs=_CASH_CORE, optional_inputs=(_CASH_OTHER,))
+@implements(
+    "dscr",
+    "dscr.cash_covenant",
+    implementation_version="dscr.cash_covenant@1",
+    inputs=_CASH_CORE,
+    optional_inputs=(_CASH_OTHER,),
+)
 def cash_covenant_dscr(
     *,
     facts: list[dict],
