@@ -216,6 +216,8 @@ _CORPORATE_PROFILE_INPUTS = (
     mode="dynamic",
     reason="состав заменяет профиль",
     implementation_version="dscr.corporate_covenant@1",
+    profile_field="dscr_definition",
+    unnamed_profile=True,
 )
 def covenant_dscr(
     *,
@@ -286,6 +288,8 @@ OCF_COVENANT_PROFILE = ("ebitda", "cash_taxes")
     inputs=OCF_COVENANT_INPUTS,
     optional_inputs=OCF_COVENANT_OPTIONAL,
     profile_inputs=OCF_COVENANT_PROFILE,
+    profile_field="dscr_definition",
+    unnamed_profile=True,
 )
 def dscr_ocf_covenant(
     *,

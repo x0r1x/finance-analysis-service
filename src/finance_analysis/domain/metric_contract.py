@@ -121,6 +121,8 @@ class Implementation:
     mode: Mode = "registered"
     reason: str = ""
     dynamic_inputs: DynamicInputs | None = None
+    profile_field: str | None = None
+    unnamed_profile: bool = False
 
 
 REGISTRY: dict[tuple[str, str], Implementation] = {}
@@ -141,6 +143,8 @@ def implements(
     mode: Mode = "registered",
     reason: str = "",
     dynamic_inputs: DynamicInputs | None = None,
+    profile_field: str | None = None,
+    unnamed_profile: bool = False,
 ):
     """Помечает функцию реализации. Другая функция на том же ключе — ошибка.
 
@@ -148,12 +152,16 @@ def implements(
     дополнительные понятия, которые договорный состав может назвать.
     mode — registered, composed или dynamic. У двух последних нужна причина.
     dynamic_inputs задаёт допустимые понятия только у dynamic.
+    profile_field — поле профиля, чей состав проверяется против этой реализации.
+    unnamed_profile — состав без имени варианта относится к ней.
     """
 
     def decorate(function: Callable[..., object]) -> Callable[..., object]:
         _require_mode(formula_id, mode, reason)
         if dynamic_inputs is not None and mode != "dynamic":
             raise ImplementationContractError(f"{formula_id}: набор dynamic только у dynamic")
+        if unnamed_profile and not profile_field:
+            raise ImplementationContractError(f"{formula_id}: unnamed_profile требует profile_field")
         key = (metric_id, formula_id)
         current = REGISTRY.get(key)
         if current is not None and _qualified(current.function) != _qualified(function):
@@ -169,6 +177,8 @@ def implements(
             mode,
             reason,
             dynamic_inputs,
+            profile_field or None,
+            unnamed_profile,
         )
         return function
 
@@ -283,6 +293,42 @@ def check_registry(metrics: Mapping[str, object]) -> None:
                     _check_formula(str(metric_id), str(variant), spec, problems)
     if problems:
         raise ImplementationContractError("\n".join(sorted(problems)))
+
+
+def profile_formula_definitions(
+    body: object,
+    registry: Mapping[tuple[str, str], Implementation],
+) -> dict[tuple[str, str], dict]:
+    """Поля профиля с составом → реализации, которые объявили это поле.
+
+    Имя варианта без состава — формула каталога, проверять нечего.
+    Состав с именем варианта относится к formula_id метрики этого поля.
+    Состав без имени — к реализациям поля с unnamed_profile.
+    """
+
+    if not isinstance(body, dict):
+        return {}
+    owners = [item for item in registry.values() if item.profile_field]
+    found: dict[tuple[str, str], dict] = {}
+    for field in {item.profile_field for item in owners}:
+        raw = body.get(field)
+        if not isinstance(raw, dict):
+            continue
+        named = raw.get("variant")
+        has_composition = "numerator" in raw or "denominator" in raw
+        field_owners = [item for item in owners if item.profile_field == field]
+        if isinstance(named, str) and named and not has_composition:
+            continue
+        if isinstance(named, str) and named:
+            for metric_id in sorted({item.metric_id for item in field_owners}):
+                found[(metric_id, f"{metric_id}.{named}")] = raw
+            continue
+        if not has_composition:
+            continue
+        for item in field_owners:
+            if item.unnamed_profile:
+                found[(item.metric_id, item.formula_id)] = raw
+    return found
 
 
 def profile_definition_problems(

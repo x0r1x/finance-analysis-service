@@ -18,6 +18,7 @@ from finance_analysis.domain.metric_contract import (
     implements,
     load_implementations,
     profile_definition_problems,
+    profile_formula_definitions,
 )
 
 # Ключ → модуль, функция, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
@@ -817,16 +818,53 @@ def test_empty_profile_inputs_keep_the_union_closed():
 
 
 def test_unnamed_dscr_definition_maps_onto_both_covenant_formulas():
-    from finance_analysis.application.glossary_store import profile_covenant_definitions
-
+    load_implementations()
     raw = _definition(["revenue"])
-    found = profile_covenant_definitions({"dscr_definition": raw})
+    found = profile_formula_definitions({"dscr_definition": raw}, REGISTRY)
     assert set(found) == {
         ("dscr", "dscr.corporate_covenant"),
         ("dscr", "dscr.ocf_covenant"),
     }
     assert found[("dscr", "dscr.ocf_covenant")] is raw
-    assert profile_covenant_definitions({"dscr_definition": {"variant": "ocf_covenant"}}) == {}
+    assert profile_formula_definitions({"dscr_definition": {"variant": "ocf_covenant"}}, REGISTRY) == {}
+
+
+def test_profile_field_comes_from_the_implementation():
+    """Новая формула объявляет поле профиля сама. Отдельный список в хранилище не нужен."""
+
+    def sample() -> None:
+        return None
+
+    keep = ("__probe__", "__probe__")
+    named = ("__probe__", "__probe__.named")
+    implements(
+        *keep,
+        implementation_version="__probe__@1",
+        inputs=("a",),
+        profile_field="probe_definition",
+        unnamed_profile=True,
+    )(sample)
+    implements(
+        *named,
+        implementation_version="__probe__.named@1",
+        inputs=("a",),
+        profile_field="probe_definition",
+    )(sample)
+    raw = _definition(["a"])
+    try:
+        assert set(profile_formula_definitions({"probe_definition": raw}, REGISTRY)) == {keep}
+        assert set(profile_formula_definitions({"probe_definition": {**raw, "variant": "named"}}, REGISTRY)) == {named}
+        assert profile_formula_definitions({"probe_definition": {"variant": "named"}}, REGISTRY) == {}
+    finally:
+        REGISTRY.pop(keep, None)
+        REGISTRY.pop(named, None)
+
+
+def test_profile_store_does_not_keep_an_unnamed_list():
+    import finance_analysis.application.glossary_store as store
+
+    assert not hasattr(store, "_UNNAMED_COVENANT")
+    assert not hasattr(store, "profile_covenant_definitions")
 
 
 def test_profile_calculation_keeps_the_contract_ratio():
