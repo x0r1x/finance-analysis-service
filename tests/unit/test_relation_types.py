@@ -339,3 +339,89 @@ def test_active_relation_names_fit_the_semantic_edge_id():
         edge = semantic_relation_edge_id(name, "debt_service", "interest")
         matched = re.fullmatch(pattern, edge) is not None
         assert matched is spec.active
+
+
+def test_semantic_targets_read_both_sides_without_writing_edges():
+    package = load_catalog()
+    dscr = package.concepts["dscr"]
+    cfads = package.concepts["cfads"]
+    assert dscr.relation_targets("related_to") == ()
+    assert cfads.relation_targets("related_to") == ("dscr",)
+    assert package.semantic_targets("dscr", "related_to") == ("cfads",)
+    assert package.semantic_targets("cfads", "related_to") == ("dscr",)
+    assert dscr.relation_targets("related_to") == ()
+    assert dscr.targets_for("substitution") == ()
+    assert dscr.targets_for("aggregation") == ()
+    assert dscr.targets_for("reconciliation") == ()
+    assert package.semantic_targets("energy_tariff", "related_to") == ("forecast_energy_tariff",)
+    assert package.semantic_targets("forecast_energy_tariff", "related_to") == ("energy_tariff",)
+    assert package.concepts["interest"].targets_for("reconciliation") == ()
+    assert package.semantic_targets("interest", "composed_of") == ()
+
+    contradicts = _concepts(
+        {
+            "left": _measure(relations={"contradicts": ["right"]}),
+            "right": _measure(),
+        }
+    )
+    assert contradicts.concepts["right"].relation_targets("contradicts") == ()
+    assert contradicts.semantic_targets("right", "contradicts") == ("left",)
+    assert contradicts.semantic_targets("left", "contradicts") == ("right",)
+    assert contradicts.concepts["right"].targets_for("substitution") == ()
+    assert contradicts.concepts["left"].targets_for("reconciliation") == ()
+    assert contradicts.concepts["left"].relation_targets("contradicts") == ("right",)
+
+    hierarchy = _concepts(
+        {
+            "parent": _measure(relations={"broader_than": ["child"]}),
+            "child": _measure(),
+        }
+    )
+    child = hierarchy.concepts["child"]
+    parent = hierarchy.concepts["parent"]
+    assert child.relation_targets("narrower_than") == ()
+    assert parent.relation_targets("narrower_than") == ()
+    assert hierarchy.semantic_targets("child", "narrower_than") == ("parent",)
+    assert hierarchy.semantic_targets("parent", "broader_than") == ("child",)
+    assert child.relations == ()
+
+    both_ways = _concepts(
+        {
+            "child": _measure(relations={"narrower_than": ["parent"]}),
+            "parent": _measure(),
+        }
+    )
+    assert both_ways.concepts["parent"].relation_targets("broader_than") == ()
+    assert both_ways.semantic_targets("parent", "broader_than") == ("child",)
+    assert both_ways.semantic_targets("child", "narrower_than") == ("parent",)
+
+    incoming = _concepts(
+        {
+            "b": _measure(relations={"related_to": ["c"]}),
+            "a": _measure(relations={"related_to": ["c"]}),
+            "c": _measure(relations={"related_to": ["a"]}),
+        }
+    )
+    assert incoming.semantic_targets("c", "related_to") == ("a", "b")
+
+
+def test_formula_relation_types_grant_no_calculation():
+    for name in ("calculated_from", "derived_from", "equivalent_to"):
+        assert permits(name, "substitution") is False
+        assert permits(name, "aggregation") is False
+        assert permits(name, "reconciliation") is False
+    package = _concepts(
+        {
+            "ratio": {"kind": "ratio", "unit": "ratio", "relations": {"calculated_from": ["money"]}},
+            "money": _measure(relations={"derived_from": ["ratio"]}),
+        }
+    )
+    ratio = package.concepts["ratio"]
+    money = package.concepts["money"]
+    assert ratio.targets_for("substitution") == ()
+    assert ratio.targets_for("aggregation") == ()
+    assert ratio.targets_for("reconciliation") == ()
+    assert money.targets_for("reconciliation") == ()
+    assert package.semantic_targets("money", "calculated_from") == ()
+    assert package.semantic_targets("ratio", "derived_from") == ()
+    assert ratio.relation_targets("calculated_from") == ("money",)

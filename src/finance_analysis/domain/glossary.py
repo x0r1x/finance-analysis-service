@@ -313,6 +313,8 @@ class Concept:
     weight: str | None = None
 
     def relation_targets(self, kind: str) -> tuple[str, ...]:
+        """Цели рёбер, записанных на этом понятии. Входящие и обратные не достраиваются."""
+
         return tuple(item.target for item in self.relations if item.type == kind)
 
     @property
@@ -387,6 +389,50 @@ class GlossaryPackage:
     @property
     def ids(self) -> frozenset[str]:
         return frozenset(self.concepts)
+
+    def semantic_targets(self, concept_id: str, kind: str) -> tuple[str, ...]:
+        """Семантически доступные цели. Записанные рёбра пакета не меняются.
+
+        Сначала цели, записанные на самом понятии, в их порядке. Для
+        симметричного типа затем источники входящих рёбер того же типа.
+        Если обратное имя другое, затем источники рёбер этого обратного типа,
+        которые указывают сюда. Повторы отбрасываются, входящие источники
+        идут по id. Транзитивное замыкание не строится. Расчётные права
+        это чтение не даёт: их по-прежнему смотрит `targets_for` по записи.
+        """
+
+        concept = self.concepts.get(concept_id)
+        spec = RELATION_TYPES.get(kind)
+        if concept is None or spec is None:
+            return ()
+        found: list[str] = []
+        seen: set[str] = set()
+
+        def add(name: str) -> None:
+            if name == concept_id or name in seen:
+                return
+            seen.add(name)
+            found.append(name)
+
+        for target in concept.relation_targets(kind):
+            add(target)
+        incoming: list[str] = []
+        if spec.symmetric:
+            incoming.append(kind)
+        inverse = spec.inverse
+        if inverse and inverse != kind:
+            incoming.append(inverse)
+        if not incoming:
+            return tuple(found)
+        for other_id in sorted(self.concepts):
+            if other_id == concept_id:
+                continue
+            other = self.concepts[other_id]
+            for edge_kind in incoming:
+                if concept_id in other.relation_targets(edge_kind):
+                    add(other_id)
+                    break
+        return tuple(found)
 
     def resolve(self, text: str) -> LabelHit | None:
         found = self.resolve_match(text)

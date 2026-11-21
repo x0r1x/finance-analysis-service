@@ -54,7 +54,7 @@ A lexical hit that fails the unit check stays in `candidates` with `structure_pa
 
 ## Concept relations
 
-The type registry is `finance_analysis.domain.relations`. Edges still live on the concept in `configs/concepts/`. There is no separate relation graph. A reverse edge is not written in for you. `cfads` `related_to` `dscr` stays one way. `energy_tariff` and `forecast_energy_tariff` are two explicit edges. `narrower_than` is not derived from `broader_than`.
+The type registry is `finance_analysis.domain.relations`. Edges still live on the concept in `configs/concepts/`. There is no separate relation graph. `relation_targets` reads only stored edges: `dscr` has an empty `related_to` list. `GlossaryPackage.semantic_targets` reads the meaning and does not change the document. For a symmetric type it adds incoming edges, so `dscr` is semantically related to `cfads`. For the `broader_than` / `narrower_than` pair, asking for the inverse type sees the edge stored on the other side. Incoming sources are ordered by id, with no duplicates. `energy_tariff` and `forecast_energy_tariff` remain two explicit edges. `transitive` does not build a closure: walking ancestors or descendants will be a separate API, not `relation_targets`.
 
 A semantic edge does not substitute one concept for another and does not sum its targets into a metric. Calculation asks the registry. No type currently grants substitution or aggregation. Reconciliation is only `composed_of`: that list matches `configs/identities/` and feeds the `lf.identity` vote. The parts are not summed into a metric input. `related_to` is not reconciliation, substitution, or aggregation.
 

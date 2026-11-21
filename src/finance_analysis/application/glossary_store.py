@@ -351,6 +351,19 @@ class GlossaryStore:
                 found[name] = parts
         return found
 
+    async def semantic_targets(self, concept_id: str, kind: str, version: str | None = None) -> tuple[str, ...]:
+        """Семантические цели понятия в релизе. Записанные рёбра не меняются.
+
+        То же чтение, что `GlossaryPackage.semantic_targets`. В сверку и
+        подстановку эти цели не входят.
+        """
+
+        try:
+            document = await self._document(version) if version else await self._active_document()
+        except NotFound:
+            document = await self._active_document()
+        return package_of(document).semantic_targets(concept_id, kind)
+
     async def concept_dimensions(self, version: str | None) -> dict[str, str]:
         """Размерность каждого понятия релиза, с которым построено состояние книги."""
 

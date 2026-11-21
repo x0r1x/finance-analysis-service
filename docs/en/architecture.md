@@ -8,7 +8,7 @@ A request enters `adapters/api`. The route checks ids and maps errors, then call
 
 ## Concept relations
 
-Concept relation types are declared in `finance_analysis.domain.relations` and checked when the glossary package is built. Edges are stored on the concept. A reverse edge does not appear on its own. Calculation does not walk every edge: `Concept.targets_for` returns targets only for a use the registry allows. Substitution and aggregation are off for every type. Reconciliation is on for `composed_of` and feeds the audit projection and the `lf.identity` vote. `related_to` is not one of those uses. Metric formulas still live in `configs/metrics/`. The type table is in the [glossary](glossary.md).
+Concept relation types are declared in `finance_analysis.domain.relations` and checked when the glossary package is built. Edges are stored on the concept. `relation_targets` reads that store. `GlossaryPackage.semantic_targets` reads symmetry and the inverse type without writing edges. Calculation does not walk every edge: `Concept.targets_for` returns targets only for a use the registry allows, and only from stored edges. Substitution and aggregation are off for every type. Reconciliation is on for `composed_of` and feeds the audit projection and the `lf.identity` vote. `related_to` is not one of those uses. `transitive` does not build a closure. Metric formulas still live in `configs/metrics/`. The type table is in the [glossary](glossary.md).
 
 ## Storage
 
