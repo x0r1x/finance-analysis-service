@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from decimal import Decimal, localcontext
 
-from finance_analysis.domain.metric_contract import implements
+from finance_analysis.domain.metric_contract import (
+    ConceptGroup,
+    DynamicInputs,
+    implements,
+)
 from finance_analysis.domain.metrics import MONEY, _payment, _primaries, quantize_ratio
 
 _NPV_TOL = Decimal("0.01")
@@ -89,6 +93,9 @@ def project_return(
     "fcf_identity",
     mode="dynamic",
     reason="без названного варианта ряд не читается",
+    dynamic_inputs=DynamicInputs(
+        groups=(ConceptGroup("сверка", ("project_fcf", "operating_cash_flow", "capex")),),
+    ),
 )
 @implements(
     "fcf_identity",

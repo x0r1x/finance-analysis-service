@@ -385,17 +385,130 @@ def test_bound_inputs_allows_an_optional_name():
         bound["ebit"]
 
 
-def test_empty_inputs_skip_the_catalog_composition():
+def test_dynamic_catalog_composition_must_be_declared():
     load_implementations()
     check_registry(
         {
             "dscr": {
                 "numerator": ["cfads"],
                 "denominator": "debt_service",
-                "variants": {"corporate_covenant": {"numerator": {"plus": ["not_declared"]}}},
+                "variants": {
+                    "corporate_covenant": {
+                        "numerator": {"plus": ["ebitda"]},
+                        "denominator": {"plus": ["interest", "principal"]},
+                    }
+                },
             }
         }
     )
+    with pytest.raises(
+        ImplementationContractError,
+        match="dscr.corporate_covenant: необъявленные входы: not_declared",
+    ):
+        check_registry(
+            {
+                "dscr": {
+                    "variants": {"corporate_covenant": {"numerator": {"plus": ["not_declared"]}}},
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("metrics", "match"),
+    [
+        (
+            {"llcr": {"variants": {"cbr590": {"numerator": {"plus": ["mystery"]}}}}},
+            "llcr.cbr590: необъявленные входы: mystery",
+        ),
+        (
+            {"llcr": {"variants": {"domrf": {"numerator": {"plus": ["mystery"]}}}}},
+            "llcr.domrf: необъявленные входы: mystery",
+        ),
+        (
+            {"total_debt": {"numerator": {"plus": ["not_a_debt"]}}},
+            "total_debt: необъявленные входы: not_a_debt",
+        ),
+        (
+            {"icr": {"variants": {"bank": {"numerator": {"plus": ["ebit"]}}}}},
+            "icr.bank: необъявленные входы: ebit",
+        ),
+        (
+            {"dscr": {"variants": {"housing": {"numerator": {"plus": ["cfads"]}}}}},
+            "dscr.housing: необъявленные входы: cfads",
+        ),
+        (
+            {"adscr": {"variants": {"housing": {"numerator": {"plus": ["cfads"]}}}}},
+            "adscr.housing: необъявленные входы: cfads",
+        ),
+        (
+            {"dscr_min": {"variants": {"housing": {"numerator": {"plus": ["cfads"]}}}}},
+            "dscr_min.housing: необъявленные входы: cfads",
+        ),
+        (
+            {"escrow_blended_rate": {"numerator": {"plus": ["discount_rate"]}}},
+            "escrow_blended_rate: необъявленные входы: discount_rate",
+        ),
+        (
+            {"debt_incl_off_balance": {"numerator": {"plus": ["mystery"]}}},
+            "debt_incl_off_balance: необъявленные входы: mystery",
+        ),
+        (
+            {"fcf_identity": {"numerator": {"plus": ["net_interest"]}}},
+            "fcf_identity: необъявленные входы: net_interest",
+        ),
+    ],
+)
+def test_dynamic_formula_rejects_a_foreign_concept(metrics, match):
+    load_implementations()
+    with pytest.raises(ImplementationContractError, match=match):
+        check_registry(metrics)
+
+
+def test_dynamic_variant_keeps_its_own_conditional_concepts():
+    load_implementations()
+    check_registry(
+        {"llcr": {"variants": {"cbr590": {"numerator": {"plus": ["guaranteed_funds", "cfo_statement"]}}}}}
+    )
+    check_registry(
+        {
+            "llcr": {
+                "variants": {
+                    "domrf": {"denominator": {"plus": ["credit_limit", "senior_interest_paid"]}},
+                }
+            }
+        }
+    )
+    with pytest.raises(ImplementationContractError, match="llcr.cbr590: необъявленные входы: credit_limit"):
+        check_registry({"llcr": {"variants": {"cbr590": {"numerator": {"plus": ["credit_limit"]}}}}})
+
+
+def test_dynamic_dependency_and_component_are_allowed():
+    load_implementations()
+    check_registry(
+        {"total_debt": {"numerator": {"plus": ["borrowings_lt", "operating_lease_liability"]}}}
+    )
+    check_registry(
+        {
+            "adscr": {
+                "variants": {"housing": {"numerator": {"plus": ["cfo_statement", "senior_fees"]}}},
+            }
+        }
+    )
+    check_registry({"icr": {"variants": {"bank": {"numerator": {"plus": ["profit_from_sales", "ebitda"]}}}}})
+
+
+def test_dynamic_without_an_allowed_set_fails():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__")
+    implements(*key, mode="dynamic", reason="проба")(sample)
+    try:
+        with pytest.raises(ImplementationContractError, match="__probe__: у dynamic нет допустимого набора"):
+            check_registry({"__probe__": {}})
+    finally:
+        REGISTRY.pop(key, None)
 
 
 def test_coverage_ratio_reads_through_bound_inputs(monkeypatch):

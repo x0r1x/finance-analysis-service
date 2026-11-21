@@ -9,7 +9,12 @@ import re
 from decimal import Decimal, localcontext
 
 from finance_analysis.domain.mapping import debt_seniority, marked_line_code
-from finance_analysis.domain.metric_contract import implements
+from finance_analysis.domain.metric_contract import (
+    ConceptDependency,
+    ConceptGroup,
+    DynamicInputs,
+    implements,
+)
 from finance_analysis.domain.metrics import (
     _BOUND,
     HUMAN_SOURCES,
@@ -75,11 +80,25 @@ def interest_addback(profile: dict | None) -> bool | None:
     return None
 
 
+# interest_addback читает коды строк 4123 и 4224, отдельного понятия не добавляет.
+_HOUSING_DYNAMIC = DynamicInputs(
+    groups=(
+        ConceptGroup("оддс", _NUMERATOR),
+        ConceptGroup("старший долг", ("senior_principal", "senior_interest_paid")),
+    ),
+    dependencies=(
+        ConceptDependency("profile", "include_senior_fees", ("senior_fees",)),
+        ConceptDependency("profile", "include_senior_swaps", ("senior_swaps",)),
+    ),
+)
+
+
 @implements(
     "dscr",
     "dscr.housing",
     mode="dynamic",
     reason="флаги профиля меняют знаменатель",
+    dynamic_inputs=_HOUSING_DYNAMIC,
 )
 def housing_dscr(
     *,

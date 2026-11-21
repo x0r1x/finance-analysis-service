@@ -61,6 +61,43 @@ class BoundInputs:
 
 Mode = Literal["registered", "composed", "dynamic"]
 _MODES = frozenset({"registered", "composed", "dynamic"})
+_DEPENDENCY_KINDS = frozenset({"profile", "standard", "variant"})
+
+
+@dataclass(frozen=True, slots=True)
+class ConceptGroup:
+    """Понятия, которые реализация читает вместе."""
+
+    name: str
+    concepts: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ConceptDependency:
+    """Понятия, которые читаются только в ветке профиля, стандарта или варианта."""
+
+    kind: Literal["profile", "standard", "variant"]
+    key: str
+    concepts: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.kind not in _DEPENDENCY_KINDS:
+            raise ImplementationContractError(f"зависимость {self.key}: profile, standard или variant")
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicInputs:
+    """Допустимые понятия динамической реализации.
+
+    groups — всегда читаемые группы. dependencies — ветки профиля, стандарта
+    или варианта. components — другие формулы, чей набор входит сюда.
+    arguments — закрытый список, который вызывающий передаёт аргументом.
+    """
+
+    groups: tuple[ConceptGroup, ...] = ()
+    dependencies: tuple[ConceptDependency, ...] = ()
+    components: tuple[tuple[str, str], ...] = ()
+    arguments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +120,7 @@ class Implementation:
     profile_inputs: tuple[str, ...] | None = None
     mode: Mode = "registered"
     reason: str = ""
+    dynamic_inputs: DynamicInputs | None = None
 
 
 REGISTRY: dict[tuple[str, str], Implementation] = {}
@@ -102,16 +140,20 @@ def implements(
     profile_inputs: tuple[str, ...] | None = None,
     mode: Mode = "registered",
     reason: str = "",
+    dynamic_inputs: DynamicInputs | None = None,
 ):
     """Помечает функцию реализации. Другая функция на том же ключе — ошибка.
 
     profile_inputs=None — профильной формулы нет. Кортеж объявляет
     дополнительные понятия, которые договорный состав может назвать.
     mode — registered, composed или dynamic. У двух последних нужна причина.
+    dynamic_inputs задаёт допустимые понятия только у dynamic.
     """
 
     def decorate(function: Callable[..., object]) -> Callable[..., object]:
         _require_mode(formula_id, mode, reason)
+        if dynamic_inputs is not None and mode != "dynamic":
+            raise ImplementationContractError(f"{formula_id}: набор dynamic только у dynamic")
         key = (metric_id, formula_id)
         current = REGISTRY.get(key)
         if current is not None and _qualified(current.function) != _qualified(function):
@@ -126,6 +168,7 @@ def implements(
             None if profile_inputs is None else tuple(profile_inputs),
             mode,
             reason,
+            dynamic_inputs,
         )
         return function
 
@@ -284,6 +327,14 @@ def _check_formula(
     if item.mode == "dynamic":
         if item.inputs:
             problems.append(f"{formula_id}: у dynamic inputs пустые")
+        names, missing = _dynamic_names(item, REGISTRY, set())
+        for ref in missing:
+            problems.append(f"{formula_id}: компонент {ref[1]} не зарегистрирован")
+        if not names and not missing:
+            problems.append(f"{formula_id}: у dynamic нет допустимого набора")
+        extra = sorted(composition_concepts(body) - names)
+        if extra:
+            problems.append(f"{formula_id}: необъявленные входы: {', '.join(extra)}")
         return
     if not item.inputs:
         problems.append(f"{formula_id}: пустые inputs у registered")
@@ -292,6 +343,40 @@ def _check_formula(
     extra = sorted(composition_concepts(body) - declared)
     if extra:
         problems.append(f"{formula_id}: необъявленные входы: {', '.join(extra)}")
+
+
+def _dynamic_names(
+    item: Implementation,
+    registry: Mapping[tuple[str, str], Implementation],
+    seen: set[tuple[str, str]],
+) -> tuple[set[str], list[tuple[str, str]]]:
+    """Понятия dynamic: свои группы, ветки, аргументы и набор компонентов."""
+
+    key = (item.metric_id, item.formula_id)
+    if key in seen:
+        return set(), []
+    seen.add(key)
+    names: set[str] = set(item.inputs) | set(item.optional_inputs)
+    if item.profile_inputs:
+        names.update(item.profile_inputs)
+    missing: list[tuple[str, str]] = []
+    spec = item.dynamic_inputs
+    if spec is None:
+        return names, missing
+    for group in spec.groups:
+        names.update(group.concepts)
+    for dependency in spec.dependencies:
+        names.update(dependency.concepts)
+    names.update(spec.arguments)
+    for ref in spec.components:
+        other = registry.get(ref)
+        if other is None:
+            missing.append(ref)
+            continue
+        extra, nested = _dynamic_names(other, registry, seen)
+        names.update(extra)
+        missing.extend(nested)
+    return names, missing
 
 
 def _term_names(value: object) -> set[str]:

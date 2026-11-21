@@ -9,7 +9,12 @@ import json
 import re
 from decimal import Decimal
 
-from finance_analysis.domain.metric_contract import implements
+from finance_analysis.domain.metric_contract import (
+    ConceptDependency,
+    ConceptGroup,
+    DynamicInputs,
+    implements,
+)
 from finance_analysis.domain.metrics import _figure
 
 _STANDARDS = frozenset({"ras", "ifrs", "gaap"})
@@ -59,11 +64,25 @@ def include_operating_lease(profile: dict | None) -> bool | None:
     return None
 
 
+_TOTAL_DEBT_DYNAMIC = DynamicInputs(
+    groups=(
+        ConceptGroup("заемные", ("borrowings_lt", "borrowings_st", "borrowings_total")),
+        ConceptGroup("итоги разделов", ("section_lt_total", "section_st_total")),
+        ConceptGroup("аренда", ("lease_liability",)),
+    ),
+    dependencies=(
+        ConceptDependency("standard", "gaap", ("finance_lease_liability",)),
+        ConceptDependency("profile", "include_operating_lease_liability", ("operating_lease_liability",)),
+    ),
+)
+
+
 @implements(
     "total_debt",
     "total_debt",
     mode="dynamic",
     reason="набор зависит от debt_standard и флага аренды",
+    dynamic_inputs=_TOTAL_DEBT_DYNAMIC,
 )
 def total_debt_result(
     *,

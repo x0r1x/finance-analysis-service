@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
-from finance_analysis.domain.metric_contract import implements
+from finance_analysis.domain.metric_contract import DynamicInputs, implements
 
 _METRIC = "debt_incl_off_balance"
 _BOUND = frozenset({"bound", "bound_with_warning"})
@@ -13,11 +13,24 @@ _VALUED = frozenset({"cached", "zero_explicit"})
 _HUMAN = frozenset({"confirmed", "profile"})
 
 
+# select_ratio передаёт numerator.plus каталога. Это закрытый аргумент функции.
+_OFF_BALANCE = DynamicInputs(
+    arguments=(
+        "long_term_borrowings",
+        "short_term_borrowings",
+        "other_financial_debt",
+        "off_balance_third_party",
+        "off_balance_lease",
+    ),
+)
+
+
 @implements(
     "debt_incl_off_balance",
     "debt_incl_off_balance",
     mode="dynamic",
     reason="слагаемые приходят аргументом из каталога",
+    dynamic_inputs=_OFF_BALANCE,
 )
 def debt_incl_off_balance(
     *,

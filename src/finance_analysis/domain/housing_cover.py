@@ -24,7 +24,12 @@ from finance_analysis.domain.housing_dscr import (
     collect_interval,
     housing_dscr,
 )
-from finance_analysis.domain.metric_contract import implements
+from finance_analysis.domain.metric_contract import (
+    ConceptDependency,
+    ConceptGroup,
+    DynamicInputs,
+    implements,
+)
 from finance_analysis.domain.metrics import aligned_keys, quantize_ratio
 
 _FAMILY = frozenset({"adscr", "dscr_min", "dscr_avg"})
@@ -168,17 +173,32 @@ def housing_cover(
     return _family(metric, facts, bindings, periods, sign_convention, absent, profile, direction, basis)
 
 
+_LLCR_CASH = ConceptGroup("проектный поток", _LLCR_FLOWS)
+_LLCR_DEBT = ConceptGroup("старший долг", ("senior_principal", "senior_interest_paid"))
+_CBR_DYNAMIC = DynamicInputs(
+    groups=(_LLCR_CASH, _LLCR_DEBT),
+    dependencies=(ConceptDependency("profile", "guaranteed_funds_none", ("guaranteed_funds",)),),
+)
+_DOMRF_DYNAMIC = DynamicInputs(
+    groups=(_LLCR_CASH, _LLCR_DEBT),
+    dependencies=(ConceptDependency("variant", "domrf", ("credit_limit",)),),
+)
+_FROM_HOUSING = DynamicInputs(components=(("dscr", "dscr.housing"),))
+
+
 @implements(
     "llcr",
     "llcr.cbr590",
     mode="dynamic",
     reason="гарантированные деньги зависят от профиля, долг читается шире формулы",
+    dynamic_inputs=_CBR_DYNAMIC,
 )
 @implements(
     "llcr",
     "llcr.domrf",
     mode="dynamic",
     reason="лимит и старшее тело читаются по правилу варианта",
+    dynamic_inputs=_DOMRF_DYNAMIC,
 )
 def _llcr(facts, bindings, periods, convention, absent, profile, variant):
     choice = profile_variant(profile, "llcr_definition") or variant or "cbr590"
@@ -292,6 +312,7 @@ def _family(metric, facts, bindings, periods, convention, absent, profile, direc
     "dscr_min.housing",
     mode="dynamic",
     reason="ряд считает housing_dscr",
+    dynamic_inputs=_FROM_HOUSING,
 )
 def _minimum(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
@@ -332,6 +353,7 @@ def _minimum(axis, members):
     "dscr_avg.housing",
     mode="dynamic",
     reason="ряд считает housing_dscr",
+    dynamic_inputs=_FROM_HOUSING,
 )
 def _average(axis, members):
     blocked = [row for row in members if row["status"] == "not_computed"]
@@ -388,6 +410,7 @@ def _average(axis, members):
     "adscr.housing",
     mode="dynamic",
     reason="ряд считает housing_dscr, состав зависит от профиля",
+    dynamic_inputs=_FROM_HOUSING,
 )
 def _adscr(axis, members, ordered, direction):
     by_period = {row["period_id"]: row for row in members}
@@ -437,6 +460,7 @@ def _adscr(axis, members, ordered, direction):
     "escrow_blended_rate",
     mode="dynamic",
     reason="входы читаются только при шкале профиля",
+    dynamic_inputs=DynamicInputs(groups=(ConceptGroup("покрытие", ("escrow_balance", "debt_outstanding")),)),
 )
 def _rate(facts, bindings, periods, convention, absent, profile):
     scale = (profile or {}).get("escrow_rate_scale")

@@ -23,7 +23,13 @@ from finance_analysis.domain.cover_metrics import (
 )
 from finance_analysis.domain.free_cash_flow import free_cash_flow
 from finance_analysis.domain.mapping import marked_line_code
-from finance_analysis.domain.metric_contract import BoundInputs, implements
+from finance_analysis.domain.metric_contract import (
+    BoundInputs,
+    ConceptDependency,
+    ConceptGroup,
+    DynamicInputs,
+    implements,
+)
 from finance_analysis.domain.metrics import (
     MIXED_BASIS,
     PARTIAL_DENOMINATOR,
@@ -1196,11 +1202,28 @@ def _depreciation_grain_mismatch(grains: set[int], period: dict) -> bool:
     return months not in grains
 
 
+# Числитель и знаменатель bank_icr. EBIT код не подставляет.
+_BANK_DYNAMIC = DynamicInputs(
+    groups=(ConceptGroup("отчёт", ("ebitda", "interest")),),
+    dependencies=(
+        ConceptDependency("standard", "ras", ("profit_from_sales", "depreciation_notes", "depreciation_rou")),
+        ConceptDependency(
+            "standard",
+            "ifrs",
+            ("ifrs_operating_profit", "depreciation_notes", "depreciation_rou"),
+        ),
+        ConceptDependency("profile", "lease_mode", ("lease_interest", "lease_payments", "lease_principal")),
+        ConceptDependency("profile", "finance_costs_confirmed", ("finance_costs",)),
+    ),
+)
+
+
 @implements(
     "icr",
     "icr.bank",
     mode="dynamic",
     reason="стандарт и флаг аренды меняют числитель",
+    dynamic_inputs=_BANK_DYNAMIC,
 )
 def bank_icr(
     *,
