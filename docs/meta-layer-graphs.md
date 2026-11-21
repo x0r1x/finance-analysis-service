@@ -49,9 +49,9 @@ metric ──(metric:in)──► concept ──(sem:bind)──► binding_key 
 | Узел-строка | `binding_key` (стабилен через пересборки); материализация — `row_key` |
 | Узел-понятие | `concept` / `effective_concept` |
 | Ребро привязки | `sem:bind:{digest16}` — digest = `sha1(model_id \| build_key \| binding_key)[:16]` |
-| Ребро таксономии | `sem:rel:{type}:{source}->{target}` (`composed_of`, `broader_than`, `related_to`) |
+| Ребро таксономии | `sem:rel:{type}:{source}->{target}`. `type` — активное имя из реестра `domain.relations` |
 
-Таксономические рёбра **не считают** и не подставляются во входы метрик (design §5.1). Формат id зарезервирован; **в `MetricTrace` они не сериализуются** — читать таксономию нужно отдельно (каталог понятий / glossary package).
+Таксономические рёбра **не считают** и не подставляются во входы метрик. Какие типы вообще могут участвовать в сверке, решает реестр `domain.relations`; сейчас это только `composed_of`. Формат id зарезервирован; **в `MetricTrace` они не сериализуются** — читать таксономию нужно отдельно (каталог понятий / glossary package).
 
 ### 3.3 Формульный метрик
 

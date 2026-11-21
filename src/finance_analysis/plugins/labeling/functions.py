@@ -53,21 +53,55 @@ def ratio_numerator(data: LabelingInput) -> list[Vote]:
 
 
 def _identity_parts(data: LabelingInput) -> dict[str, tuple[str, ...]]:
-    """Части lf.identity. composed_of задаёт их; явный список тождеств добавляет то, чего в связи нет.
+    """Части lf.identity. Их задаёт связь, которой реестр разрешил сверку.
 
-    Расхождение списка с composed_of не подменяет связь: голос читает связь.
+    Сейчас это composed_of. related_to и другая смысловая связь части не задаёт
+    и понятие не подменяет. Список тождеств добавляет понятие без такой связи.
+    Расхождение списка со связью не подменяет связь: голос читает связь.
     Сумма в метрику отсюда не попадает.
     """
 
-    found = {concept.id: concept.composed_of for concept in data.concepts.values() if concept.composed_of}
+    found = {}
+    for concept in data.concepts.values():
+        parts = concept.targets_for("reconciliation")
+        if parts:
+            found[concept.id] = parts
     for left, parts in data.identities.items():
         if left not in found:
             found[left] = tuple(parts)
     return found
 
 
+def _known_currency(data: LabelingInput, row_key: str) -> str | None:
+    """Валюта строки книги. Пустое поле — неизвестная валюта, из единицы не выводится."""
+
+    for row in data.rows:
+        if row.get("row_key") != row_key:
+            continue
+        raw = row.get("currency")
+        if not isinstance(raw, str):
+            return None
+        text = raw.strip()
+        return text.casefold() if text else None
+    return None
+
+
+def _one_currency(data: LabelingInput, row_keys: list[str]) -> bool:
+    """Итог и части в одной известной валюте. Иначе сверка воздерживается."""
+
+    found = [_known_currency(data, key) for key in row_keys]
+    if any(item is None for item in found):
+        return False
+    return len(set(found)) == 1
+
+
 def identity(data: LabelingInput) -> list[Vote]:
-    """Строка по формуле и значениям равна сумме привязанных людьми слагаемых → голос за левую часть."""
+    """Строка по формуле и значениям равна сумме привязанных людьми слагаемых → голос за левую часть.
+
+    Голос только если у итога и всех частей одна известная валюта строки.
+    Разные валюты и неизвестная валюта — воздержание, не голос «против»:
+    совпавшие числа в разных валютах левую часть не опровергают.
+    """
 
     keys = _key_of(data)
     votes = []
@@ -79,6 +113,8 @@ def identity(data: LabelingInput) -> list[Vote]:
             if row_key in rows or row_key not in keys:
                 continue
             if not set(rows) <= data.precedents.get(row_key, set()):
+                continue
+            if not _one_currency(data, [row_key, *rows]):
                 continue
             series = data.values[row_key]
             pairs = []
@@ -123,13 +159,14 @@ def rollforward(data: LabelingInput) -> list[Vote]:
 def sum_component(data: LabelingInput) -> list[Vote]:
     """Слагаемое итога, привязанного к debt_service → «компонент DS» (кандидат narrower, не синоним).
 
-    Голос требует, чтобы у понятия была связь composed_of. Список целей ряд не отбирает и не суммирует:
+    Голос требует связь, которой реестр разрешил сверку. Сейчас это composed_of.
+    Смысловая связь голос не открывает. Список целей ряд не отбирает и не суммирует:
     в голос попадают прецеденты строки итога.
     """
 
     ds = data.bound("debt_service")
     concept = data.concepts.get("debt_service")
-    if not ds or concept is None or not concept.composed_of:
+    if not ds or concept is None or not concept.targets_for("reconciliation"):
         return []
     keys = _key_of(data)
     return [
