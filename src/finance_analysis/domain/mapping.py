@@ -252,16 +252,64 @@ def assign_rows(
     return assigned
 
 
+def structure_failures(row: dict, concept, *, label: str) -> tuple[str, ...]:
+    """Коды жёсткого отсева стадии 4. Пустой кортеж — та же проверка, что `structure_pass`.
+
+    Вероятность по-прежнему обнуляется в калибраторе. Здесь только имена причин.
+    """
+
+    found: list[str] = []
+    unit = str(row.get("unit_decision") or row.get("unit") or "").lower()
+    if concept.unit == "money" and ("%" in label or unit in _NOT_MONEY):
+        found.append("unit_mismatch")
+    if concept.unit == "ratio" and unit in _MONEY:
+        found.append("unit_mismatch")
+    scanned = label_scan(label)
+    if any(label_scan(item) in scanned for item in concept.negative):
+        found.append("negative_label")
+    return tuple(found)
+
+
 def structure_pass(row: dict, concept, *, label: str) -> bool:
     """Стадия 4: единица, отсев %-строк и отрицательных меток понятия."""
 
-    unit = str(row.get("unit_decision") or row.get("unit") or "").lower()
-    if concept.unit == "money" and ("%" in label or unit in _NOT_MONEY):
-        return False
-    if concept.unit == "ratio" and unit in _MONEY:
-        return False
-    scanned = label_scan(label)
-    return not any(label_scan(item) in scanned for item in concept.negative)
+    return not structure_failures(row, concept, label=label)
+
+
+def _stamp_compatibility(
+    row: dict,
+    glossary: GlossaryPackage,
+    name: str | None,
+    evidence: dict,
+    *,
+    probability: float | None,
+    candidate: Candidate | None = None,
+    lexical: bool = False,
+    notes: tuple[str, ...] = (),
+) -> dict:
+    """Кладёт likelihood и compatibility в evidence. Статус и понятие не меняет.
+
+    `uses` сюда не входит: формула на привязке ещё не выбрана. Ожидаемый тип
+    модели и ожидаемый способ показа тоже. Их даст расчёт метрики.
+    """
+
+    concept = glossary.concepts.get(name) if name else None
+    if concept is None:
+        return evidence
+    from finance_analysis.domain.semantic_compatibility import assess, basis_of
+
+    basis = ("lexical",) if lexical else basis_of(candidate) if candidate is not None else ()
+    report = assess(
+        concept,
+        row=row,
+        label=str(row.get("label") or ""),
+        probability=probability,
+        basis=basis,
+        notes=notes,
+    )
+    body = report.as_dict()
+    body.pop("uses", None)
+    return {**evidence, "compatibility": body}
 
 
 def decide(
@@ -292,9 +340,15 @@ def decide(
     alive = [(p, candidate) for p, candidate in scored if candidate.structure_pass]
     if not alive:
         reason = "structure_filtered" if scored else "no_candidates"
+        if scored:
+            dropped_p, dropped = scored[0]
+            evidence = _stamp_compatibility(
+                row, glossary, dropped.concept, evidence, probability=dropped_p, candidate=dropped
+            )
         return Assignment(None, "unknown", "inferred", False, None, "peripheral", None, {**evidence, "nil": reason})
     top_p, top = alive[0]
     second_p = alive[1][0] if len(alive) > 1 else 0.0
+    evidence = _stamp_compatibility(row, glossary, top.concept, evidence, probability=top_p, candidate=top)
     if found.clm_choice == "none" and (found.clm_none_prob or 0.0) >= thresholds.clm_none:
         return Assignment(None, "unknown", "inferred", False, None, "peripheral", top_p, {**evidence, "nil": "clm_none"})
     nil_p = calibrator.nil_probability(found, top_p) if calibrator else None
@@ -377,13 +431,18 @@ def _one(
         evidence["line_code"] = code
     if hit.concept == "borrowings_total":
         evidence["granularity"] = "total"
+    notes: tuple[str, ...] = ()
     if strength == "section_heading":
         evidence["match_provenance"] = "section_heading"
         evidence["section_heading"] = _nearest_heading(row)
+        notes = ("section",)
     terms, source = _price_terms(row, strength)
     if terms and source:
         evidence["price_terms"] = terms
         evidence["price_terms_source"] = source
+    evidence = _stamp_compatibility(
+        row, glossary, hit.concept, evidence, probability=None, lexical=True, notes=notes
+    )
     return Assignment(hit.concept, status, "inferred", True, hit.text, "normal", None, evidence)
 
 

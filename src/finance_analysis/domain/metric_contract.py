@@ -396,7 +396,7 @@ def _check_formula(
     if item.mode == "dynamic":
         if item.inputs:
             problems.append(f"{formula_id}: у dynamic inputs пустые")
-        names, missing = _dynamic_names(item, REGISTRY, set())
+        names, missing = dynamic_names(item, REGISTRY, set())
         for ref in missing:
             problems.append(f"{formula_id}: компонент {ref[1]} не зарегистрирован")
         if not names and not missing:
@@ -414,7 +414,7 @@ def _check_formula(
         problems.append(f"{formula_id}: необъявленные входы: {', '.join(extra)}")
 
 
-def _dynamic_names(
+def dynamic_names(
     item: Implementation,
     registry: Mapping[tuple[str, str], Implementation],
     seen: set[tuple[str, str]],
@@ -445,7 +445,7 @@ def _dynamic_names(
         if other is None:
             missing.append(ref)
             continue
-        extra, nested = _dynamic_names(other, registry, seen)
+        extra, nested = dynamic_names(other, registry, seen)
         names.update(extra)
         missing.extend(nested)
     return names, missing

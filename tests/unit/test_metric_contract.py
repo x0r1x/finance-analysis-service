@@ -13,8 +13,8 @@ from finance_analysis.domain.metric_contract import (
     DuplicateImplementation,
     ImplementationContractError,
     UndeclaredInput,
-    _dynamic_names,
     check_registry,
+    dynamic_names,
     formula_id_of,
     implements,
     load_implementations,
@@ -770,7 +770,7 @@ def test_dynamic_code_reads_only_declared_concepts():
         found: set[str] = set()
         with watch(found):
             _DYNAMIC_READS[item.formula_id](found)
-        allowed, _missing = _dynamic_names(item, REGISTRY, set())
+        allowed, _missing = dynamic_names(item, REGISTRY, set())
         extra = sorted(found - allowed)
         if extra:
             gaps.append(f"{item.formula_id}: {', '.join(extra)}")

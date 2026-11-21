@@ -109,7 +109,7 @@ def confirm_paid_interest(
 
     if "interest_paid" in primaries:
         return None
-    paid = [row for row in bindings if _paid_interest_row(row, absent)]
+    paid = [row for row in bindings if paid_interest_row(row, absent)]
     if len(paid) != 1:
         return None
     injected = {**paid[0], "effective_concept": "interest_paid", "is_primary": True}
@@ -117,7 +117,9 @@ def confirm_paid_interest(
     return injected
 
 
-def _paid_interest_row(row: dict, absent: frozenset[str]) -> bool:
+def paid_interest_row(row: dict, absent: frozenset[str]) -> bool:
+    """Строка interest с явной подписью 4123. Основную interest эта функция не меняет."""
+
     if row.get("effective_concept") != "interest" or row.get("status") not in _BOUND:
         return False
     if "interest" in absent and row.get("source") not in HUMAN_SOURCES:
