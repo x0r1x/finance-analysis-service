@@ -1532,6 +1532,60 @@ def test_ocf_covenant_uses_the_catalog_formula_without_a_profile(monkeypatch):
     assert cash["rows"][0]["value"] == quantize_ratio(Decimal(90) / Decimal(70))
 
 
+def test_ocf_covenant_falls_back_to_interest_paid():
+    """interest_paid — запасной вход порядка, не синоним interest."""
+
+    catalog = _catalog()
+    route = {
+        "profile_ref": None,
+        "composed": catalog.composed,
+        "concepts": _CONCEPTS | {"operating_cash_flow", "interest_paid"},
+        "money": _MONEY | {"interest_paid"},
+        "interest_order": catalog.interest_order,
+        "row_fallbacks": catalog.row_fallbacks,
+    }
+    paid = {
+        "facts": [
+            _fact("o", "Y1", "100"),
+            _fact("paid", "Y1", "-20"),
+            _fact("c", "Y1", "-10"),
+            _fact("p", "Y1", "-30"),
+        ],
+        "bindings": [
+            _bind("operating_cash_flow", "o"),
+            _bind("interest_paid", "paid"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    got = select_ratio("dscr", "ocf_covenant", paid, profile=None, **route)
+    assert got["rows"][0]["value"] == Decimal("2.2000000000")
+    assert "interest_paid" in got["rows"][0]["inputs"]
+    assert "interest" not in got["rows"][0]["inputs"]
+    fallback = next(item for item in got["warnings"] if item["code"] == "interest_basis_fallback")
+    assert fallback["params"]["concept"] == "interest_paid"
+
+    neither = {
+        **paid,
+        "facts": [_fact("o", "Y1", "100"), _fact("c", "Y1", "-10"), _fact("p", "Y1", "-30")],
+        "bindings": [
+            _bind("operating_cash_flow", "o"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+    }
+    missing = select_ratio("dscr", "ocf_covenant", neither, profile=None, **route)
+    assert missing["status"] == "missing_input"
+    assert missing["needs_input"][0]["subject"] == "interest"
+    assert all(row.get("value") is None for row in missing["rows"])
+
+
 async def test_window_fold_follows_concept_aggregation(monkeypatch):
     from pathlib import Path
 

@@ -247,8 +247,9 @@ def covenant_dscr(
     return {**result, "warnings": [*notes, *result["warnings"]], "definition_source": source, "definition_ref": ref}
 
 
-# Состав каталога dscr.ocf_covenant. interest_paid сюда не входит: это запасной порядок процентов внутри covenant_dscr.
+# Состав каталога dscr.ocf_covenant. interest_paid — запасной вход по interest_order, а не синоним interest: это разные понятия.
 OCF_COVENANT_INPUTS = ("operating_cash_flow", "interest", "capex", "principal")
+OCF_COVENANT_OPTIONAL = ("interest_paid",)
 
 
 @implements(
@@ -256,6 +257,7 @@ OCF_COVENANT_INPUTS = ("operating_cash_flow", "interest", "capex", "principal")
     "dscr.ocf_covenant",
     version="dscr.ocf_covenant@1",
     inputs=OCF_COVENANT_INPUTS,
+    optional_inputs=OCF_COVENANT_OPTIONAL,
 )
 def dscr_ocf_covenant(
     *,

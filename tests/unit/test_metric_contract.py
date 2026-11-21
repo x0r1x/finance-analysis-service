@@ -111,6 +111,7 @@ _ROUTE = {
 
 # Условные входы: профиль, concept.absent, щит процентов. Остальные реализации — пусто.
 _OPTIONAL = {
+    ("dscr", "dscr.ocf_covenant"): ("interest_paid",),
     ("dscr", "dscr.cash_covenant"): ("other_financial_debt_service",),
     ("fcff", "fcff"): ("interest", "interest_paid", "income_tax_rate"),
 }
