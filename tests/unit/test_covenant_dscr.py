@@ -1432,6 +1432,95 @@ def test_select_ratio_uses_named_profile_variant_for_any_book():
     assert all(row.get("value") != Decimal("2.2000000000") for row in plain["rows"])
 
 
+def test_ocf_and_cash_routes_keep_their_current_functions(monkeypatch):
+    """Закрепляет текущий маршрут. Логику не меняет: решение по ocf — за владельцем."""
+
+    from finance_analysis.domain import covenant
+    from finance_analysis.domain.metrics import coverage_ratio, quantize_ratio
+
+    called: list[str] = []
+
+    def watch(name, real):
+        def wrapped(*args, **kwargs):
+            called.append(name)
+            return real(*args, **kwargs)
+
+        return wrapped
+
+    monkeypatch.setattr(covenant, "cash_covenant_dscr", watch("cash_covenant_dscr", covenant.cash_covenant_dscr))
+    monkeypatch.setattr(covenant, "covenant_dscr", watch("covenant_dscr", covenant.covenant_dscr))
+    monkeypatch.setattr(covenant, "coverage_ratio", watch("coverage_ratio", coverage_ratio))
+    monkeypatch.setattr(covenant, "dscr_pf", watch("dscr_pf", covenant.dscr_pf))
+
+    catalog = _catalog()
+    route = {
+        "profile_ref": None,
+        "composed": catalog.composed,
+        "concepts": _CONCEPTS | {"operating_cash_flow", "cfads", "debt_service", "interest_paid"},
+        "money": _MONEY | {"cfads", "debt_service", "interest_paid"},
+        "interest_order": catalog.interest_order,
+        "row_fallbacks": catalog.row_fallbacks,
+    }
+    base = {
+        "facts": [_fact("cf", "Y1", "100"), _fact("ds", "Y1", "40")],
+        "bindings": [_bind("cfads", "cf"), _bind("debt_service", "ds")],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    called.clear()
+    plain = select_ratio("dscr", "ocf_covenant", base, profile=None, **route)
+    assert called == ["coverage_ratio"]
+    assert plain["rows"][0]["value"] == Decimal("2.5000000000")
+
+    profile_book = {
+        "facts": [
+            _fact("o", "Y1", "100"),
+            _fact("i", "Y1", "-20"),
+            _fact("c", "Y1", "-10"),
+            _fact("p", "Y1", "-30"),
+        ],
+        "bindings": [
+            _bind("operating_cash_flow", "o"),
+            _bind("interest", "i"),
+            _bind("capex", "c"),
+            _bind("principal", "p"),
+        ],
+        "periods": [_year()],
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    called.clear()
+    named = select_ratio(
+        "dscr",
+        "ocf_covenant",
+        profile_book,
+        profile={"dscr_definition": {"variant": "ocf_covenant"}},
+        **route,
+    )
+    assert called == ["covenant_dscr"]
+    assert named["definition_source"] == "profile"
+    assert named["rows"][0]["value"] == Decimal("2.2000000000")
+
+    called.clear()
+    cash = select_ratio(
+        "dscr",
+        "cash_covenant",
+        _cash_common(_cash_facts("Y1"), _cash_bindings(), [_year()]),
+        profile=None,
+        **route,
+    )
+    assert called == ["cash_covenant_dscr"]
+    assert cash["rows"][0]["variant"] == "cash_covenant"
+    assert cash["rows"][0]["value"] == quantize_ratio(Decimal(90) / Decimal(70))
+
+
 async def test_window_fold_follows_concept_aggregation(monkeypatch):
     from pathlib import Path
 
