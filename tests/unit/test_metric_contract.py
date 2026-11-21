@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from finance_analysis.application.model_types import load_coverage_document
@@ -116,6 +118,21 @@ _OPTIONAL = {
     ("fcff", "fcff"): ("interest", "interest_paid", "income_tax_rate"),
 }
 
+# Дополнительные понятия договорного состава. None — профильной формулы нет.
+# interest_paid не выводится из interest: это отдельное имя.
+_PROFILE_INPUTS = {
+    ("dscr", "dscr.corporate_covenant"): (
+        "ebitda",
+        "cash_taxes",
+        "capex",
+        "operating_cash_flow",
+        "interest",
+        "interest_paid",
+        "principal",
+    ),
+    ("dscr", "dscr.ocf_covenant"): ("ebitda", "cash_taxes"),
+}
+
 
 def _catalog_keys() -> set[tuple[str, str]]:
     document = load_coverage_document()
@@ -144,6 +161,7 @@ def test_registry_keys_match_coverage_formulas():
         assert item.version == version
         assert item.inputs == inputs
         assert item.optional_inputs == _OPTIONAL.get(key, ())
+        assert item.profile_inputs == _PROFILE_INPUTS.get(key)
 
 
 def test_same_key_cannot_register_twice():
@@ -569,10 +587,148 @@ def test_cash_covenant_reads_through_bound_inputs(monkeypatch):
     } <= set(seen)
 
 
+def _definition(plus: list[str], minus: list[str] | None = None, denominator: list[str] | None = None) -> dict:
+    return {
+        "numerator": {"plus": plus, "minus": minus or []},
+        "denominator": {"plus": denominator or ["interest"]},
+        "window": "LTM",
+    }
+
+
+def test_profile_composition_within_the_declared_set_passes():
+    load_implementations()
+    profiles = {
+        "desk": {"dscr_definition": _definition(["ebitda"], ["cash_taxes", "capex"], ["interest", "principal"])},
+        "ocf": {
+            "dscr_definition": _definition(
+                ["operating_cash_flow", "interest"],
+                ["capex"],
+                ["interest", "principal"],
+            )
+        },
+        "paid": {"dscr_definition": _definition(["ebitda"], denominator=["interest_paid"])},
+        "named": {"dscr_definition": {"variant": "ocf_covenant", "basis_ref": "Формулы!B53"}},
+    }
+    check_registry(load_coverage_document()["metrics"], profiles)
+
+
+def test_profile_composition_outside_the_declared_set_fails():
+    load_implementations()
+    profiles = {"desk": {"dscr_definition": _definition(["revenue"])}}
+    with pytest.raises(ImplementationContractError) as caught:
+        check_registry(load_coverage_document()["metrics"], profiles)
+    text = str(caught.value)
+    assert "dscr.corporate_covenant: профиль desk: необъявленные профильные входы: revenue" in text
+    assert "dscr.ocf_covenant: профиль desk: необъявленные профильные входы: revenue" in text
+    assert "interest_paid" not in text
+
+
+def test_interest_paid_is_not_accepted_as_a_stand_in_for_another_name():
+    """interest_paid объявлен сам по себе. Похожее имя в набор не попадает."""
+
+    load_implementations()
+    profiles = {"desk": {"dscr_definition": _definition(["ebitda"], denominator=["finance_costs"])}}
+    with pytest.raises(ImplementationContractError, match="необъявленные профильные входы: finance_costs"):
+        check_registry(load_coverage_document()["metrics"], profiles)
+
+
+def test_empty_profile_inputs_keep_the_union_closed():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__.covenant")
+    implements(*key, inputs=("ebitda", "interest"), profile_inputs=())(sample)
+    load_implementations()
+    try:
+        check_registry(
+            {},
+            {"desk": {"dscr_definition": _definition(["ebitda"], denominator=["interest"])}},
+        )
+        with pytest.raises(ImplementationContractError) as caught:
+            check_registry({}, {"desk": {"dscr_definition": _definition(["ebitda", "capex"])}})
+        assert str(caught.value) == (
+            "__probe__.covenant: профиль desk: необъявленные профильные входы: capex"
+        )
+    finally:
+        REGISTRY.pop(key, None)
+
+
+def test_profile_calculation_keeps_the_contract_ratio():
+    from finance_analysis.domain.covenant import covenant_dscr
+    from tests.unit.test_covenant_dscr import (
+        _CONCEPTS,
+        _MONEY,
+        _bind,
+        _catalog,
+        _fact,
+        _year,
+    )
+
+    catalog = _catalog()
+    raw = {
+        "numerator": {"plus": ["ebitda"], "minus": []},
+        "denominator": {"plus": ["interest"]},
+        "window": "period",
+        "basis_ref": "кредитный договор, п. 4.2",
+    }
+    got = covenant_dscr(
+        facts=[
+            _fact("e", "Y1", "100"),
+            _fact("t", "Y1", "10"),
+            _fact("c", "Y1", "20"),
+            _fact("i", "Y1", "15"),
+            _fact("p", "Y1", "5"),
+        ],
+        bindings=[
+            _bind("ebitda", "e"),
+            _bind("cash_taxes", "t"),
+            _bind("capex", "c"),
+            _bind("interest", "i"),
+            _bind("principal", "p"),
+        ],
+        periods=[_year()],
+        profile={"dscr_definition": raw},
+        profile_ref="desk@p-3",
+        default=catalog.composed["dscr.corporate_covenant"],
+        concepts=_CONCEPTS,
+        money=_MONEY,
+    )
+    assert got["definition_source"] == "profile"
+    assert got["rows"][0]["value"] == Decimal("6.6666666667")
+
+
+def test_load_profiles_reads_yaml_bodies(tmp_path):
+    from finance_analysis.application.model_types import load_profiles
+
+    folder = tmp_path / "profiles"
+    folder.mkdir()
+    (folder / "desk.yaml").write_text(
+        "dscr_definition:\n  numerator:\n    plus: [ebitda]\n  denominator:\n    plus: [interest]\n",
+        encoding="utf-8",
+    )
+    loaded = load_profiles(folder)
+    assert loaded["desk"]["dscr_definition"]["numerator"]["plus"] == ["ebitda"]
+    assert load_profiles(tmp_path / "missing") == {}
+
+
+def test_check_config_rejects_a_foreign_profile_concept(capsys, monkeypatch):
+    from finance_analysis.cli import _check_config
+
+    def bad() -> dict:
+        return {"desk": {"dscr_definition": _definition(["revenue"])}}
+
+    monkeypatch.setattr("finance_analysis.application.model_types.load_profiles", bad)
+    with pytest.raises(SystemExit) as caught:
+        _check_config()
+    assert caught.value.code == 1
+    err = capsys.readouterr().err
+    assert "dscr.ocf_covenant: профиль desk: необъявленные профильные входы: revenue" in err
+
+
 def test_check_config_prints_registry_problems(capsys, monkeypatch):
     from finance_analysis.cli import _check_config
 
-    def fail(_metrics: object) -> None:
+    def fail(_metrics: object, _profiles: object = None) -> None:
         raise ImplementationContractError("probe: нет реализации в реестре")
 
     monkeypatch.setattr("finance_analysis.domain.metric_contract.check_registry", fail)

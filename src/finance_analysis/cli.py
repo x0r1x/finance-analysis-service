@@ -140,6 +140,7 @@ def _check_config() -> None:
     from finance_analysis.application.model_types import (
         load_coverage_document,
         load_model_types,
+        load_profiles,
     )
     from finance_analysis.domain.metric_contract import (
         ImplementationContractError,
@@ -155,7 +156,7 @@ def _check_config() -> None:
         catalog = load_model_types()
         financial = load_financial_catalog(model_types=catalog)
         load_implementations()
-        check_registry(load_coverage_document()["metrics"])
+        check_registry(load_coverage_document()["metrics"], load_profiles())
     except (ModelTypeInvalid, CatalogIntegrityError, ImplementationContractError) as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc

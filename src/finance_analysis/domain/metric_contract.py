@@ -60,12 +60,19 @@ class BoundInputs:
 
 @dataclass(frozen=True, slots=True)
 class Implementation:
+    """profile_inputs is None — профиль состав не задаёт.
+
+    Кортеж, в том числе пустой, — дополнительные понятия договорной формулы
+    сверх inputs и optional_inputs. interest и interest_paid этим полем не сливаются.
+    """
+
     metric_id: str
     formula_id: str
     version: str
     function: Callable[..., object]
     inputs: tuple[str, ...]
     optional_inputs: tuple[str, ...] = ()
+    profile_inputs: tuple[str, ...] | None = None
 
 
 REGISTRY: dict[tuple[str, str], Implementation] = {}
@@ -82,8 +89,13 @@ def implements(
     version: str = "",
     inputs: tuple[str, ...] = (),
     optional_inputs: tuple[str, ...] = (),
+    profile_inputs: tuple[str, ...] | None = None,
 ):
-    """Помечает функцию реализации. Другая функция на том же ключе — ошибка."""
+    """Помечает функцию реализации. Другая функция на том же ключе — ошибка.
+
+    profile_inputs=None — профильной формулы нет. Кортеж объявляет
+    дополнительные понятия, которые договорный состав может назвать.
+    """
 
     def decorate(function: Callable[..., object]) -> Callable[..., object]:
         key = (metric_id, formula_id)
@@ -97,6 +109,7 @@ def implements(
             function,
             tuple(inputs),
             tuple(optional_inputs),
+            None if profile_inputs is None else tuple(profile_inputs),
         )
         return function
 
@@ -176,8 +189,15 @@ def composition_concepts(body: Mapping[str, object]) -> frozenset[str]:
     return frozenset(found)
 
 
-def check_registry(metrics: Mapping[str, object]) -> None:
-    """Каждая формула каталога есть в реестре, состав не шире объявленных входов."""
+def check_registry(
+    metrics: Mapping[str, object],
+    profiles: Mapping[str, Mapping[str, object]] | None = None,
+) -> None:
+    """Каждая формула каталога есть в реестре, состав не шире объявленных входов.
+
+    У реализации с profile_inputs состав ковенанта в профиле не выходит
+    за inputs, optional_inputs и profile_inputs вместе.
+    """
 
     problems: list[str] = []
     for metric_id, body in metrics.items():
@@ -189,8 +209,54 @@ def check_registry(metrics: Mapping[str, object]) -> None:
             for variant, spec in variants.items():
                 if isinstance(spec, dict):
                     _check_formula(str(metric_id), str(variant), spec, problems)
+    if profiles:
+        _check_profile_formulas(profiles, problems)
     if problems:
         raise ImplementationContractError("\n".join(sorted(problems)))
+
+
+def _check_profile_formulas(
+    profiles: Mapping[str, Mapping[str, object]],
+    problems: list[str],
+) -> None:
+    # shortcut: поле профиля только dscr_definition, следующее договорное поле — свой ключ на Implementation
+    for key in sorted(REGISTRY):
+        item = REGISTRY[key]
+        if item.profile_inputs is None:
+            continue
+        allowed = set(item.inputs) | set(item.optional_inputs) | set(item.profile_inputs)
+        variant = item.formula_id.removeprefix(f"{item.metric_id}.")
+        for profile_id in sorted(profiles):
+            raw = _profile_covenant(profiles[profile_id], variant)
+            if raw is None:
+                continue
+            extra = sorted(composition_concepts(raw) - allowed)
+            if extra:
+                names = ", ".join(extra)
+                problems.append(f"{item.formula_id}: профиль {profile_id}: необъявленные профильные входы: {names}")
+
+
+def _profile_covenant(body: object, variant: str) -> Mapping[str, object] | None:
+    """Состав dscr_definition, если он относится к этой реализации.
+
+    Имя варианта относит профиль к формуле dscr.<variant>. Состав без имени
+    подставляет resolve_covenant, поэтому его проверяет каждая реализация,
+    у которой задан profile_inputs.
+    """
+
+    if not isinstance(body, Mapping):
+        return None
+    raw = body.get("dscr_definition")
+    if not isinstance(raw, dict):
+        return None
+    named = raw.get("variant")
+    if isinstance(named, str) and named:
+        if named != variant:
+            return None
+        return raw
+    if "numerator" in raw or "denominator" in raw:
+        return raw
+    return None
 
 
 def _check_formula(

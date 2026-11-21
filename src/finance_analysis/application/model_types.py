@@ -44,6 +44,29 @@ def metrics_file() -> Path:
     return catalog_file().parent.parent / "metrics" / "coverage.yaml"
 
 
+def profiles_dir() -> Path:
+    return metrics_file().parent.parent / "profiles"
+
+
+def load_profiles(path: Path | None = None) -> dict[str, dict]:
+    """Тела профилей из ``configs/profiles``. Каталога нет — пустой словарь.
+
+    Имя файла без суффикса — id профиля. Проверка ковенанта читает состав,
+    числа расчёта отсюда не берутся.
+    """
+
+    folder = path or profiles_dir()
+    if not folder.is_dir():
+        return {}
+    found: dict[str, dict] = {}
+    for file in sorted(folder.glob("*.yaml")):
+        document = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+        if not isinstance(document, dict):
+            raise ModelTypeInvalid(f"профиль {file.stem}: документ должен быть объектом")
+        found[file.stem] = document
+    return found
+
+
 _BASE_EXCLUSIVE = frozenset({"numerator", "denominator", "rate", "terminal", "add_back", "compare_with"})
 _ADD_BACK_KEYS = frozenset({"concept", "tax_complement"})
 
