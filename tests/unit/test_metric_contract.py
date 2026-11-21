@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from finance_analysis.application.model_types import load_coverage_document
@@ -17,6 +19,7 @@ from finance_analysis.domain.metric_contract import (
     formula_id_of,
     implements,
     load_implementations,
+    profile_definition_problems,
 )
 
 # Ключ → модуль, функция, version, inputs. inputs пуст, если набор читаемых понятий не фиксирован.
@@ -116,6 +119,21 @@ _OPTIONAL = {
     ("fcff", "fcff"): ("interest", "interest_paid", "income_tax_rate"),
 }
 
+# Дополнительные понятия договорного состава. None — профильной формулы нет.
+# interest_paid не выводится из interest: это отдельное имя.
+_PROFILE_INPUTS = {
+    ("dscr", "dscr.corporate_covenant"): (
+        "ebitda",
+        "cash_taxes",
+        "capex",
+        "operating_cash_flow",
+        "interest",
+        "interest_paid",
+        "principal",
+    ),
+    ("dscr", "dscr.ocf_covenant"): ("ebitda", "cash_taxes"),
+}
+
 
 def _catalog_keys() -> set[tuple[str, str]]:
     document = load_coverage_document()
@@ -144,6 +162,7 @@ def test_registry_keys_match_coverage_formulas():
         assert item.version == version
         assert item.inputs == inputs
         assert item.optional_inputs == _OPTIONAL.get(key, ())
+        assert item.profile_inputs == _PROFILE_INPUTS.get(key)
 
 
 def test_same_key_cannot_register_twice():
@@ -567,6 +586,138 @@ def test_cash_covenant_reads_through_bound_inputs(monkeypatch):
         "principal",
         "other_financial_debt_service",
     } <= set(seen)
+
+
+def _definition(plus: list[str], minus: list[str] | None = None, denominator: list[str] | None = None) -> dict:
+    return {
+        "numerator": {"plus": plus, "minus": minus or []},
+        "denominator": {"plus": denominator or ["interest"]},
+        "window": "LTM",
+    }
+
+
+def test_profile_definition_problems_accepts_a_declared_composition():
+    load_implementations()
+    allowed = {
+        ("dscr", "dscr.corporate_covenant"): _definition(
+            ["ebitda"], ["cash_taxes", "capex"], ["interest", "principal"]
+        ),
+        ("dscr", "dscr.ocf_covenant"): _definition(
+            ["operating_cash_flow", "interest"],
+            ["capex"],
+            ["interest_paid", "principal"],
+        ),
+    }
+    assert profile_definition_problems(allowed, REGISTRY) == []
+
+
+def test_profile_definition_problems_names_an_undeclared_concept():
+    load_implementations()
+    foreign = _definition(["revenue"])
+    problems = profile_definition_problems(
+        {
+            ("dscr", "dscr.corporate_covenant"): foreign,
+            ("dscr", "dscr.ocf_covenant"): foreign,
+        },
+        REGISTRY,
+    )
+    assert problems == [
+        "dscr.corporate_covenant: необъявленные профильные входы: revenue",
+        "dscr.ocf_covenant: необъявленные профильные входы: revenue",
+    ]
+
+
+def test_interest_paid_is_not_accepted_as_a_stand_in_for_another_name():
+    """interest_paid объявлен сам по себе. Похожее имя в набор не попадает."""
+
+    load_implementations()
+    paid = {("dscr", "dscr.ocf_covenant"): _definition(["ebitda"], denominator=["interest_paid"])}
+    assert profile_definition_problems(paid, REGISTRY) == []
+    foreign = {("dscr", "dscr.ocf_covenant"): _definition(["ebitda"], denominator=["finance_costs"])}
+    assert profile_definition_problems(foreign, REGISTRY) == [
+        "dscr.ocf_covenant: необъявленные профильные входы: finance_costs"
+    ]
+
+
+def test_formula_without_profile_inputs_rejects_a_definition():
+    load_implementations()
+    problems = profile_definition_problems(
+        {("dscr", "dscr.cash_covenant"): _definition(["operating_cash_flow"])},
+        REGISTRY,
+    )
+    assert problems == ["dscr.cash_covenant: профильный состав не объявлен"]
+
+
+def test_empty_profile_inputs_keep_the_union_closed():
+    def sample() -> None:
+        return None
+
+    key = ("__probe__", "__probe__.covenant")
+    implements(*key, inputs=("ebitda", "interest"), profile_inputs=())(sample)
+    try:
+        assert profile_definition_problems({key: _definition(["ebitda"])}, REGISTRY) == []
+        assert profile_definition_problems({key: _definition(["ebitda", "capex"])}, REGISTRY) == [
+            "__probe__.covenant: необъявленные профильные входы: capex"
+        ]
+    finally:
+        REGISTRY.pop(key, None)
+
+
+def test_unnamed_dscr_definition_maps_onto_both_covenant_formulas():
+    from finance_analysis.application.glossary_store import profile_covenant_definitions
+
+    raw = _definition(["revenue"])
+    found = profile_covenant_definitions({"dscr_definition": raw})
+    assert set(found) == {
+        ("dscr", "dscr.corporate_covenant"),
+        ("dscr", "dscr.ocf_covenant"),
+    }
+    assert found[("dscr", "dscr.ocf_covenant")] is raw
+    assert profile_covenant_definitions({"dscr_definition": {"variant": "ocf_covenant"}}) == {}
+
+
+def test_profile_calculation_keeps_the_contract_ratio():
+    from finance_analysis.domain.covenant import covenant_dscr
+    from tests.unit.test_covenant_dscr import (
+        _CONCEPTS,
+        _MONEY,
+        _bind,
+        _catalog,
+        _fact,
+        _year,
+    )
+
+    catalog = _catalog()
+    raw = {
+        "numerator": {"plus": ["ebitda"], "minus": []},
+        "denominator": {"plus": ["interest"]},
+        "window": "period",
+        "basis_ref": "кредитный договор, п. 4.2",
+    }
+    got = covenant_dscr(
+        facts=[
+            _fact("e", "Y1", "100"),
+            _fact("t", "Y1", "10"),
+            _fact("c", "Y1", "20"),
+            _fact("i", "Y1", "15"),
+            _fact("p", "Y1", "5"),
+        ],
+        bindings=[
+            _bind("ebitda", "e"),
+            _bind("cash_taxes", "t"),
+            _bind("capex", "c"),
+            _bind("interest", "i"),
+            _bind("principal", "p"),
+        ],
+        periods=[_year()],
+        profile={"dscr_definition": raw},
+        profile_ref="desk@p-3",
+        default=catalog.composed["dscr.corporate_covenant"],
+        concepts=_CONCEPTS,
+        money=_MONEY,
+    )
+    assert got["definition_source"] == "profile"
+    assert got["rows"][0]["value"] == Decimal("6.6666666667")
 
 
 def test_check_config_prints_registry_problems(capsys, monkeypatch):

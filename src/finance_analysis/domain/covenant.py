@@ -191,7 +191,19 @@ def resolve_covenant(
     return _parse(raw), "profile", ref, []
 
 
-@implements("dscr", "dscr.corporate_covenant")
+# Договорный состав без имени варианта. interest_paid — отдельное понятие, не синоним interest.
+_CORPORATE_PROFILE_INPUTS = (
+    "ebitda",
+    "cash_taxes",
+    "capex",
+    "operating_cash_flow",
+    "interest",
+    "interest_paid",
+    "principal",
+)
+
+
+@implements("dscr", "dscr.corporate_covenant", profile_inputs=_CORPORATE_PROFILE_INPUTS)
 def covenant_dscr(
     *,
     facts: list[dict],
@@ -250,6 +262,8 @@ def covenant_dscr(
 # Состав каталога dscr.ocf_covenant. interest_paid — запасной вход по interest_order, а не синоним interest: это разные понятия.
 OCF_COVENANT_INPUTS = ("operating_cash_flow", "interest", "capex", "principal")
 OCF_COVENANT_OPTIONAL = ("interest_paid",)
+# resolve_covenant может подставить договор с понятиями корпоративного состава.
+OCF_COVENANT_PROFILE = ("ebitda", "cash_taxes")
 
 
 @implements(
@@ -258,6 +272,7 @@ OCF_COVENANT_OPTIONAL = ("interest_paid",)
     version="dscr.ocf_covenant@1",
     inputs=OCF_COVENANT_INPUTS,
     optional_inputs=OCF_COVENANT_OPTIONAL,
+    profile_inputs=OCF_COVENANT_PROFILE,
 )
 def dscr_ocf_covenant(
     *,

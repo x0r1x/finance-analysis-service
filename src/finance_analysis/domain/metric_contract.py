@@ -60,12 +60,19 @@ class BoundInputs:
 
 @dataclass(frozen=True, slots=True)
 class Implementation:
+    """profile_inputs is None — профиль состав не задаёт.
+
+    Кортеж, в том числе пустой, — дополнительные понятия договорной формулы
+    сверх inputs и optional_inputs. interest и interest_paid этим полем не сливаются.
+    """
+
     metric_id: str
     formula_id: str
     version: str
     function: Callable[..., object]
     inputs: tuple[str, ...]
     optional_inputs: tuple[str, ...] = ()
+    profile_inputs: tuple[str, ...] | None = None
 
 
 REGISTRY: dict[tuple[str, str], Implementation] = {}
@@ -82,8 +89,13 @@ def implements(
     version: str = "",
     inputs: tuple[str, ...] = (),
     optional_inputs: tuple[str, ...] = (),
+    profile_inputs: tuple[str, ...] | None = None,
 ):
-    """Помечает функцию реализации. Другая функция на том же ключе — ошибка."""
+    """Помечает функцию реализации. Другая функция на том же ключе — ошибка.
+
+    profile_inputs=None — профильной формулы нет. Кортеж объявляет
+    дополнительные понятия, которые договорный состав может назвать.
+    """
 
     def decorate(function: Callable[..., object]) -> Callable[..., object]:
         key = (metric_id, formula_id)
@@ -97,6 +109,7 @@ def implements(
             function,
             tuple(inputs),
             tuple(optional_inputs),
+            None if profile_inputs is None else tuple(profile_inputs),
         )
         return function
 
@@ -191,6 +204,32 @@ def check_registry(metrics: Mapping[str, object]) -> None:
                     _check_formula(str(metric_id), str(variant), spec, problems)
     if problems:
         raise ImplementationContractError("\n".join(sorted(problems)))
+
+
+def profile_definition_problems(
+    definitions: Mapping[tuple[str, str], Mapping[str, object]],
+    registry: Mapping[tuple[str, str], Implementation],
+) -> list[str]:
+    """Состав договорных формул против реестра. Пустой список — нарушений нет.
+
+    Ключ определения — (metric_id, formula_id). Тело — числитель и знаменатель,
+    уже без полей профиля. Реализация без profile_inputs состав не принимает.
+    """
+
+    problems: list[str] = []
+    for metric_id, formula_id in sorted(definitions):
+        item = registry.get((metric_id, formula_id))
+        if item is None:
+            problems.append(f"{formula_id}: нет реализации в реестре")
+            continue
+        if item.profile_inputs is None:
+            problems.append(f"{formula_id}: профильный состав не объявлен")
+            continue
+        allowed = set(item.inputs) | set(item.optional_inputs) | set(item.profile_inputs)
+        extra = sorted(composition_concepts(definitions[(metric_id, formula_id)]) - allowed)
+        if extra:
+            problems.append(f"{formula_id}: необъявленные профильные входы: {', '.join(extra)}")
+    return problems
 
 
 def _check_formula(
