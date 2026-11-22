@@ -70,7 +70,8 @@ def render_markdown(result: dict) -> str:
             if row.get("components"):
                 lines.append(f"- components: {_show(row.get('components'))}")
     origin = data.get("formula_origin")
-    if isinstance(origin, dict) and (origin.get("book") or origin.get("metrics")):
+    incomplete = isinstance(origin, dict) and origin.get("physical_lineage_complete") is False
+    if isinstance(origin, dict) and (origin.get("book") or origin.get("metrics") or incomplete):
         lines.extend(["", "## Происхождение формул"])
         for code, counts in (origin.get("book") or {}).items():
             rendered = ", ".join(f"{severity} {count}" for severity, count in counts.items())
@@ -89,6 +90,8 @@ def render_markdown(result: dict) -> str:
                 )
                 lines.append(f"- {row.get('label')} глубина {row.get('depth')}: {cells}")
         lines.append("- цепь: formula_origin.chain")
+        if incomplete and origin.get("note"):
+            lines.append(f"- {origin['note']}")
     findings = data.get("findings") or []
     if findings:
         lines.extend(["", "## findings"])

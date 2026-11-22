@@ -1031,7 +1031,6 @@ class Analyses:
         }
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
-        envelope["result_data"]["formula_origin"] = self._formula_origin(data, attached)
         _attach_book_rows(envelope, got)
         await self._annotate(envelope)
         stored = _ratio_stored(job_id, target, analysis_id, head, computed)

@@ -120,6 +120,43 @@ def test_direct_inputs_stay_short_and_the_chain_is_complete():
     assert view["book"]["literal_in_formula"]["low"] == 2
     assert view["book"]["formula_pattern_break"]["high"] == 2
     assert view["metrics"][0]["inputs"][0]["source"] == "formula"
+    assert view["physical_lineage_complete"] is True
+    assert view["truncated_links"] == 0
+    assert view["note"] is None
+
+
+def test_truncated_ref_range_does_not_make_the_chain_complete():
+    key = "S|10|S!r2"
+    data = AuditInput(
+        rows=[row(key, label="сумма")],
+        periods=PERIODS,
+        facts=[fact(key, "S!C10", "2024", "1")],
+        links=[
+            {
+                "cell": "S!C10",
+                "formula": "SUM(A10:A100)",
+                "formula_class": "same_period",
+                "ref_cell": "S!A10",
+                "row_key": key,
+                "period_id": "2024",
+                "truncated": True,
+            }
+        ],
+        bindings=[{"status": "bound", "is_primary": True, "effective_concept": "cfads", "row_key": key}],
+        applicable_metrics=frozenset({"dscr"}),
+    )
+    assert data.link_cells["S!C10"].truncated is True
+    assert data.link_cells["S!C10"].refs == ("S!A10",)
+    _findings, view = _view(
+        data,
+        {"dscr": MetricExpression(numerator_plus=("cfads",), denominator_plus=("debt_service",))},
+    )
+    assert view["chain"] == []
+    assert view["physical_lineage_complete"] is False
+    assert view["truncated_links"] == 1
+    assert view["note"] == "цепь может быть неполной: обрезано ссылок 1"
+    text = render_markdown({"analysis_id": "a", "status": "succeeded", "result_data": {"formula_origin": view}})
+    assert "цепь может быть неполной: обрезано ссылок 1" in text
 
 
 def _view(data, expressions):
@@ -258,3 +295,68 @@ def test_dscr_fallback_seeds_only_the_chosen_parts():
     assert any(item["input"] == "interest_paid" and item["source"] == "fallback" for item in view["chain"])
     text = render_markdown({"analysis_id": "a", "status": "succeeded", "result_data": {"formula_origin": view}})
     assert "вход interest_paid: fallback" in text
+
+
+async def test_formula_origin_is_absent_on_ratios_and_present_on_audit_and_full():
+    import anyio
+
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.domain.book import Actor, Head
+
+    catalog = type("Catalog", (), {})()
+    catalog.version = "test"
+    catalog.metric_expressions = {}
+    catalog.interest_order = {}
+    catalog.row_fallbacks = {}
+
+    class Svc:
+        model_types = catalog
+        _cpu = anyio.CapacityLimiter(1)
+
+    analyses = Analyses(Svc())
+
+    async def metrics(*_args, **_kwargs):
+        return {
+            "rows": [],
+            "needs_input": [],
+            "warnings": [],
+            "bindings": [],
+            "facts": [],
+            "periods": [],
+            "phase_of": {},
+            "profile": {},
+            "absent": frozenset(),
+            "applicability": {},
+            "model_type": {},
+            "dscr_variant": None,
+            "book_rows": [],
+        }
+
+    async def no_findings(*_args, **_kwargs):
+        return []
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    saved: dict = {}
+
+    async def save_tables(*args, **_kwargs):
+        saved["envelope"] = args[5]
+
+    analyses.compute_metrics = metrics
+    analyses._metric_findings = no_findings
+    analyses._annotate = noop
+    analyses._save_tables = save_tables
+    analyses._input = lambda *_args, **_kwargs: _empty_input()
+    head = Head(build_key="b", state_seq=1, derive_key="d", versions={})
+    target = Target(head, "b", {"builder_ref": {}}, False, "d")
+    ratios = await analyses._execute_ratios("job", target, "ratios", ["dscr"], {}, Actor())
+    assert "formula_origin" not in ratios["result_data"]
+    audit = analyses._envelope("job", target, "audit", [], AuditInput(), [], [])
+    assert "formula_origin" in audit["result_data"]
+    await analyses._execute_full("job", target, "full", ["dscr"], None, {"rules": []}, Actor(), "")
+    assert "formula_origin" in saved["envelope"]["result_data"]
+
+
+async def _empty_input():
+    return AuditInput()

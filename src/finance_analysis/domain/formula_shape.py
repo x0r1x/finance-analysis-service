@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from finance_analysis.domain.audit import AuditInput
 
 _YEAR = re.compile(r"(?:19|20)\d{2}")
+# Слева — граница токена. Иначе Revenue2025 даёт адрес e2025. MS-XLSX: name и A1-cell — разные продукции.
 _REF = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё0-9_])"
     r"(?:(?P<sheet>'(?:[^']|'')+'|[A-Za-zА-Яа-яЁё_][\w. ]*)!)?"
     r"(?P<abscol>\$)?(?P<col>[A-Za-z]{1,3})(?P<absrow>\$)?(?P<row>\d+)"
     r"(?::(?P<abscol2>\$)?(?P<col2>[A-Za-z]{1,3})(?P<absrow2>\$)?(?P<row2>\d+))?"

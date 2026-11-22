@@ -98,7 +98,19 @@ def origin_view(
                 "direct": direct,
             }
         )
-    return {"book": book, "metrics": metrics, "chain": chain, "direct_cap": DIRECT_CAP}
+    truncated_links = sum(1 for link in data.link_cells.values() if link.truncated)
+    # Тот же смысл, что physical_lineage_complete у trace_metric: физический граф неполон.
+    # Здесь причина — обрезанный диапазон, а не отсутствие датасета graph_links.
+    complete = truncated_links == 0
+    return {
+        "book": book,
+        "metrics": metrics,
+        "chain": chain,
+        "direct_cap": DIRECT_CAP,
+        "physical_lineage_complete": complete,
+        "truncated_links": truncated_links,
+        "note": None if complete else f"цепь может быть неполной: обрезано ссылок {truncated_links}",
+    }
 
 
 def _variant_name(data: AuditInput, metric: str) -> str | None:

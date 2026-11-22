@@ -1,6 +1,27 @@
 """R1C1 одного прохода и отрезки ряда."""
 
-from finance_analysis.domain.formula_shape import normalize, series_kind
+from finance_analysis.domain.formula_shape import _REF, normalize, series_kind
+
+
+def test_year_inside_a_name_is_not_a_cell():
+    # Имя целиком. Кусок e2025 внутри Revenue2025 — не адрес.
+    for name in ("Revenue2025", "Budget2025", "Выручка2025"):
+        assert _REF.search(name) is None
+        assert _REF.search(f"={name}+1") is None
+    assert _REF.fullmatch("A1").group("col") == "A"
+    assert _REF.fullmatch("$A$1").group("abscol") == "$"
+    assert _REF.fullmatch("Sheet1!A1").group("sheet") == "Sheet1"
+    assert _REF.fullmatch("'Лист'!A1").group("sheet") == "'Лист'"
+    kept = normalize(
+        "=Revenue2025+A1",
+        host_sheet="S",
+        host_col=2,
+        host_row=1,
+        year_at=lambda *_: None,
+        host_year=None,
+    )
+    assert kept.startswith("Revenue2025+")
+    assert "R2025" not in kept
 
 
 def test_copied_formula_is_one_pattern():
