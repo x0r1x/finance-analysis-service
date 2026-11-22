@@ -989,6 +989,7 @@ class Analyses:
             "applicability": uses,
             "model_type": verdict.as_dict(),
             "dscr_variant": dscr_variant,
+            "plans": plans,
             "book_rows": cite_lbo_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,
@@ -1015,7 +1016,16 @@ class Analyses:
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
-            job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
+            job_id,
+            target,
+            metrics,
+            got["bindings"],
+            got["facts"],
+            got["periods"],
+            got["phase_of"],
+            got["profile"],
+            got["absent"],
+            got["plans"],
         )
         candidates = list(attached) + promote_needs_findings(needs)
         bound: set[str] = set()
@@ -1026,6 +1036,7 @@ class Analyses:
             facts=got["facts"],
             bindings=got["bindings"],
             dscr_variant=got.get("dscr_variant"),
+            plans=got["plans"],
         )
         attached = [item for item in candidates if _in_scope(item, scope, data, bound)]
         envelope = {
@@ -1131,6 +1142,8 @@ class Analyses:
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
         got = await self.compute_metrics(job_id, target, metrics)
+        data.plans = got["plans"]
+        self._trace_plans(data, metrics)
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
         bound: set[str] = set()
         if "concepts" in scope:
@@ -1199,8 +1212,33 @@ class Analyses:
         await self.service.finish_op(op_id, "cancelled")
         return True
 
+    def _trace_plans(self, data, metrics: list[str]) -> None:
+        """След читает тот же объект плана, что расчёт и аудит. metricTrace не публикуется."""
+
+        from finance_analysis.domain.graphs import trace_metric
+
+        catalog = self.service.model_types
+        plans = data.plans or {}
+        for metric in metrics:
+            plan = plans.get(metric)
+            if plan is None:
+                continue
+            trace_metric(
+                metric,
+                inputs=None,
+                bindings=data.bindings,
+                facts=data.facts,
+                graph_links=data.links,
+                expressions=catalog.metric_expressions,
+                interest_order=catalog.interest_order,
+                row_fallbacks=catalog.row_fallbacks,
+                absent=data.absent,
+                statement_sheets=data.statement_sheets,
+                plan=plan,
+            )
+
     async def _metric_findings(
-        self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent
+        self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent, plans=None
     ) -> list[Finding]:
         """Находки, которые прикрепляются к результату метрики (§6.2): статус метрики они не меняют.
 
@@ -1232,6 +1270,7 @@ class Analyses:
             applicable_metrics=live,
             dscr_variant=_dscr_variant(self.service.model_types, verdict, profile),
             statement_sheets=frozenset(load_sheet_roles().statement),
+            plans=plans,
         )
         found = run_rules(rules, data)
         return [item for item in found if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]

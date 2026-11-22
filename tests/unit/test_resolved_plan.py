@@ -529,3 +529,184 @@ def test_each_selection_rule_runs_once_inside_resolve_metric_plan(monkeypatch):
     assert fcff["confirm_paid_interest"] == 1
     assert fcff.get("shield_concepts", 0) == 0
     assert fcff.get("dscr_denominator_plan", 0) == 0
+
+
+async def test_analyses_passes_one_plan_object(monkeypatch):
+    """Analyses строит план один раз на метрику и отдаёт тот же объект читателям."""
+
+    import anyio
+
+    import finance_analysis.application.analyses as analyses_mod
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.audit import AuditInput
+    from finance_analysis.domain.book import Actor, Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    bindings = [_bind("ebitda", 1), _bind("ebit", 2), _bind("interest", 3)]
+    facts = [_fact(row["row_key"], row["effective_concept"]) for row in bindings]
+    periods = [_period()]
+    catalog = load_catalog()
+    types = load_model_types()
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Service:
+        def __init__(self):
+            self.catalog = catalog
+            self.model_types = types
+            self.guard = _Guard()
+            self._cpu = anyio.CapacityLimiter(1)
+
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset == "bindings":
+                return list(bindings)
+            if dataset == "fact_observation":
+                return list(facts)
+            if dataset == "dim_period":
+                return list(periods)
+            if dataset in {"dim_row", "period_semantics", "graph_links"}:
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                ("corporate",),
+                "corporate",
+                "confirmed",
+                None,
+                1,
+                None,
+                1.0,
+                {"corporate": 1.0},
+                (),
+            )
+
+    def allow(_catalog, _labels, metric):
+        return "required" if metric == "icr" else "not_applicable"
+
+    monkeypatch.setattr(analyses_mod, "applicability", allow)
+
+    phase = {"freeze": False}
+    held: dict = {}
+    calls: list[tuple[str, ...]] = []
+    resolves: list[str] = []
+
+    from finance_analysis.domain.semantic_input import plans_for as real_plans_for
+    from finance_analysis.domain.semantic_input import (
+        resolve_metric_plan as real_resolve,
+    )
+
+    def spy_plans_for(metrics, *args, **kwargs):
+        if phase["freeze"]:
+            raise AssertionError("selection repeated")
+        calls.append(tuple(metrics))
+        built = real_plans_for(metrics, *args, **kwargs)
+        phase["freeze"] = True
+        held["plans"] = built
+        return built
+
+    def spy_resolve(metric, *args, **kwargs):
+        resolves.append(metric)
+        return real_resolve(metric, *args, **kwargs)
+
+    monkeypatch.setattr(analyses_mod, "plans_for", spy_plans_for)
+    monkeypatch.setattr(
+        "finance_analysis.domain.semantic_input.resolve_metric_plan", spy_resolve
+    )
+
+    def guard(fn):
+        def inner(*args, **kwargs):
+            if phase["freeze"]:
+                raise AssertionError("selection repeated")
+            return fn(*args, **kwargs)
+
+        return inner
+
+    guarded = (
+        ("finance_analysis.domain.semantic_input", "choose_one_of"),
+        ("finance_analysis.domain.semantic_input", "dscr_denominator_plan"),
+        ("finance_analysis.domain.semantic_input", "interest_choice"),
+        ("finance_analysis.domain.semantic_input", "confirm_paid_interest"),
+        ("finance_analysis.domain.semantic_input", "_primaries"),
+        ("finance_analysis.domain.semantic_input", "_basis"),
+        ("finance_analysis.domain.semantic_input", "_select_primary"),
+        ("finance_analysis.domain.semantic_input", "resolve_semantic_inputs"),
+        ("finance_analysis.domain.metrics", "choose_one_of"),
+        ("finance_analysis.domain.metrics", "dscr_denominator_plan"),
+        ("finance_analysis.domain.metrics", "interest_choice"),
+        ("finance_analysis.domain.metrics", "confirm_paid_interest"),
+        ("finance_analysis.domain.metrics", "_primaries"),
+        ("finance_analysis.domain.binding_resolution", "select_primary"),
+        ("finance_analysis.domain.free_cash_flow", "shield_concepts"),
+        ("finance_analysis.domain.free_cash_flow", "_basis"),
+        ("finance_analysis.domain.formula_origin", "resolve_semantic_inputs"),
+    )
+    for module, name in guarded:
+        host = __import__(module, fromlist=[name])
+        monkeypatch.setattr(host, name, guard(getattr(host, name)))
+
+    real_select = analyses_mod.select_ratio
+
+    def spy_select_ratio(*args, **kwargs):
+        held["calc"] = kwargs.get("plan")
+        return real_select(*args, **kwargs)
+
+    real_origin = analyses_mod.origin_view
+
+    def spy_origin(data, findings, expressions, **kwargs):
+        plans = kwargs["plans"] if kwargs.get("plans") is not None else data.plans
+        held["origin"] = (plans or {}).get("icr")
+        return real_origin(data, findings, expressions, **kwargs)
+
+    real_rules = analyses_mod.run_rules
+
+    def spy_rules(rules, data):
+        held["audit"] = (data.plans or {}).get("icr")
+        return real_rules(rules, data)
+
+    from finance_analysis.domain import graphs
+
+    real_trace = graphs.trace_metric
+
+    def spy_trace(*args, **kwargs):
+        held["trace"] = kwargs.get("plan")
+        return real_trace(*args, **kwargs)
+
+    monkeypatch.setattr(analyses_mod, "select_ratio", spy_select_ratio)
+    monkeypatch.setattr(analyses_mod, "origin_view", spy_origin)
+    monkeypatch.setattr(analyses_mod, "run_rules", spy_rules)
+    monkeypatch.setattr(graphs, "trace_metric", spy_trace)
+
+    analyses = Analyses(_Service())
+
+    async def _input(*_args, **_kwargs):
+        return AuditInput(
+            bindings=list(bindings),
+            facts=list(facts),
+            periods=list(periods),
+            applicable_metrics=frozenset({"icr"}),
+        )
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(analyses, "_input", _input)
+    monkeypatch.setattr(analyses, "_annotate", _noop)
+    monkeypatch.setattr(analyses, "_save_tables", _noop)
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    target = Target(head=head, build="build", manifest={}, fresh=True)
+    await analyses._execute_full(
+        "job", target, "analysis", ["icr"], None, {"rules": []}, Actor(), ""
+    )
+    assert calls == [("icr",)]
+    assert resolves == ["icr"]
+    plan = held["plans"]["icr"]
+    assert held["calc"] is plan
+    assert held["trace"] is plan
+    assert held["origin"] is plan
+    assert held["audit"] is plan
