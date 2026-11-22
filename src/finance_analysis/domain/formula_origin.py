@@ -5,9 +5,10 @@
 OAK ведёт по дереву одной формулы, PerfectXL показывает уникальные формулы,
 ICAEW сокращает число формул, которые ревьюер читает.
 
-Семена — входы, которые расчёт реально взял: выбранный вариант, один член one_of,
-текущая основная привязка и фактический запасной путь interest_order.
-Подстановка 4123 (confirm_paid_interest) в семена не входит: это не вход формулы.
+Семена берёт resolve_semantic_inputs: выбранный вариант, один член one_of,
+не-stale основная привязка, фактический запасной путь и та же подстановка
+4123, что у расчёта. Щит FCFF добавляет interest_paid тем же базисом;
+источник такого входа — paid_interest.
 """
 
 from __future__ import annotations
@@ -16,9 +17,13 @@ from collections import Counter, defaultdict, deque
 
 from finance_analysis.domain.audit import AuditInput, Finding, severity_rank
 from finance_analysis.domain.formula_shape import parse_cell
-from finance_analysis.domain.graphs import _select_primary
-from finance_analysis.domain.metrics import interest_choice
 from finance_analysis.domain.model_type import MetricExpression
+from finance_analysis.domain.semantic_input import (
+    FormulaChain,
+    FormulaOrigin,
+    lineage_completeness,
+    resolve_semantic_inputs,
+)
 
 ORIGIN_CODES = frozenset(
     {
@@ -32,8 +37,6 @@ ORIGIN_CODES = frozenset(
 )
 DIRECT_DEPTH = 1
 DIRECT_CAP = 8
-# Тот же набор, что housing_cover._FAMILY: ADSCR и сводки наследуют housing, не ковенант.
-_HOUSING = frozenset({"adscr", "dscr_min", "dscr_avg"})
 
 
 def origin_view(
@@ -61,195 +64,73 @@ def origin_view(
     wanted = data.applicable_metrics if data.applicable_metrics is not None else catalog
     edges = _inputs_of(data)
     for metric in sorted(wanted & catalog):
-        resolved = _resolved(data, expressions, metric, interest_order, row_fallbacks)
-        seeds = {item["row_key"]: (item["concept"], item["source"]) for item in resolved}
+        resolved = resolve_semantic_inputs(
+            metric,
+            data.bindings,
+            expressions,
+            dscr_variant=data.dscr_variant,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            absent=data.absent,
+            facts=data.facts,
+            links=data.links,
+            statement_sheets=data.statement_sheets,
+        )
+        if not resolved:
+            continue
+        seeded = tuple(item for item in resolved if item.row_key)
+        seeds = {item.row_key: item for item in seeded if item.row_key}
         depth, via = _closure(set(seeds), edges)
         counts: Counter = Counter()
+        links: list[FormulaChain] = []
         for row_key, distance in depth.items():
             root = _root(via, row_key)
-            concept, source = seeds.get(root, (None, None))
+            seed = seeds.get(root)
             for item in by_row.get(row_key, ()):
                 counts[(item.code, item.severity)] += 1
-                chain.append(
-                    {
-                        "metric": metric,
-                        "code": item.code,
-                        "severity": item.severity,
-                        "fingerprint": item.fingerprint,
-                        "depth": distance,
-                        "via": via.get(row_key),
-                        "input": concept,
-                        "source": source,
-                        "cells": [loc.cell_id for loc in item.locations if loc.cell_id],
-                    }
+                links.append(
+                    FormulaChain(
+                        metric=metric,
+                        code=item.code,
+                        severity=item.severity,
+                        fingerprint=item.fingerprint,
+                        depth=distance,
+                        via=via.get(row_key),
+                        input=seed.concept if seed else None,
+                        source=seed.source if seed else None,
+                        cells=tuple(loc.cell_id for loc in item.locations if loc.cell_id),
+                        confirmed=not seed.ambiguous if seed else True,
+                    )
                 )
         if not counts:
             continue
-        direct = _direct(data, depth, by_row)
-        metrics.append(
-            {
-                "metric": metric,
-                "closure": len(depth),
-                "inputs": resolved,
-                "counts": [
-                    {"code": code, "severity": severity, "count": count}
-                    for (code, severity), count in sorted(counts.items(), key=lambda pair: (severity_rank(pair[0][1]), pair[0][0]))
-                ],
-                "direct": direct,
-            }
+        ordered = tuple(
+            sorted(counts.items(), key=lambda pair: (severity_rank(pair[0][1]), pair[0][0]))
         )
-    truncated_links = sum(1 for link in data.link_cells.values() if link.truncated)
-    if not data.graph_links_available:
-        complete = False
-        note = "физическая трассировка недоступна: graph_links не загружен"
-    elif truncated_links:
-        complete = False
-        note = f"цепь может быть неполной: обрезано ссылок {truncated_links}"
-    else:
-        complete = True
-        note = None
+        origin = FormulaOrigin(
+            metric=metric,
+            closure=len(depth),
+            inputs=seeded,
+            counts=tuple((code, severity, count) for (code, severity), count in ordered),
+            direct=tuple(_direct(data, depth, by_row)),
+        )
+        metrics.append(origin.as_dict())
+        chain.extend(link.as_dict() for link in links)
+    status = lineage_completeness(
+        graph_links_available=data.graph_links_available,
+        truncated_links=sum(1 for link in data.link_cells.values() if link.truncated),
+    )
     return {
         "book": book,
         "metrics": metrics,
         "chain": chain,
         "direct_cap": DIRECT_CAP,
-        "physical_lineage_complete": complete,
-        "truncated_links": truncated_links,
-        "note": note,
+        "graph_available": status.graph_available,
+        "graph_truncation_free": status.graph_truncation_free,
+        "physical_lineage_complete": status.physical_lineage_complete,
+        "truncated_links": status.truncated_links,
+        "note": status.note,
     }
-
-
-def _variant_name(data: AuditInput, metric: str) -> str | None:
-    named = data.dscr_variant
-    if not named:
-        return None
-    if metric == "dscr":
-        return named
-    if metric in _HOUSING and named == "housing":
-        return "housing"
-    return None
-
-
-def _active(data: AuditInput, expressions: dict[str, MetricExpression], metric: str) -> tuple[MetricExpression | None, str]:
-    variant = _variant_name(data, metric)
-    if variant:
-        chosen = expressions.get(f"{metric}.{variant}")
-        if chosen is not None and not chosen.base:
-            return chosen, f"variant:{variant}"
-    expr = expressions.get(metric)
-    if expr is not None and expr.base:
-        base = expressions.get(expr.base)
-        if base is not None:
-            return base, f"base:{expr.base}"
-    return expr, "formula"
-
-
-def _one_of(expr: MetricExpression, bindings: list[dict]) -> str | None:
-    """Член one_of, который берёт расчёт. Оба числителя ICR — EBITDA."""
-
-    present = [name for name in expr.one_of if _select_primary(bindings, name)[0] is not None]
-    if "ebitda" in present:
-        return "ebitda"
-    if len(present) == 1:
-        return present[0]
-    return None
-
-
-def _interest_slot(metric: str, variant: str | None) -> str | None:
-    if metric in {"icr", "icr_ebit"}:
-        return metric
-    if metric == "dscr" and variant in {None, "pf", "corporate_covenant", "ocf_covenant"}:
-        return "pf" if variant in {None, "pf"} else variant
-    return None
-
-
-def _interest_pick(bindings: list[dict], order, row_fallbacks: dict | None) -> str | None:
-    primaries: dict = {}
-    names = list(order)
-    for name in names:
-        row, _, _ = _select_primary(bindings, name)
-        if row is not None:
-            primaries[name] = row
-        fallback = (row_fallbacks or {}).get(name)
-        canonical = getattr(fallback, "canonical", None) if fallback is not None else ("interest" if name == "interest_paid" else None)
-        if canonical and canonical not in primaries:
-            canonical_row, _, _ = _select_primary(bindings, canonical)
-            if canonical_row is not None:
-                primaries[canonical] = canonical_row
-    chosen, _warning = interest_choice(primaries, order, row_fallbacks=row_fallbacks)
-    return chosen
-
-
-def _specs(
-    data: AuditInput,
-    expressions: dict[str, MetricExpression],
-    metric: str,
-    interest_order: dict | None,
-    row_fallbacks: dict | None,
-) -> list[tuple[str, str]]:
-    expr, source = _active(data, expressions, metric)
-    if expr is None:
-        return []
-    specs: list[tuple[str, str]] = []
-
-    def add(name: str | None, src: str) -> None:
-        if name and all(item[0] != name for item in specs):
-            specs.append((name, src))
-
-    for name in (
-        *expr.numerator_plus,
-        *expr.numerator_minus,
-        *expr.denominator_plus,
-        *expr.denominator_minus,
-        *expr.rates,
-    ):
-        add(name, source)
-    add(expr.rate, source)
-    add(expr.compare_with, source)
-    if expr.add_back:
-        add(expr.add_back[0], source)
-        add(expr.add_back[1], source)
-    chosen = _one_of(expr, data.bindings)
-    if chosen:
-        add(chosen, "one_of")
-    return _fallbacks(data, metric, _variant_name(data, metric), specs, interest_order, row_fallbacks)
-
-
-def _fallbacks(data, metric, variant, specs, interest_order, row_fallbacks) -> list[tuple[str, str]]:
-    order = interest_order or {}
-    names = [name for name, _src in specs]
-    slot = _interest_slot(metric, variant)
-    if "interest" in names and slot and order.get(slot) and _select_primary(data.bindings, "interest")[0] is None:
-        chosen = _interest_pick(data.bindings, order[slot], row_fallbacks)
-        if chosen and chosen != "interest":
-            specs = [(chosen, "fallback") if name == "interest" else (name, src) for name, src in specs]
-    if (
-        metric == "dscr"
-        and variant in {None, "pf"}
-        and "debt_service" in names
-        and _select_primary(data.bindings, "debt_service")[0] is None
-        and order.get("pf")
-    ):
-        chosen = _interest_pick(data.bindings, order["pf"], row_fallbacks)
-        if chosen and _select_primary(data.bindings, "principal")[0] is not None:
-            specs = [item for item in specs if item[0] != "debt_service"]
-            have = {name for name, _src in specs}
-            if chosen not in have:
-                specs.append((chosen, "fallback"))
-            if "principal" not in have:
-                specs.append(("principal", "fallback"))
-    return specs
-
-
-def _resolved(data, expressions, metric, interest_order, row_fallbacks) -> list[dict]:
-    found = []
-    for concept, source in _specs(data, expressions, metric, interest_order, row_fallbacks):
-        primary, _missing, _ambiguous = _select_primary(data.bindings, concept)
-        row_key = primary.get("row_key") if primary else None
-        if not row_key:
-            continue
-        found.append({"concept": concept, "source": source, "row_key": row_key})
-    return found
 
 
 def _root(via: dict[str, str | None], row_key: str) -> str:

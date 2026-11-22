@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.glossary import label_surface
 
 # Пустое, ошибочное и отсутствующее значение не являются числом ячейки.
@@ -146,7 +147,7 @@ def _citable(
     *,
     primary_only: bool,
 ) -> bool:
-    if row.get("effective_concept") != concept:
+    if declared_concept(row) != concept:
         return False
     if primary_only and not row.get("is_primary"):
         return False

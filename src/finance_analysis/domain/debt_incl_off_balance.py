@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import DynamicInputs, implements
 
 _METRIC = "debt_incl_off_balance"
@@ -71,7 +72,7 @@ def _bound_rows(components: tuple[str, ...], bindings: list[dict], absent: froze
     wanted = set(components)
     found: dict[str, list[str]] = {}
     for binding in bindings:
-        concept = binding.get("effective_concept")
+        concept = declared_concept(binding)
         if concept not in wanted or binding.get("status") not in _BOUND:
             continue
         if concept in absent and binding.get("source") not in _HUMAN:

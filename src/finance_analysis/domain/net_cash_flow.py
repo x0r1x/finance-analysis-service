@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, localcontext
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     _BOUND,
@@ -320,7 +321,7 @@ def _ambiguous(bindings: list[dict], absent: frozenset[str]) -> str | None:
     names = {name for name, _code in _SECTIONS}
     counts = {name: 0 for name in names}
     for row in bindings:
-        concept = row.get("effective_concept")
+        concept = declared_concept(row)
         if concept not in counts:
             continue
         if not (row.get("is_primary") and row.get("status") in _BOUND):

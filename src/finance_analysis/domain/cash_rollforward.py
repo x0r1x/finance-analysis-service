@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from finance_analysis.domain.audit import AuditInput
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.cash_flow import _COMPANY_IN, _COMPANY_OUT, _label_key
 from finance_analysis.domain.derive_fingerprint import configs_root
 from finance_analysis.domain.errors import InvalidArgument
@@ -287,7 +288,7 @@ def _bound_keys(data: AuditInput, concept: str | None) -> list[str]:
 
 
 def _concept(binding: dict) -> str:
-    return str(binding.get("effective_concept") or binding.get("concept") or "")
+    return declared_concept(binding)
 
 
 def _one(data: AuditInput, concept: str | None) -> str | None:
@@ -297,7 +298,7 @@ def _one(data: AuditInput, concept: str | None) -> str | None:
     for binding in data.bindings:
         if binding.get("status") not in _BOUND or binding.get("is_primary") is False:
             continue
-        name = str(binding.get("effective_concept") or binding.get("concept") or "")
+        name = declared_concept(binding)
         key = binding.get("row_key")
         if name == concept and key and key not in keys:
             keys.append(str(key))

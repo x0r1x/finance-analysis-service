@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, localcontext
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     HUMAN_SOURCES,
@@ -36,6 +37,7 @@ _EXCLUDED = (
 _NO_ANNUAL = "Годовой FCFF не посчитан. Число книги не вход калькулятора."
 _DIFFERS = "Годовой FCFF не совпал с числом книги."
 _ADD_BACK = frozenset({"interest", "interest_paid"})
+_PAID_BASES = frozenset({"interest_included", "candidate"})
 _BOUND = frozenset({"bound", "bound_with_warning"})
 _FINANCING_SECTION = (
     "финансовая деятельность",
@@ -139,7 +141,7 @@ def free_cash_flow(
         if basis == "unknown":
             rows.append(_blank(period, "ocf_basis_unknown"))
             continue
-        if basis != "interest_excluded":
+        if basis in _PAID_BASES:
             if basis == "candidate":
                 blocked = _candidate_block(
                     accrued_flow, paid_flow, accrued, paid, period, aligned
@@ -216,6 +218,33 @@ def free_cash_flow(
     )
 
 
+def shield_concepts(
+    metric: str,
+    bindings: list[dict],
+    absent: frozenset[str],
+    facts: list[dict],
+    links: list[dict],
+    statement_sheets: frozenset[str],
+) -> tuple[str, ...]:
+    """Понятия щита, которые читает расчёт. У любой метрики, кроме FCFF, пусто.
+
+    Базис тот же, что у ``free_cash_flow``: ``interest_included`` и ``candidate``
+    берут ``interest_paid``. ``interest_excluded`` и ``unknown`` не берут.
+    """
+
+    if metric != "fcff":
+        return ()
+    rows = [dict(row) for row in bindings]
+    ocf = _primaries(rows, absent).get("operating_cash_flow")
+    if ocf is None:
+        return ()
+    statement = frozenset(sheet_name_key(name) for name in statement_sheets)
+    basis = _basis(ocf, rows, absent, list(facts or []), list(links or []), statement)
+    if basis in _PAID_BASES:
+        return ("interest_paid",)
+    return ()
+
+
 def _basis(
     ocf: dict,
     bindings: list[dict],
@@ -238,10 +267,7 @@ def _basis(
 def _interest_rows(bindings: list[dict], absent: frozenset[str]) -> list[dict]:
     found = []
     for row in bindings:
-        if (
-            row.get("effective_concept") != "interest"
-            or row.get("status") not in _BOUND
-        ):
+        if declared_concept(row) != "interest" or row.get("status") not in _BOUND:
             continue
         if "interest" in absent and row.get("source") not in HUMAN_SOURCES:
             continue
@@ -315,8 +341,8 @@ def _precedent_concepts(
         if row.get("status") not in _BOUND:
             continue
         key = row.get("row_key")
-        concept = row.get("effective_concept")
-        if not isinstance(key, str) or not isinstance(concept, str) or not concept:
+        concept = declared_concept(row)
+        if not isinstance(key, str) or not concept:
             continue
         if concept in absent and row.get("source") not in HUMAN_SOURCES:
             continue
@@ -647,7 +673,7 @@ def _ambiguous_primary(bindings: list[dict], absent: frozenset[str]) -> str | No
 
     counts = {name: 0 for name in _GUARDED}
     for row in bindings:
-        concept = row.get("effective_concept")
+        concept = declared_concept(row)
         if concept not in counts:
             continue
         if not (row.get("is_primary") and row.get("status") in _BOUND):

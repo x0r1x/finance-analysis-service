@@ -19,6 +19,7 @@ from finance_analysis.domain.audit import (
     Rule,
     project_finance_dscr,
 )
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.cover_metrics import (
     METRIC_INPUTS,
     add_months,
@@ -190,7 +191,7 @@ class MissingTotalRow(Rule):
             locations = [
                 Location(None, row["row_key"], None, None)
                 for row in data.bindings
-                if row.get("is_primary") and row.get("status") in _BOUND and row.get("effective_concept") in parts
+                if row.get("is_primary") and row.get("status") in _BOUND and declared_concept(row) in parts
             ]
             findings.append(
                 self.finding(
@@ -203,7 +204,7 @@ class MissingTotalRow(Rule):
         seen = set(absent)
         components: dict[str, list[dict]] = {}
         for row in data.bindings:
-            concept = row.get("effective_concept")
+            concept = declared_concept(row)
             if not concept or _binding_evidence(row).get("role") != "component":
                 continue
             components.setdefault(str(concept), []).append(row)
@@ -243,7 +244,7 @@ def _bound_total_remains(bindings, concept: str) -> bool:
     """
 
     for row in bindings:
-        if str(row.get("effective_concept") or "") != concept:
+        if declared_concept(row) != concept:
             continue
         if row.get("status") not in _BOUND:
             continue

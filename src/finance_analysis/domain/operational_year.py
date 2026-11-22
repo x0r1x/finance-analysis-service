@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.phases import split_phase_target
 
 DEBT_SERVICE = "debt_service"
@@ -100,7 +101,7 @@ def _primary_row(bindings: list[dict]) -> str | None:
     rows = []
     ambiguous = False
     for row in bindings:
-        concept = row.get("effective_concept") or row.get("concept")
+        concept = declared_concept(row)
         if concept != DEBT_SERVICE:
             continue
         status = row.get("status")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.signals import LabelingInput, Vote
 
 HUMAN = frozenset({"confirmed", "profile"})
@@ -270,7 +271,7 @@ def unit_sign(data: LabelingInput) -> list[Vote]:
     rows = {row["binding_key"]: row for row in data.rows}
     votes = []
     for key, binding in sorted(data.bindings.items()):
-        concept = data.concepts.get(binding.get("effective_concept") or "")
+        concept = data.concepts.get(declared_concept(binding) or "")
         row = rows.get(key)
         if concept is None or row is None or binding.get("source") in HUMAN:
             continue

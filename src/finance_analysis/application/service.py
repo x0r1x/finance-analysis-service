@@ -2894,7 +2894,7 @@ class FasService:
 
         Отсутствие обязательных `dim_row` / `fact_observation` — ошибка доступности
         трассировки, а не `missing_trace=no_cell`. `graph_links` опционален:
-        отсутствие помечает `physical_lineage_complete=false`.
+        отсутствие даёт `graph_available=false` и `physical_lineage_complete=false`.
         """
 
         from finance_analysis.domain.graphs import (
@@ -2943,7 +2943,9 @@ class FasService:
                 if named:
                     resolved_variant = named
         inputs = None
+        expressions = None
         if indicator is not None:
+            expressions = self.model_types.metric_expressions
             if resolved_variant:
                 spec = indicator.variants.get(resolved_variant)
                 if spec is None:
@@ -2969,6 +2971,9 @@ class FasService:
             graph_links_available=graph_links_available,
             absent=absent,
             statement_sheets=frozenset(load_sheet_roles().statement),
+            expressions=expressions,
+            interest_order=self.model_types.interest_order,
+            row_fallbacks=self.model_types.row_fallbacks,
         )
         # catalog_version / build_key уже в trace; ответ валидируется схемой.
         return assemble_metric_trace_response(trace)

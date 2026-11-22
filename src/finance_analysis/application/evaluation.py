@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from finance_analysis.application.project import derive_rows
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.calibration import bootstrap_delta
 from finance_analysis.domain.candidates import Candidate, RowEvidence
 from finance_analysis.domain.errors import NotFound
@@ -61,7 +62,7 @@ def primaries(bindings: list[dict]) -> dict[str, str]:
 
     owners: dict[str, list[str]] = {}
     for row in bindings:
-        concept = row.get("effective_concept")
+        concept = declared_concept(row)
         if concept in METRIC_CONCEPTS and row.get("is_primary") and row.get("status") in {"bound", "bound_with_warning"}:
             owners.setdefault(concept, []).append(row["binding_key"])
     return {concept: keys[0] for concept, keys in owners.items() if len(keys) == 1}

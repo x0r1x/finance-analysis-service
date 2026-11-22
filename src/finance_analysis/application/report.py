@@ -80,7 +80,10 @@ def render_markdown(result: dict) -> str:
             lines.append(f"### {metric.get('metric')}")
             lines.append(f"- замыкание: {metric.get('closure')}")
             for item in metric.get("inputs") or []:
-                lines.append(f"- вход {item.get('concept')}: {item.get('source')}")
+                if item.get("confirmed") is False:
+                    lines.append(f"- вход {item.get('concept')}: неоднозначен, не подтверждён")
+                else:
+                    lines.append(f"- вход {item.get('concept')}: {item.get('source')}")
             for item in metric.get("counts") or []:
                 lines.append(f"- {item.get('code')} {item.get('severity')}: {item.get('count')}")
             for row in metric.get("direct") or []:
@@ -90,6 +93,14 @@ def render_markdown(result: dict) -> str:
                 )
                 lines.append(f"- {row.get('label')} глубина {row.get('depth')}: {cells}")
         lines.append("- цепь: formula_origin.chain")
+        if "graph_available" in origin:
+            lines.append(
+                "- полнота: файл graph_links "
+                f"{'загружен' if origin.get('graph_available') else 'не загружен'}, "
+                "обрезанных ссылок этой сборки "
+                f"{'нет' if origin.get('graph_truncation_free') else 'есть'}. "
+                "physical_lineage_complete — только эти две проверки, не разбор каждой зависимости Excel."
+            )
         if incomplete and origin.get("note"):
             lines.append(f"- {origin['note']}")
     findings = data.get("findings") or []

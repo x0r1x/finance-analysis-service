@@ -472,17 +472,24 @@ def test_fcff_trace_cites_the_paid_interest_cell():
             "one_of": [],
         },
         bindings=[
-            _bind("operating_cash_flow", "ocf", sheet="ОДДС"),
+            _bind("operating_cash_flow", "ocf", code="стр. 4100", sheet="ОДДС"),
             _bind("interest", "accrued"),
             _bind("interest", "paid", primary=False, code="стр. 4123"),
             _bind("capex", "capex"),
+            _bind("income_tax_rate", "rate"),
         ],
-        facts=[{"row_key": "paid", "cell_id": "S!C1"}],
+        facts=[
+            _fact("ocf", "Y1", "100", "S!A1"),
+            _fact("capex", "Y1", "-30", "S!B1"),
+            _fact("paid", "Y1", "-10", "S!C1"),
+            _fact("rate", "Y1", "0.2", "S!D1"),
+        ],
+        statement_sheets=frozenset({"ОДДС"}),
     )
-    paid = next(step for step in trace.steps if step.concept == "interest")
-    assert paid.row_key == "paid"
-    assert paid.cell_ids == ("S!C1",)
-    assert paid.metric_edge_id == "metric:in:fcff:all_of:interest"
+    paid = [step for step in trace.steps if step.row_key == "paid"]
+    assert [step.concept for step in paid] == ["interest_paid"]
+    assert paid[0].cell_ids == ("S!C1",)
+    assert paid[0].metric_edge_id == "metric:in:fcff:all_of:interest_paid"
     validate_metric_trace_document(trace.as_dict())
 
 
@@ -523,8 +530,9 @@ def test_absent_interest_drops_the_inferred_4123_row_from_the_shield_and_the_tra
         bindings=bindings("inferred"),
         facts=facts,
         absent=absent,
+        statement_sheets=frozenset({"ОДДС"}),
     )
-    assert all(step.concept != "interest" for step in hidden.steps)
+    assert all(step.concept != "interest_paid" for step in hidden.steps)
 
     # concept.set пишет привязке source confirmed. Так строка возвращается в щит и в след.
     kept = free_cash_flow(
@@ -542,8 +550,9 @@ def test_absent_interest_drops_the_inferred_4123_row_from_the_shield_and_the_tra
         bindings=bindings("confirmed"),
         facts=facts,
         absent=absent,
+        statement_sheets=frozenset({"ОДДС"}),
     )
-    paid = next(step for step in shown.steps if step.concept == "interest")
+    paid = next(step for step in shown.steps if step.concept == "interest_paid")
     assert paid.row_key == "paid"
     assert paid.cell_ids == ("S!C1",)
     validate_metric_trace_document(shown.as_dict())
