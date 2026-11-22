@@ -22,12 +22,12 @@
 2. Расчёт, след, пояснение и аудит пользуются этим разрешением и не повторяют выбор: ни `select_primary`, ни `choose_one_of`, ни `dscr_denominator_plan`, ни `interest_choice`, ни `confirm_paid_interest`, ни `shield_concepts`, ни `_basis`.
 3. План строится на полном контексте сегодняшнего `free_cash_flow` и резолвера: факты, `graph_links`, привязки, вариант, `interest_order`, `row_fallbacks`, плюс `absent` и листы отчётности. Если след запрошен без расчёта, строитель один и контекст тот же полный. Урезанный план «только для следа» не строится.
 
-PostgreSQL отделяет поиск от исполнения: планировщик перебирает пути, затем строит одно дерево плана и отдаёт его исполнителю. Исполнитель пути заново не составляет. `EXPLAIN EXECUTE` отдельно показывает время, когда план достали из кеша и когда пришлось перепланировать. Берём это: потребители получают готовый план, перепланирование — не их работа. Отход: у PostgreSQL перепланирование иногда законно, если кеш не подошёл. У нас второй вызов движка из расчёта или следа — нарушение инварианта, даже если строки сошлись бы.
+DuckDB отделяет разрешение имён от исполнения. Binder подставляет таблицы и колонки по каталогу. Logical planner строит дерево логических операторов, генератор физического плана превращает его в дерево `PhysicalOperator`. Исполнение пушит `DataChunk` по этому дереву и к разбору запроса не возвращается. `EXPLAIN` показывает физический план и запрос не выполняет. Берём границу: потребители получают готовый план и выбор не повторяют. Отход: у DuckDB оптимизатор ещё переписывает логическое дерево до физического. У нас второго оптимизатора нет. Повторный вызов движка из расчёта или следа — нарушение инварианта, даже если строки сошлись бы.
 
 OpenLineage запрещает потребителю достраивать рёбра из общих списков, если фасет уже назвал источники. Берём тот же запрет для выбора входа.
 
-- [PostgreSQL: Planner/Optimizer](https://www.postgresql.org/docs/current/planner-optimizer.html)
-- [PostgreSQL: EXPLAIN](https://www.postgresql.org/docs/current/sql-explain.html) — время планирования `EXPLAIN EXECUTE` включает чтение плана из кеша и перепланирование, если оно понадобилось
+- [DuckDB internals](https://duckdb.org/docs/2.0/internals/overview.html) — binder, logical planner, physical plan generator, execution
+- [DuckDB EXPLAIN](https://duckdb.org/docs/2.0/guides/meta/explain.html) — физический план, запрос не исполняется
 - [Lineage Job Facet](https://openlineage.io/docs/spec/facets/job-facets/lineage/)
 
 ## 1. Где выбор входа живёт на этом main
@@ -135,7 +135,7 @@ OpenLineage запрещает потребителю достраивать р�
 
 `NeedsInput`: `kind` (`concept`), `reason` (`ambiguous` \| `concept_unknown` \| `absent_in_book`), `subject`.
 
-В план не входят значения ячеек, окно периодов, масштаб и `lineage_completeness`. Это исполнение и физический граф. PostgreSQL сначала строит план, исполнитель его выполняет; `EXPLAIN` без `ANALYZE` показывает выбранный план, `EXPLAIN ANALYZE` добавляет фактические времена и числа строк уже после исполнения. Число коэффициента и `scale_unconfirmed` остаются результатом расчёта. Отход от планировщика: мы не ищем самый дешёвый оператор. Выбор здесь семантический.
+В план не входят значения ячеек, окно периодов, масштаб и `lineage_completeness`. Это исполнение и физический граф. DuckDB `EXPLAIN` показывает план и запрос не выполняет: в оценке строк стоит `~`. `EXPLAIN ANALYZE` уже выполняет запрос и добавляет фактические мощности и время. Число коэффициента и `scale_unconfirmed` остаются результатом расчёта. Отход: мы не ищем самый дешёвый оператор соединения. Выбор здесь семантический. Коэффициент по-прежнему считает `Decimal` в `domain/metrics.py`, не DuckDB.
 
 ### Неоднозначность: три списка, одно чтение
 
@@ -151,7 +151,7 @@ OpenLineage запрещает потребителю достраивать р�
 
 Расчёт при `status != resolved` число не считает. Арифметика читает только `inputs` и только элементы с `confirmed=true`. Если кандидат по ошибке сборки всё же оказался в `inputs`, `ambiguous=true` и `confirmed=false` значат одно: в исполнитель он не передаётся. Это не второй способ прочитать тот же объект. Подтверждённый вход — `inputs`. Неподтверждённый показ для следа — `diagnostic`. Не выбранное правилом — `rejected`. Одно поле не означает «и посчитать, и только показать».
 
-Так планировщик PostgreSQL не отдаёт исполнителю структуры поиска. Пути нужны, чтобы выбрать. Исполнителю уходит дерево выбранного плана. `EXPLAIN` показывает это дерево отдельно и не подмешивает отвергнутые пути в узлы, которые исполняются. OpenLineage в `inputField` пишет колонки, которые пошли в выход, а не кандидатов, которых не взяли. Берём разделение «что исполнять» и «что показать». Отход: PostgreSQL и OpenLineage отвергнутый и диагностический кандидат в план не кладут. Мы кладём их в `rejected` и `diagnostic`, потому что аудит спрашивает, почему строка не подтверждена. В `inputs` они от этого не становятся.
+DuckDB по умолчанию показывает в `EXPLAIN` только физический план (`explain_output = physical_only`): дерево операторов, которое будут исполнять. `optimized_only` — другой вид того же запроса, не набор узлов исполнения. OpenLineage в `inputField` пишет колонки, которые пошли в выход, а не кандидатов, которых не взяли. Берём разделение «что исполнять» и «что показать»: `inputs` — исполняемое, `diagnostic` и `rejected` — нет. Отход: DuckDB и OpenLineage отвергнутый порядок и неподтверждённого кандидата в выдачу не кладут. Мы кладём их в `rejected` и `diagnostic`, потому что аудит спрашивает, почему строка не подтверждена. В `inputs` они от этого не становятся.
 
 Правило строки одно — `select_primary`. `_groups`, `_ambiguous_primary` и оба `_primary` для входа метрики больше не решают. Расхождение `plugins/rules/ratios.py` названо в миграции: там первая bound-строка и нет фильтра stale.
 
@@ -187,7 +187,7 @@ plan_id = content_sha256[:16]
 
 Тело: `resolution_engine_version`, `metric_id`, `variant`, `variant_source`, `catalog_version`, `build_key`, `model_id`, `status`, `inputs`, `diagnostic`, `rejected`, `fallbacks`, `warnings`, `needs_input`, `shield`. Не входят: `plan_id`, `content_sha256`, `schema`, `semantic_model_version`, значения ячеек, флаги `graph_available`.
 
-`resolution_engine_version` — константа движка, не версия HTTP. PostgreSQL прямо пишет, что выбранная стратегия плана может отличаться между выпусками из‑за изменений планировщика. OpenLineage кладёт в фасет `_producer` с версией производителя и `_schemaURL` фасета: запись говорит, кто её построил. Берём версию алгоритма в хешируемое тело, чтобы смена правил выбора не выглядела тем же планом, что и прежний алгоритм на тех же строках. Отход: это не SemVer публичного API и не URL производителя OpenLineage. Константу вводит PR движка. Пока алгоритм тот же, константа не растёт; вырос результат — хеш меняется и при прежней константе.
+`resolution_engine_version` — константа движка, не версия HTTP. DuckDB `EXPLAIN (SQL)` прямо говорит: оптимизированный план может сильно отличаться от исходного запроса, например из‑за перестановки соединений или свёртки констант, а точное форматирование и порождённые алиасы не являются стабильным интерфейсом. OpenLineage кладёт в фасет `_producer` с версией производителя и `_schemaURL`. Берём версию алгоритма в хешируемое тело, чтобы смена правил выбора не выглядела тем же планом, что и прежний алгоритм на тех же строках. Отход: план FAS не сериализуется как SQL из `EXPLAIN (SQL)`. Это не SemVer публичного API и не URL производителя OpenLineage. Константу вводит PR движка. Пока алгоритм тот же, константа не растёт; вырос результат — хеш меняется и при прежней константе.
 
 `content_sha256` живёт на объекте домена для идентичности и аудита. В публичную модель его пока не кладут: ни в `metricTrace`, ни в будущий контракт, пока этот контракт сам не решил иначе. `plan_id` в JSON `formula_origin` не кладётся, пока нет схемы аудита.
 
@@ -215,9 +215,9 @@ plan_id = content_sha256[:16]
 
 `lineage_completeness`, рёбра `excel:link` и три графа (`excel:`, `sem:`, `metric:`) остаются у следа. План их не заменяет. Схемы датасетов не сливаются: это уже запрещено `assert_graphs_not_collapsed`.
 
-Spark `EXPLAIN EXTENDED` показывает четыре ступени: разобранный логический план, проанализированный, оптимизированный и физический. Проанализированный план уже подставил имена. Берём ступень, не конвейер: каталог — неразрешённое определение, план — привязанный результат для одной сборки, расчёт — исполнение. Отход: четыре плана не храним. Физический план Spark — операторы (`HashAggregate`, `Exchange`). Наш физический слой — `graph_links` и `cell_id`, он остаётся в следе.
+Та же граница у DuckDB: binder уже разрешил имена, физический план исполняется, к разбору запроса исполнение не возвращается. `EXPLAIN` показывает этот физический план и сам запрос не гоняет.
 
-PostgreSQL: планировщик перебирает пути, выбирает один и строит дерево плана для исполнителя. Исполнитель план заново не составляет. `EXPLAIN` показывает выбранный план. Берём границу «один план, исполнитель не выбирает». Отход записан в разделе про отвергнутые альтернативы: планировщик отвергнутые пути в дерево исполнителя не кладёт.
+Spark `EXPLAIN EXTENDED` показывает четыре ступени: разобранный логический план, проанализированный, оптимизированный и физический. Проанализированный план уже подставил имена. Берём ступень, не конвейер: каталог — неразрешённое определение, план — привязанный результат для одной сборки, расчёт — исполнение. Отход: четыре плана не храним. Физический план Spark — операторы (`HashAggregate`, `Exchange`). Наш физический слой — `graph_links` и `cell_id`, он остаётся в следе. Отвергнутые альтернативы в дерево исполнения не входят: они лежат в `rejected` и `diagnostic`.
 
 Что перестаёт быть вторым проходом:
 
@@ -228,6 +228,19 @@ PostgreSQL: планировщик перебирает пути, выбирае
 - четыре определения «несколько основных».
 
 `resolve_semantic_inputs` не становится вторым фасадом плана. Проекция в один кортеж `SemanticInput`, где неподтверждённый кандидат снова лежит рядом с входом, вернула бы два чтения. На шагах 2–4 старый вызов живёт только у того читателя, до которого шаг ещё не дошёл. Шаг 5 этот вызов удаляет.
+
+### Хранение, журнал и запросы
+
+План этих шагов — объект в процессе. Отдельной базы под него нет, и PostgreSQL в этот контур не возвращается.
+
+С 0.4 FAS уже не хранит состояние в Postgres: `docs/design-v0.23.md` убрал Postgres, SQLAlchemy и Alembic. Запись идёт через `ObjectStorePort` (`application/ports.py`): локальный каталог или S3-совместимый MinIO. Wren читает Parquet оттуда же: `adapters/wren/query.py` при `wren_source = minio_file` отдаёт DuckDB источник `minio_file`, при локальном диске — `local_file`. Журнал книги — `application/journal.py`: события по номерам, запись `put_if_absent`, без своей СУБД. Результат анализа пишет Parquet и маркер `result.json` с `sha256` тем же `put_if_absent` (`application/analyses.py`). Коэффициент считает `Decimal` в `domain/metrics.py`. DuckDB суммы по Parquet не подменяет эту арифметику и не разрешает метрику.
+
+Если позже план или аудит нужно сохранить или выбрать запросом, это тот же контур, не новая СУБД.
+
+- Байты плана или строки Parquet пишутся через `put_if_absent`. Ключ содержит `content_sha256`. Повтор той же записи не создаёт второй объект. Условная запись MinIO `If-None-Match` не перезаписывает уже лежащий ключ: PUT проходит только если объект с таким ETag ещё не лежит. Для нового ключа по хешу объекта ещё нет; повтор с тем же ключом отвергается. Это и есть неизменяемость артефакта.
+- Versioning бакета и Object Lock не включаем. Документация MinIO по retention: блокировка требует versioning, держит версию до истечения срока, а удаление без идентификатора версии оставляет delete marker. Это другой механизм, чем ключ по SHA-256. В текущем FAS его нет, и плану он не нужен.
+- Срез по сохранённым планам, если он понадобится, читает DuckDB 2.0 (`pyproject.toml`, `duckdb==2.0.0`) через `read_parquet` по файлам в том же object store. DuckDB не становится системой записи. Источник правды — объект, положенный `put_if_absent`.
+- Журнал решений книги не заменяется планом и никуда не переезжает. План не является лентой событий выбора.
 
 ## 4. Контракт и JSON Schema
 
@@ -286,6 +299,7 @@ Strangler Fig (Fowler): замена идёт швом, старое и ново
 - Хеш разъедется, если в `params` попадёт не строка. В каноническое тело идут только строки.
 - Пунктир NCF по-прежнему добавляет `trace_metric`, не план. Это не выбор входа метрики.
 - Пока `content_sha256` не в публичном контракте, внешний аудитор видит только объект внутри процесса. Это сознательная отсрочка, не второй идентификатор.
+- План, аудит и журнал не получают своей СУБД. Журнал книги остаётся `Journal` на `ObjectStorePort`. Сохранённый план, когда он понадобится, — объект по `content_sha256` через `put_if_absent` и, для среза, Parquet, который читает DuckDB. Versioning и Object Lock бакета не включаются.
 
 ## 7. Решения и источники
 
@@ -298,20 +312,21 @@ Strangler Fig (Fowler): замена идёт швом, старое и ново
 - [What is LookML](https://cloud.google.com/looker/docs/what-is-lookml)
 - [Cube, data modeling](https://cube.dev/docs/product/data-modeling/overview)
 
-**Один план, исполнитель не выбирает. Три списка — три чтения.** Взято у планировщика PostgreSQL: поиск идёт по путям, исполнителю отдаётся одно дерево выбранного плана. `EXPLAIN` показывает это дерево и не исполняет отвергнутые пути. У Spark `EXPLAIN EXTENDED`: разобранный, проанализированный, оптимизированный и физический планы. Зачем: `inputs` — то, что можно считать; `diagnostic` — неподтверждённый показ для следа; `rejected` — что правило не выбрало. Один список с `confirmed=false` читался бы и как вход, и как диагноз. Отход: PostgreSQL отвергнутые пути в дерево не кладёт; мы храним их в `rejected` и `diagnostic`, но не в `inputs`. Четыре ступени Spark не храним. Физические операторы Spark не путаем с `graph_links`.
+**Один план, исполнитель не выбирает. Три списка — три чтения.** Взято у DuckDB. Binder разрешает имена, logical planner строит дерево, генератор физического плана делает дерево `PhysicalOperator`, исполнение идёт по нему и к разбору не возвращается. `EXPLAIN` по умолчанию (`explain_output = physical_only`) показывает это дерево и запрос не выполняет. `optimized_only` — другой вид, не узлы исполнения. У Spark `EXPLAIN EXTENDED`: разобранный, проанализированный, оптимизированный и физический планы. Зачем: `inputs` — то, что можно считать; `diagnostic` — неподтверждённый показ для следа; `rejected` — что правило не выбрало. Один список с `confirmed=false` читался бы и как вход, и как диагноз. Отход: DuckDB отвергнутые порядки соединений в физический план не кладёт; мы храним их в `rejected` и `diagnostic`, но не в `inputs`. Четыре ступени Spark не храним. Физические операторы Spark и DuckDB не путаем с `graph_links`. Коэффициент считает `Decimal`, не оператор DuckDB.
 
-- [PostgreSQL: Planner/Optimizer](https://www.postgresql.org/docs/current/planner-optimizer.html)
-- [PostgreSQL: EXPLAIN](https://www.postgresql.org/docs/current/sql-explain.html)
+- [DuckDB internals](https://duckdb.org/docs/2.0/internals/overview.html)
+- [DuckDB EXPLAIN](https://duckdb.org/docs/2.0/guides/meta/explain.html)
+- [DuckDB profiling](https://duckdb.org/docs/2.0/sql/statements/profiling.html) — `EXPLAIN` не исполняет, `EXPLAIN ANALYZE` исполняет
 - [Spark SQL: EXPLAIN](https://spark.apache.org/docs/latest/sql-ref-syntax-qry-explain.html)
 
-**Неизменяемость, полный хеш и короткий префикс.** Фиксированные аспекты сущности — PROV. Запись, которую не переписывают, — Event Sourcing. Git идентифицирует объект контрольной суммой содержания; короткий вид — префикс того же имени (`git rev-parse --short`). JCS сортирует ключи объектов и запрещает менять порядок элементов массива. Зачем: `content_sha256` — идентичность, `plan_id` — первые 16 hex того же дайджеста, не второй хеш. `resolution_engine_version` входит в тело, потому что PostgreSQL предупреждает: выбранная стратегия может смениться между выпусками планировщика, а OpenLineage пишет версию производителя в `_producer`. Списки входов перед `canonical_json` сортируются: иначе порядок массива меняет хеш, хотя JCS сам массивы не сортирует. Отход: не журнал событий; не SHA-1 и не удлиняемый префикс Git; не числовая канонизация JCS; SMV и значения ячеек в хеш не входят; `content_sha256` пока не в публичной модели.
+**Неизменяемость, полный хеш и короткий префикс.** Фиксированные аспекты сущности — PROV. Запись, которую не переписывают, — Event Sourcing. Git идентифицирует объект контрольной суммой содержания; короткий вид — префикс того же имени (`git rev-parse --short`). JCS сортирует ключи объектов и запрещает менять порядок элементов массива. Зачем: `content_sha256` — идентичность, `plan_id` — первые 16 hex того же дайджеста, не второй хеш. `resolution_engine_version` входит в тело, потому что DuckDB `EXPLAIN (SQL)` предупреждает: оптимизированный план может сильно отличаться от исходного запроса, а форматирование и порождённые алиасы не стабильный интерфейс. OpenLineage пишет версию производителя в `_producer`. Списки входов перед `canonical_json` сортируются: иначе порядок массива меняет хеш, хотя JCS сам массивы не сортирует. Отход: не журнал событий; план не сериализуется как SQL из `EXPLAIN (SQL)`; не SHA-1 и не удлиняемый префикс Git; не числовая канонизация JCS; SMV и значения ячеек в хеш не входят; `content_sha256` пока не в публичной модели.
 
 - [PROV-DM](https://www.w3.org/TR/prov-dm/), разделы 2.1.1 и 5.1.1 (Entity), 5.2 (wasDerivedFrom)
 - [Event Sourcing](https://martinfowler.com/eaaDev/EventSourcing.html)
 - [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785), правило сортировки: порядок элементов массива не менять
 - [Git objects](https://git-scm.com/book/en/v2/Git-Internals-Git-Objects) — ключ есть контрольная сумма содержания
 - [git rev-parse](https://git-scm.com/docs/git-rev-parse) — `--short` сокращает имя объекта до префикса
-- [PostgreSQL: EXPLAIN](https://www.postgresql.org/docs/current/sql-explain.html) — стратегия плана может отличаться между выпусками
+- [DuckDB profiling](https://duckdb.org/docs/2.0/sql/statements/profiling.html) — `EXPLAIN (SQL)`: оптимизированный план не стабильный интерфейс
 - [Column Level Lineage Dataset Facet](https://openlineage.io/docs/spec/facets/dataset-facets/column_lineage_facet/) — `_producer` с версией и `_schemaURL`
 
 **Происхождение.** OpenLineage пишет в фасет, какие входы питают выход. Потребитель не достраивает рёбра декартовым произведением общих списков. Фасет колонок перечисляет наблюдённые `inputField`. Фасет lineage задания, если он есть, главнее общего списка входов и выходов. PROV связывает порождённое с использованным. Зачем: след и аудит читают входы плана и не собирают их из каталога. Отход: OpenLineage описывает наблюдение уже выполненной работы и не отдаёт объект, по которому работу ещё надо выполнить. Отвергнутых входов в фасете нет.
@@ -320,10 +335,16 @@ Strangler Fig (Fowler): замена идёт швом, старое и ново
 - [Lineage Job Facet](https://openlineage.io/docs/spec/facets/job-facets/lineage/)
 - [PROV-DM](https://www.w3.org/TR/prov-dm/)
 
-**Пояснение с отвергнутыми альтернативами.** `EXPLAIN` PostgreSQL и `--explain` MetricFlow показывают выбранный план или SQL, не список проигравших. OpenLineage и PROV тоже фиксируют использованное. Зачем нам поле `rejected`: вопрос продукта — почему взят этот вход и почему не соседний. Это не поиск дешёвого соединения, поэтому причины закрытые (`not_selected_one_of`, `interest_order_skipped`, `not_min_binding_key`, `debt_service_present`, `shield_not_applied`), а не стоимости планировщика. Пояснение печатает эти причины через `template_text` и само не выбирает.
+**Пояснение с отвергнутыми альтернативами.** `EXPLAIN` DuckDB и `--explain` MetricFlow показывают выбранный план или SQL, не список проигравших. OpenLineage и PROV тоже фиксируют использованное. Зачем нам поле `rejected`: вопрос продукта — почему взят этот вход и почему не соседний. Это не поиск дешёвого соединения, поэтому причины закрытые (`not_selected_one_of`, `interest_order_skipped`, `not_min_binding_key`, `debt_service_present`, `shield_not_applied`), а не стоимости оптимизатора. Пояснение печатает эти причины через `template_text` и само не выбирает.
 
-- [PostgreSQL: EXPLAIN](https://www.postgresql.org/docs/current/sql-explain.html)
+- [DuckDB EXPLAIN](https://duckdb.org/docs/2.0/guides/meta/explain.html)
 - [MetricFlow commands](https://docs.getdbt.com/docs/build/metricflow-commands)
+
+**Хранение и запросы — тот стек, который уже есть.** MinIO пишет объект условно: `If-None-Match` не даёт затереть уже лежащий ключ. DuckDB читает Parquet (`read_parquet`), в том числе каталогом и по glob, и не обязан копировать файл в свою таблицу: вид над `read_parquet` оставляет данные в файле. Зачем: журнал книги уже `put_if_absent` на `ObjectStorePort`, результаты анализа уже Parquet с `sha256`, Wren уже читает этот Parquet через `minio_file`. План, если его сохранят, идёт тем же путём, ключ содержит `content_sha256`. Срез, если он понадобится, — DuckDB по этому Parquet. Отход: Object Lock и versioning бакета не берём. У MinIO блокировка — WORM на версию объекта, ей нужен versioning, а удаление без версии оставляет delete marker. Неизменяемость плана — новый ключ на каждый хеш и отказ перезаписи, не срок удержания.
+
+- [MinIO: conditional writes](https://www.min.io/blog/leading-the-way-minios-conditional-write-feature-for-modern-data-workloads) — `If-Match` и `If-None-Match`
+- [MinIO: Object Locking and Immutability](https://www.min.io/docs/minio/linux/administration/object-management/object-retention.html) — WORM и versioning; в план не берём
+- [DuckDB: Parquet](https://duckdb.org/docs/2.0/data/parquet/overview.html) — `read_parquet`, вид над файлом
 
 **Версия контракта.** SemVer: несовместимое изменение публичного API — мажор. JSON Schema: `additionalProperties: false` отвергает лишнее имя, свойство вне `required` можно опустить. Зачем: план не вшивается в `metricTrace`, `meta_layer_graphs@2.0` не меняется, MAJOR этой схемы нет. Будущий документ плана — отдельная схема `resolved_metric_plan@1.0`. `plan_id` не появляется в JSON `formula_origin`, пока нет схемы аудита. Отход от `unevaluatedProperties`: расширение плана должно быть видно мажором, как уже сделано для следа в 2.0.
 
@@ -348,11 +369,14 @@ Strangler Fig (Fowler): замена идёт швом, старое и ново
 - `src/finance_analysis/domain/financial_catalog.py` — `catalog_version_for`
 - `src/finance_analysis/domain/book.py` — `canonical_json`
 - `src/finance_analysis/domain/contracts/meta_layer_graphs.json`
-- `src/finance_analysis/application/analyses.py` — расчёт и `_formula_origin`
+- `src/finance_analysis/application/analyses.py` — расчёт, `_formula_origin`, Parquet результата и `put_if_absent`
+- `src/finance_analysis/application/journal.py` — журнал книги на object store
+- `src/finance_analysis/application/ports.py` — `ObjectStorePort`
+- `src/finance_analysis/adapters/wren/query.py` — DuckDB, `minio_file` и `local_file`
 - `src/finance_analysis/application/service.py` — `metric_trace_view`
 - `src/finance_analysis/application/explain.py`
 - `src/finance_analysis/plugins/rules/coverage.py`, `plugins/rules/ratios.py`
 - `tests/unit/test_semantic_input.py`
 - `tests/contract/test_book_model_type.py`
-- `docs/semantic-model-version.md`, `docs/meta-layer-graphs.md`
+- `docs/semantic-model-version.md`, `docs/meta-layer-graphs.md`, `docs/design-v0.23.md` — с 0.4 хранение без Postgres
 - `pyproject.toml`, контракт `[tool.importlinter]`
