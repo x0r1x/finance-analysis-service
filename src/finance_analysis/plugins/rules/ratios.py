@@ -50,30 +50,43 @@ _STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income")
 _GRAIN_WORD = {"quarter": "квартале", "month": "месяце", "year": "году"}
 
 
-def _primary(data: AuditInput, concept: str, metric: str | None = None) -> dict | None:
-    """Строка понятия. С планом метрики берёт подтверждённый вход и не выбирает заново.
+def _legacy_bound_row(data: AuditInput, concept: str) -> dict | None:
+    """Старый просмотр, только когда плана нет.
 
-    Без плана остаётся прежний просмотр: первая bound-строка, если она одна.
-    Устаревшая единственная строка здесь остаётся, а план её не подтверждает.
-    Это расхождение не закрыто: ожидания golden не переписываются.
+    Единственная bound-строка, включая stale. Это не правило разрешения:
+    анализ план передаёт, и тогда вход берётся только из него.
+    Калькулятор без плана stale уже отбрасывает. Здесь фильтр не добавляется:
+    у golden-аудита привязок нет, а прямой тест этой строки ожидание не двигает
+    счётчики книг.
     """
 
-    plan = (data.plans or {}).get(metric or "")
-    if plan is not None:
-        item = next((row for row in plan.inputs if row.concept == concept), None)
-        if item is not None:
-            for row in data.bindings:
-                if item.binding_key and str(row.get("binding_key") or "") == item.binding_key:
-                    return row
-                if not item.binding_key and item.row_key and row.get("row_key") == item.row_key:
-                    return row
-            return None
     found = [
         row
         for row in data.bindings
         if row.get("is_primary") and row.get("status") in _BOUND and declared_concept(row) == concept
     ]
     return found[0] if len(found) == 1 else None
+
+
+def _primary(data: AuditInput, concept: str, metric: str | None = None) -> dict | None:
+    """Строка входа метрики. План подтверждает её или отказывает.
+
+    Без плана остаётся `_legacy_bound_row`. Понятие, которого нет в плане, не
+    добирается из привязок.
+    """
+
+    plan = (data.plans or {}).get(metric or "")
+    if plan is None:
+        return _legacy_bound_row(data, concept)
+    item = next((row for row in plan.inputs if row.concept == concept), None)
+    if item is None:
+        return None
+    for row in data.bindings:
+        if item.binding_key and str(row.get("binding_key") or "") == item.binding_key:
+            return row
+        if not item.binding_key and item.row_key and row.get("row_key") == item.row_key:
+            return row
+    return None
 
 
 def _cached(data: AuditInput, row_key: str) -> dict[tuple[str, str], Decimal]:

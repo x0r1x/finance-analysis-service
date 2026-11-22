@@ -752,6 +752,21 @@ def test_unused_alternative_ambiguity_does_not_set_status():
     assert all(item.subject != "ebit" for item in plan.needs_input)
 
 
+def test_stale_sole_row_is_not_an_input_when_a_plan_exists():
+    """Правило одно: план подтверждает вход. Без плана остаётся старый просмотр."""
+
+    from finance_analysis.plugins.rules.ratios import _primary
+
+    stale = _bind("cfads", 1, stale=True, row_key="stale")
+    debt = _bind("debt_service", 2, row_key="debt")
+    plan = resolve_metric_plan("dscr", [stale, debt], EXPRESSIONS)
+    assert plan is not None
+    assert "cfads" not in {item.concept for item in plan.inputs}
+    legacy = _primary(AuditInput(bindings=[stale]), "cfads")
+    assert legacy is not None and legacy["row_key"] == "stale"
+    assert _primary(AuditInput(bindings=[stale, debt], plans={"dscr": plan}), "cfads", "dscr") is None
+
+
 def test_concept_outside_the_plan_is_not_selected_again():
     """Понятие вне плана не читается через _groups и _primaries."""
 
