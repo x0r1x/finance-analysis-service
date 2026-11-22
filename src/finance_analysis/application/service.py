@@ -2894,7 +2894,7 @@ class FasService:
 
         Отсутствие обязательных `dim_row` / `fact_observation` — ошибка доступности
         трассировки, а не `missing_trace=no_cell`. `graph_links` опционален:
-        отсутствие помечает `physical_lineage_complete=false`.
+        отсутствие даёт `graph_available=false` и `physical_lineage_complete=false`.
         """
 
         from finance_analysis.domain.graphs import (

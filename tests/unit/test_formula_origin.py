@@ -200,16 +200,16 @@ def test_icr_with_both_numerators_does_not_inherit_ebit():
     findings, view = _view(data, expressions)
     [metric] = view["metrics"]
     sources = {item["concept"]: item["source"] for item in metric["inputs"]}
-    assert sources["ebitda"] == "one_of"
+    assert sources["ebitda"] == "formula"
     assert "ebit" not in sources
     assert sources["interest"] == "formula"
     ebit_key = parts[1][0]
     ebit_marks = {item.fingerprint for item in findings if any(loc.row_key == ebit_key for loc in item.locations)}
     assert ebit_marks
     assert not any(item["fingerprint"] in ebit_marks for item in view["chain"])
-    assert any(item["input"] == "ebitda" and item["source"] == "one_of" for item in view["chain"])
+    assert any(item["input"] == "ebitda" and item["source"] == "formula" for item in view["chain"])
     text = render_markdown({"analysis_id": "a", "status": "succeeded", "result_data": {"formula_origin": view}})
-    assert "вход ebitda: one_of" in text
+    assert "вход ebitda: formula" in text
     assert "вход ebit:" not in text
 
 

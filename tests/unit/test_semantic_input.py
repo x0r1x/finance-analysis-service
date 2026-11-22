@@ -286,8 +286,12 @@ def test_truncated_lineage_is_incomplete_for_trace_and_origin():
         graph_links_available=True,
     )
     assert view["physical_lineage_complete"] is False
+    assert view["graph_available"] is True
+    assert view["graph_truncation_free"] is False
     assert view["truncated_links"] == 1
     assert trace.physical_lineage_complete is False
+    assert trace.graph_available is view["graph_available"]
+    assert trace.graph_truncation_free is view["graph_truncation_free"]
     assert view["physical_lineage_complete"] is trace.physical_lineage_complete
 
 
@@ -411,10 +415,21 @@ def test_one_of_follows_coverage_numerator_not_declaration_order(order, bound, n
         row_fallbacks=catalog.row_fallbacks,
     )
     assert resolved is not None
-    assert [item.concept for item in resolved if item.role == "one_of"] == [numerator]
+    chosen = [item for item in resolved if item.role == "one_of"]
+    assert [item.concept for item in chosen] == [numerator]
+    assert chosen[0].source == "formula"
     got = _coverage("icr", bindings, facts, catalog)
     if numerator in bound:
         assert _components(got) == {numerator, "interest"}
+        view = origin_view(
+            data,
+            _marked(data),
+            expressions,
+            interest_order=catalog.interest_order,
+            row_fallbacks=catalog.row_fallbacks,
+        )
+        sources = {item["source"] for item in view["chain"] if item["input"] == numerator}
+        assert sources == {"formula"}
     else:
         assert "ebitda" in set(got.get("missing_inputs") or [])
         assert numerator == "ebitda"
@@ -593,6 +608,8 @@ def test_lineage_truncated_empty_missing_and_other_build():
         graph_links_available=True,
     )
     assert truncated.physical_lineage_complete is False
+    assert truncated.graph_available is True
+    assert truncated.graph_truncation_free is False
     empty = trace_metric(
         "dscr",
         inputs=None,
@@ -604,6 +621,8 @@ def test_lineage_truncated_empty_missing_and_other_build():
         graph_links_available=True,
     )
     assert empty.physical_lineage_complete is True
+    assert empty.graph_available is True
+    assert empty.graph_truncation_free is True
     missing = trace_metric(
         "dscr",
         inputs=None,
@@ -614,6 +633,8 @@ def test_lineage_truncated_empty_missing_and_other_build():
         graph_links_available=False,
     )
     assert missing.physical_lineage_complete is False
+    assert missing.graph_available is False
+    assert missing.graph_truncation_free is False
     other = trace_metric(
         "dscr",
         inputs=None,
@@ -625,6 +646,8 @@ def test_lineage_truncated_empty_missing_and_other_build():
         graph_links_available=True,
     )
     assert other.physical_lineage_complete is True
+    assert other.graph_available is True
+    assert other.graph_truncation_free is True
     assert all(link.ref_cell != "S!Z9" for step in other.steps for link in step.excel_links)
     step = next(item for item in other.steps if item.concept == "cfads")
     assert (step.binding_key, step.row_key) == (binding["binding_key"], binding["row_key"])
@@ -671,6 +694,95 @@ def _used_concepts(got: dict) -> set[str]:
         found.update(row.get("components") or {})
         found.update(row.get("inputs") or [])
     return found
+
+
+def test_row_with_concept_and_no_effective_concept_matches_calculation_and_resolver():
+    catalog = _catalog()
+    expressions = {"dscr": MetricExpression(numerator_plus=("cfads",), denominator_plus=("debt_service",))}
+    cfads = {
+        "status": "bound",
+        "is_primary": True,
+        "concept": "cfads",
+        "row_key": "row-cfads",
+        "binding_key": "bk-cfads",
+        "source": "inferred",
+    }
+    debt = {
+        "status": "bound",
+        "is_primary": True,
+        "concept": "debt_service",
+        "row_key": "row-debt",
+        "binding_key": "bk-debt",
+        "source": "inferred",
+    }
+    facts = [_fact("row-cfads", "cfads"), _fact("row-debt", "debt_service")]
+    data = AuditInput(
+        rows=[{"row_key": "row-cfads", "label": "cfads"}, {"row_key": "row-debt", "label": "debt"}],
+        facts=facts,
+        bindings=[cfads, debt],
+        applicable_metrics=frozenset({"dscr"}),
+        graph_links_available=True,
+    )
+    rows = _trace_rows("dscr", data, expressions, catalog)
+    assert rows == {("cfads", "row-cfads"), ("debt_service", "row-debt")}
+    assert rows == _origin_rows("dscr", data, expressions, catalog) == _resolved_rows("dscr", data, expressions, catalog)
+    assert {concept for concept, _row in rows} == _core_rows("dscr", [cfads, debt], facts, catalog)
+
+
+def test_two_concept_only_primaries_block_calculation_and_stay_ambiguous_on_the_trace():
+    expressions = {"dscr": MetricExpression(numerator_plus=("cfads",), denominator_plus=("debt_service",))}
+    first = {
+        "status": "bound",
+        "is_primary": True,
+        "concept": "cfads",
+        "row_key": "row-b",
+        "binding_key": "bk-b",
+        "source": "inferred",
+    }
+    second = {
+        "status": "bound",
+        "is_primary": True,
+        "concept": "cfads",
+        "row_key": "row-a",
+        "binding_key": "bk-a",
+        "source": "inferred",
+    }
+    debt = {
+        "status": "bound",
+        "is_primary": True,
+        "concept": "debt_service",
+        "row_key": "row-debt",
+        "binding_key": "bk-debt",
+        "source": "inferred",
+    }
+    facts = [_fact("row-a", "cfads"), _fact("row-b", "cfads"), _fact("row-debt", "debt_service")]
+    got = coverage_ratio(
+        metric="dscr",
+        facts=facts,
+        bindings=[first, second, debt],
+        periods=[_period()],
+        period_phase={},
+        explicit_phases=False,
+    )
+    assert got["status"] == "needs_input"
+    trace = trace_metric(
+        "dscr",
+        inputs=None,
+        bindings=[first, second, debt],
+        facts=facts,
+        expressions=expressions,
+    )
+    step = next(item for item in trace.steps if item.concept == "cfads")
+    assert step.binding_key == "bk-a"
+    assert any(
+        item.reason == "ambiguous_primary_binding" and item.binding_key == "bk-a"
+        for item in trace.integrity
+    )
+    resolved = resolve_semantic_inputs("dscr", [first, second, debt], expressions)
+    assert resolved is not None
+    chosen = next(item for item in resolved if item.concept == "cfads")
+    assert chosen.ambiguous is True
+    assert chosen.binding_key == "bk-a"
 
 
 def test_dscr_fallback_uses_the_4123_row_in_trace_origin_resolver_and_calculation():

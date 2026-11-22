@@ -57,11 +57,12 @@ class SemanticInput:
 
 @dataclass(frozen=True)
 class LineageCompleteness:
-    """Одна оценка: загружен ли graph_links и не обрезана ли ссылка."""
+    """Три факта. ``physical_lineage_complete`` не шире двух проверок."""
 
-    graph_links_available: bool
-    truncated_links: int
+    graph_available: bool
+    graph_truncation_free: bool
     physical_lineage_complete: bool
+    truncated_links: int
     note: str | None
 
 
@@ -122,27 +123,30 @@ class FormulaChain:
 
 
 def lineage_completeness(*, graph_links_available: bool, truncated_links: int) -> LineageCompleteness:
-    """Пустой загруженный граф полон. Нет файла или обрезанная ссылка — нет.
+    """Две проверки и их соединение.
 
-    Позже разделить graph_available, graph_truncation_free и physical_lineage_complete.
-    Сейчас наружу по-прежнему один флаг.
+    ``graph_available`` — файл ``graph_links`` загружен, в том числе пустой.
+    ``graph_truncation_free`` — файл загружен и у этой сборки нет обрезанной
+    ссылки. Нет файла — флаг ложен: обрезание не проверялось.
+    ``physical_lineage_complete`` истинен только когда оба флага истинны.
+    Это не доказательство, что разбор нашёл каждую зависимость Excel.
     """
 
-    if not graph_links_available:
-        return LineageCompleteness(
-            False,
-            truncated_links,
-            False,
-            "физическая трассировка недоступна: graph_links не загружен",
-        )
-    if truncated_links:
-        return LineageCompleteness(
-            True,
-            truncated_links,
-            False,
-            f"цепь может быть неполной: обрезано ссылок {truncated_links}",
-        )
-    return LineageCompleteness(True, truncated_links, True, None)
+    available = bool(graph_links_available)
+    free = available and truncated_links == 0
+    if not available:
+        note = "физическая трассировка недоступна: graph_links не загружен"
+    elif not free:
+        note = f"цепь может быть неполной: обрезано ссылок {truncated_links}"
+    else:
+        note = None
+    return LineageCompleteness(
+        graph_available=available,
+        graph_truncation_free=free,
+        physical_lineage_complete=available and free,
+        truncated_links=truncated_links,
+        note=note,
+    )
 
 
 def resolve_semantic_inputs(
@@ -260,7 +264,14 @@ def _specs(
     members = expr.one_of_order or tuple(sorted(expr.one_of))
     if members:
         present = {name for name in members if _select_primary(bindings, name)[0] is not None}
-        add(choose_one_of(members, present), "one_of", "one_of")
+        chosen_name = choose_one_of(members, present)
+        if chosen_name:
+            for index, (name, src, _role) in enumerate(specs):
+                if name == chosen_name:
+                    specs[index] = (name, src, "one_of")
+                    break
+            else:
+                specs.append((chosen_name, source, "one_of"))
     return _fallbacks(metric, variant, specs, bindings, interest_order, row_fallbacks)
 
 

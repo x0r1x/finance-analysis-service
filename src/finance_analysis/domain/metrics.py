@@ -12,6 +12,7 @@ import json
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.mapping import marked_line_code
 from finance_analysis.domain.metric_contract import BoundInputs, implements
 from finance_analysis.domain.model_type import sheet_name_key
@@ -1163,7 +1164,7 @@ def _numerator_misses_axis(numerator: dict, denominator: dict, periods: list[dic
 def _primaries(bindings: list[dict], absent: frozenset[str] = frozenset()) -> dict[str, dict]:
     found = {}
     for row in bindings:
-        concept = row.get("effective_concept")
+        concept = declared_concept(row)
         if not (row.get("is_primary") and row.get("status") in _BOUND and concept):
             continue
         # Устаревшая основная строка не входит в расчёт: её отбрасывает и резолвер входа.
@@ -1190,8 +1191,9 @@ def absent_concepts(bindings: list[dict], absent: frozenset[str] = frozenset()) 
 def _groups(bindings: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
     for row in bindings:
-        if row.get("is_primary") and row.get("effective_concept") and not row.get("stale"):
-            grouped.setdefault(row["effective_concept"], []).append(row)
+        concept = declared_concept(row)
+        if row.get("is_primary") and concept and not row.get("stale"):
+            grouped.setdefault(concept, []).append(row)
     return grouped
 
 

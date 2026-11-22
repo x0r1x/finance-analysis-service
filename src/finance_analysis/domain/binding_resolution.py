@@ -14,6 +14,12 @@ MISSING_NO_PRIMARY = "no_primary_binding"
 MISSING_STALE = "stale_binding"
 
 
+def declared_concept(row: Mapping[str, Any]) -> str:
+    """Понятие строки: ``effective_concept``, а если его нет — ``concept``."""
+
+    return str(row.get("effective_concept") or row.get("concept") or "")
+
+
 def select_primary(
     bindings: Sequence[Mapping[str, Any]], concept: str
 ) -> tuple[Mapping[str, Any] | None, str | None, bool]:
@@ -29,7 +35,7 @@ def select_primary(
         if row.get("is_primary")
         and row.get("status") in _BOUND
         and not row.get("stale")
-        and str(row.get("effective_concept") or row.get("concept") or "") == concept
+        and declared_concept(row) == concept
     ]
     if fresh:
         ordered = sorted(fresh, key=lambda row: str(row.get("binding_key") or ""))
@@ -41,7 +47,7 @@ def select_primary(
         if row.get("is_primary")
         and row.get("status") in _BOUND
         and row.get("stale")
-        and str(row.get("effective_concept") or row.get("concept") or "") == concept
+        and declared_concept(row) == concept
     ]
     if stale:
         return None, MISSING_STALE, False

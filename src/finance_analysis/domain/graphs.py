@@ -98,6 +98,8 @@ class MetricTrace:
     missing_trace: str | None = None
     catalog_version: str | None = None
     integrity: tuple[TraceIntegrityFinding, ...] = ()
+    graph_available: bool = True
+    graph_truncation_free: bool = True
     physical_lineage_complete: bool = True
 
     def as_dict(self) -> dict[str, Any]:
@@ -110,6 +112,8 @@ class MetricTrace:
             "missing_trace": self.missing_trace,
             "steps": [step.as_dict() for step in self.steps],
             "integrity": [item.as_dict() for item in self.integrity],
+            "graph_available": self.graph_available,
+            "graph_truncation_free": self.graph_truncation_free,
             "physical_lineage_complete": self.physical_lineage_complete,
         }
 
@@ -205,6 +209,8 @@ def trace_metric(
         "build_key": resolved_build,
         "model_id": resolved_model,
         "catalog_version": catalog_version,
+        "graph_available": status.graph_available,
+        "graph_truncation_free": status.graph_truncation_free,
         "physical_lineage_complete": status.physical_lineage_complete,
     }
     if inputs is None and expressions is None:

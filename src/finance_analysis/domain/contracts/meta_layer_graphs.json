@@ -119,6 +119,8 @@
         "steps",
         "missing_trace",
         "integrity",
+        "graph_available",
+        "graph_truncation_free",
         "physical_lineage_complete"
       ],
       "additionalProperties": false,
@@ -138,9 +140,17 @@
           "type": "array",
           "items": { "$ref": "#/$defs/traceIntegrityFinding" }
         },
+        "graph_available": {
+          "type": "boolean",
+          "description": "Файл graph_links этой сборки загружен. Пустой файл тоже загружен."
+        },
+        "graph_truncation_free": {
+          "type": "boolean",
+          "description": "Файл загружен и в этой сборке нет обрезанной ссылки. Ссылка другого build_key не считается. Нет файла — флаг ложен."
+        },
         "physical_lineage_complete": {
           "type": "boolean",
-          "description": "false, если файла graph_links нет или хотя бы одна ссылка обрезана. Пустой загруженный граф полон."
+          "description": "Истина только когда graph_available и graph_truncation_free. Не значит, что разбор нашёл каждую зависимость Excel: такой проверки нет."
         }
       }
     },

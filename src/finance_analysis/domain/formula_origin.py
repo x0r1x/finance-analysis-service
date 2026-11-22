@@ -125,6 +125,8 @@ def origin_view(
         "metrics": metrics,
         "chain": chain,
         "direct_cap": DIRECT_CAP,
+        "graph_available": status.graph_available,
+        "graph_truncation_free": status.graph_truncation_free,
         "physical_lineage_complete": status.physical_lineage_complete,
         "truncated_links": status.truncated_links,
         "note": status.note,

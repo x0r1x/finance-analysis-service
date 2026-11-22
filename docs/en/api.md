@@ -34,7 +34,7 @@ Each tool has `name`, `description`, `method`, `path`, `parameters`, `in`, and `
 - `POST /v1/books/{job_id}/periods:resolve` — periods for a phrase.
 - `GET /v1/books/{job_id}/decisions` and `POST /v1/books/{job_id}/decisions` — read and append the journal.
 - `POST /v1/books/{job_id}/mapping:infer` — rebuild the inferred mapping. Returns `202`.
-- `GET /v1/books/{job_id}/metrics/{metric_id}/trace` — read-only metric-input → concept → binding → cell trace (meta-layer phase 4). Query: `variant`. Missing `dim_row` / `fact_observation` → `412`; a missing `graph_links` file or a truncated link → `physical_lineage_complete: false`. An empty published `graph_links` is a complete chain. Steps are the inputs the calculation used: one `one_of` member, the actual fallback, and FCFF paid interest as `interest_paid`.
+- `GET /v1/books/{job_id}/metrics/{metric_id}/trace` — read-only metric-input → concept → binding → cell trace (meta-layer phase 4). Query: `variant`. Missing `dim_row` / `fact_observation` → `412`. `graph_available` means the `graph_links` file is loaded. `graph_truncation_free` means that file is loaded and this build has no truncated reference. `physical_lineage_complete` is true only when both are true. An empty published `graph_links` passes those two checks. That is not proof the parser found every Excel dependency. Steps are the inputs the calculation used: one `one_of` member, the actual fallback, and FCFF paid interest as `interest_paid`.
 
 ## Analyses
 

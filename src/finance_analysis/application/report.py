@@ -93,6 +93,14 @@ def render_markdown(result: dict) -> str:
                 )
                 lines.append(f"- {row.get('label')} глубина {row.get('depth')}: {cells}")
         lines.append("- цепь: formula_origin.chain")
+        if "graph_available" in origin:
+            lines.append(
+                "- полнота: файл graph_links "
+                f"{'загружен' if origin.get('graph_available') else 'не загружен'}, "
+                "обрезанных ссылок этой сборки "
+                f"{'нет' if origin.get('graph_truncation_free') else 'есть'}. "
+                "physical_lineage_complete — только эти две проверки, не разбор каждой зависимости Excel."
+            )
         if incomplete and origin.get("note"):
             lines.append(f"- {origin['note']}")
     findings = data.get("findings") or []

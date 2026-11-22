@@ -108,11 +108,11 @@ metric_id → concept → binding_key → cell_id
 | `fact_dataset_unavailable` | нет `fact_observation` в сборке (доменная метка; HTTP — см. ниже) |
 | `dim_row_unavailable` | нет `dim_row` в сборке (доменная метка; HTTP — см. ниже) |
 
-**Важно:** отсутствие обязательного датасета ≠ `no_cell`. HTTP-слой при отсутствии `dim_row` / `fact_observation` отвечает `412 precondition_failed` («трассировка недоступна…»), а не подменяет ответ пустым списком фактов. Нет файла `graph_links` (старая сборка или сбой записи) → `physical_lineage_complete: false` (связи формул не проверялись). Обрезанная ссылка в загруженном графе даёт тот же флаг: полноту считает `lineage_completeness`, её же читает `formula_origin`. Новая публикация всегда пишет файл, в том числе пустой: пустой граф — книга без формул, цепь полная. В шаге следа остаётся выбранный член `one_of` и фактический запасной вход, а не каждый член каталога.
+**Важно:** отсутствие обязательного датасета ≠ `no_cell`. HTTP-слой при отсутствии `dim_row` / `fact_observation` отвечает `412 precondition_failed` («трассировка недоступна…»), а не подменяет ответ пустым списком фактов. Полноту считает `lineage_completeness`, её же читает `formula_origin`. Три поля: `graph_available` — файл `graph_links` загружен; `graph_truncation_free` — файл загружен и у этой сборки нет обрезанной ссылки (ссылка другого `build_key` не считается; нет файла — флаг ложен); `physical_lineage_complete` истинен только когда оба флага истинны. Пустой загруженный граф проходит эти две проверки. Это не доказательство, что разбор нашёл каждую зависимость Excel: такой проверки нет. OpenLineage в фасете колонок перечисляет наблюдённые `inputField` и не предлагает достраивать недостающие зависимости. Новая публикация всегда пишет файл, в том числе пустой. В шаге следа остаётся выбранный член `one_of` и фактический запасной вход, а не каждый член каталога.
 
 ### Ответ API
 
-Полное тело (валидируется JSON Schema перед возвратом): `metric_id`, `variant`, `build_key`, `model_id`, `catalog_version`, `missing_trace`, `steps[]`, `integrity[]`, `physical_lineage_complete`.
+Полное тело (валидируется JSON Schema перед возвратом): `metric_id`, `variant`, `build_key`, `model_id`, `catalog_version`, `missing_trace`, `steps[]`, `integrity[]`, `graph_available`, `graph_truncation_free`, `physical_lineage_complete`.
 
 `integrity[]` — findings по исходным данным и инварианту DTO (`ambiguous_primary_binding`, `primary_binding_without_trace_or_reason`, …).
 
