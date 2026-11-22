@@ -1701,6 +1701,65 @@ def _cash_paid(keys, series: dict, name: str, convention: str) -> Decimal | None
     return total
 
 
+
+def _reported_book_dscr(
+    attempt: dict,
+    *,
+    variant: str,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    absent: frozenset[str],
+) -> dict:
+    """The book's DSCR row, when the selected formula has no inputs. Not a substitute formula."""
+
+    if attempt.get("status") not in {"missing_input", "needs_input"}:
+        return attempt
+    if any(row.get("value") is not None for row in attempt.get("rows") or []):
+        return attempt
+    book = _primaries(bindings, absent).get("dscr")
+    if book is None:
+        return attempt
+    aligned = aligned_keys(periods)
+    cached = _sums(facts, book, aligned, periods)
+    rows = []
+    for period in periods:
+        own = (period.get("axis_id"), period.get("period_id"))
+        number = cached.get(aligned.get(own, own))
+        if number is None:
+            continue
+        rows.append(
+            _line("dscr", period, number, "computed", "reported", ["dscr"], None, variant="reported")
+        )
+    if not rows:
+        return attempt
+    missing = [str(name) for name in attempt.get("missing_inputs") or [] if name]
+    names = ", ".join(missing) if missing else "входы"
+    return {
+        "metric": "dscr",
+        "rows": rows,
+        "needs_input": attempt.get("needs_input") or [],
+        "warnings": [
+            {
+                "code": "dscr_reported",
+                "params": {
+                    "variant": variant,
+                    "inputs": missing,
+                    "message": (
+                        f"Вариант {variant} не посчитан: не хватает {names}. "
+                        "Показан DSCR строки книги с пометкой reported."
+                    ),
+                },
+            },
+            *(attempt.get("warnings") or []),
+        ],
+        "status": "succeeded",
+        "definition_source": "reported",
+        "definition_ref": book.get("row_key"),
+        "missing_inputs": missing,
+    }
+
+
 def select_ratio(
     metric: str,
     variant: str | None,
@@ -1846,7 +1905,8 @@ def select_ratio(
             aggregations=aggregations,
         )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
-        return covenant_dscr(
+        return _reported_book_dscr(
+            covenant_dscr(
             facts=common["facts"],
             bindings=common["bindings"],
             periods=common["periods"],
@@ -1862,6 +1922,12 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             composed=composed,
             aggregations=aggregations,
+        ),
+            variant=named or variant or "corporate_covenant",
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            absent=common.get("absent") or frozenset(),
         )
     if metric == "dscr" and variant == "pf":
         return dscr_pf(
