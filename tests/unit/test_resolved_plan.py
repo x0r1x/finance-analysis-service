@@ -137,21 +137,13 @@ def test_engine_version_changes_the_digest():
 def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
     """Как читается строка, входит в хеш. Целый SMV — нет."""
 
-    import hashlib
-    import inspect
-
     from finance_analysis.domain.resolved_plan import (
-        RESOLUTION_ENGINE_VERSION,
         content_digest,
         hashed_body,
         input_read_stamp,
-        resolution_functions,
     )
 
-    text = RESOLUTION_ENGINE_VERSION + "\n" + "\n".join(
-        inspect.getsource(fn) for fn in resolution_functions()
-    )
-    assert input_read_stamp() == hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    assert input_read_stamp()
     bindings = [_bind("cfads", 1), _bind("debt_service", 2)]
     left = resolve_metric_plan("dscr", bindings, EXPRESSIONS, semantic_model_version="smv-a")
     right = resolve_metric_plan("dscr", bindings, EXPRESSIONS, semantic_model_version="smv-b")
@@ -183,37 +175,27 @@ def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
 
 
 def test_resolution_stamp_covers_every_selection_function():
-    """Набор и исходник функций выбора входят в штамп вместе с версией движка.
-
-    Смена исходника двигает штамп без правки константы. Смена константы двигает
-    штамп, даже если исходники те же. Штамп входит в content_sha256.
-    """
+    """Штамп входит в content_sha256. Смена версии движка двигает штамп при тех же исходниках."""
 
     import hashlib
     import inspect
 
+    import finance_analysis.domain.semantic_input as engine
     from finance_analysis.domain.resolved_plan import (
         RESOLUTION_ENGINE_VERSION,
         content_digest,
+        declared_resolution_dependencies,
         hashed_body,
         input_read_stamp,
-        resolution_functions,
     )
 
-    names = tuple(fn.__name__ for fn in resolution_functions())
-    assert names == (
-        "declared_concept",
-        "select_primary",
-        "_specs",
-        "_fallbacks",
-        "choose_one_of",
-        "dscr_denominator_plan",
-        "interest_choice",
-        "confirm_paid_interest",
-        "_basis",
-    )
-    text = RESOLUTION_ENGINE_VERSION + "\n" + "\n".join(
-        inspect.getsource(fn) for fn in resolution_functions()
+    source = inspect.getsource(engine)
+    text = "\n".join(
+        [
+            RESOLUTION_ENGINE_VERSION,
+            source,
+            *(f"{name}\n{_dependency_text(obj)}" for name, obj in declared_resolution_dependencies()),
+        ]
     )
     stamp = input_read_stamp()
     assert stamp == hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -238,10 +220,83 @@ def test_resolution_stamp_covers_every_selection_function():
     assert body["input_read_stamp"] == stamp
     assert "semantic_model_version" not in body
     assert content_digest(body) != content_digest({**body, "input_read_stamp": "0" * 16})
-    bumped = RESOLUTION_ENGINE_VERSION + "-other\n" + "\n".join(
-        inspect.getsource(fn) for fn in resolution_functions()
-    )
+    bumped = text.replace(RESOLUTION_ENGINE_VERSION, RESOLUTION_ENGINE_VERSION + "-other", 1)
     assert hashlib.sha256(bumped.encode("utf-8")).hexdigest()[:16] != stamp
+
+
+def test_stamp_hashes_the_engine_module_and_declared_dependencies():
+    """Новая функция модуля меняет штамп сама. Новый внешний вызов без объявления не проходит."""
+
+    import ast
+    import hashlib
+    import inspect
+
+    import finance_analysis.domain.semantic_input as engine
+    from finance_analysis.domain.resolved_plan import (
+        RESOLUTION_ENGINE_VERSION,
+        declared_resolution_dependencies,
+        input_read_stamp,
+    )
+
+    source = inspect.getsource(engine)
+    for name in (
+        "_visible",
+        "_materialize",
+        "_with_confirmed_paid",
+        "_with_shield",
+        "_active",
+        "_split",
+        "_outcome",
+        "_coverage_status",
+    ):
+        assert f"def {name}(" in source
+    dependencies = declared_resolution_dependencies()
+    text = "\n".join(
+        [
+            RESOLUTION_ENGINE_VERSION,
+            source,
+            *(f"{name}\n{_dependency_text(obj)}" for name, obj in dependencies),
+        ]
+    )
+    stamp = input_read_stamp()
+    assert stamp == hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    added = text + "\ndef _new_influence():\n    return None\n"
+    assert hashlib.sha256(added.encode("utf-8")).hexdigest()[:16] != stamp
+
+    imported = _imported_project_names(ast.parse(source))
+    used = _loaded_names(ast.parse(source), imported)
+    used.discard("RESOLUTION_ENGINE_VERSION")
+    assert used == {name for name, _obj in dependencies}
+
+
+def _dependency_text(obj: object) -> str:
+    import inspect
+
+    if inspect.isfunction(obj) or inspect.isclass(obj):
+        return inspect.getsource(obj)
+    if isinstance(obj, (set, frozenset)):
+        return repr(tuple(sorted(obj)))
+    raise TypeError(type(obj))
+
+
+def _imported_project_names(tree: object) -> set[str]:
+    import ast
+
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("finance_analysis."):
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def _loaded_names(tree: object, imported: set[str]) -> set[str]:
+    import ast
+
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in imported:
+            found.add(node.id)
+    return found
 
 
 def test_trace_and_origin_read_one_plan_and_do_not_select(monkeypatch):

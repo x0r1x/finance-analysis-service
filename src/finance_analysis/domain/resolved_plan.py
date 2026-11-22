@@ -12,53 +12,87 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from finance_analysis.domain.binding_resolution import declared_concept, select_primary
 from finance_analysis.domain.book import canonical_json
 
 RESOLUTION_ENGINE_VERSION = "1"
 PLAN_SCHEMA = "resolved_metric_plan@1.0"
 
 
-def resolution_functions() -> tuple:
-    """Функции, от которых зависит план. Набор зафиксирован контрактным тестом.
+def declared_resolution_dependencies() -> tuple[tuple[str, Any], ...]:
+    """Внешние имена, которые движок читает. Имя — как в ``semantic_input``.
 
     Импорт ленивый: ``semantic_input`` сам импортирует этот модуль.
+    Контрактный тест сверяет этот набор с каждым загруженным импортом модуля.
+    Новая функция внутри модуля в набор не вносится: её исходник уже в штампе.
     """
 
-    from finance_analysis.domain.free_cash_flow import _basis
-    from finance_analysis.domain.metrics import (
-        choose_one_of,
-        confirm_paid_interest,
-        dscr_denominator_plan,
-        interest_choice,
-    )
-    from finance_analysis.domain.semantic_input import _fallbacks, _specs
-
-    return (
+    from finance_analysis.domain.binding_resolution import (
         declared_concept,
-        select_primary,
-        _specs,
-        _fallbacks,
+    )
+    from finance_analysis.domain.binding_resolution import (
+        select_primary as _select_primary,
+    )
+    from finance_analysis.domain.free_cash_flow import _ambiguous_primary, _basis
+    from finance_analysis.domain.metrics import (
+        HUMAN_SOURCES,
+        _primaries,
         choose_one_of,
+        confirm_paid_interest,
         dscr_denominator_plan,
         interest_choice,
-        confirm_paid_interest,
-        _basis,
     )
+    from finance_analysis.domain.model_type import MetricExpression, sheet_name_key
+
+    named = (
+        ("AppliedFallback", AppliedFallback),
+        ("DiagnosticCandidate", DiagnosticCandidate),
+        ("HUMAN_SOURCES", HUMAN_SOURCES),
+        ("LineageRow", LineageRow),
+        ("MetricExpression", MetricExpression),
+        ("NeedsInput", NeedsInput),
+        ("PlanWarning", PlanWarning),
+        ("RejectedAlternative", RejectedAlternative),
+        ("ResolvedInput", ResolvedInput),
+        ("ResolvedMetricPlan", ResolvedMetricPlan),
+        ("ShieldDecision", ShieldDecision),
+        ("_ambiguous_primary", _ambiguous_primary),
+        ("_basis", _basis),
+        ("_primaries", _primaries),
+        ("_select_primary", _select_primary),
+        ("choose_one_of", choose_one_of),
+        ("confirm_paid_interest", confirm_paid_interest),
+        ("declared_concept", declared_concept),
+        ("dscr_denominator_plan", dscr_denominator_plan),
+        ("interest_choice", interest_choice),
+        ("recover_row", recover_row),
+        ("seal", seal),
+        ("sheet_name_key", sheet_name_key),
+    )
+    return tuple(sorted(named))
+
+
+def _dependency_source(obj: Any) -> str:
+    if inspect.isfunction(obj) or inspect.isclass(obj):
+        return inspect.getsource(obj)
+    if isinstance(obj, (set, frozenset)):
+        return repr(tuple(sorted(obj)))
+    raise TypeError(type(obj))
 
 
 def input_read_stamp() -> str:
-    """16 hex версии движка и исходников функций выбора.
+    """16 hex версии движка, исходника модуля разрешения и объявленных зависимостей.
 
-    Целый SMV сюда не входит. Смена исходника любой функции из
-    ``resolution_functions`` или ``RESOLUTION_ENGINE_VERSION`` меняет штамп
-    и хеш плана, даже если вторую из этих двух констант забыли поправить.
+    Целый SMV сюда не входит. Новая функция в ``semantic_input`` меняет штамп
+    без отдельной записи в список. Новый импорт, который модуль загружает и
+    который не объявлен, контрактный тест не пропускает: без объявления сборка
+    не сходится, и штамп такого пропуска не прячет.
     """
 
-    text = RESOLUTION_ENGINE_VERSION + "\n" + "\n".join(
-        inspect.getsource(fn) for fn in resolution_functions()
-    )
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    import finance_analysis.domain.semantic_input as engine
+
+    parts = [RESOLUTION_ENGINE_VERSION, inspect.getsource(engine)]
+    parts.extend(f"{name}\n{_dependency_source(obj)}" for name, obj in declared_resolution_dependencies())
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
