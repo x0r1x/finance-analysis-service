@@ -93,9 +93,14 @@ def total_debt_result(
     periods: list[dict],
     profile: dict | None = None,
     marker_class: str | None = None,
+    plan=None,
 ) -> dict:
     standard = debt_standard(profile)
     flag = include_operating_lease(profile)
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     if standard == "invalid" or flag is None:
         return _blocked("debt_standard: ras, ifrs или gaap; include_operating_lease_liability: true или false")
     rows = []

@@ -930,11 +930,12 @@ class Analyses:
                 basis=basis,
                 direction=direction,
                 common=common,
+                plan=plans.get(metric),
             )
             if routed is not None:
                 result = routed
             elif metric in LOAN_LIFE:
-                result = loan_life_ratio(metric, basis=basis, **common)
+                result = loan_life_ratio(metric, basis=basis, plan=plans.get(metric), **common)
             elif metric in REDUCED:
                 result = dscr_reductions(metric, plan=plans.get("dscr"), **common)
             elif metric == "adscr":

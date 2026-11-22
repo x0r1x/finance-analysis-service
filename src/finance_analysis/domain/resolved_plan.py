@@ -230,6 +230,43 @@ def recover_row(
     return None
 
 
+def bindings_for_plan(
+    bindings: Sequence[Mapping[str, Any]],
+    plan: Any | None,
+) -> Sequence[Mapping[str, Any]]:
+    """Строки калькулятора, у которого план уже есть.
+
+    Понятие, о котором план говорит, берётся только из подтверждённого входа.
+    Кэш самой метрики и окно, которого формула не называет, остаются.
+    Без плана список тот же: это фасад старых тестов и golden.
+    """
+
+    if plan is None:
+        return bindings
+    from finance_analysis.domain.binding_resolution import declared_concept
+
+    owned = {item.concept for item in (*plan.inputs, *plan.diagnostic, *plan.rejected)}
+    confirmed: set[tuple[str, str]] = set()
+    for item in plan.inputs:
+        if item.binding_key:
+            confirmed.add(("binding", str(item.binding_key)))
+        elif item.row_key:
+            confirmed.add(("row", str(item.row_key)))
+    kept: list[Mapping[str, Any]] = []
+    for row in bindings:
+        concept = declared_concept(row)
+        if concept not in owned:
+            kept.append(row)
+            continue
+        binding_key = str(row.get("binding_key") or "")
+        row_key = str(row.get("row_key") or "")
+        by_binding = bool(binding_key) and ("binding", binding_key) in confirmed
+        by_row = not binding_key and bool(row_key) and ("row", row_key) in confirmed
+        if by_binding or by_row:
+            kept.append(row)
+    return kept
+
+
 def bound_rows(plan: ResolvedMetricPlan, bindings: Sequence[Mapping[str, Any]]) -> dict[str, dict]:
     """Строки входов плана. Выбор не повторяет: ключ уже записан в плане."""
 

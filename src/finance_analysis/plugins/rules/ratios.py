@@ -233,17 +233,26 @@ def _chain_concepts(data: AuditInput) -> set[str]:
 class IcrReference(Rule):
     """Сверяет ICR FAS со строкой коэффициента книги.
 
-    Ноль или пустое значение книги не считается расхождением, если пуст источник
-    EBITDA либо строка числителя, на которую ссылается формула.
+    Числитель — тот, что подтвердил план: EBITDA или EBIT. Ноль или пустое
+    значение книги не считается расхождением, если пуст этот числитель.
+    Строка `icr` книги — сверка, не вход формулы.
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
         if data.applicable_metrics is not None and "icr" not in data.applicable_metrics:
             return []
-        ebitda = _primary(data, "ebitda")
-        if ebitda is None or not data.periods:
+        plan = (data.plans or {}).get("icr")
+        numerator_keys = None
+        if plan is None:
+            numerator = _primary(data, "ebitda")
+            interest = _primary(data, "interest")
+        else:
+            chosen = next((item.concept for item in plan.inputs if item.role == "one_of"), None)
+            numerator = _primary(data, chosen, "icr") if chosen else None
+            interest = _primary(data, "interest", "icr")
+            numerator_keys = {numerator["row_key"]} if numerator and numerator.get("row_key") else set()
+        if numerator is None or not data.periods:
             return []
-        interest = _primary(data, "interest")
         computed = {}
         if interest is not None:
             phases = {}
@@ -263,8 +272,13 @@ class IcrReference(Rule):
             computed = {(row["axis_id"], row["period_id"]): row for row in result["rows"] if row.get("value") is not None}
         fas_axes = {axis for axis, _period in computed}
         if not fas_axes:
-            fas_axes = _row_axes(data, ebitda["row_key"])
-        reference = _coverage_reference(data, fas_axes, None if interest is None else interest["row_key"])
+            fas_axes = _row_axes(data, numerator["row_key"])
+        reference = _coverage_reference(
+            data,
+            fas_axes,
+            None if interest is None else interest["row_key"],
+            numerator_keys,
+        )
         if reference is None:
             return []
         if reference == "ambiguous":
@@ -280,7 +294,7 @@ class IcrReference(Rule):
         if not ref_axes:
             ref_axes = {period["axis_id"] for period in data.periods if period.get("axis_id")}
         cached = _cached(data, model_key)
-        source = _cached(data, ebitda["row_key"])
+        source = _cached(data, numerator["row_key"])
         children = [row for row in _child_rows(data, model_key) if interest is None or row != interest["row_key"]]
         findings = []
         seen: set[str] = set()
@@ -304,7 +318,7 @@ class IcrReference(Rule):
                         params={
                             "cause": "empty_numerator",
                             "message": _INCOMPLETE_NUMERATOR,
-                            "cells": _named_cells(data, model_key, ebitda["row_key"], children, period_id),
+                            "cells": _named_cells(data, model_key, numerator["row_key"], children, period_id),
                         },
                     )
                 )
@@ -368,28 +382,35 @@ def _bound_rows(data: AuditInput, concept: str) -> list[str]:
     return found
 
 
-def _coverage_reference(data: AuditInput, fas_axes: set[str], interest_key: str | None) -> str | None:
+def _coverage_reference(
+    data: AuditInput,
+    fas_axes: set[str],
+    interest_key: str | None,
+    numerator_keys: set[str] | None = None,
+) -> str | None:
     """Строка покрытия на оси расчёта FAS.
 
-    Сначала берётся формула, которая делит строку EBITDA на строку процентов.
+    Сначала берётся формула, которая делит подтверждённый числитель на проценты.
     Если такой формулы нет, берётся привязка `icr` на той же оси. Строка `icr`
     на другой оси, в том числе на листе итогов, справочником не становится.
     Несколько кандидатов одного вида дают одну пометку неоднозначности.
+    Без плана числитель — все привязанные строки EBITDA, как раньше.
     """
 
-    ebitda_keys = set(_bound_rows(data, "ebitda"))
+    if numerator_keys is None:
+        numerator_keys = set(_bound_rows(data, "ebitda"))
     if not fas_axes:
         labeled = _bound_rows(data, "icr")
         if len(labeled) > 1:
             return "ambiguous"
         return labeled[0] if labeled else None
     formula_rows = []
-    if interest_key and ebitda_keys:
+    if interest_key and numerator_keys:
         children = _children_by_row(data)
         for row_key, refs in children.items():
-            if row_key in ebitda_keys or row_key == interest_key:
+            if row_key in numerator_keys or row_key == interest_key:
                 continue
-            if interest_key not in refs or not (refs & ebitda_keys):
+            if interest_key not in refs or not (refs & numerator_keys):
                 continue
             if not (_row_axes(data, row_key) & fas_axes):
                 continue

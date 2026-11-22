@@ -335,6 +335,10 @@ def dscr_ocf_covenant(
 ) -> dict:
     """OCF-ковенант по составу каталога. Нет входов состава — метрика не считается, CFADS не подставляется."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     return covenant_dscr(
         facts=facts,
         bindings=bindings,
@@ -1305,9 +1309,14 @@ def bank_icr(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
     """Внутренний профиль icr.bank. Поле regulatory_6960u всегда ложь."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     result = _bank_icr(
         facts=facts,
         bindings=bindings,
@@ -1617,6 +1626,7 @@ def cash_covenant_dscr(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
     """Кассовый DSCR года i. OCF со знаком, остальные входы — модули платежей.
 
@@ -1625,6 +1635,10 @@ def cash_covenant_dscr(
     вместо ненайденной строки. Неполный календарный год не считается.
     """
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     include_other = _CASH_OTHER not in absent
     needed = (*_CASH_CORE, *((_CASH_OTHER,) if include_other else ()))
     missing = _missing("dscr", bindings, needed, absent)
@@ -1797,6 +1811,7 @@ def select_ratio(
             periods=common["periods"],
             profile=profile,
             marker_class=common["marker_class"],
+            plan=plan,
         )
     if metric == "debt_incl_off_balance":
         from finance_analysis.domain.debt_incl_off_balance import debt_incl_off_balance
@@ -1809,6 +1824,7 @@ def select_ratio(
             bindings=common["bindings"],
             periods=common["periods"],
             absent=common["absent"],
+            plan=plan,
         )
     if metric in {"npv", "irr"}:
         return project_return(
@@ -1817,6 +1833,7 @@ def select_ratio(
             bindings=common["bindings"],
             periods=common["periods"],
             absent=common["absent"],
+            plan=plan,
         )
     if metric == "fcff":
         return free_cash_flow(
@@ -1846,6 +1863,7 @@ def select_ratio(
                 if statement_sheets is not None
                 else common.get("statement_sheets") or frozenset()
             ),
+            plan=plan,
         )
     if metric == "ncf_period":
         return period_net_cash_flow(
@@ -1854,6 +1872,7 @@ def select_ratio(
             periods=common["periods"],
             sign_convention=common.get("sign_convention") or "outflow_negative",
             absent=common.get("absent") or frozenset(),
+            plan=plan,
         )
     if metric == "fcf_identity":
         return fcf_identity(
@@ -1863,6 +1882,7 @@ def select_ratio(
             periods=common["periods"],
             absent=common.get("absent") or frozenset(),
             sign_convention=common.get("sign_convention") or "outflow_negative",
+            plan=plan,
         )
     if metric == "icr_lease":
         return lease_interest_coverage(
@@ -1872,6 +1892,7 @@ def select_ratio(
             sign_convention=common["sign_convention"],
             marker_class=common["marker_class"],
             absent=common["absent"],
+            plan=plan,
         )
     if metric == "dscr" and variant == "cash_covenant":
         return cash_covenant_dscr(
@@ -1881,6 +1902,7 @@ def select_ratio(
             sign_convention=common["sign_convention"],
             marker_class=common["marker_class"],
             absent=common["absent"],
+            plan=plan,
         )
     named = _named_variant(profile)
     if metric == "dscr" and (named or variant) == "housing":
@@ -1893,6 +1915,7 @@ def select_ratio(
             sign_convention=common.get("sign_convention") or "outflow_negative",
             absent=common.get("absent") or frozenset(),
             profile=profile,
+            plan=plan,
         )
     if metric == "dscr" and (variant == "ocf_covenant" or named == "ocf_covenant"):
         return dscr_ocf_covenant(
@@ -1949,6 +1972,7 @@ def select_ratio(
             sign_convention=common["sign_convention"],
             marker_class=common["marker_class"],
             absent=common["absent"],
+            plan=plan,
         )
     formula = composed.get(metric)
     if formula is not None:
@@ -1963,6 +1987,7 @@ def select_ratio(
             absent=common["absent"],
             profile=profile,
             aggregations=aggregations,
+            plan=plan,
         )
     return coverage_ratio(
         metric=metric,

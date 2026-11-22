@@ -54,7 +54,12 @@ def net_cash_flow(
     absent: frozenset[str] = frozenset(),
     book: list[dict] | None = None,
     statement_sheets: frozenset[str] = frozenset(),
+    plan=None,
 ) -> dict:
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     statement = frozenset(sheet_name_key(name) for name in statement_sheets)
     clash = _ambiguous(bindings, absent)
     if clash:
@@ -144,9 +149,14 @@ def dashed_lines(
     facts: list[dict],
     statement_sheets: frozenset[str],
     absent: frozenset[str] = frozenset(),
+    plan=None,
 ) -> list[dict]:
     """Итоги разделов, у которых на форме есть прочерк. Для следа, не для суммы."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     statement = frozenset(sheet_name_key(name) for name in statement_sheets)
     primaries = _primaries(bindings, absent)
     found = []

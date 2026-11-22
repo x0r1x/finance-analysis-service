@@ -114,6 +114,7 @@ def housing_dscr(
     sign_convention: str = "outflow_negative",
     absent: frozenset[str] = frozenset(),
     profile: dict | None = None,
+    plan=None,
 ) -> dict:
     flag = interest_addback(profile)
     fees = _named_flag(profile, "include_senior_fees")
@@ -125,6 +126,10 @@ def housing_dscr(
         broken = "include_senior_fees: true или false"
     elif swaps is None:
         broken = "include_senior_swaps: true или false"
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     if broken:
         return {
             "metric": "dscr",

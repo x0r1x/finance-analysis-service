@@ -353,6 +353,7 @@ def loan_life_ratio(
     marker_class: str | None = None,
     basis: str = "period_end",
     absent: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
     """LLCR и PLCR: NPV CFADS ÷ остаток долга на каждом тестовом периоде.
 
@@ -366,6 +367,10 @@ def loan_life_ratio(
     меняется по периодам; без дат — по длине `grain` с предупреждением.
     """
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     missing = _missing(metric, bindings, LOAN_LIFE_INPUTS, absent)
     if missing is not None:
         return missing

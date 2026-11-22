@@ -567,6 +567,10 @@ def dscr_pf(
 ) -> dict:
     """Проектный DSCR. Те же числа, что coverage_ratio для metric=dscr."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     return coverage_ratio(
         metric="dscr",
         facts=facts,
@@ -598,6 +602,7 @@ def lease_interest_coverage(
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
     annual: bool = False,
+    plan: Any | None = None,
 ) -> dict:
     """EBITDA / (|проценты| + проценты в составе лизингового платежа).
 
@@ -606,6 +611,10 @@ def lease_interest_coverage(
     Прямая строка `lease_interest` и пара «платёж − долг» вместе не считаются.
     """
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     metric = "icr_lease"
     primaries = BoundInputs(ICR_LEASE_INPUTS, _primaries(bindings, absent))
     warnings: list[dict] = []

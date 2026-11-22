@@ -30,7 +30,12 @@ def project_return(
     bindings: list[dict],
     periods: list[dict],
     absent: frozenset[str] = frozenset(),
+    plan=None,
 ) -> dict:
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     primaries = _primaries(bindings, absent)
     flow = primaries.get("project_fcf")
     if flow is None:
@@ -118,9 +123,14 @@ def fcf_identity(
     periods: list[dict],
     absent: frozenset[str] = frozenset(),
     sign_convention: str = "outflow_negative",
+    plan=None,
 ) -> dict:
     """Сверка названного варианта с процитированным project_fcf. Ряд NPV не подменяется."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     metric = "fcf_identity"
     if variant not in _IDENTITY:
         return _warned(metric, "fcf_identity_variant_absent")

@@ -55,9 +55,14 @@ def net_cash_flow(
     periods: list[dict],
     sign_convention: str = "outflow_negative",
     absent: frozenset[str] = frozenset(),
+    plan=None,
 ) -> dict:
     """ncf_period(t) = |приток| − |отток| на одном периоде. Дыра периода нулём не закрывается."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     inflow, inflow_error = _side(bindings, "cash_inflow", _COMPANY_IN, _SECTION_IN, absent)
     outflow, outflow_error = _side(bindings, "cash_outflow", _COMPANY_OUT, _SECTION_OUT, absent)
     if inflow_error or outflow_error:

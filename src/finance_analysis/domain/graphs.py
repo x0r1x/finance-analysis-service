@@ -283,6 +283,7 @@ def trace_metric(
             list(scoped_facts),
             statement_sheets,
             absent,
+            plan=plan,
         ):
             steps.append(
                 _dash_step(
