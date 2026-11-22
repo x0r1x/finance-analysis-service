@@ -767,6 +767,27 @@ def test_stale_sole_row_is_not_an_input_when_a_plan_exists():
     assert _primary(AuditInput(bindings=[stale, debt], plans={"dscr": plan}), "cfads", "dscr") is None
 
 
+def test_stale_cfads_fails_ratio_precheck_when_the_plan_does_not_confirm_it(monkeypatch):
+    """Предпроверка DSCR читает план. Кэшированная строка модели в inputs не входит."""
+
+    from finance_analysis.plugins.rules.ratios import RATIO_MISMATCH
+
+    stale = _bind("cfads", 1, stale=True, row_key="stale")
+    debt = _bind("debt_service", 2, row_key="debt")
+    model = _bind("dscr", 3, row_key="model")
+    plan = resolve_metric_plan("dscr", [stale, debt, model], EXPRESSIONS)
+    assert plan is not None
+    assert "cfads" not in {item.concept for item in plan.inputs}
+    assert "dscr" not in {item.concept for item in plan.inputs}
+
+    def _forbidden(**_kwargs):
+        raise AssertionError("формула не считается, пока план не подтвердил CFADS")
+
+    monkeypatch.setattr("finance_analysis.plugins.rules.ratios.coverage_ratio", _forbidden)
+    data = AuditInput(bindings=[stale, debt, model], plans={"dscr": plan})
+    assert RATIO_MISMATCH.check(data) == []
+
+
 def test_concept_outside_the_plan_is_not_selected_again():
     """Понятие вне плана не читается через _groups и _primaries."""
 

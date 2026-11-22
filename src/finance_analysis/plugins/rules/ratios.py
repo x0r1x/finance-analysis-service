@@ -89,6 +89,12 @@ def _primary(data: AuditInput, concept: str, metric: str | None = None) -> dict 
     return None
 
 
+def _cached_model_row(data: AuditInput, concept: str) -> dict | None:
+    """Кэш модели, не вход формулы. В plan.inputs это понятие не добавляется."""
+
+    return _legacy_bound_row(data, concept)
+
+
 def _cached(data: AuditInput, row_key: str) -> dict[tuple[str, str], Decimal]:
     values = {}
     for fact in data.facts:
@@ -107,8 +113,12 @@ class RatioMismatch(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
         if not data.bindings or not project_finance_dscr(data):
             return []
-        model = _primary(data, "dscr")
-        if model is None or _primary(data, "cfads") is None or _primary(data, "debt_service") is None:
+        model = _cached_model_row(data, "dscr")
+        if (
+            model is None
+            or _primary(data, "cfads", "dscr") is None
+            or _primary(data, "debt_service", "dscr") is None
+        ):
             return []
         phases = {}
         for row in data.periods:
