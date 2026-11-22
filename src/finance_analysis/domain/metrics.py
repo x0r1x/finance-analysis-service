@@ -1139,6 +1139,9 @@ def _primaries(bindings: list[dict], absent: frozenset[str] = frozenset()) -> di
         concept = row.get("effective_concept")
         if not (row.get("is_primary") and row.get("status") in _BOUND and concept):
             continue
+        # Устаревшая основная строка не входит в расчёт: её отбрасывает и резолвер входа.
+        if row.get("stale"):
+            continue
         if concept in absent and row.get("source") not in HUMAN_SOURCES:
             continue
         found[concept] = row
@@ -1160,7 +1163,7 @@ def absent_concepts(bindings: list[dict], absent: frozenset[str] = frozenset()) 
 def _groups(bindings: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
     for row in bindings:
-        if row.get("is_primary") and row.get("effective_concept"):
+        if row.get("is_primary") and row.get("effective_concept") and not row.get("stale"):
             grouped.setdefault(row["effective_concept"], []).append(row)
     return grouped
 

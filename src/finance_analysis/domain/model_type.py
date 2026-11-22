@@ -73,6 +73,8 @@ class MetricExpression:
     denominator_plus: tuple[str, ...] = ()
     denominator_minus: tuple[str, ...] = ()
     one_of: frozenset[str] = field(default_factory=frozenset)
+    # Порядок объявления one_of. Пустой кортеж — порядок не записан, резолвер берёт sorted.
+    one_of_order: tuple[str, ...] = ()
     rate: str | None = None
     base: str | None = None
     aggregate: str | None = None

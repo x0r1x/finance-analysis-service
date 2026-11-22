@@ -140,7 +140,7 @@
         },
         "physical_lineage_complete": {
           "type": "boolean",
-          "description": "false, если graph_links отсутствует в сборке (связи формул Excel не проверялись)"
+          "description": "false, если файла graph_links нет или хотя бы одна ссылка обрезана. Пустой загруженный граф полон."
         }
       }
     },

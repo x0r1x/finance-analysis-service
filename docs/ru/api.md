@@ -34,7 +34,7 @@
 - `POST /v1/books/{job_id}/periods:resolve` — периоды по фразе.
 - `GET /v1/books/{job_id}/decisions` и `POST /v1/books/{job_id}/decisions` — чтение и запись журнала.
 - `POST /v1/books/{job_id}/mapping:infer` — пересчитать inferred-привязку. Ответ `202`.
-- `GET /v1/books/{job_id}/metrics/{metric_id}/trace` — read-only трассировка входа metric → concept → binding → cell (фаза 4). Query: `variant`. Нет `dim_row` / `fact_observation` → `412`; нет файла `graph_links` → `physical_lineage_complete: false`. Пустой опубликованный `graph_links` — полная цепь.
+- `GET /v1/books/{job_id}/metrics/{metric_id}/trace` — read-only трассировка входа metric → concept → binding → cell (фаза 4). Query: `variant`. Нет `dim_row` / `fact_observation` → `412`; нет файла `graph_links` или обрезанная ссылка → `physical_lineage_complete: false`. Пустой опубликованный `graph_links` — полная цепь. Шаги — входы, которые взял расчёт: один член `one_of` и фактический запасной путь.
 
 ## Анализы
 
