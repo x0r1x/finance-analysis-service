@@ -99,8 +99,8 @@ def origin_view(
             }
         )
     truncated_links = sum(1 for link in data.link_cells.values() if link.truncated)
-    # Тот же смысл, что physical_lineage_complete у trace_metric: физический граф неполон.
-    # Здесь причина — обрезанный диапазон, а не отсутствие датасета graph_links.
+    # shortcut: пустой список связей выглядит полным. Книга без формул и отсутствующий graph_links здесь не различаются. Поднять, когда AuditInput получит graph_links_available, как trace_metric.
+    # Обрезанный диапазон — та же неполнота физического графа, что physical_lineage_complete у trace_metric.
     complete = truncated_links == 0
     return {
         "book": book,
