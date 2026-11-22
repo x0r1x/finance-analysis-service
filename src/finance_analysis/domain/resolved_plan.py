@@ -19,18 +19,46 @@ RESOLUTION_ENGINE_VERSION = "1"
 PLAN_SCHEMA = "resolved_metric_plan@1.0"
 
 
-def _reader_stamp() -> str:
-    """16 hex исходников, которые читают строку в понятие и выбранную привязку.
+def resolution_functions() -> tuple:
+    """Функции, от которых зависит план. Набор зафиксирован контрактным тестом.
 
-    Целый SMV сюда не входит: глоссарий и правила чтение строки не меняют.
-    Смена ``declared_concept`` или ``select_primary`` меняет штамп и хеш плана.
+    Импорт ленивый: ``semantic_input`` сам импортирует этот модуль.
     """
 
-    text = inspect.getsource(declared_concept) + "\n" + inspect.getsource(select_primary)
+    from finance_analysis.domain.free_cash_flow import _basis
+    from finance_analysis.domain.metrics import (
+        choose_one_of,
+        confirm_paid_interest,
+        dscr_denominator_plan,
+        interest_choice,
+    )
+    from finance_analysis.domain.semantic_input import _fallbacks, _specs
+
+    return (
+        declared_concept,
+        select_primary,
+        _specs,
+        _fallbacks,
+        choose_one_of,
+        dscr_denominator_plan,
+        interest_choice,
+        confirm_paid_interest,
+        _basis,
+    )
+
+
+def input_read_stamp() -> str:
+    """16 hex версии движка и исходников функций выбора.
+
+    Целый SMV сюда не входит. Смена исходника любой функции из
+    ``resolution_functions`` или ``RESOLUTION_ENGINE_VERSION`` меняет штамп
+    и хеш плана, даже если вторую из этих двух констант забыли поправить.
+    """
+
+    text = RESOLUTION_ENGINE_VERSION + "\n" + "\n".join(
+        inspect.getsource(fn) for fn in resolution_functions()
+    )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-INPUT_READ_STAMP = _reader_stamp()
 
 
 @dataclass(frozen=True)
@@ -288,7 +316,7 @@ def hashed_body(
                 key=lambda item: (item.slot, item.replaced, item.chosen, _text(item.warning_code)),
             )
         ],
-        "input_read_stamp": INPUT_READ_STAMP,
+        "input_read_stamp": input_read_stamp(),
         "lineage": [
             _lineage_row(item)
             for item in sorted(

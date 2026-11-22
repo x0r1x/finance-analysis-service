@@ -140,18 +140,18 @@ def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
     import hashlib
     import inspect
 
-    from finance_analysis.domain.binding_resolution import (
-        declared_concept,
-        select_primary,
-    )
     from finance_analysis.domain.resolved_plan import (
-        INPUT_READ_STAMP,
+        RESOLUTION_ENGINE_VERSION,
         content_digest,
         hashed_body,
+        input_read_stamp,
+        resolution_functions,
     )
 
-    text = inspect.getsource(declared_concept) + "\n" + inspect.getsource(select_primary)
-    assert INPUT_READ_STAMP == hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    text = RESOLUTION_ENGINE_VERSION + "\n" + "\n".join(
+        inspect.getsource(fn) for fn in resolution_functions()
+    )
+    assert input_read_stamp() == hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     bindings = [_bind("cfads", 1), _bind("debt_service", 2)]
     left = resolve_metric_plan("dscr", bindings, EXPRESSIONS, semantic_model_version="smv-a")
     right = resolve_metric_plan("dscr", bindings, EXPRESSIONS, semantic_model_version="smv-b")
@@ -175,11 +175,73 @@ def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
         shield=left.shield,
         lineage=left.lineage,
     )
-    assert body["input_read_stamp"] == INPUT_READ_STAMP
+    assert body["input_read_stamp"] == input_read_stamp()
     assert "semantic_model_version" not in body
     assert content_digest(body) == left.content_sha256
     changed = {**body, "input_read_stamp": "0" * 16}
     assert content_digest(changed) != left.content_sha256
+
+
+def test_resolution_stamp_covers_every_selection_function():
+    """Набор и исходник функций выбора входят в штамп вместе с версией движка.
+
+    Смена исходника двигает штамп без правки константы. Смена константы двигает
+    штамп, даже если исходники те же. Штамп входит в content_sha256.
+    """
+
+    import hashlib
+    import inspect
+
+    from finance_analysis.domain.resolved_plan import (
+        RESOLUTION_ENGINE_VERSION,
+        content_digest,
+        hashed_body,
+        input_read_stamp,
+        resolution_functions,
+    )
+
+    names = tuple(fn.__name__ for fn in resolution_functions())
+    assert names == (
+        "declared_concept",
+        "select_primary",
+        "_specs",
+        "_fallbacks",
+        "choose_one_of",
+        "dscr_denominator_plan",
+        "interest_choice",
+        "confirm_paid_interest",
+        "_basis",
+    )
+    text = RESOLUTION_ENGINE_VERSION + "\n" + "\n".join(
+        inspect.getsource(fn) for fn in resolution_functions()
+    )
+    stamp = input_read_stamp()
+    assert stamp == hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    assert len(stamp) == 16
+    body = hashed_body(
+        resolution_engine_version=RESOLUTION_ENGINE_VERSION,
+        metric_id="dscr",
+        variant=None,
+        variant_source="formula",
+        catalog_version=None,
+        build_key=None,
+        model_id=None,
+        status="resolved",
+        inputs=(),
+        diagnostic=(),
+        rejected=(),
+        fallbacks=(),
+        warnings=(),
+        needs_input=(),
+        shield=None,
+    )
+    assert body["input_read_stamp"] == stamp
+    assert "semantic_model_version" not in body
+    assert content_digest(body) != content_digest({**body, "input_read_stamp": "0" * 16})
+    bumped = RESOLUTION_ENGINE_VERSION + "-other\n" + "\n".join(
+        inspect.getsource(fn) for fn in resolution_functions()
+    )
+    assert hashlib.sha256(bumped.encode("utf-8")).hexdigest()[:16] != stamp
 
 
 def test_trace_and_origin_read_one_plan_and_do_not_select(monkeypatch):
