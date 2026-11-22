@@ -77,6 +77,30 @@ class ShieldDecision:
 
 
 @dataclass(frozen=True)
+class LineageRow:
+    """Порядок следа внутри процесса. В хеш и в JSON контракта не входит."""
+
+    concept: str
+    source: str
+    role: str
+    row_key: str | None = None
+    binding_key: str | None = None
+    missing: str | None = None
+    ambiguous: bool = False
+
+    def as_origin(self) -> dict[str, str | bool | None]:
+        body: dict[str, str | bool | None] = {
+            "concept": self.concept,
+            "source": self.source,
+            "row_key": self.row_key,
+        }
+        if self.ambiguous:
+            body["ambiguous"] = True
+            body["confirmed"] = False
+        return body
+
+
+@dataclass(frozen=True)
 class ResolvedMetricPlan:
     schema: str
     plan_id: str
@@ -97,6 +121,7 @@ class ResolvedMetricPlan:
     warnings: tuple[PlanWarning, ...]
     needs_input: tuple[NeedsInput, ...]
     shield: ShieldDecision | None
+    lineage: tuple[LineageRow, ...] = ()
 
 
 def content_digest(body: dict) -> str:
@@ -249,6 +274,7 @@ def seal(
     warnings: tuple[PlanWarning, ...],
     needs_input: tuple[NeedsInput, ...],
     shield: ShieldDecision | None,
+    lineage: tuple[LineageRow, ...] = (),
     resolution_engine_version: str = RESOLUTION_ENGINE_VERSION,
 ) -> ResolvedMetricPlan:
     digest = content_digest(
@@ -290,4 +316,5 @@ def seal(
         warnings=warnings,
         needs_input=needs_input,
         shield=shield,
+        lineage=lineage,
     )

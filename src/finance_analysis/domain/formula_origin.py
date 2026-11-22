@@ -14,10 +14,12 @@ ICAEW сокращает число формул, которые ревьюер 
 from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
+from collections.abc import Mapping
 
 from finance_analysis.domain.audit import AuditInput, Finding, severity_rank
 from finance_analysis.domain.formula_shape import parse_cell
 from finance_analysis.domain.model_type import MetricExpression
+from finance_analysis.domain.resolved_plan import ResolvedMetricPlan
 from finance_analysis.domain.semantic_input import (
     FormulaChain,
     FormulaOrigin,
@@ -46,6 +48,7 @@ def origin_view(
     *,
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
+    plans: Mapping[str, ResolvedMetricPlan] | None = None,
 ) -> dict:
     marked = [item for item in findings if item.code in ORIGIN_CODES]
     by_code: dict[str, Counter] = defaultdict(Counter)
@@ -64,18 +67,22 @@ def origin_view(
     wanted = data.applicable_metrics if data.applicable_metrics is not None else catalog
     edges = _inputs_of(data)
     for metric in sorted(wanted & catalog):
-        resolved = resolve_semantic_inputs(
-            metric,
-            data.bindings,
-            expressions,
-            dscr_variant=data.dscr_variant,
-            interest_order=interest_order,
-            row_fallbacks=row_fallbacks,
-            absent=data.absent,
-            facts=data.facts,
-            links=data.links,
-            statement_sheets=data.statement_sheets,
-        )
+        plan = (plans or {}).get(metric)
+        if plan is not None:
+            resolved = plan.lineage
+        else:
+            resolved = resolve_semantic_inputs(
+                metric,
+                data.bindings,
+                expressions,
+                dscr_variant=data.dscr_variant,
+                interest_order=interest_order,
+                row_fallbacks=row_fallbacks,
+                absent=data.absent,
+                facts=data.facts,
+                links=data.links,
+                statement_sheets=data.statement_sheets,
+            )
         if not resolved:
             continue
         seeded = tuple(item for item in resolved if item.row_key)

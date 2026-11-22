@@ -37,6 +37,7 @@ from finance_analysis.domain.resolved_plan import (
     RESOLUTION_ENGINE_VERSION,
     AppliedFallback,
     DiagnosticCandidate,
+    LineageRow,
     NeedsInput,
     PlanWarning,
     RejectedAlternative,
@@ -301,6 +302,18 @@ def resolve_metric_plan(
         warnings=warnings,
         needs_input=needs,
         shield=shield,
+        lineage=tuple(
+            LineageRow(
+                item.concept,
+                item.source,
+                item.role,
+                item.row_key,
+                item.binding_key,
+                item.missing,
+                item.ambiguous,
+            )
+            for item in items
+        ),
         resolution_engine_version=RESOLUTION_ENGINE_VERSION,
     )
 
