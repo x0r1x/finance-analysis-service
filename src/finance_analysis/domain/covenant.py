@@ -53,7 +53,7 @@ from finance_analysis.domain.metrics import (
     methodology_block,
     unconfirmed_scale,
 )
-from finance_analysis.domain.model_type import Composed, Side
+from finance_analysis.domain.model_type import Composed, MetricExpression, Side
 from finance_analysis.domain.net_cash_flow import net_cash_flow
 from finance_analysis.domain.period_basis import _as_date, basis_of
 from finance_analysis.domain.returns import fcf_identity, project_return
@@ -167,6 +167,22 @@ def _parse(value: dict) -> Composed:
     return Composed(_as_side(value["numerator"]), _as_side(value["denominator"]), str(value["window"]))
 
 
+def profile_dscr_expression(profile: dict | None) -> MetricExpression | None:
+    """Неименованный состав профиля. Именованный вариант остаётся формулой каталога."""
+
+    raw = (profile or {}).get("dscr_definition")
+    if not isinstance(raw, dict) or "numerator" not in raw or "denominator" not in raw:
+        return None
+    numerator = raw["numerator"] if isinstance(raw["numerator"], dict) else {}
+    denominator = raw["denominator"] if isinstance(raw["denominator"], dict) else {}
+    return MetricExpression(
+        numerator_plus=tuple(numerator.get("plus") or ()),
+        numerator_minus=tuple(numerator.get("minus") or ()),
+        denominator_plus=tuple(denominator.get("plus") or ()),
+        denominator_minus=tuple(denominator.get("minus") or ()),
+    )
+
+
 def _as_side(raw: dict) -> Side:
     return Side(tuple(raw.get("plus") or ()), tuple(raw.get("minus") or ()))
 
@@ -274,6 +290,7 @@ def covenant_dscr(
         absent=absent,
         profile=profile,
         aggregations=aggregations,
+        plan=plan,
     )
     if source == "default" and result["status"] == "succeeded":
         notes = [*notes, *_mismatch(result["rows"], facts, bindings, periods, absent)]
@@ -314,6 +331,7 @@ def dscr_ocf_covenant(
     row_fallbacks: dict | None = None,
     composed: dict[str, Composed] | None = None,
     aggregations: Mapping[str, str] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     """OCF-ковенант по составу каталога. Нет входов состава — метрика не считается, CFADS не подставляется."""
 
@@ -333,7 +351,21 @@ def dscr_ocf_covenant(
         row_fallbacks=row_fallbacks,
         composed=composed,
         aggregations=aggregations,
+        plan=plan,
     )
+
+
+def _unplanned(metric: str, names: list[str]) -> dict:
+    """Понятие формулы нет среди подтверждённых входов плана. Привязки не сканируются."""
+
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [{"kind": "concept", "reason": "concept_unknown", "subject": names[0]}],
+        "missing_inputs": names,
+        "warnings": [],
+        "status": "missing_input",
+    }
 
 
 def composed_ratio(
@@ -348,6 +380,7 @@ def composed_ratio(
     absent: frozenset[str] = frozenset(),
     profile: dict | None = None,
     aggregations: Mapping[str, str] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     blocked = methodology_block(
         profile,
@@ -362,8 +395,25 @@ def composed_ratio(
     )
     if blocked:
         return blocked
+    if plan is not None and plan.status in {"needs_input", "missing_input"}:
+        needs = [item.as_dict() for item in plan.needs_input]
+        return {
+            "metric": metric,
+            "rows": [],
+            "needs_input": needs,
+            "missing_inputs": [item.subject for item in plan.needs_input],
+            "warnings": [item.as_dict() for item in plan.warnings],
+            "status": plan.status,
+        }
+    confirmed: frozenset[str] | None = None
+    primaries: dict | None = None
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bound_rows
+
+        primaries = bound_rows(plan, bindings)
+        confirmed = frozenset(item.concept for item in plan.inputs)
     unbound: frozenset[str] = frozenset()
-    if metric == "debt_off_balance_ebitda":
+    if metric == "debt_off_balance_ebitda" and plan is None:
         bound = _primaries(bindings, absent)
         if "total_debt" in bound and "off_balance_obligations" not in bound:
             unbound = frozenset({"off_balance_obligations"})
@@ -374,10 +424,19 @@ def composed_ratio(
         *formula.denominator.minus,
     )
     needed = tuple(name for name in needed if name not in unbound)
-    missing = _missing(metric, bindings, needed, absent)
-    if missing:
-        return missing
-    primaries = _primaries(bindings, absent)
+    if plan is not None:
+        outside = [name for name in needed if name not in (confirmed or frozenset())]
+        if outside:
+            return _unplanned(metric, outside)
+        lost = [name for name in needed if name not in (primaries or {})]
+        if lost:
+            return _unplanned(metric, lost)
+    else:
+        missing = _missing(metric, bindings, needed, absent)
+        if missing:
+            return missing
+        primaries = _primaries(bindings, absent)
+    assert primaries is not None
     inputs = list(dict.fromkeys(needed))
     if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
         return _refused(metric, periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)
@@ -1852,6 +1911,7 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             composed=composed,
             aggregations=aggregations,
+            plan=plan,
         )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         return covenant_dscr(

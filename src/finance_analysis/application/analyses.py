@@ -128,6 +128,12 @@ def _dscr_variant(catalog, verdict, profile: dict | None = None) -> str | None:
     return confirmed_variants(catalog, verdict).get("dscr")
 
 
+def _profile_dscr(profile: dict | None):
+    from finance_analysis.domain.covenant import profile_dscr_expression
+
+    return profile_dscr_expression(profile)
+
+
 def _attach_book_rows(envelope: dict, got: dict) -> None:
     """Кладёт цитаты строк книги в результат, только когда список не пуст.
 
@@ -902,6 +908,7 @@ class Analyses:
             semantic_model_version=target.semantic_model,
             build_key=target.build,
             model_id=job_id,
+            dscr_expression=_profile_dscr(body),
         )
         for metric in metrics:
             use = applicability(svc.model_types, labels, metric)
@@ -1398,6 +1405,7 @@ class Analyses:
             semantic_model_version=target.semantic_model,
             build_key=target.build,
             model_id=job_id,
+            dscr_expression=_profile_dscr(data.profile),
         )
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
         bound: set[str] = set()

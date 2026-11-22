@@ -1,5 +1,7 @@
 """План разрешения: один объект, три списка, полный хеш."""
 
+from decimal import Decimal
+
 import pytest
 
 from finance_analysis.domain.audit import AuditInput
@@ -370,6 +372,206 @@ def test_covenant_reads_the_plan_and_ratios_primary_does_not_select(monkeypatch)
     assert after["definition_source"] == before["definition_source"]
     assert _primary(data, "ebitda", metric="dscr")["row_key"] == "e"
     assert _primary(data, "dscr", metric="dscr") is None
+
+
+def _corporate():
+    from finance_analysis.application.model_types import (
+        load_metric_catalog,
+        load_model_types,
+    )
+
+    catalog = load_model_types()
+    _inputs, _variants, composed, _bases, _rates, expressions = load_metric_catalog()
+    return catalog, composed, expressions
+
+
+def _covenant(catalog, composed, **extra):
+    from finance_analysis.domain.covenant import covenant_dscr
+
+    body = {
+        "facts": extra.pop("facts"),
+        "bindings": extra.pop("bindings"),
+        "periods": [_period()],
+        "default": composed["dscr.corporate_covenant"],
+        "concepts": frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal", "operating_cash_flow", "dscr"}),
+        "money": frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal", "operating_cash_flow"}),
+        "interest_order": catalog.interest_order,
+        "row_fallbacks": catalog.row_fallbacks,
+        "composed": composed,
+    }
+    body.update(extra)
+    return covenant_dscr(**body)
+
+
+def test_ambiguous_covenant_binding_is_not_calculated(monkeypatch):
+    """Неоднозначный вход ковенанта не даёт число, и выбор не повторяется."""
+
+    catalog, composed, expressions = _corporate()
+    bindings = [
+        _bind("ebitda", 1, row_key="e"),
+        _bind("ebitda", 2, row_key="e2"),
+        _bind("cash_taxes", 3, row_key="t"),
+        _bind("capex", 4, row_key="c"),
+        _bind("interest", 5, row_key="i"),
+        _bind("principal", 6, row_key="p"),
+    ]
+    facts = [
+        _fact("e", "ebitda") | {"normalized_value": "100"},
+        _fact("e2", "ebitda") | {"normalized_value": "999"},
+        _fact("t", "cash_taxes") | {"normalized_value": "10"},
+        _fact("c", "capex") | {"normalized_value": "20"},
+        _fact("i", "interest") | {"normalized_value": "15"},
+        _fact("p", "principal") | {"normalized_value": "5"},
+    ]
+    plan = resolve_metric_plan(
+        "dscr",
+        bindings,
+        expressions,
+        variant="corporate_covenant",
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    assert plan is not None and plan.status == "needs_input"
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("selection repeated")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant._primaries", boom)
+    monkeypatch.setattr("finance_analysis.domain.cover_metrics._primaries", boom)
+    got = _covenant(catalog, composed, facts=facts, bindings=bindings, plan=plan)
+    assert got["status"] == "needs_input"
+    assert got["rows"] == []
+
+
+def test_missing_plan_blocks_a_profile_formula_that_could_still_be_divided():
+    """missing_input плана не доходит до деления, даже если состав профиля полный."""
+
+    catalog, composed, expressions = _corporate()
+    bindings = [
+        _bind("ebitda", 1, row_key="e"),
+        _bind("cash_taxes", 2, row_key="t"),
+        _bind("capex", 3, row_key="c"),
+        _bind("interest", 4, row_key="i"),
+    ]
+    facts = [
+        _fact("e", "ebitda") | {"normalized_value": "100"},
+        _fact("t", "cash_taxes") | {"normalized_value": "10"},
+        _fact("c", "capex") | {"normalized_value": "20"},
+        _fact("i", "interest") | {"normalized_value": "15"},
+    ]
+    plan = resolve_metric_plan(
+        "dscr",
+        bindings,
+        expressions,
+        variant="corporate_covenant",
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    assert plan is not None and plan.status == "missing_input"
+    profile = {
+        "dscr_definition": {
+            "numerator": {"plus": ["ebitda"], "minus": []},
+            "denominator": {"plus": ["interest"], "minus": []},
+            "window": "period",
+        }
+    }
+    got = _covenant(
+        catalog,
+        composed,
+        facts=facts,
+        bindings=bindings,
+        profile=profile,
+        plan=plan,
+    )
+    assert got["status"] == "missing_input"
+    assert got["rows"] == []
+
+
+def test_profile_definition_builds_a_plan_from_that_composition():
+    """Состав профиля строит план из своих понятий, а не из формулы каталога."""
+
+    from finance_analysis.domain.covenant import profile_dscr_expression
+    from finance_analysis.domain.semantic_input import plans_for
+
+    catalog, composed, expressions = _corporate()
+    profile = {
+        "dscr_definition": {
+            "numerator": {"plus": ["ebitda"], "minus": []},
+            "denominator": {"plus": ["interest"], "minus": []},
+            "window": "period",
+        }
+    }
+    bindings = [
+        _bind("ebitda", 1, row_key="e"),
+        _bind("cash_taxes", 2, row_key="t"),
+        _bind("interest", 3, row_key="i"),
+    ]
+    facts = [
+        _fact("e", "ebitda") | {"normalized_value": "100"},
+        _fact("t", "cash_taxes") | {"normalized_value": "10"},
+        _fact("i", "interest") | {"normalized_value": "15"},
+    ]
+    plans = plans_for(
+        ["dscr"],
+        bindings,
+        expressions,
+        dscr_variant="corporate_covenant",
+        dscr_expression=profile_dscr_expression(profile),
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    plan = plans["dscr"]
+    assert {item.concept for item in plan.inputs} == {"ebitda", "interest"}
+    assert plan.status == "resolved"
+    got = _covenant(
+        catalog,
+        composed,
+        facts=facts,
+        bindings=bindings,
+        profile=profile,
+        plan=plan,
+    )
+    assert got["status"] == "succeeded"
+    assert got["definition_source"] == "profile"
+    assert got["rows"][0]["value"] == Decimal("6.6666666667")
+    assert got["rows"][0]["inputs"] == ["ebitda", "interest"]
+
+
+def test_composed_ratio_does_not_enlarge_confirmed_inputs():
+    """Формула шире плана не подтягивает лишнее понятие из привязок."""
+
+    from finance_analysis.domain.covenant import composed_ratio
+    from finance_analysis.domain.model_type import Composed, Side
+
+    bindings = [
+        _bind("ebitda", 1, row_key="e"),
+        _bind("interest", 2, row_key="i"),
+        _bind("operating_cash_flow", 3, row_key="o"),
+    ]
+    facts = [
+        _fact("e", "ebitda") | {"normalized_value": "100"},
+        _fact("i", "interest") | {"normalized_value": "15"},
+        _fact("o", "operating_cash_flow") | {"normalized_value": "40"},
+    ]
+    plan = resolve_metric_plan(
+        "dscr",
+        bindings,
+        None,
+        inputs={"all_of": ("ebitda", "interest")},
+    )
+    assert plan is not None and plan.status == "resolved"
+    formula = Composed(Side(("ebitda", "operating_cash_flow"), ()), Side(("interest",), ()), "period")
+    got = composed_ratio(
+        "dscr",
+        formula,
+        facts=facts,
+        bindings=bindings,
+        periods=[_period()],
+        plan=plan,
+    )
+    assert got["status"] == "missing_input"
+    assert got["rows"] == []
+    assert "operating_cash_flow" in got["missing_inputs"]
 
 
 def test_one_plan_is_reused_and_trace_keeps_the_full_context(monkeypatch):

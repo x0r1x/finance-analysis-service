@@ -578,16 +578,25 @@ def plans_for(
     semantic_model_version: str | None = None,
     build_key: str | None = None,
     model_id: str | None = None,
+    dscr_expression: MetricExpression | None = None,
 ) -> dict[str, ResolvedMetricPlan]:
-    """Один план на метрику. Вызывающий передаёт этот словарь дальше как есть."""
+    """Один план на метрику. Вызывающий передаёт этот словарь дальше как есть.
+
+    ``dscr_expression`` — неименованный состав профиля. Он заменяет формулу
+    варианта DSCR, чтобы план строился из понятий договора, а не каталога.
+    """
 
     found: dict[str, ResolvedMetricPlan] = {}
     for metric in metrics:
         variant = dscr_variant if metric == "dscr" else (variant_of or {}).get(metric)
+        active = expressions
+        if metric == "dscr" and dscr_expression is not None:
+            active = dict(expressions or {})
+            active[f"dscr.{variant}" if variant else "dscr"] = dscr_expression
         plan = resolve_metric_plan(
             metric,
             bindings,
-            expressions,
+            active,
             variant=variant,
             dscr_variant=dscr_variant,
             interest_order=interest_order,
