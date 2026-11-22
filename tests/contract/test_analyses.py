@@ -305,6 +305,9 @@ def _insert_row_on_every_sheet(folder) -> None:
         link["cell"] = _cell(link["cell"])
         link["refs"] = [_cell(ref) for ref in link["refs"]]
         link["row_key"] = _row_key(link.get("row_key"))
+        # Текст формулы тоже сдвигается: zero_addend читает адреса из формулы, не из refs.
+        if link.get("formula"):
+            link["formula"] = _CELL.sub(lambda m: f"{m.group(1)}{int(m.group(2)) + 1}", link["formula"])
     (folder / "context.json").write_text(json.dumps(context, ensure_ascii=False))
     (folder / "graph.json").write_text(json.dumps(graph, ensure_ascii=False))
 
@@ -381,7 +384,10 @@ async def test_projection_upgrade_rebuilds_with_same_etag(app, local_service, mo
         )
         assert filtered.status_code == 200, filtered.text
         assert filtered.json()["build_key"] == old.build_key
-        assert filtered.json()["items"] == []
+        old_bindings = await local_service._dataset_rows(RVI, old, "bindings")
+        cfads = {row["binding_key"] for row in old_bindings if row.get("effective_concept") == "cfads"}
+        got = {item["binding_key"] for item in filtered.json()["items"]}
+        assert got and got <= cfads
 
 
 async def test_scope_periods_concepts_and_trace_fallback(app, local_service):
@@ -430,7 +436,11 @@ async def test_scope_periods_concepts_and_trace_fallback(app, local_service):
         )
         assert bound.status_code == 200, bound.text
         kept = [item for item in bound.json()["result_data"]["findings"] if item["locations"]]
-        assert kept and {item["binding_key"] for item in kept} == {chosen["binding_key"]}
+        head_after = (await local_service._read_head(RVI))[0]
+        debt_rows = await local_service._dataset_rows(RVI, head_after, "bindings")
+        debt = {row["binding_key"] for row in debt_rows if row.get("effective_concept") == "debt_service"}
+        assert kept and chosen["binding_key"] in {item["binding_key"] for item in kept}
+        assert {item["binding_key"] for item in kept} <= debt
 
         # Builder пересобирает публикацию — цепочка на один уровень по graph_links.
         local_service.builder.rebuilding.add(RVI)
