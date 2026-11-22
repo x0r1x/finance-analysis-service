@@ -736,6 +736,41 @@ def test_icr_keeps_only_the_chosen_numerator_in_inputs():
     assert any(item.reason == "not_selected_one_of" for item in plan.rejected)
 
 
+def test_unused_alternative_ambiguity_does_not_set_status():
+    """Статус — проекция выбранных входов. Вторая группировка ebit статус не меняет."""
+
+    bindings = [
+        _bind("ebitda", 1),
+        _bind("ebit", 2),
+        _bind("ebit", 3),
+        _bind("interest", 4),
+    ]
+    plan = resolve_metric_plan("icr", bindings, EXPRESSIONS)
+    assert plan is not None
+    assert plan.status == "resolved"
+    assert {item.concept for item in plan.inputs} == {"ebitda", "interest"}
+    assert all(item.subject != "ebit" for item in plan.needs_input)
+
+
+def test_concept_outside_the_plan_is_not_selected_again():
+    """Понятие вне плана не читается через _groups и _primaries."""
+
+    from finance_analysis.plugins.rules.coverage import _primary
+
+    bindings = [
+        _bind("cfads", 1, row_key="c"),
+        _bind("debt_service", 2, row_key="d"),
+        _bind("target_dscr", 3, row_key="target"),
+    ]
+    plan = resolve_metric_plan("dscr", bindings, EXPRESSIONS)
+    assert plan is not None
+    assert "target_dscr" not in {item.concept for item in plan.inputs}
+    with_plan = AuditInput(bindings=list(bindings), plans={"dscr": plan})
+    assert _primary(with_plan, "target_dscr") is None
+    assert _primary(with_plan, "cfads")["row_key"] == "c"
+    assert _primary(AuditInput(bindings=list(bindings)), "target_dscr")["row_key"] == "target"
+
+
 def test_ambiguous_row_without_binding_key_is_not_calculated():
     """Неоднозначная строка без binding_key не становится подтверждённым входом."""
 

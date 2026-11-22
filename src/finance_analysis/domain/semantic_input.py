@@ -23,7 +23,6 @@ from finance_analysis.domain.free_cash_flow import (
 )
 from finance_analysis.domain.metrics import (
     HUMAN_SOURCES,
-    _groups,
     _primaries,
     choose_one_of,
     confirm_paid_interest,
@@ -399,22 +398,17 @@ def _coverage_status(
     warnings: tuple[PlanWarning, ...],
     fallbacks: tuple[AppliedFallback, ...],
 ) -> tuple[str, tuple[NeedsInput, ...], tuple[PlanWarning, ...], tuple[AppliedFallback, ...]]:
-    """Статус покрытия по уже выбранным входам. Повторный выбор не делает.
+    """Статус — проекция уже выбранных входов. Второй группировки привязок нет."""
 
-    Неоднозначность и отсутствие читаются со строк. Это диагностика, не правило выбора.
-    """
-
-    rows = [dict(row) for row in bindings]
-    watched = {item.concept for item in items} | {"ebitda", "ebit"}
-    ambiguous = [name for name, grouped in _groups(rows).items() if len(grouped) > 1 and name in watched]
-    if not ambiguous:
-        ambiguous = [
-            declared_concept(row)
-            for row in rows
-            if row.get("status") == "ambiguous" and declared_concept(row) in watched
-        ]
+    ambiguous = [item.concept for item in items if item.ambiguous]
     if ambiguous:
-        return "needs_input", (NeedsInput("concept", "ambiguous", ambiguous[0]),), warnings, fallbacks
+        return (
+            "needs_input",
+            tuple(NeedsInput("concept", "ambiguous", name) for name in ambiguous),
+            warnings,
+            fallbacks,
+        )
+    rows = [dict(row) for row in bindings]
     missing = [item.concept for item in items if item.row_key is None]
     if missing:
         subject = missing[0]

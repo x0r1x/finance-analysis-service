@@ -75,17 +75,19 @@ def dscr_rows(data: AuditInput) -> list[dict]:
 def _primary(data: AuditInput, concept: str, metric: str = "dscr") -> dict | None:
     """Основная строка понятия; `concept.absent` отменяет только привязка человека, как в DSCR.
 
-    Если у книги уже есть план метрики, строка берётся из его подтверждённых входов.
+    Если у книги уже есть план метрики, строка берётся только из его подтверждённых входов.
+    Понятия вне плана нет: повторный `_groups` его не назначает.
     """
 
     plan = (data.plans or {}).get(metric)
     if plan is not None:
         item = next((row for row in plan.inputs if row.concept == concept), None)
-        if item is not None:
-            from finance_analysis.domain.resolved_plan import recover_row
+        if item is None:
+            return None
+        from finance_analysis.domain.resolved_plan import recover_row
 
-            found = recover_row(data.bindings, item)
-            return found if isinstance(found, dict) else None
+        found = recover_row(data.bindings, item)
+        return found if isinstance(found, dict) else None
     if len(_groups(data.bindings).get(concept, ())) > 1:
         return None
     return _primaries(data.bindings, data.absent).get(concept)
