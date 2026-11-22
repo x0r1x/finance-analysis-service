@@ -452,7 +452,7 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
       a/{attempt_ulid}/projection/dim_row.parquet     # данные попытки; действительна только попытка, указанная в manifest
       a/{attempt_ulid}/projection/dim_period.parquet
       a/{attempt_ulid}/projection/fact_observation.parquet
-      a/{attempt_ulid}/projection/graph_links.parquet # опц.: развёрнутые refs из graph.json для правил
+      a/{attempt_ulid}/projection/graph_links.parquet # всегда, в том числе пустой (0 строк): книга без формул. Нет файла только у старой сборки или если запись не удалась
       derived/{derive_key}/_done.json               # маркер (put_if_absent, последним): входы derive_key + attempt + файлы
       derived/{derive_key}/a/{attempt}/row_semantics.parquet · period_semantics.parquet   # inferred ⊕ свёртка журнала до state_seq
       derived/{derive_key}/a/{attempt}/bindings.parquet   # все fact-строки, включая unknown/ambiguous (§5.10.1)

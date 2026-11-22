@@ -108,7 +108,7 @@ metric_id → concept → binding_key → cell_id
 | `fact_dataset_unavailable` | нет `fact_observation` в сборке (доменная метка; HTTP — см. ниже) |
 | `dim_row_unavailable` | нет `dim_row` в сборке (доменная метка; HTTP — см. ниже) |
 
-**Важно:** отсутствие обязательного датасета ≠ `no_cell`. HTTP-слой при отсутствии `dim_row` / `fact_observation` отвечает `412 precondition_failed` («трассировка недоступна…»), а не подменяет ответ пустым списком фактов. Отсутствие опционального `graph_links` → `physical_lineage_complete: false` (связи формул не проверялись).
+**Важно:** отсутствие обязательного датасета ≠ `no_cell`. HTTP-слой при отсутствии `dim_row` / `fact_observation` отвечает `412 precondition_failed` («трассировка недоступна…»), а не подменяет ответ пустым списком фактов. Нет файла `graph_links` (старая сборка или сбой записи) → `physical_lineage_complete: false` (связи формул не проверялись). Новая публикация всегда пишет файл, в том числе пустой: пустой граф — книга без формул, цепь полная.
 
 ### Ответ API
 

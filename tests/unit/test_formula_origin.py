@@ -455,3 +455,105 @@ async def test_audit_input_threads_graph_links_availability():
     loaded_view = origin_view(loaded, [], {})
     assert absent_view["physical_lineage_complete"] is False
     assert loaded_view["physical_lineage_complete"] is True
+
+
+async def test_book_without_formulas_publishes_empty_graph_links_and_stays_complete():
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from finance_analysis.adapters.storage.parquet_io import PyarrowParquet
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.keys import projection_key
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.application.project import project
+    from finance_analysis.application.service import FasService
+    from finance_analysis.domain.book import Head, WorkbookSnapshot
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    job = "a" * 64
+    build = "0123456789abcdef"
+    attempt = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    tables, _warnings = project(WorkbookSnapshot(axes={}, rows=()), model_id=job, build=build)
+    assert tables["graph_links"] == []
+
+    class Store:
+        def __init__(self) -> None:
+            self.data: dict[str, bytes] = {}
+
+        async def put_if_absent(self, key, payload):
+            self.data[key] = payload
+
+        async def get(self, key):
+            return self.data[key]
+
+    store = Store()
+    writer = type("Writer", (), {"parquet": PyarrowParquet(), "store": store})()
+    files = await FasService._write_attempt(writer, job, build, attempt, tables)
+    rel = f"a/{attempt}/projection/graph_links.parquet"
+    assert rel in files
+    assert files[rel]["rows"] == 0
+    assert files[rel]["schema"] == "graph_links@1.0"
+    table = pq.read_table(io.BytesIO(store.data[projection_key(job, build, attempt, "graph_links")]))
+    assert table.num_rows == 0
+    field = table.schema.field("truncated")
+    assert field.type == pa.bool_()
+    assert field.nullable is False
+
+    class Glossary:
+        async def concept_price_facts(self, _version):
+            return {}, {}
+
+        async def composed_of(self, _version):
+            return {}
+
+        async def concept_dimensions(self, _version):
+            return {}
+
+        async def profile_body(self, _profile_id):
+            return {}
+
+    class Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class Svc:
+        parquet = PyarrowParquet()
+        glossary = Glossary()
+        guard = Guard()
+        model_types = load_model_types()
+
+        async def _dataset_rows(self, *_args, **_kwargs):
+            raise NotFound("нет датасета")
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                labels=(),
+                primary=None,
+                source="unresolved",
+                reason=None,
+                seq=None,
+                profile_version=None,
+                score=None,
+                scores={},
+                candidates=(),
+            )
+
+    service = Svc()
+    service.store = store
+    analyses = Analyses(service)
+    head = Head(build_key=build, state_seq=1, derive_key="d", versions={})
+    published = await analyses._input(job, Target(head, build, {"files": files}, False, "d"), frozenset({"links"}))
+    assert published.links == [] and published.graph_links_available is True
+    complete = origin_view(published, [], {})
+    assert complete["physical_lineage_complete"] is True
+    assert complete["note"] is None
+    old = await analyses._input(
+        job,
+        Target(head, build, {"files": {}}, False, "d"),
+        frozenset({"links"}),
+    )
+    assert old.graph_links_available is False
+    assert origin_view(old, [], {})["physical_lineage_complete"] is False
