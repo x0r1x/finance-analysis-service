@@ -1702,24 +1702,7 @@ def _cash_paid(keys, series: dict, name: str, convention: str) -> Decimal | None
 
 
 
-def _reported_book_dscr(
-    attempt: dict,
-    *,
-    variant: str,
-    facts: list[dict],
-    bindings: list[dict],
-    periods: list[dict],
-    absent: frozenset[str],
-) -> dict:
-    """The book's DSCR row, when the selected formula has no inputs. Not a substitute formula."""
-
-    if attempt.get("status") not in {"missing_input", "needs_input"}:
-        return attempt
-    if any(row.get("value") is not None for row in attempt.get("rows") or []):
-        return attempt
-    book = _primaries(bindings, absent).get("dscr")
-    if book is None:
-        return attempt
+def _book_dscr_rows(facts, book, periods) -> list[dict]:
     aligned = aligned_keys(periods)
     cached = _sums(facts, book, aligned, periods)
     rows = []
@@ -1731,13 +1714,49 @@ def _reported_book_dscr(
         rows.append(
             _line("dscr", period, number, "computed", "reported", ["dscr"], None, variant="reported")
         )
-    if not rows:
+    return rows
+
+
+def _reported_book_dscr(
+    attempt: dict,
+    *,
+    variant: str,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    absent: frozenset[str],
+) -> dict:
+    """Keep the book's DSCR beside the formula that actually ran. Do not swap one for the other."""
+
+    book = _primaries(bindings, absent).get("dscr")
+    if book is None:
+        return attempt
+    reported = _book_dscr_rows(facts, book, periods)
+    if not reported:
+        return attempt
+    computed = [row for row in attempt.get("rows") or [] if row.get("value") is not None]
+    if computed:
+        label = variant or "catalog"
+        marked = [{**row, "variant": row.get("variant") or label} for row in attempt["rows"]]
+        warning = {
+            "code": "dscr_reported",
+            "params": {
+                "variant": label,
+                "inputs": ["dscr"],
+                "message": (
+                    f"Посчитан вариант {label}. "
+                    "Рядом DSCR строки книги с пометкой reported. Это разные определения."
+                ),
+            },
+        }
+        return {**attempt, "rows": [*marked, *reported], "warnings": [warning, *(attempt.get("warnings") or [])]}
+    if attempt.get("status") not in {"missing_input", "needs_input"}:
         return attempt
     missing = [str(name) for name in attempt.get("missing_inputs") or [] if name]
     names = ", ".join(missing) if missing else "входы"
     return {
         "metric": "dscr",
-        "rows": rows,
+        "rows": reported,
         "needs_input": attempt.get("needs_input") or [],
         "warnings": [
             {
@@ -1960,12 +1979,22 @@ def select_ratio(
             profile=profile,
             aggregations=aggregations,
         )
-    return coverage_ratio(
+    result = coverage_ratio(
         metric=metric,
         interest_order=interest_order,
         row_fallbacks=row_fallbacks,
         profile=profile,
         **common,
+    )
+    if metric != "dscr":
+        return result
+    return _reported_book_dscr(
+        result,
+        variant=variant or "catalog",
+        facts=common["facts"],
+        bindings=common["bindings"],
+        periods=common["periods"],
+        absent=common.get("absent") or frozenset(),
     )
 
 
