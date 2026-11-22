@@ -86,6 +86,53 @@ def test_engine_version_changes_the_digest():
     assert content_digest(body) != content_digest({**body, "resolution_engine_version": "2"})
 
 
+def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
+    """Как читается строка, входит в хеш. Целый SMV — нет."""
+
+    import hashlib
+    import inspect
+
+    from finance_analysis.domain.binding_resolution import (
+        declared_concept,
+        select_primary,
+    )
+    from finance_analysis.domain.resolved_plan import (
+        INPUT_READ_STAMP,
+        content_digest,
+        hashed_body,
+    )
+
+    text = inspect.getsource(declared_concept) + "\n" + inspect.getsource(select_primary)
+    assert INPUT_READ_STAMP == hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    bindings = [_bind("cfads", 1), _bind("debt_service", 2)]
+    left = resolve_metric_plan("dscr", bindings, EXPRESSIONS, semantic_model_version="smv-a")
+    right = resolve_metric_plan("dscr", bindings, EXPRESSIONS, semantic_model_version="smv-b")
+    assert left is not None and right is not None
+    assert left.content_sha256 == right.content_sha256
+    body = hashed_body(
+        resolution_engine_version=left.resolution_engine_version,
+        metric_id=left.metric_id,
+        variant=left.variant,
+        variant_source=left.variant_source,
+        catalog_version=left.catalog_version,
+        build_key=left.build_key,
+        model_id=left.model_id,
+        status=left.status,
+        inputs=left.inputs,
+        diagnostic=left.diagnostic,
+        rejected=left.rejected,
+        fallbacks=left.fallbacks,
+        warnings=left.warnings,
+        needs_input=left.needs_input,
+        shield=left.shield,
+    )
+    assert body["input_read_stamp"] == INPUT_READ_STAMP
+    assert "semantic_model_version" not in body
+    assert content_digest(body) == left.content_sha256
+    changed = {**body, "input_read_stamp": "0" * 16}
+    assert content_digest(changed) != left.content_sha256
+
+
 def test_trace_and_origin_read_one_plan_and_do_not_select(monkeypatch):
     bindings = [_bind("ebitda", 1), _bind("ebit", 2), _bind("interest", 3)]
     facts = [{"row_key": "S|1|a", "cell_id": "P&L!D12"}]

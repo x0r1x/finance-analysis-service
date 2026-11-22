@@ -7,14 +7,30 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from finance_analysis.domain.binding_resolution import declared_concept, select_primary
 from finance_analysis.domain.book import canonical_json
 
 RESOLUTION_ENGINE_VERSION = "1"
 PLAN_SCHEMA = "resolved_metric_plan@1.0"
+
+
+def _reader_stamp() -> str:
+    """16 hex исходников, которые читают строку в понятие и выбранную привязку.
+
+    Целый SMV сюда не входит: глоссарий и правила чтение строки не меняют.
+    Смена ``declared_concept`` или ``select_primary`` меняет штамп и хеш плана.
+    """
+
+    text = inspect.getsource(declared_concept) + "\n" + inspect.getsource(select_primary)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+INPUT_READ_STAMP = _reader_stamp()
 
 
 @dataclass(frozen=True)
@@ -254,6 +270,7 @@ def hashed_body(
                 key=lambda item: (item.slot, item.replaced, item.chosen, _text(item.warning_code)),
             )
         ],
+        "input_read_stamp": INPUT_READ_STAMP,
         "inputs": [
             _input_row(item)
             for item in sorted(
