@@ -16,9 +16,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from finance_analysis.domain.binding_resolution import select_primary as _select_primary
+from finance_analysis.domain.free_cash_flow import shield_concepts
 from finance_analysis.domain.metrics import (
     HUMAN_SOURCES,
+    _primaries,
     choose_one_of,
+    confirm_paid_interest,
     dscr_denominator_plan,
     interest_choice,
 )
@@ -154,6 +157,9 @@ def resolve_semantic_inputs(
     absent: frozenset[str] = frozenset(),
     inputs: Mapping[str, Sequence[str]] | None = None,
     row_keys: Mapping[str, str] | None = None,
+    facts: Sequence[Mapping[str, Any]] = (),
+    links: Sequence[Mapping[str, Any]] = (),
+    statement_sheets: frozenset[str] = frozenset(),
 ) -> tuple[SemanticInput, ...] | None:
     """Входы, которые расчёт реально берёт. None — метрики нет в этом вызове.
 
@@ -163,14 +169,22 @@ def resolve_semantic_inputs(
 
     chosen = variant if variant else _implied_variant(metric, dscr_variant)
     active = _active(metric, chosen, expressions) if expressions else None
-    visible = _visible(bindings, absent)
+    visible = _with_confirmed_paid(_visible(bindings, absent), absent)
     if active is None:
         if inputs is None:
             return None
-        return _listed(inputs, visible, row_keys)
+        listed = _listed(inputs, visible, row_keys)
+        return _with_shield(
+            listed, metric, visible, absent, facts, links, statement_sheets, row_keys
+        )
     expr, source = active
     specs = _specs(expr, source, metric, chosen, visible, interest_order, row_fallbacks)
-    return tuple(_materialize(name, src, role, visible, row_keys) for name, src, role in specs)
+    chosen_inputs = tuple(
+        _materialize(name, src, role, visible, row_keys) for name, src, role in specs
+    )
+    return _with_shield(
+        chosen_inputs, metric, visible, absent, facts, links, statement_sheets, row_keys
+    )
 
 
 def _implied_variant(metric: str, dscr_variant: str | None) -> str | None:
@@ -344,6 +358,51 @@ def _materialize(
     binding_key = str(raw_key) if raw_key else None
     row_key = str(primary.get("row_key") or (row_keys or {}).get(binding_key or "") or "") or None
     return SemanticInput(concept, source, role, row_key, binding_key, None, ambiguous)
+
+
+def _with_confirmed_paid(
+    bindings: Sequence[Mapping[str, Any]], absent: frozenset[str]
+) -> list[Mapping[str, Any]]:
+    """Та же подстановка 4123, что ``confirm_paid_interest`` кладёт в primaries.
+
+    Копия снимает stale: расчёт вставляет строку уже после фильтра stale.
+    Чужой список привязок не меняется. Занятый interest_paid не переписывается.
+    """
+
+    rows = [dict(row) for row in bindings]
+    injected = confirm_paid_interest(_primaries(rows, absent), rows, absent)
+    if injected is None:
+        return list(bindings)
+    return [*bindings, {**injected, "stale": False}]
+
+
+def _with_shield(
+    items: tuple[SemanticInput, ...],
+    metric: str,
+    bindings: Sequence[Mapping[str, Any]],
+    absent: frozenset[str],
+    facts: Sequence[Mapping[str, Any]],
+    links: Sequence[Mapping[str, Any]],
+    statement_sheets: frozenset[str],
+    row_keys: Mapping[str, str] | None,
+) -> tuple[SemanticInput, ...]:
+    """Добавить понятия щита, которых нет в формуле. Базис берёт расчёт."""
+
+    have = {item.concept for item in items}
+    extra = shield_concepts(
+        metric,
+        [dict(row) for row in bindings],
+        absent,
+        list(facts),
+        list(links),
+        statement_sheets,
+    )
+    added = [
+        _materialize(name, "paid_interest", "all_of", bindings, row_keys)
+        for name in extra
+        if name not in have
+    ]
+    return (*items, *added)
 
 
 def _visible(

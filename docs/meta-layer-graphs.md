@@ -88,7 +88,7 @@ metric_id → concept → binding_key → cell_id
 Алгоритм:
 
 1. Взять показатель (и опционально `variant`) из Financial Model Catalog.  
-2. Взять семантические входы из `resolve_semantic_inputs` (выбранный вариант, один член `one_of` в порядке объявления, не-stale основная привязка, фактический запасной путь `interest_order`). Для каждого такого входа построить шаг:  
+2. Взять семантические входы из `resolve_semantic_inputs` (выбранный вариант, один член `one_of`, не-stale основная привязка, фактический запасной путь `interest_order`, подстановка 4123 и щит FCFF — те же, что у расчёта). Для каждого такого входа построить шаг:  
    - ребро `metric:in:…`;  
    - найти **основную** не-`stale` привязку (`is_primary`, статус `bound` / `bound_with_warning`); при нескольких — детерминированно минимальный `binding_key` + finding `ambiguous_primary_binding`;  
    - по `row_key` собрать все `cell_id` из `fact_observation` этой сборки;  

@@ -15,6 +15,7 @@ from finance_analysis.application.model_types import (
 from finance_analysis.application.report import render_markdown
 from finance_analysis.domain.audit import AuditInput, Finding, Location
 from finance_analysis.domain.formula_origin import origin_view
+from finance_analysis.domain.free_cash_flow import free_cash_flow
 from finance_analysis.domain.graphs import trace_metric
 from finance_analysis.domain.metrics import coverage_ratio
 from finance_analysis.domain.model_type import MetricExpression
@@ -117,6 +118,7 @@ def _trace_rows(metric: str, data: AuditInput, expressions, catalog) -> set[tupl
         row_fallbacks=catalog.row_fallbacks,
         dscr_variant=data.dscr_variant,
         absent=data.absent,
+        statement_sheets=data.statement_sheets,
     )
     return _rows((step.concept, step.row_key) for step in trace.steps if not step.note)
 
@@ -166,6 +168,9 @@ def _resolved_rows(metric: str, data: AuditInput, expressions, catalog) -> set[t
         interest_order=catalog.interest_order,
         row_fallbacks=catalog.row_fallbacks,
         absent=data.absent,
+        facts=data.facts,
+        links=data.links,
+        statement_sheets=data.statement_sheets,
     )
     assert resolved is not None
     return _rows((item.concept, item.row_key) for item in resolved)
@@ -623,3 +628,142 @@ def test_lineage_truncated_empty_missing_and_other_build():
     assert all(link.ref_cell != "S!Z9" for step in other.steps for link in step.excel_links)
     step = next(item for item in other.steps if item.concept == "cfads")
     assert (step.binding_key, step.row_key) == (binding["binding_key"], binding["row_key"])
+
+
+def _line(concept: str, number: int, code: str, **extra) -> dict:
+    row = _bind(concept, number, evidence={"line_code": code}, **extra)
+    return row
+
+
+def _fcff_book(*, statement: bool, absent: frozenset[str] = frozenset()):
+    ocf = _line("operating_cash_flow", 1, "стр. 4100", row_key="row-ocf", sheet="ОДДС" if statement else None)
+    capex = _bind("capex", 2, row_key="row-capex")
+    rate = _bind("income_tax_rate", 3, row_key="row-rate")
+    paid = _line(
+        "interest",
+        4,
+        "стр. 4123",
+        is_primary=False,
+        row_key="row-paid",
+        binding_key="bk-paid",
+    )
+    facts = [
+        {**_fact("row-ocf", "operating_cash_flow"), "normalized_value": "100", "cell_id": "S!A1"},
+        {**_fact("row-capex", "capex"), "normalized_value": "-30", "cell_id": "S!B1"},
+        {**_fact("row-paid", "interest"), "normalized_value": "-10", "cell_id": "S!C1"},
+        {**_fact("row-rate", "income_tax_rate"), "normalized_value": "0.2", "cell_id": "S!D1"},
+    ]
+    sheets = frozenset({"ОДДС"}) if statement else frozenset()
+    data = AuditInput(
+        bindings=[ocf, capex, rate, paid],
+        facts=facts,
+        applicable_metrics=frozenset({"fcff"}),
+        absent=absent,
+        statement_sheets=sheets,
+        graph_links_available=True,
+    )
+    return data
+
+
+def _used_concepts(got: dict) -> set[str]:
+    found: set[str] = set()
+    for row in got.get("rows") or []:
+        found.update(row.get("components") or {})
+        found.update(row.get("inputs") or [])
+    return found
+
+
+def test_dscr_fallback_uses_the_4123_row_in_trace_origin_resolver_and_calculation():
+    catalog = _catalog()
+    expressions = _expressions()
+    cfads = _bind("cfads", 1, row_key="row-cfads")
+    principal = _bind("principal", 2, row_key="row-principal")
+    paid = _line("interest", 3, "стр. 4123", is_primary=False, row_key="row-paid", binding_key="bk-paid")
+    data, bindings, facts = _book(
+        [],
+        extra=[cfads, principal, paid],
+        variant="pf",
+        metrics=frozenset({"dscr"}),
+    )
+    rows = _trace_rows("dscr", data, expressions, catalog)
+    assert rows == _origin_rows("dscr", data, expressions, catalog) == _resolved_rows("dscr", data, expressions, catalog)
+    assert {concept for concept, _row in rows} == {"cfads", "interest_paid", "principal"}
+    assert ("interest_paid", "row-paid") in rows
+    assert {concept for concept, _row in rows} == _components(_coverage("dscr", bindings, facts, catalog))
+
+
+def test_existing_interest_paid_beats_a_4123_row_and_two_codes_inject_nothing():
+    catalog = _catalog()
+    expressions = _expressions()
+    cfads = _bind("cfads", 1)
+    principal = _bind("principal", 2)
+    own = _bind("interest_paid", 3, row_key="row-own", binding_key="bk-own")
+    coded = _line("interest", 4, "стр. 4123", is_primary=False, row_key="row-coded", binding_key="bk-coded")
+    data, bindings, facts = _book([], extra=[cfads, principal, own, coded], variant="pf", metrics=frozenset({"dscr"}))
+    rows = _trace_rows("dscr", data, expressions, catalog)
+    assert ("interest_paid", "row-own") in rows
+    assert ("interest_paid", "row-coded") not in rows
+    assert rows == _origin_rows("dscr", data, expressions, catalog) == _resolved_rows("dscr", data, expressions, catalog)
+    assert {concept for concept, _row in rows} == _components(_coverage("dscr", bindings, facts, catalog))
+
+    first = _line("interest", 5, "стр. 4123", is_primary=False, row_key="row-a", binding_key="bk-a")
+    second = _line("interest", 6, "стр. 4123", is_primary=False, row_key="row-b", binding_key="bk-b")
+    empty, empty_bindings, empty_facts = _book(
+        [],
+        extra=[_bind("cfads", 7), _bind("principal", 8), first, second],
+        variant="pf",
+        metrics=frozenset({"dscr"}),
+    )
+    missed = _resolved_rows("dscr", empty, expressions, catalog)
+    assert "row-a" not in {row for _concept, row in missed}
+    assert "row-b" not in {row for _concept, row in missed}
+    refused = _coverage("dscr", empty_bindings, empty_facts, catalog)
+    assert _components(refused) == set()
+    assert "interest_paid" not in set(refused.get("missing_inputs") or [])
+    assert missed == _trace_rows("dscr", empty, expressions, catalog) == _origin_rows("dscr", empty, expressions, catalog)
+
+
+def test_fcff_shield_uses_the_same_4123_row_everywhere():
+    catalog = _catalog()
+    expressions = _expressions()
+    data = _fcff_book(statement=True)
+    got = free_cash_flow(
+        facts=data.facts,
+        bindings=data.bindings,
+        periods=[_period()],
+        statement_sheets=data.statement_sheets,
+    )
+    core = _used_concepts(got)
+    assert "interest_paid" in core
+    rows = _trace_rows("fcff", data, expressions, catalog)
+    assert rows == _origin_rows("fcff", data, expressions, catalog) == _resolved_rows("fcff", data, expressions, catalog)
+    assert {concept for concept, _row in rows} == core
+    assert ("interest_paid", "row-paid") in rows
+    trace = trace_metric(
+        "fcff",
+        inputs=None,
+        bindings=data.bindings,
+        facts=data.facts,
+        expressions=expressions,
+        statement_sheets=data.statement_sheets,
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    assert [step.concept for step in trace.steps if step.row_key == "row-paid"] == ["interest_paid"]
+
+
+def test_fcff_without_a_shield_does_not_take_the_4123_row():
+    catalog = _catalog()
+    expressions = _expressions()
+    data = _fcff_book(statement=False)
+    got = free_cash_flow(
+        facts=data.facts,
+        bindings=data.bindings,
+        periods=[_period()],
+        statement_sheets=data.statement_sheets,
+    )
+    assert "interest_paid" not in _used_concepts(got)
+    rows = _trace_rows("fcff", data, expressions, catalog)
+    assert "interest_paid" not in {concept for concept, _row in rows}
+    assert ("interest_paid", "row-paid") not in rows
+    assert rows == _origin_rows("fcff", data, expressions, catalog) == _resolved_rows("fcff", data, expressions, catalog)

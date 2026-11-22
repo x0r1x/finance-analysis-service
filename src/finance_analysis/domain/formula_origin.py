@@ -6,8 +6,9 @@ OAK ведёт по дереву одной формулы, PerfectXL показ
 ICAEW сокращает число формул, которые ревьюер читает.
 
 Семена берёт resolve_semantic_inputs: выбранный вариант, один член one_of,
-не-stale основная привязка и фактический запасной путь. Подстановка 4123
-(confirm_paid_interest) в семена не входит: это не вход формулы.
+не-stale основная привязка, фактический запасной путь и та же подстановка
+4123, что у расчёта. Щит FCFF добавляет interest_paid тем же базисом;
+источник такого входа — paid_interest.
 """
 
 from __future__ import annotations
@@ -71,6 +72,9 @@ def origin_view(
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
             absent=data.absent,
+            facts=data.facts,
+            links=data.links,
+            statement_sheets=data.statement_sheets,
         )
         if not resolved:
             continue
