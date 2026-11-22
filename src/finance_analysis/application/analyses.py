@@ -641,11 +641,14 @@ class Analyses:
         catalog = load_dimensions()
         pricing, billing = await self.service.glossary.concept_price_facts(target.head.versions.get("glossary"))
         profile = await self._profile(target.head)
+        link_file = next((item for item in files if str(item).endswith("/graph_links.parquet")), None)
+        links_loaded = "links" in needed and link_file is not None
         return AuditInput(
             rows=dim_rows,
             periods=periods,
             facts=await rows("fact_observation"),
-            links=await rows("graph_links") if "links" in needed else [],
+            links=await rows("graph_links") if links_loaded else [],
+            graph_links_available=links_loaded,
             counters=dict(target.manifest.get("builder_counters") or {}),
             bindings=bindings,
             semantics=row_semantics,

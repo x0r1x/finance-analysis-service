@@ -16,7 +16,7 @@ The catalog metric `ncf` is the interval sum of the operating, investing, and fi
 
 ## What each type does
 
-`audit` runs the selected rules. Omit `rules` and every rule runs. An empty `rules` list runs none. `result_data.formula_origin` maps formula findings through the reference graph. `physical_lineage_complete: false` and `truncated_links` mean a reference range was cut, so the chain may be incomplete.
+`audit` runs the selected rules. Omit `rules` and every rule runs. An empty `rules` list runs none. `result_data.formula_origin` maps formula findings through the reference graph. `physical_lineage_complete: false` means the chain is not the full physical graph: `truncated_links` counts a cut reference range, and a note that `graph_links` was not loaded means the dataset was absent. A loaded empty `graph_links` is a book with no formulas, and that chain stays complete.
 
 `ratios` requires a non-empty `metrics` list. The allowed names are the `metrics` array in `GET /v1/capabilities`. On a confident primary model type, `result_data.book_rows` cites book cells for the type slice (`cited` / `absent` / `ambiguous` + `observations`). Contract: `adapters/storage/schemas/book_rows.json` (`book_rows@1.0`). `ratios` has no `formula_origin`: its findings are not formula-pattern findings.
 

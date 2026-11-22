@@ -159,6 +159,26 @@ def test_truncated_ref_range_does_not_make_the_chain_complete():
     assert "цепь может быть неполной: обрезано ссылок 1" in text
 
 
+def test_missing_graph_links_is_not_a_complete_chain():
+    data = AuditInput(links=[], graph_links_available=False)
+    view = origin_view(data, [], {})
+    assert view["physical_lineage_complete"] is False
+    assert view["truncated_links"] == 0
+    assert view["note"] == "физическая трассировка недоступна: graph_links не загружен"
+    text = render_markdown({"analysis_id": "a", "status": "succeeded", "result_data": {"formula_origin": view}})
+    assert "физическая трассировка недоступна: graph_links не загружен" in text
+
+
+def test_loaded_empty_graph_links_stays_complete():
+    data = AuditInput(links=[], graph_links_available=True)
+    view = origin_view(data, [], {})
+    assert view["physical_lineage_complete"] is True
+    assert view["truncated_links"] == 0
+    assert view["note"] is None
+    text = render_markdown({"analysis_id": "a", "status": "succeeded", "result_data": {"formula_origin": view}})
+    assert "недоступна" not in text
+
+
 def _view(data, expressions):
     findings = run_rules(select_rules(load_rules(), ["formula_pattern_break"]), data)
     view = origin_view(data, findings, expressions, interest_order=_orders())
@@ -360,3 +380,78 @@ async def test_formula_origin_is_absent_on_ratios_and_present_on_audit_and_full(
 
 async def _empty_input():
     return AuditInput()
+
+
+async def test_audit_input_threads_graph_links_availability():
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    class Store:
+        async def get(self, _key):
+            return b"empty"
+
+    class Parquet:
+        async def read(self, _raw):
+            return []
+
+    class Glossary:
+        async def concept_price_facts(self, _version):
+            return {}, {}
+
+        async def composed_of(self, _version):
+            return {}
+
+        async def concept_dimensions(self, _version):
+            return {}
+
+        async def profile_body(self, _profile_id):
+            return {}
+
+    class Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class Svc:
+        store = Store()
+        parquet = Parquet()
+        glossary = Glossary()
+        guard = Guard()
+        model_types = load_model_types()
+
+        async def _dataset_rows(self, *_args, **_kwargs):
+            raise NotFound("нет датасета")
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                labels=(),
+                primary=None,
+                source="unresolved",
+                reason=None,
+                seq=None,
+                profile_version=None,
+                score=None,
+                scores={},
+                candidates=(),
+            )
+
+    analyses = Analyses(Svc())
+    head = Head(build_key="b", state_seq=1, derive_key="d", versions={})
+    missing = Target(head, "b", {"files": {"a/1/projection/dim_row.parquet": {}}}, False, "d")
+    empty = Target(
+        head,
+        "b",
+        {"files": {"a/1/projection/graph_links.parquet": {}}},
+        False,
+        "d",
+    )
+    absent = await analyses._input("job", missing, frozenset({"links"}))
+    loaded = await analyses._input("job", empty, frozenset({"links"}))
+    assert absent.links == [] and absent.graph_links_available is False
+    assert loaded.links == [] and loaded.graph_links_available is True
+    absent_view = origin_view(absent, [], {})
+    loaded_view = origin_view(loaded, [], {})
+    assert absent_view["physical_lineage_complete"] is False
+    assert loaded_view["physical_lineage_complete"] is True

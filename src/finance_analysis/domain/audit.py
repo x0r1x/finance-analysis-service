@@ -191,6 +191,9 @@ class AuditInput:
     statement_sheets: frozenset[str] = frozenset()
     # Явная граница факта из решения `actuals_end.set`: период или дата конца.
     actuals_end: str | None = None
+    # Как graph_links_available у trace_metric: False — датасет не загружен.
+    # Пустой links при True — книга без формул, не отсутствующий граф.
+    graph_links_available: bool = True
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:

@@ -99,9 +99,15 @@ def origin_view(
             }
         )
     truncated_links = sum(1 for link in data.link_cells.values() if link.truncated)
-    # shortcut: пустой список связей выглядит полным. Книга без формул и отсутствующий graph_links здесь не различаются. Поднять, когда AuditInput получит graph_links_available, как trace_metric.
-    # Обрезанный диапазон — та же неполнота физического графа, что physical_lineage_complete у trace_metric.
-    complete = truncated_links == 0
+    if not data.graph_links_available:
+        complete = False
+        note = "физическая трассировка недоступна: graph_links не загружен"
+    elif truncated_links:
+        complete = False
+        note = f"цепь может быть неполной: обрезано ссылок {truncated_links}"
+    else:
+        complete = True
+        note = None
     return {
         "book": book,
         "metrics": metrics,
@@ -109,7 +115,7 @@ def origin_view(
         "direct_cap": DIRECT_CAP,
         "physical_lineage_complete": complete,
         "truncated_links": truncated_links,
-        "note": None if complete else f"цепь может быть неполной: обрезано ссылок {truncated_links}",
+        "note": note,
     }
 
 

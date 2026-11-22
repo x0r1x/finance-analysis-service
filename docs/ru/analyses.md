@@ -16,7 +16,7 @@
 
 ## Что делает каждый type
 
-`audit` гоняет выбранные правила. Нет ключа `rules` — гоняются все. Пустой список `rules` не гоняет ни одного. В `result_data.formula_origin` — пометки формул по графу ссылок. `physical_lineage_complete: false` и `truncated_links` значат, что диапазон ссылок обрезан и цепь может быть неполной.
+`audit` гоняет выбранные правила. Нет ключа `rules` — гоняются все. Пустой список `rules` не гоняет ни одного. В `result_data.formula_origin` — пометки формул по графу ссылок. `physical_lineage_complete: false` значит, что цепь не полный физический граф: `truncated_links` — обрезанный диапазон, а note «graph_links не загружен» — датасета не было. Загруженный пустой `graph_links` — книга без формул, цепь полная.
 
 `ratios` требует непустой список `metrics`. Допустимые имена — массив `metrics` в `GET /v1/capabilities`. При уверенном основном типе в `result_data.book_rows` — цитаты строк среза типа (`cited` / `absent` / `ambiguous` + `observations`). Контракт: `adapters/storage/schemas/book_rows.json` (`book_rows@1.0`). Поля `formula_origin` у `ratios` нет: находки этого типа не про шаблон формулы.
 
