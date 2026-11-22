@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from finance_analysis.domain.book import canonical_json
 
@@ -122,6 +124,25 @@ class ResolvedMetricPlan:
     needs_input: tuple[NeedsInput, ...]
     shield: ShieldDecision | None
     lineage: tuple[LineageRow, ...] = ()
+
+
+def bound_rows(plan: ResolvedMetricPlan, bindings: Sequence[Mapping[str, Any]]) -> dict[str, dict]:
+    """Строки входов плана. Выбор не повторяет: ключ уже записан в плане."""
+
+    by_key: dict[str, Mapping[str, Any]] = {}
+    for row in bindings:
+        key = row.get("binding_key")
+        if key:
+            by_key[str(key)] = row
+    found: dict[str, dict] = {}
+    for item in plan.inputs:
+        source = by_key.get(item.binding_key or "")
+        if source is None:
+            continue
+        copy = dict(source)
+        copy["effective_concept"] = item.concept
+        found[item.concept] = copy
+    return found
 
 
 def content_digest(body: dict) -> str:

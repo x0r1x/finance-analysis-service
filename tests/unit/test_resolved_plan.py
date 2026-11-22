@@ -4,7 +4,9 @@ import pytest
 
 from finance_analysis.domain.audit import AuditInput
 from finance_analysis.domain.formula_origin import origin_view
+from finance_analysis.domain.free_cash_flow import free_cash_flow
 from finance_analysis.domain.graphs import trace_metric
+from finance_analysis.domain.metrics import coverage_ratio
 from finance_analysis.domain.model_type import MetricExpression
 from finance_analysis.domain.semantic_input import (
     resolve_metric_plan,
@@ -141,6 +143,114 @@ def test_trace_and_origin_read_one_plan_and_do_not_select(monkeypatch):
             [],
             EXPRESSIONS,
         )
+
+
+def _period() -> dict:
+    return {"axis_id": "a", "period_id": "Y1", "period_index": 1, "grain": "year", "timeline_id": "t"}
+
+
+def _fact(row_key: str, concept: str) -> dict:
+    return {
+        "row_key": row_key,
+        "axis_id": "a",
+        "period_id": "Y1",
+        "normalized_value": "40",
+        "cell_id": f"S!{concept}",
+    }
+
+
+def _silence(monkeypatch) -> None:
+    def boom(*_args, **_kwargs):
+        raise AssertionError("selection repeated")
+
+    for module, name in (
+        ("finance_analysis.domain.binding_resolution", "select_primary"),
+        ("finance_analysis.domain.metrics", "choose_one_of"),
+        ("finance_analysis.domain.metrics", "dscr_denominator_plan"),
+        ("finance_analysis.domain.metrics", "interest_choice"),
+        ("finance_analysis.domain.metrics", "confirm_paid_interest"),
+        ("finance_analysis.domain.free_cash_flow", "shield_concepts"),
+        ("finance_analysis.domain.free_cash_flow", "_basis"),
+        ("finance_analysis.domain.semantic_input", "resolve_metric_plan"),
+    ):
+        monkeypatch.setattr(f"{module}.{name}", boom)
+
+
+def test_calculators_read_the_plan_and_do_not_select(monkeypatch):
+    bindings = [_bind("ebitda", 1), _bind("ebit", 2), _bind("interest", 3)]
+    facts = [_fact(row["row_key"], row["effective_concept"]) for row in bindings]
+    periods = [_period()]
+    plan = resolve_metric_plan("icr", bindings, EXPRESSIONS)
+    assert plan is not None and plan.status == "resolved"
+    assert plan.shield is None
+    before = coverage_ratio(
+        metric="icr",
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+    )
+    blocked = [
+        _bind("cfads", 1, binding_key="bk-b", row_key="row-b"),
+        _bind("cfads", 2, binding_key="bk-a", row_key="row-a"),
+        _bind("debt_service", 3),
+    ]
+    blocked_plan = resolve_metric_plan("dscr", blocked, EXPRESSIONS)
+    blocked_before = coverage_ratio(
+        metric="dscr",
+        facts=[_fact(row["row_key"], "cfads") for row in blocked],
+        bindings=blocked,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+    )
+    ocf = _bind("operating_cash_flow", 1)
+    capex = _bind("capex", 2)
+    fcff_bindings = [ocf, capex]
+    fcff_facts = [_fact(row["row_key"], row["effective_concept"]) for row in fcff_bindings]
+    fcff_plan = resolve_metric_plan(
+        "fcff",
+        fcff_bindings,
+        None,
+        inputs={"all_of": ("operating_cash_flow", "capex")},
+    )
+    assert fcff_plan is not None and fcff_plan.shield is not None
+    assert fcff_plan.shield.basis == "unknown"
+    fcff_before = free_cash_flow(facts=fcff_facts, bindings=fcff_bindings, periods=periods)
+    _silence(monkeypatch)
+    after = coverage_ratio(
+        metric="icr",
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+        plan=plan,
+    )
+    assert after["status"] == before["status"] == "succeeded"
+    assert after["rows"] == before["rows"]
+    assert after["warnings"] == before["warnings"]
+    blocked_after = coverage_ratio(
+        metric="dscr",
+        facts=[_fact(row["row_key"], "cfads") for row in blocked],
+        bindings=blocked,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+        plan=blocked_plan,
+    )
+    assert blocked_after["status"] == blocked_before["status"] == "needs_input"
+    assert blocked_after["needs_input"] == blocked_before["needs_input"]
+    assert blocked_after["missing_inputs"] == blocked_before["missing_inputs"]
+    fcff_after = free_cash_flow(
+        facts=fcff_facts,
+        bindings=fcff_bindings,
+        periods=periods,
+        plan=fcff_plan,
+    )
+    assert fcff_after["status"] == fcff_before["status"]
+    assert [row["status"] for row in fcff_after["rows"]] == [row["status"] for row in fcff_before["rows"]]
 
 
 def test_icr_keeps_only_the_chosen_numerator_in_inputs():
