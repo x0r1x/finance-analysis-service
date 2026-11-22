@@ -325,7 +325,7 @@ def _split(
     confirmed: list[ResolvedInput] = []
     diagnostic: list[DiagnosticCandidate] = []
     for item in items:
-        if item.ambiguous and item.binding_key:
+        if item.ambiguous:
             diagnostic.append(
                 DiagnosticCandidate(item.concept, item.binding_key, item.row_key)
             )

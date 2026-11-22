@@ -376,3 +376,32 @@ def test_icr_keeps_only_the_chosen_numerator_in_inputs():
     assert {item.concept for item in plan.inputs} == {"ebitda", "interest"}
     assert {item.concept for item in plan.rejected} >= {"ebit"}
     assert any(item.reason == "not_selected_one_of" for item in plan.rejected)
+
+
+def test_ambiguous_row_without_binding_key_is_not_calculated():
+    """Неоднозначная строка без binding_key не становится подтверждённым входом."""
+
+    first = _bind("cfads", 1, binding_key="", row_key="row-cfads-a")
+    second = _bind("cfads", 2, binding_key="", row_key="row-cfads-b")
+    debt = _bind("debt_service", 3)
+    bindings = [first, second, debt]
+    plan = resolve_metric_plan("dscr", bindings, EXPRESSIONS)
+    assert plan is not None
+    assert "cfads" not in {item.concept for item in plan.inputs}
+    assert all(item.binding_key for item in plan.inputs)
+    diagnostic = next(item for item in plan.diagnostic if item.concept == "cfads")
+    assert diagnostic.binding_key is None
+    assert diagnostic.row_key in {"row-cfads-a", "row-cfads-b"}
+    got = coverage_ratio(
+        metric="dscr",
+        facts=[_fact(row["row_key"], row["effective_concept"]) for row in bindings],
+        bindings=bindings,
+        periods=[_period()],
+        period_phase={},
+        explicit_phases=False,
+        plan=plan,
+    )
+    assert got["rows"] == []
+    assert got["status"] == "needs_input"
+    assert "row-cfads-a" not in str(got)
+    assert "row-cfads-b" not in str(got)
