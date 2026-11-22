@@ -325,6 +325,49 @@ def test_covenant_reads_the_plan_and_ratios_primary_does_not_select(monkeypatch)
     assert _primary(data, "dscr", metric="dscr") is None
 
 
+def test_one_plan_is_reused_and_trace_keeps_the_full_context(monkeypatch):
+    from finance_analysis.domain.semantic_input import plans_for
+
+    bindings = [_bind("ebitda", 1), _bind("interest", 2)]
+    facts = [_fact(row["row_key"], row["effective_concept"]) for row in bindings]
+    plans = plans_for(
+        ["icr"],
+        bindings,
+        EXPRESSIONS,
+        facts=facts,
+        links=[{"cell": "S!ebitda", "ref_cell": "S!A1"}],
+        statement_sheets=frozenset({"ОПиУ"}),
+        interest_order={"icr": ("interest",)},
+        catalog_version="cat",
+        build_key="bld",
+    )
+    plan = plans["icr"]
+    assert plan is plans["icr"]
+    assert plan.catalog_version == "cat"
+    assert plan.build_key == "bld"
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("selection repeated")
+
+    monkeypatch.setattr("finance_analysis.domain.semantic_input.resolve_metric_plan", boom)
+    monkeypatch.setattr("finance_analysis.domain.formula_origin.resolve_semantic_inputs", boom)
+    traced = trace_metric(
+        "icr",
+        inputs=None,
+        bindings=bindings,
+        facts=facts,
+        expressions=EXPRESSIONS,
+        plan=plan,
+    )
+    assert any(step.cell_ids for step in traced.steps)
+    origin_view(
+        AuditInput(bindings=list(bindings), facts=list(facts), applicable_metrics=frozenset({"icr"})),
+        [],
+        EXPRESSIONS,
+        plans=plans,
+    )
+
+
 def test_icr_keeps_only_the_chosen_numerator_in_inputs():
     bindings = [_bind("ebitda", 1), _bind("ebit", 2), _bind("interest", 3)]
     plan = resolve_metric_plan("icr", bindings, EXPRESSIONS)

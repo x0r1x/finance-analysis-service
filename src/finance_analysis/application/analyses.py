@@ -79,6 +79,7 @@ from finance_analysis.domain.model_type import (
     confirmed_variants,
     decision_labels,
 )
+from finance_analysis.domain.semantic_input import plans_for
 from finance_analysis.plugins.rules.coverage import (
     MISSING_TOTAL_ROW,
     PERIOD_GRAIN_MISMATCH,
@@ -885,6 +886,23 @@ class Analyses:
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
+        plans = plans_for(
+            metrics,
+            bindings,
+            svc.model_types.metric_expressions,
+            variant_of=variant_of,
+            dscr_variant=dscr_variant,
+            interest_order=svc.model_types.interest_order,
+            row_fallbacks=svc.model_types.row_fallbacks,
+            absent=common["absent"],
+            facts=facts,
+            links=links,
+            statement_sheets=statement_sheets,
+            catalog_version=getattr(getattr(svc, "financial_catalog", None), "version", None),
+            semantic_model_version=target.semantic_model,
+            build_key=target.build,
+            model_id=job_id,
+        )
         for metric in metrics:
             use = applicability(svc.model_types, labels, metric)
             if use == "not_applicable":
@@ -911,9 +929,9 @@ class Analyses:
             elif metric in LOAN_LIFE:
                 result = loan_life_ratio(metric, basis=basis, **common)
             elif metric in REDUCED:
-                result = dscr_reductions(metric, **common)
+                result = dscr_reductions(metric, plan=plans.get("dscr"), **common)
             elif metric == "adscr":
-                result = adscr(direction=direction, **common)
+                result = adscr(direction=direction, plan=plans.get("dscr"), **common)
             else:
                 result = select_ratio(
                     metric,
@@ -929,6 +947,7 @@ class Analyses:
                     row_fallbacks=svc.model_types.row_fallbacks,
                     links=links,
                     statement_sheets=statement_sheets,
+                    plan=plans.get(metric),
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
@@ -1319,6 +1338,28 @@ class Analyses:
         started = _now()
         needed = requirements(rules)
         data = await self._input(job_id, target, needed)
+        catalog = self.service.model_types
+        names = (
+            sorted(data.applicable_metrics)
+            if data.applicable_metrics is not None
+            else sorted(name for name in catalog.metric_expressions if "." not in name)
+        )
+        data.plans = plans_for(
+            names,
+            data.bindings,
+            catalog.metric_expressions,
+            dscr_variant=data.dscr_variant,
+            interest_order=catalog.interest_order,
+            row_fallbacks=catalog.row_fallbacks,
+            absent=data.absent,
+            facts=data.facts,
+            links=data.links,
+            statement_sheets=data.statement_sheets,
+            catalog_version=self.service.financial_catalog.version,
+            semantic_model_version=target.semantic_model,
+            build_key=target.build,
+            model_id=job_id,
+        )
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
         bound: set[str] = set()
         if "concepts" in scope:

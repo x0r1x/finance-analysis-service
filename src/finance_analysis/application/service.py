@@ -2957,6 +2957,24 @@ class FasService:
         absent = absent_in_journal(
             [event for event in events if int(event["seq"]) <= head.state_seq]
         )
+        from finance_analysis.domain.semantic_input import resolve_metric_plan
+
+        plan = resolve_metric_plan(
+            metric_id,
+            bindings,
+            expressions,
+            variant=resolved_variant,
+            interest_order=self.model_types.interest_order,
+            row_fallbacks=self.model_types.row_fallbacks,
+            absent=absent,
+            inputs=inputs,
+            facts=facts,
+            links=links,
+            statement_sheets=frozenset(load_sheet_roles().statement),
+            catalog_version=self.financial_catalog.version,
+            build_key=head.build_key,
+            model_id=job_id,
+        )
         trace, _findings = check_metric_physical_trace(
             metric_id,
             inputs=inputs,
@@ -2974,6 +2992,7 @@ class FasService:
             expressions=expressions,
             interest_order=self.model_types.interest_order,
             row_fallbacks=self.model_types.row_fallbacks,
+            plan=plan,
         )
         # catalog_version / build_key уже в trace; ответ валидируется схемой.
         return assemble_metric_trace_response(trace)

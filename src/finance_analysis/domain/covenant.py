@@ -1722,6 +1722,7 @@ def select_ratio(
     links: list[dict] | None = None,
     statement_sheets: frozenset[str] | None = None,
     aggregations: Mapping[str, str] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -1772,6 +1773,7 @@ def select_ratio(
                 if statement_sheets is not None
                 else common.get("statement_sheets") or frozenset()
             ),
+            plan=plan,
         )
     if metric == "ncf":
         return net_cash_flow(
@@ -1868,12 +1870,14 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             composed=composed,
             aggregations=aggregations,
+            plan=plan,
         )
     if metric == "dscr" and variant == "pf":
         return dscr_pf(
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
             profile=profile,
+            plan=plan,
             **common,
         )
     if metric == "icr" and bank_requested(variant, profile):
@@ -1905,6 +1909,7 @@ def select_ratio(
         interest_order=interest_order,
         row_fallbacks=row_fallbacks,
         profile=profile,
+        plan=plan,
         **common,
     )
 

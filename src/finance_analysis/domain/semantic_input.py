@@ -590,6 +590,51 @@ def _fresh(bindings: Sequence[Mapping[str, Any]], concept: str) -> list[Mapping[
     ]
 
 
+def plans_for(
+    metrics: Sequence[str],
+    bindings: Sequence[Mapping[str, Any]],
+    expressions: Mapping[str, MetricExpression] | None,
+    *,
+    variant_of: Mapping[str, str | None] | None = None,
+    dscr_variant: str | None = None,
+    interest_order: Mapping[str, Sequence[str]] | None = None,
+    row_fallbacks: Mapping[str, Any] | None = None,
+    absent: frozenset[str] = frozenset(),
+    facts: Sequence[Mapping[str, Any]] = (),
+    links: Sequence[Mapping[str, Any]] = (),
+    statement_sheets: frozenset[str] = frozenset(),
+    catalog_version: str | None = None,
+    semantic_model_version: str | None = None,
+    build_key: str | None = None,
+    model_id: str | None = None,
+) -> dict[str, ResolvedMetricPlan]:
+    """Один план на метрику. Вызывающий передаёт этот словарь дальше как есть."""
+
+    found: dict[str, ResolvedMetricPlan] = {}
+    for metric in metrics:
+        variant = dscr_variant if metric == "dscr" else (variant_of or {}).get(metric)
+        plan = resolve_metric_plan(
+            metric,
+            bindings,
+            expressions,
+            variant=variant,
+            dscr_variant=dscr_variant,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            absent=absent,
+            facts=facts,
+            links=links,
+            statement_sheets=statement_sheets,
+            catalog_version=catalog_version,
+            semantic_model_version=semantic_model_version,
+            build_key=build_key,
+            model_id=model_id,
+        )
+        if plan is not None:
+            found[metric] = plan
+    return found
+
+
 def _implied_variant(metric: str, dscr_variant: str | None) -> str | None:
     if not dscr_variant:
         return None

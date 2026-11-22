@@ -563,6 +563,7 @@ def dscr_pf(
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
     profile: dict | None = None,
+    plan: Any | None = None,
 ) -> dict:
     """Проектный DSCR. Те же числа, что coverage_ratio для metric=dscr."""
 
@@ -580,6 +581,7 @@ def dscr_pf(
         row_fallbacks=row_fallbacks,
         profile=profile,
         declared=DSCR_INPUTS,
+        plan=plan,
     )
 
 

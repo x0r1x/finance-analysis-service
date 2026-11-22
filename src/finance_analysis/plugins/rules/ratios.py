@@ -113,6 +113,7 @@ class RatioMismatch(Rule):
             periods=data.periods,
             period_phase=phases,
             explicit_phases=bool(phases),
+            plan=(data.plans or {}).get("dscr"),
         )
         cached = _cached(data, model["row_key"])
         findings = []
@@ -234,6 +235,7 @@ class IcrReference(Rule):
                 periods=data.periods,
                 period_phase=phases,
                 explicit_phases=bool(phases),
+                plan=(data.plans or {}).get("icr"),
             )
             computed = {(row["axis_id"], row["period_id"]): row for row in result["rows"] if row.get("value") is not None}
         fas_axes = {axis for axis, _period in computed}

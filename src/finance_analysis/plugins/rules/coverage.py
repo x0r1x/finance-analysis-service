@@ -67,6 +67,7 @@ def dscr_rows(data: AuditInput) -> list[dict]:
         sign_convention=data.profile.get("sign_convention") or "outflow_negative",
         marker_class=data.profile.get("marker_class"),
         absent=data.absent,
+        plan=(data.plans or {}).get("dscr"),
     )
     return result["rows"]
 

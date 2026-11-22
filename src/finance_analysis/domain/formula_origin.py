@@ -67,7 +67,7 @@ def origin_view(
     wanted = data.applicable_metrics if data.applicable_metrics is not None else catalog
     edges = _inputs_of(data)
     for metric in sorted(wanted & catalog):
-        plan = (plans or {}).get(metric)
+        plan = (plans if plans is not None else data.plans or {}).get(metric)
         if plan is not None:
             resolved = plan.lineage
         else:
