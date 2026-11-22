@@ -965,6 +965,7 @@ class Analyses:
             "absent": common["absent"],
             "applicability": uses,
             "model_type": verdict.as_dict(),
+            "dscr_variant": dscr_variant,
             "book_rows": cite_lbo_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,
@@ -997,7 +998,12 @@ class Analyses:
         bound: set[str] = set()
         if "concepts" in scope:
             bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
-        data = AuditInput(periods=got["periods"], facts=got["facts"], bindings=got["bindings"])
+        data = AuditInput(
+            periods=got["periods"],
+            facts=got["facts"],
+            bindings=got["bindings"],
+            dscr_variant=got.get("dscr_variant"),
+        )
         attached = [item for item in candidates if _in_scope(item, scope, data, bound)]
         envelope = {
             "analysis_id": analysis_id,
@@ -1025,9 +1031,7 @@ class Analyses:
         }
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
-        envelope["result_data"]["formula_origin"] = origin_view(
-            data, attached, self.service.model_types.metric_expressions
-        )
+        envelope["result_data"]["formula_origin"] = self._formula_origin(data, attached)
         _attach_book_rows(envelope, got)
         await self._annotate(envelope)
         stored = _ratio_stored(job_id, target, analysis_id, head, computed)
@@ -1149,9 +1153,7 @@ class Analyses:
         }
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
-        envelope["result_data"]["formula_origin"] = origin_view(
-            data, findings, self.service.model_types.metric_expressions
-        )
+        envelope["result_data"]["formula_origin"] = self._formula_origin(data, findings)
         _attach_book_rows(envelope, got)
         await self._annotate(envelope)
         if op_id and await self._cancelled(op_id):
@@ -1372,10 +1374,18 @@ class Analyses:
             "needs_input": [],
             "warnings": warnings,
         }
-        envelope["result_data"]["formula_origin"] = origin_view(
-            data, findings, self.service.model_types.metric_expressions
-        )
+        envelope["result_data"]["formula_origin"] = self._formula_origin(data, findings)
         return envelope
+
+    def _formula_origin(self, data, findings) -> dict:
+        catalog = self.service.model_types
+        return origin_view(
+            data,
+            findings,
+            catalog.metric_expressions,
+            interest_order=catalog.interest_order,
+            row_fallbacks=catalog.row_fallbacks,
+        )
 
     async def _save(self, job_id, target: Target, analysis_id, rules, findings, envelope, actor, started) -> None:
         svc = self.service

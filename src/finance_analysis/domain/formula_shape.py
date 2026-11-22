@@ -167,36 +167,138 @@ def additive_terms(formula: str | None) -> list[str]:
     return walk(text)
 
 
+_FN = re.compile(r"[A-Za-zА-Яа-яЁё_][\w.]*")
+_NUM = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?%?")
+# Знаки формулы. Двоеточие — оператор диапазона, не «где-то в тексте есть двоеточие».
+_OP = frozenset("(),:;+-*/^=<>&%")
+
+
+def _scan(body: str) -> list[tuple] | None:
+    """Токены слагаемого. None — остался неразобранный кусок.
+
+    Диапазон — один операнд (или две ссылки через «:»), как у openpyxl OPERAND/RANGE
+    и formulas.tokens.operand.Range. IF и прочие функции сюда не входят.
+    """
+
+    tokens: list[tuple] = []
+    index = 0
+    while index < len(body):
+        if body[index].isspace():
+            index += 1
+            continue
+        if body[index] == '"':
+            end = index + 1
+            while end < len(body):
+                if body[end] == '"':
+                    if end + 1 < len(body) and body[end + 1] == '"':
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                end += 1
+            else:
+                return None
+            tokens.append(("str", body[index:end]))
+            index = end
+            continue
+        name = _FN.match(body, index)
+        if name and name.end() < len(body) and body[name.end()] == "(":
+            tokens.append(("fn", name.group(0).upper()))
+            index = name.end()
+            continue
+        ref = _REF.match(body, index)
+        if ref:
+            tokens.append(("ref", ref))
+            index = ref.end()
+            continue
+        number = _NUM.match(body, index)
+        if number:
+            tokens.append(("num", number.group(0)))
+            index = number.end()
+            continue
+        if body[index] in _OP:
+            tokens.append(("op", body[index]))
+            index += 1
+            continue
+        return None
+    return tokens
+
+
+def _box(tokens: list[tuple]) -> tuple | None:
+    """('cell', ref) или ('box', start, end). Иная форма — None."""
+
+    if len(tokens) == 1 and tokens[0][0] == "num":
+        return ("num", tokens[0][1])
+    if len(tokens) == 1 and tokens[0][0] == "ref":
+        ref = tokens[0][1]
+        return ("box", ref, ref) if ref.group("col2") else ("cell", ref)
+    if _is_span(tokens):
+        return ("box", tokens[0][1], tokens[2][1])
+    if (
+        len(tokens) == 4
+        and tokens[0] == ("fn", "SUM")
+        and tokens[1] == ("op", "(")
+        and tokens[2][0] == "ref"
+        and tokens[2][1].group("col2")
+        and tokens[3] == ("op", ")")
+    ):
+        return ("box", tokens[2][1], tokens[2][1])
+    if len(tokens) == 6 and tokens[0] == ("fn", "SUM") and tokens[1] == ("op", "(") and tokens[5] == ("op", ")") and _is_span(tokens[2:5]):
+        return ("box", tokens[2][1], tokens[4][1])
+    return None
+
+
+def _is_span(tokens: list[tuple]) -> bool:
+    return (
+        len(tokens) == 3
+        and tokens[0][0] == "ref"
+        and not tokens[0][1].group("col2")
+        and tokens[1] == ("op", ":")
+        and tokens[2][0] == "ref"
+        and not tokens[2][1].group("col2")
+    )
+
+
+def _corner(ref, which: str) -> tuple[int, int]:
+    if which == "end" and ref.group("col2"):
+        return column_number(ref.group("col2")), int(ref.group("row2"))
+    return column_number(ref.group("col")), int(ref.group("row"))
+
+
 def term_total(term: str, host_sheet: str, value_at) -> object | None:
-    """Сумма кэша слагаемого. None — кэша нет, это не ноль."""
+    """Сумма кэша слагаемого. None — форма неизвестна или кэш неполон, это не ноль.
+
+    Ноль только у константы 0, прямой ссылки на 0 и диапазона, где известна каждая ячейка.
+    Пустая ячейка известна. Ячейки нет в facts_by_cell — диапазон не суммируется частично.
+    """
 
     from decimal import Decimal
 
-    body = term.strip()
-    if _ZERO.fullmatch(body):
-        return Decimal(0)
-    upper = body.upper().replace(" ", "")
-    if upper.startswith("SUM(") and body.endswith(")"):
-        body = body[body.find("(") + 1 : -1]
-    refs = list(_REF.finditer(_STRING.sub(lambda match: " " * len(match.group(0)), body)))
-    if not refs:
+    tokens = _scan(term.strip())
+    if tokens is None:
         return None
-    if ":" in body and len(refs) >= 2:
-        start, end = refs[0], refs[1]
-        sheet = _sheet_name(start.group("sheet"), host_sheet)
-        total = Decimal(0)
-        seen = False
-        for col in range(min(column_number(start.group("col")), column_number(end.group("col"))), max(column_number(start.group("col")), column_number(end.group("col"))) + 1):
-            for row in range(min(int(start.group("row")), int(end.group("row"))), max(int(start.group("row")), int(end.group("row"))) + 1):
-                number = value_at(sheet, row, col)
-                if number is not None:
-                    total += number
-                    seen = True
-        return total if seen else None
-    if len(refs) == 1 and not any(char in body for char in "*/"):
-        ref = refs[0]
-        return value_at(_sheet_name(ref.group("sheet"), host_sheet), int(ref.group("row")), column_number(ref.group("col")))
-    return None
+    shape = _box(tokens)
+    if shape is None:
+        return None
+    if shape[0] == "num":
+        return Decimal(0) if _ZERO.fullmatch(shape[1]) else None
+    if shape[0] == "cell":
+        ref = shape[1]
+        return value_at(_sheet_name(ref.group("sheet"), host_sheet), int(ref.group("row")), column_number(ref.group("col")), False)
+    start, end = shape[1], shape[2]
+    sheet = _sheet_name(start.group("sheet"), host_sheet)
+    other = _sheet_name(end.group("sheet"), host_sheet) if end.group("sheet") else sheet
+    if other != sheet:
+        return None
+    left, right = _corner(start, "start"), _corner(end, "end")
+    total = Decimal(0)
+    for col in range(min(left[0], right[0]), max(left[0], right[0]) + 1):
+        for row in range(min(left[1], right[1]), max(left[1], right[1]) + 1):
+            number = value_at(sheet, row, col, True)
+            if number is None:
+                return None
+            total += number
+    return total
 
 
 @dataclass(frozen=True)
@@ -222,24 +324,36 @@ def row_shapes(data: AuditInput) -> tuple[RowShape, ...]:
 def _shapes(data: AuditInput) -> list[RowShape]:
     years = _column_years(data.periods)
     period_year = _period_years(data.periods)
-    values = _values(data)
-    grouped: dict[str, list] = {}
+    numbers, blanks = _caches(data)
+
+    def value_at(name, line, column, blank_zero=False):
+        key = (name, line, column)
+        if key in numbers:
+            return numbers[key]
+        if blank_zero and key in blanks:
+            from decimal import Decimal
+
+            return Decimal(0)
+        return None
+
+    grouped: dict[tuple[str, str | None], list] = {}
     for link in data.link_cells.values():
-        if link.row_key and link.formula:
-            grouped.setdefault(link.row_key, []).append(link)
+        if not link.row_key or not link.formula:
+            continue
+        fact = data.facts_by_cell.get(link.cell)
+        # Вне факта оси это шапка. Итог на другой оси — свой RowShape, не шаблон периода.
+        if fact is None:
+            continue
+        grouped.setdefault((link.row_key, fact.get("axis_id")), []).append(link)
     shapes: list[RowShape] = []
-    for row_key, links in grouped.items():
+    for (row_key, axis_id), links in grouped.items():
         pairs: list[tuple[int, str]] = []
         by_pattern: dict[str, list[str]] = {}
         order: list[str] = []
         cross: list[str] = []
         prior: list[str] = []
         zeros: list[tuple[str, str]] = []
-        axis_id = None
         for link in links:
-            # Вне оси периода это шапка или итог строки, не шаблон ряда.
-            if link.cell not in data.facts_by_cell:
-                continue
             parsed = parse_cell(link.cell)
             if parsed is None:
                 continue
@@ -247,8 +361,6 @@ def _shapes(data: AuditInput) -> list[RowShape]:
             if not sheet:
                 sheet = _sheet_of(data, row_key)
             fact = data.facts_by_cell.get(link.cell)
-            if fact is not None and axis_id is None:
-                axis_id = fact.get("axis_id")
             host_year = _host_year(link.period_id, fact, period_year)
             pattern = normalize(
                 link.formula,
@@ -268,7 +380,7 @@ def _shapes(data: AuditInput) -> list[RowShape]:
             elif link.formula_class == "rollforward":
                 prior.append(link.cell)
             for term in additive_terms(link.formula):
-                total = term_total(term, sheet, lambda name, line, column, values=values: values.get((name, line, column)))
+                total = term_total(term, sheet, value_at)
                 if total == 0:
                     zeros.append((link.cell, term[:80]))
                     break
@@ -327,28 +439,37 @@ def _host_year(period_id: str | None, fact: dict | None, period_year: dict[tuple
     return period_year.get((fact.get("axis_id"), fact.get("period_id")))
 
 
-def _values(data: AuditInput) -> dict[tuple[str, int, int], object]:
+def _caches(data: AuditInput) -> tuple[dict[tuple[str, int, int], object], set[tuple[str, int, int]]]:
+    """Числа кэша и пустые ячейки. Ключа нет — ячейка неизвестна, не ноль."""
+
     from decimal import Decimal, InvalidOperation
 
-    found: dict[tuple[str, int, int], object] = {}
+    numbers: dict[tuple[str, int, int], object] = {}
+    blanks: set[tuple[str, int, int]] = set()
     for cell, fact in data.facts_by_cell.items():
-        if fact.get("value_status") not in {"cached", "zero_explicit"}:
-            continue
         parsed = parse_cell(cell)
         if parsed is None:
             continue
         sheet, col, row = parsed
         if not sheet:
             sheet = _sheet_of(data, fact.get("row_key") or "")
+        if not sheet:
+            continue
+        status = fact.get("value_status")
+        if status == "empty":
+            blanks.add((sheet, row, col))
+            continue
+        if status not in {"cached", "zero_explicit"}:
+            continue
         number = fact.get("value_dec")
         if number is None and fact.get("value_raw") not in (None, ""):
             try:
                 number = Decimal(str(fact["value_raw"]))
             except InvalidOperation:
                 number = None
-        if number is not None and sheet:
-            found[(sheet, row, col)] = number
-    return found
+        if number is not None:
+            numbers[(sheet, row, col)] = number
+    return numbers, blanks
 
 
 def _axis_sheet(axis_id: str) -> str:

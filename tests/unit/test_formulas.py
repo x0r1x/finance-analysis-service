@@ -70,6 +70,118 @@ def test_pattern_break_on_unbound_row_and_opening_is_quiet():
     assert check("formula_segment", opening) == []
 
 
+def test_two_axes_of_one_row_are_not_a_false_break():
+    # Год и квартал — две оси одного ряда. Смешение даёт ложный segment.
+    key = "S|10|S!r2"
+    year, quarter = "S!r8", "S!r2"
+    facts = [
+        fact(key, "S!C10", "2024", "1", axis=quarter),
+        fact(key, "S!D10", "2025", "1", axis=quarter),
+        fact(key, "S!E10", "2026@план", "1", axis=quarter),
+        fact(key, "S!U10", "2024", "1", axis=year),
+        fact(key, "S!V10", "2025", "1", axis=year),
+        fact(key, "S!W10", "2026@план", "1", axis=year),
+    ]
+    data = AuditInput(
+        rows=[row(key)],
+        periods=[*PERIODS, {"axis_id": year, "period_id": "2024", "period_key_base": "2024", "period_marker": None}],
+        facts=facts,
+        links=link("S!C10", "SUM(C10:F10)", key, "2024")
+        + link("S!D10", "SUM(D10:G10)", key, "2025")
+        + link("S!E10", "SUM(E10:H10)", key, "2026@план")
+        + link("S!U10", "C10+D10", key, "2024")
+        + link("S!V10", "D10+E10", key, "2025")
+        + link("S!W10", "E10+F10", key, "2026@план"),
+    )
+    from finance_analysis.domain.formula_shape import row_shapes
+
+    shapes = row_shapes(data)
+    assert len(shapes) == 2
+    assert {shape.axis_id: shape.kind for shape in shapes} == {year: "uniform", quarter: "uniform"}
+    assert check("formula_pattern_break", data) == []
+    assert check("formula_segment", data) == []
+
+
+def test_break_stays_on_its_axis():
+    key = "S|10|S!r2"
+    year, quarter = "S!r8", "S!r2"
+    facts = [
+        fact(key, "S!C10", "2024", "1", axis=quarter),
+        fact(key, "S!D10", "2025", "1", axis=quarter),
+        fact(key, "S!E10", "2026@план", "1", axis=quarter),
+        fact(key, "S!U10", "2024", "1", axis=year),
+        fact(key, "S!V10", "2025", "1", axis=year),
+        fact(key, "S!W10", "2026@план", "1", axis=year),
+    ]
+    data = AuditInput(
+        rows=[row(key)],
+        periods=[*PERIODS, {"axis_id": year, "period_id": "2024", "period_key_base": "2024", "period_marker": None}],
+        facts=facts,
+        links=link("S!C10", "B10+1", key, "2024")
+        + link("S!D10", "C10+1", key, "2025")
+        + link("S!E10", "D10+1", key, "2026@план")
+        + link("S!U10", "C10+1", key, "2024")
+        + link("S!V10", "C10+2", key, "2025")
+        + link("S!W10", "C10+3", key, "2026@план"),
+    )
+    [found] = check("formula_pattern_break", data)
+    assert {item.cell_id for item in found.locations} == {"S!U10", "S!V10", "S!W10"}
+    assert {item.axis_id for item in found.locations} == {year}
+    assert found.fingerprint == fingerprint("formula_pattern_break", "bk-S-10", "", "", "1")
+    assert check("formula_segment", data) == []
+
+
+def test_row_total_off_the_period_axis_is_not_a_pattern_break():
+    key = "S|16|S!r2"
+    period, total = "S!r2", "S!r9"
+    facts = [
+        fact(key, "S!C16", "2024", "1", axis=period),
+        fact(key, "S!E16", "2026@план", "1", axis=period),
+        fact(key, "S!D16", "2025", "2", axis=total),
+    ]
+    data = AuditInput(
+        rows=[row(key)],
+        periods=[*PERIODS, {"axis_id": total, "period_id": "2025", "period_key_base": "2025", "period_marker": None}],
+        facts=facts,
+        links=link("S!C16", "B16+1", key, "2024")
+        + link("S!E16", "D16+1", key, "2026@план")
+        + link("S!D16", "SUM(C16:E16)", key, "2025"),
+    )
+    assert check("formula_pattern_break", data) == []
+
+
+def test_zero_addend_skips_if_and_a_partial_range():
+    host, other = "S|15|S!r2", "S|1|S!r2"
+    facts = [
+        fact(host, "S!D15", "2025", "10"),
+        fact(host, "S!E15", "2025", "0"),
+        fact(host, "S!F15", "2025", "0"),
+        fact(host, "S!G15", "2025", "1"),
+        fact(other, "S!A1", "2024", "0"),
+        fact(other, "S!B1", "2024", "0"),
+        fact(other, "S!C1", "2024", "0"),
+        fact(other, "S!C2", "2024", "10"),
+        fact(other, "S!C3", "2024", "0"),
+        fact(other, "S!C5", "2024", "0"),
+        fact(other, "S!C6", "2024", None, "empty"),
+        fact(other, "S!C7", "2024", "0"),
+    ]
+    data = AuditInput(
+        rows=[row(host), row(other)],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!D15", "IF(A1=0,SUM(C1:C2),0)", host, "2025")
+        + link("S!E15", "SUM(C3:C4)", host, "2025")
+        + link("S!F15", "SUM(C5:C6)", host, "2025")
+        + link("S!G15", "G14+C7", host, "2025"),
+    )
+    found = check("zero_addend", data)
+    cells = {item.cell_id for mark in found for item in mark.locations}
+    assert "S!D15" not in cells
+    assert "S!E15" not in cells
+    assert cells == {"S!F15", "S!G15"}
+
+
 def test_two_segments_are_info_not_a_break():
     key = "S|13|S!r2"
     facts = [fact(key, f"S!{col}13", period, "1") for col, period in (("C", "2024"), ("D", "2025"), ("E", "2026@план"))]
@@ -168,8 +280,10 @@ def test_golden_formula_patterns_on_packt_and_rvi():
     assert golden_count("rvi", "cross_period_ref") == 10
     assert golden_count("packt", "prior_column") == 5
     assert golden_count("rvi", "prior_column") == 10
-    assert golden_count("packt", "zero_addend") == 49
-    assert golden_count("rvi", "zero_addend") == 125
+    # Ноль слагаемого больше не берёт частичный диапазон и IF. Packt 49→42, RVI 125→110:
+    # ушедшие ряды — SUM, где известен не весь диапазон, либо IF, который старый разбор читал как ссылку.
+    assert golden_count("packt", "zero_addend") == 42
+    assert golden_count("rvi", "zero_addend") == 110
 
 
 def test_golden_offset_indirect_used():

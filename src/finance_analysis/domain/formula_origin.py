@@ -4,6 +4,10 @@
 для API. На АШАН замыкание DSCR — сотни рядов; печать всех прячет коэффициент.
 OAK ведёт по дереву одной формулы, PerfectXL показывает уникальные формулы,
 ICAEW сокращает число формул, которые ревьюер читает.
+
+Семена — входы, которые расчёт реально взял: выбранный вариант, один член one_of,
+текущая основная привязка и фактический запасной путь interest_order.
+Подстановка 4123 (confirm_paid_interest) в семена не входит: это не вход формулы.
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ from collections import Counter, defaultdict, deque
 
 from finance_analysis.domain.audit import AuditInput, Finding, severity_rank
 from finance_analysis.domain.formula_shape import parse_cell
+from finance_analysis.domain.graphs import _select_primary
+from finance_analysis.domain.metrics import interest_choice
 from finance_analysis.domain.model_type import MetricExpression
 
 ORIGIN_CODES = frozenset(
@@ -26,38 +32,18 @@ ORIGIN_CODES = frozenset(
 )
 DIRECT_DEPTH = 1
 DIRECT_CAP = 8
+# Тот же набор, что housing_cover._FAMILY: ADSCR и сводки наследуют housing, не ковенант.
+_HOUSING = frozenset({"adscr", "dscr_min", "dscr_avg"})
 
 
-def input_concepts(expressions: dict[str, MetricExpression], metric: str, seen: set[str] | None = None) -> tuple[str, ...]:
-    """Входы базовой формулы. Варианты каталога сюда не входят."""
-
-    if seen is None:
-        seen = set()
-    if metric in seen:
-        return ()
-    expr = expressions.get(metric)
-    if expr is None:
-        return ()
-    seen.add(metric)
-    if expr.base:
-        return input_concepts(expressions, expr.base, seen)
-    names: list[str] = []
-    for name in (
-        *expr.numerator_plus,
-        *expr.numerator_minus,
-        *expr.denominator_plus,
-        *expr.denominator_minus,
-        *sorted(expr.one_of),
-        *expr.rates,
-    ):
-        if name not in names:
-            names.append(name)
-    if expr.compare_with and expr.compare_with not in names:
-        names.append(expr.compare_with)
-    return tuple(names)
-
-
-def origin_view(data: AuditInput, findings: list[Finding], expressions: dict[str, MetricExpression]) -> dict:
+def origin_view(
+    data: AuditInput,
+    findings: list[Finding],
+    expressions: dict[str, MetricExpression],
+    *,
+    interest_order: dict | None = None,
+    row_fallbacks: dict | None = None,
+) -> dict:
     marked = [item for item in findings if item.code in ORIGIN_CODES]
     by_code: dict[str, Counter] = defaultdict(Counter)
     by_row: dict[str, list[Finding]] = defaultdict(list)
@@ -71,13 +57,17 @@ def origin_view(data: AuditInput, findings: list[Finding], expressions: dict[str
     }
     metrics = []
     chain = []
-    wanted = data.applicable_metrics if data.applicable_metrics is not None else frozenset(expressions)
-    inputs = _inputs_of(data)
-    for metric in sorted(wanted & set(expressions)):
-        seeds = _seeds(data, metric, input_concepts(expressions, metric))
-        depth, via = _closure(seeds, inputs)
+    catalog = {name for name in expressions if "." not in name}
+    wanted = data.applicable_metrics if data.applicable_metrics is not None else catalog
+    edges = _inputs_of(data)
+    for metric in sorted(wanted & catalog):
+        resolved = _resolved(data, expressions, metric, interest_order, row_fallbacks)
+        seeds = {item["row_key"]: (item["concept"], item["source"]) for item in resolved}
+        depth, via = _closure(set(seeds), edges)
         counts: Counter = Counter()
         for row_key, distance in depth.items():
+            root = _root(via, row_key)
+            concept, source = seeds.get(root, (None, None))
             for item in by_row.get(row_key, ()):
                 counts[(item.code, item.severity)] += 1
                 chain.append(
@@ -88,6 +78,8 @@ def origin_view(data: AuditInput, findings: list[Finding], expressions: dict[str
                         "fingerprint": item.fingerprint,
                         "depth": distance,
                         "via": via.get(row_key),
+                        "input": concept,
+                        "source": source,
                         "cells": [loc.cell_id for loc in item.locations if loc.cell_id],
                     }
                 )
@@ -98,6 +90,7 @@ def origin_view(data: AuditInput, findings: list[Finding], expressions: dict[str
             {
                 "metric": metric,
                 "closure": len(depth),
+                "inputs": resolved,
                 "counts": [
                     {"code": code, "severity": severity, "count": count}
                     for (code, severity), count in sorted(counts.items(), key=lambda pair: (severity_rank(pair[0][1]), pair[0][0]))
@@ -108,13 +101,146 @@ def origin_view(data: AuditInput, findings: list[Finding], expressions: dict[str
     return {"book": book, "metrics": metrics, "chain": chain, "direct_cap": DIRECT_CAP}
 
 
-def _seeds(data: AuditInput, metric: str, concepts: tuple[str, ...]) -> set[str]:
-    names = {metric, *concepts}
-    return {
-        row["row_key"]
-        for row in data.bindings
-        if row.get("status") == "bound" and row.get("effective_concept") in names and row.get("row_key")
-    }
+def _variant_name(data: AuditInput, metric: str) -> str | None:
+    named = data.dscr_variant
+    if not named:
+        return None
+    if metric == "dscr":
+        return named
+    if metric in _HOUSING and named == "housing":
+        return "housing"
+    return None
+
+
+def _active(data: AuditInput, expressions: dict[str, MetricExpression], metric: str) -> tuple[MetricExpression | None, str]:
+    variant = _variant_name(data, metric)
+    if variant:
+        chosen = expressions.get(f"{metric}.{variant}")
+        if chosen is not None and not chosen.base:
+            return chosen, f"variant:{variant}"
+    expr = expressions.get(metric)
+    if expr is not None and expr.base:
+        base = expressions.get(expr.base)
+        if base is not None:
+            return base, f"base:{expr.base}"
+    return expr, "formula"
+
+
+def _one_of(expr: MetricExpression, bindings: list[dict]) -> str | None:
+    """Член one_of, который берёт расчёт. Оба числителя ICR — EBITDA."""
+
+    present = [name for name in expr.one_of if _select_primary(bindings, name)[0] is not None]
+    if "ebitda" in present:
+        return "ebitda"
+    if len(present) == 1:
+        return present[0]
+    return None
+
+
+def _interest_slot(metric: str, variant: str | None) -> str | None:
+    if metric in {"icr", "icr_ebit"}:
+        return metric
+    if metric == "dscr" and variant in {None, "pf", "corporate_covenant", "ocf_covenant"}:
+        return "pf" if variant in {None, "pf"} else variant
+    return None
+
+
+def _interest_pick(bindings: list[dict], order, row_fallbacks: dict | None) -> str | None:
+    primaries: dict = {}
+    names = list(order)
+    for name in names:
+        row, _, _ = _select_primary(bindings, name)
+        if row is not None:
+            primaries[name] = row
+        fallback = (row_fallbacks or {}).get(name)
+        canonical = getattr(fallback, "canonical", None) if fallback is not None else ("interest" if name == "interest_paid" else None)
+        if canonical and canonical not in primaries:
+            canonical_row, _, _ = _select_primary(bindings, canonical)
+            if canonical_row is not None:
+                primaries[canonical] = canonical_row
+    chosen, _warning = interest_choice(primaries, order, row_fallbacks=row_fallbacks)
+    return chosen
+
+
+def _specs(
+    data: AuditInput,
+    expressions: dict[str, MetricExpression],
+    metric: str,
+    interest_order: dict | None,
+    row_fallbacks: dict | None,
+) -> list[tuple[str, str]]:
+    expr, source = _active(data, expressions, metric)
+    if expr is None:
+        return []
+    specs: list[tuple[str, str]] = []
+
+    def add(name: str | None, src: str) -> None:
+        if name and all(item[0] != name for item in specs):
+            specs.append((name, src))
+
+    for name in (
+        *expr.numerator_plus,
+        *expr.numerator_minus,
+        *expr.denominator_plus,
+        *expr.denominator_minus,
+        *expr.rates,
+    ):
+        add(name, source)
+    add(expr.rate, source)
+    add(expr.compare_with, source)
+    if expr.add_back:
+        add(expr.add_back[0], source)
+        add(expr.add_back[1], source)
+    chosen = _one_of(expr, data.bindings)
+    if chosen:
+        add(chosen, "one_of")
+    return _fallbacks(data, metric, _variant_name(data, metric), specs, interest_order, row_fallbacks)
+
+
+def _fallbacks(data, metric, variant, specs, interest_order, row_fallbacks) -> list[tuple[str, str]]:
+    order = interest_order or {}
+    names = [name for name, _src in specs]
+    slot = _interest_slot(metric, variant)
+    if "interest" in names and slot and order.get(slot) and _select_primary(data.bindings, "interest")[0] is None:
+        chosen = _interest_pick(data.bindings, order[slot], row_fallbacks)
+        if chosen and chosen != "interest":
+            specs = [(chosen, "fallback") if name == "interest" else (name, src) for name, src in specs]
+    if (
+        metric == "dscr"
+        and variant in {None, "pf"}
+        and "debt_service" in names
+        and _select_primary(data.bindings, "debt_service")[0] is None
+        and order.get("pf")
+    ):
+        chosen = _interest_pick(data.bindings, order["pf"], row_fallbacks)
+        if chosen and _select_primary(data.bindings, "principal")[0] is not None:
+            specs = [item for item in specs if item[0] != "debt_service"]
+            have = {name for name, _src in specs}
+            if chosen not in have:
+                specs.append((chosen, "fallback"))
+            if "principal" not in have:
+                specs.append(("principal", "fallback"))
+    return specs
+
+
+def _resolved(data, expressions, metric, interest_order, row_fallbacks) -> list[dict]:
+    found = []
+    for concept, source in _specs(data, expressions, metric, interest_order, row_fallbacks):
+        primary, _missing, _ambiguous = _select_primary(data.bindings, concept)
+        row_key = primary.get("row_key") if primary else None
+        if not row_key:
+            continue
+        found.append({"concept": concept, "source": source, "row_key": row_key})
+    return found
+
+
+def _root(via: dict[str, str | None], row_key: str) -> str:
+    seen = set()
+    current = row_key
+    while via.get(current) and current not in seen:
+        seen.add(current)
+        current = via[current]
+    return current
 
 
 def _inputs_of(data: AuditInput) -> dict[str, set[str]]:

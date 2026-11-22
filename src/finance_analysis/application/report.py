@@ -78,6 +78,8 @@ def render_markdown(result: dict) -> str:
         for metric in origin.get("metrics") or []:
             lines.append(f"### {metric.get('metric')}")
             lines.append(f"- замыкание: {metric.get('closure')}")
+            for item in metric.get("inputs") or []:
+                lines.append(f"- вход {item.get('concept')}: {item.get('source')}")
             for item in metric.get("counts") or []:
                 lines.append(f"- {item.get('code')} {item.get('severity')}: {item.get('count')}")
             for row in metric.get("direct") or []:
