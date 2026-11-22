@@ -126,17 +126,33 @@ class ResolvedMetricPlan:
     lineage: tuple[LineageRow, ...] = ()
 
 
+def recover_row(
+    bindings: Sequence[Mapping[str, Any]], item: Any
+) -> Mapping[str, Any] | None:
+    """Строка входа плана: сначала ``binding_key``, иначе ``row_key``.
+
+    Один поиск для расчёта и для подстановки уплаченных процентов.
+    """
+
+    binding_key = getattr(item, "binding_key", None) or None
+    if binding_key:
+        for row in bindings:
+            if str(row.get("binding_key") or "") == str(binding_key):
+                return row
+    row_key = getattr(item, "row_key", None) or None
+    if row_key:
+        for row in bindings:
+            if row.get("row_key") == row_key:
+                return row
+    return None
+
+
 def bound_rows(plan: ResolvedMetricPlan, bindings: Sequence[Mapping[str, Any]]) -> dict[str, dict]:
     """Строки входов плана. Выбор не повторяет: ключ уже записан в плане."""
 
-    by_key: dict[str, Mapping[str, Any]] = {}
-    for row in bindings:
-        key = row.get("binding_key")
-        if key:
-            by_key[str(key)] = row
     found: dict[str, dict] = {}
     for item in plan.inputs:
-        source = by_key.get(item.binding_key or "")
+        source = recover_row(bindings, item)
         if source is None:
             continue
         copy = dict(source)

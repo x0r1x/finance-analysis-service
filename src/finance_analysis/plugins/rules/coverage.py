@@ -82,12 +82,10 @@ def _primary(data: AuditInput, concept: str, metric: str = "dscr") -> dict | Non
     if plan is not None:
         item = next((row for row in plan.inputs if row.concept == concept), None)
         if item is not None:
-            for row in data.bindings:
-                if item.binding_key and str(row.get("binding_key") or "") == item.binding_key:
-                    return row
-                if not item.binding_key and item.row_key and row.get("row_key") == item.row_key:
-                    return row
-            return None
+            from finance_analysis.domain.resolved_plan import recover_row
+
+            found = recover_row(data.bindings, item)
+            return found if isinstance(found, dict) else None
     if len(_groups(data.bindings).get(concept, ())) > 1:
         return None
     return _primaries(data.bindings, data.absent).get(concept)

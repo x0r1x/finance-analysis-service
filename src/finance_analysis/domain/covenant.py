@@ -1944,12 +1944,10 @@ def _rename(formula: Composed, chosen: str) -> Composed:
 
 
 def _row_for(bindings: list[dict], item: Any) -> dict | None:
-    for row in bindings:
-        if item.binding_key and str(row.get("binding_key") or "") == item.binding_key:
-            return row
-        if item.row_key and row.get("row_key") == item.row_key:
-            return row
-    return None
+    from finance_analysis.domain.resolved_plan import recover_row
+
+    found = recover_row(bindings, item)
+    return found if isinstance(found, dict) else None
 
 
 def _swap_interest(

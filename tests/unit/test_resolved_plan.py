@@ -405,3 +405,38 @@ def test_ambiguous_row_without_binding_key_is_not_calculated():
     assert got["status"] == "needs_input"
     assert "row-cfads-a" not in str(got)
     assert "row-cfads-b" not in str(got)
+
+
+def test_plan_uses_row_key_when_binding_key_is_absent():
+    """План без binding_key находит строку по row_key и считает её."""
+
+    from finance_analysis.domain.resolved_plan import bound_rows
+
+    cfads = _bind("cfads", 1, binding_key="", row_key="row-cfads")
+    debt = _bind("debt_service", 2, row_key="row-debt")
+    bindings = [cfads, debt]
+    plan = resolve_metric_plan("dscr", bindings, EXPRESSIONS)
+    assert plan is not None and plan.status == "resolved"
+    chosen = next(item for item in plan.inputs if item.concept == "cfads")
+    assert chosen.binding_key is None
+    assert chosen.row_key == "row-cfads"
+    rows = bound_rows(plan, bindings)
+    assert rows["cfads"]["row_key"] == "row-cfads"
+    assert rows["debt_service"]["row_key"] == "row-debt"
+    got = coverage_ratio(
+        metric="dscr",
+        facts=[
+            _fact("row-cfads", "cfads") | {"normalized_value": "40"},
+            _fact("row-debt", "debt_service") | {"normalized_value": "10"},
+        ],
+        bindings=bindings,
+        periods=[_period()],
+        period_phase={},
+        explicit_phases=False,
+        plan=plan,
+    )
+    from decimal import Decimal
+
+    assert got["status"] == "succeeded"
+    assert got["rows"][0]["value"] == Decimal("4.0000000000")
+    assert got["rows"][0]["components"]["cfads"] == ["S!cfads"]
