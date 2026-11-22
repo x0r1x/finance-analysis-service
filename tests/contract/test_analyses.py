@@ -56,7 +56,7 @@ async def test_audit_history_and_findings(app, local_service):
         assert result["versions"]["rules"]["hardcoded_formula"] == "1"
         findings = result["result_data"]["findings"]
         codes = {item["code"] for item in findings}
-        assert {"missing_cached_value", "formula_inconsistent_in_row", "offset_indirect_used"} <= codes
+        assert {"missing_cached_value", "formula_pattern_break", "offset_indirect_used"} <= codes
         assert result["summary"]["params"]["findings"] == len(findings)
         assert len({item["fingerprint"] for item in findings}) == len(findings)
         first = findings[0]
@@ -115,12 +115,12 @@ async def test_audit_history_and_findings(app, local_service):
         assert len(paged.json()["items"]) == 5
         assert paged.json()["next_page_token"] == paged.json()["items"][-1]["fingerprint"]
 
-        target = next(item for item in findings if item["code"] == "formula_inconsistent_in_row")
+        target = next(item for item in findings if item["code"] == "formula_pattern_break")
         detail = await client.get(f"/v1/books/{RVI}/findings/{target['fingerprint']}", headers=HEADERS)
         assert detail.status_code == 200, detail.text
         body = detail.json()
         assert body["finding"] == target
-        assert body["rule"]["code"] == "formula_inconsistent_in_row"
+        assert body["rule"]["code"] == "formula_pattern_break"
         trace = body["trace"]
         assert trace["source"] == "builder"
         assert trace["direction"] == "precedents" and trace["depth"] == 8
@@ -367,7 +367,7 @@ async def test_projection_upgrade_rebuilds_with_same_etag(app, local_service, mo
         assert builds.json()["items"][0]["rebuild_reason"] == "fas_projection_upgrade"
         audit = await client.post(f"/v1/books/{RVI}/analyses", headers=HEADERS, json={"type": "audit"})
         assert all(item["code"] != "builder_counters_missing" for item in audit.json()["warnings"])
-        assert any(item["code"] == "formula_inconsistent_in_row" for item in audit.json()["result_data"]["findings"])
+        assert any(item["code"] == "formula_pattern_break" for item in audit.json()["result_data"]["findings"])
 
         # Аудит прошлой сборки: concept-фильтр берёт привязки той сборки, а не головы.
         old_audit = await client.post(

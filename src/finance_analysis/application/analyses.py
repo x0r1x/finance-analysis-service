@@ -64,6 +64,7 @@ from finance_analysis.domain.errors import (
     NotAcceptable,
     NotFound,
 )
+from finance_analysis.domain.formula_origin import origin_view
 from finance_analysis.domain.housing_cover import dispatch_cover
 from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
@@ -1024,6 +1025,9 @@ class Analyses:
         }
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
+        envelope["result_data"]["formula_origin"] = origin_view(
+            data, attached, self.service.model_types.metric_expressions
+        )
         _attach_book_rows(envelope, got)
         await self._annotate(envelope)
         stored = _ratio_stored(job_id, target, analysis_id, head, computed)
@@ -1145,6 +1149,9 @@ class Analyses:
         }
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
+        envelope["result_data"]["formula_origin"] = origin_view(
+            data, findings, self.service.model_types.metric_expressions
+        )
         _attach_book_rows(envelope, got)
         await self._annotate(envelope)
         if op_id and await self._cancelled(op_id):
@@ -1328,7 +1335,7 @@ class Analyses:
         severity = Counter(item.severity for item in findings)
         by_rule = Counter((item.code, item.severity) for item in findings)
         head = target.head
-        return {
+        envelope = {
             "analysis_id": analysis_id,
             "status": "succeeded",
             "builder_ref": ref,
@@ -1365,6 +1372,10 @@ class Analyses:
             "needs_input": [],
             "warnings": warnings,
         }
+        envelope["result_data"]["formula_origin"] = origin_view(
+            data, findings, self.service.model_types.metric_expressions
+        )
+        return envelope
 
     async def _save(self, job_id, target: Target, analysis_id, rules, findings, envelope, actor, started) -> None:
         svc = self.service
