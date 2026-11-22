@@ -1025,7 +1025,7 @@ class Analyses:
             got["phase_of"],
             got["profile"],
             got["absent"],
-            got["plans"],
+            got.get("plans"),
         )
         candidates = list(attached) + promote_needs_findings(needs)
         bound: set[str] = set()
@@ -1036,7 +1036,7 @@ class Analyses:
             facts=got["facts"],
             bindings=got["bindings"],
             dscr_variant=got.get("dscr_variant"),
-            plans=got["plans"],
+            plans=got.get("plans"),
         )
         attached = [item for item in candidates if _in_scope(item, scope, data, bound)]
         envelope = {
@@ -1142,7 +1142,7 @@ class Analyses:
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
         got = await self.compute_metrics(job_id, target, metrics)
-        data.plans = got["plans"]
+        data.plans = got.get("plans") or {}
         self._trace_plans(data, metrics)
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
         bound: set[str] = set()
