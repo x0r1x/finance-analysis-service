@@ -440,3 +440,92 @@ def test_plan_uses_row_key_when_binding_key_is_absent():
     assert got["status"] == "succeeded"
     assert got["rows"][0]["value"] == Decimal("4.0000000000")
     assert got["rows"][0]["components"]["cfads"] == ["S!cfads"]
+
+
+def _rule_counts(monkeypatch) -> dict[str, int]:
+    counts: dict[str, int] = {}
+
+    def wrap(fn, key):
+        def inner(*args, **kwargs):
+            counts[key] = counts.get(key, 0) + 1
+            return fn(*args, **kwargs)
+
+        return inner
+
+    targets = (
+        ("finance_analysis.domain.semantic_input", "choose_one_of"),
+        ("finance_analysis.domain.semantic_input", "dscr_denominator_plan"),
+        ("finance_analysis.domain.semantic_input", "interest_choice"),
+        ("finance_analysis.domain.semantic_input", "confirm_paid_interest"),
+        ("finance_analysis.domain.semantic_input", "_primaries"),
+        ("finance_analysis.domain.semantic_input", "_basis"),
+        ("finance_analysis.domain.semantic_input", "_select_primary"),
+        ("finance_analysis.domain.free_cash_flow", "shield_concepts"),
+    )
+    for module, name in targets:
+        host = __import__(module, fromlist=[name])
+        monkeypatch.setattr(host, name, wrap(getattr(host, name), name))
+    return counts
+
+
+def test_each_selection_rule_runs_once_inside_resolve_metric_plan(monkeypatch):
+    """Правила выбора внутри resolve_metric_plan не повторяются вторым проходом."""
+
+    counts = _rule_counts(monkeypatch)
+
+    def take() -> dict[str, int]:
+        found = dict(counts)
+        counts.clear()
+        return found
+
+    resolve_metric_plan(
+        "dscr",
+        [_bind("cfads", 1), _bind("debt_service", 2)],
+        EXPRESSIONS,
+    )
+    dscr = take()
+    assert dscr["dscr_denominator_plan"] == 1
+    assert dscr["confirm_paid_interest"] == 1
+    assert dscr["_primaries"] == 1
+    assert dscr.get("choose_one_of", 0) == 0
+    assert dscr.get("interest_choice", 0) == 0
+    assert dscr.get("_basis", 0) == 0
+    assert dscr.get("shield_concepts", 0) == 0
+
+    resolve_metric_plan(
+        "icr",
+        [_bind("ebitda", 1), _bind("ebit", 2), _bind("interest", 3)],
+        EXPRESSIONS,
+    )
+    icr = take()
+    assert icr["choose_one_of"] == 1
+    assert icr["confirm_paid_interest"] == 1
+    assert icr["_primaries"] == 1
+    assert icr.get("dscr_denominator_plan", 0) == 0
+    assert icr.get("interest_choice", 0) == 0
+    assert icr.get("_basis", 0) == 0
+
+    resolve_metric_plan(
+        "icr",
+        [_bind("ebitda", 1), _bind("interest_paid", 2)],
+        EXPRESSIONS,
+        interest_order={"icr": ("interest", "interest_paid")},
+    )
+    fallback = take()
+    assert fallback["interest_choice"] == 1
+    assert fallback["choose_one_of"] == 1
+    assert fallback["confirm_paid_interest"] == 1
+    assert fallback["_primaries"] == 1
+
+    resolve_metric_plan(
+        "fcff",
+        [_bind("operating_cash_flow", 1), _bind("capex", 2)],
+        None,
+        inputs={"all_of": ("operating_cash_flow", "capex")},
+    )
+    fcff = take()
+    assert fcff["_basis"] == 1
+    assert fcff["_primaries"] == 1
+    assert fcff["confirm_paid_interest"] == 1
+    assert fcff.get("shield_concepts", 0) == 0
+    assert fcff.get("dscr_denominator_plan", 0) == 0

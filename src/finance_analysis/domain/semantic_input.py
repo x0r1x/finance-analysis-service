@@ -12,7 +12,7 @@ OpenLineage записывает входы выхода в одном фасе�
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from finance_analysis.domain.binding_resolution import declared_concept
@@ -20,13 +20,11 @@ from finance_analysis.domain.binding_resolution import select_primary as _select
 from finance_analysis.domain.free_cash_flow import (
     _ambiguous_primary,
     _basis,
-    shield_concepts,
 )
 from finance_analysis.domain.metrics import (
     HUMAN_SOURCES,
     _groups,
     _primaries,
-    absent_concepts,
     choose_one_of,
     confirm_paid_interest,
     dscr_denominator_plan,
@@ -44,8 +42,18 @@ from finance_analysis.domain.resolved_plan import (
     ResolvedInput,
     ResolvedMetricPlan,
     ShieldDecision,
+    recover_row,
     seal,
 )
+
+
+@dataclass
+class _Selection:
+    """Один проход выбора. Поля плана — проекция, а не второй вызов правил."""
+
+    warnings: list[PlanWarning] = field(default_factory=list)
+    fallbacks: list[AppliedFallback] = field(default_factory=list)
+    shield: ShieldDecision | None = None
 
 # ADSCR и сводки наследуют housing, как housing_cover._FAMILY.
 _HOUSING = frozenset({"adscr", "dscr_min", "dscr_avg"})
@@ -185,6 +193,7 @@ def resolve_semantic_inputs(
     links: Sequence[Mapping[str, Any]] = (),
     statement_sheets: frozenset[str] = frozenset(),
     include_shield: bool = True,
+    selection: _Selection | None = None,
 ) -> tuple[SemanticInput, ...] | None:
     """Входы, которые расчёт реально берёт. None — метрики нет в этом вызове.
 
@@ -202,17 +211,35 @@ def resolve_semantic_inputs(
         if not include_shield:
             return listed
         return _with_shield(
-            listed, metric, visible, absent, facts, links, statement_sheets, row_keys
+            listed,
+            metric,
+            visible,
+            absent,
+            facts,
+            links,
+            statement_sheets,
+            row_keys,
+            selection,
         )
     expr, source = active
-    specs = _specs(expr, source, metric, chosen, visible, interest_order, row_fallbacks)
+    specs = _specs(
+        expr, source, metric, chosen, visible, interest_order, row_fallbacks, selection
+    )
     chosen_inputs = tuple(
         _materialize(name, src, role, visible, row_keys) for name, src, role in specs
     )
     if not include_shield:
         return chosen_inputs
     return _with_shield(
-        chosen_inputs, metric, visible, absent, facts, links, statement_sheets, row_keys
+        chosen_inputs,
+        metric,
+        visible,
+        absent,
+        facts,
+        links,
+        statement_sheets,
+        row_keys,
+        selection,
     )
 
 
@@ -250,6 +277,7 @@ def resolve_metric_plan(
     chosen_variant = variant if variant else _implied_variant(metric, dscr_variant)
     active = _active(metric, chosen_variant, expressions) if expressions else None
     variant_source = active[1] if active else "formula"
+    selection = _Selection()
     items = resolve_semantic_inputs(
         metric,
         bindings,
@@ -264,29 +292,14 @@ def resolve_metric_plan(
         facts=facts,
         links=links,
         statement_sheets=statement_sheets,
-        include_shield=metric != "fcff",
+        selection=selection,
     )
     if items is None:
         return None
-    shield = _shield_decision(metric, bindings, absent, facts, links, statement_sheets)
-    if shield is not None and shield.basis in _PAID_BASES and all(item.concept != "interest_paid" for item in items):
-        visible = _with_confirmed_paid(_visible(bindings, absent), absent)
-        items = (
-            *items,
-            _materialize("interest_paid", "paid_interest", "all_of", visible, row_keys),
-        )
+    shield = selection.shield
     confirmed, diagnostic = _split(items)
     rejected = _rejected(metric, items, bindings, expressions, chosen_variant, interest_order, shield)
-    status, needs, warnings, fallbacks = _outcome(
-        metric,
-        bindings,
-        items,
-        absent,
-        interest_order,
-        row_fallbacks,
-        shield,
-        chosen_variant,
-    )
+    status, needs, warnings, fallbacks = _outcome(metric, bindings, items, absent, selection, chosen_variant)
     return seal(
         metric_id=metric,
         variant=chosen_variant,
@@ -347,59 +360,93 @@ def _split(
     return tuple(confirmed), tuple(diagnostic)
 
 
-def _shield_decision(
-    metric: str,
-    bindings: Sequence[Mapping[str, Any]],
-    absent: frozenset[str],
-    facts: Sequence[Mapping[str, Any]],
-    links: Sequence[Mapping[str, Any]],
-    statement_sheets: frozenset[str],
-) -> ShieldDecision | None:
-    if metric != "fcff":
-        return None
-    rows = [dict(row) for row in bindings]
-    ocf = _primaries(rows, absent).get("operating_cash_flow")
-    if ocf is None:
-        return ShieldDecision("unknown", "no_basis")
-    statement = frozenset(sheet_name_key(name) for name in statement_sheets)
-    basis = _basis(ocf, rows, absent, list(facts), list(links), statement)
-    return ShieldDecision(basis, _SHIELD_REASON[basis])
-
-
 def _outcome(
     metric: str,
     bindings: Sequence[Mapping[str, Any]],
     items: tuple[SemanticInput, ...],
     absent: frozenset[str],
-    interest_order: Mapping[str, Sequence[str]] | None,
-    row_fallbacks: Mapping[str, Any] | None,
-    shield: ShieldDecision | None,
+    selection: _Selection,
     variant: str | None = None,
 ) -> tuple[str, tuple[NeedsInput, ...], tuple[PlanWarning, ...], tuple[AppliedFallback, ...]]:
     if metric == "fcff":
         return _fcff_outcome(bindings, items, absent)
+    warnings = tuple(selection.warnings)
+    fallbacks = tuple(selection.fallbacks)
     if metric == "dscr" and variant in {None, "pf"} or metric in {"icr", "icr_ebit"}:
-        return _coverage_outcome(metric, bindings, absent, interest_order, row_fallbacks)
+        return _coverage_status(items, bindings, absent, warnings, fallbacks)
     if any(item.ambiguous for item in items):
         return (
             "needs_input",
             tuple(NeedsInput("concept", "ambiguous", item.concept) for item in items if item.ambiguous),
-            (),
-            (),
+            warnings,
+            fallbacks,
         )
     missing = [item.concept for item in items if item.row_key is None]
     if missing:
         return (
             "missing_input",
             tuple(NeedsInput("concept", "concept_unknown", name) for name in missing),
-            (),
-            (),
+            warnings,
+            fallbacks,
         )
-    del shield
-    extra_warnings, extra_fallbacks = _recorded_fallbacks(
-        items, metric, variant, interest_order, row_fallbacks
-    )
-    return "resolved", (), extra_warnings, extra_fallbacks
+    return "resolved", (), warnings, fallbacks
+
+
+def _coverage_status(
+    items: tuple[SemanticInput, ...],
+    bindings: Sequence[Mapping[str, Any]],
+    absent: frozenset[str],
+    warnings: tuple[PlanWarning, ...],
+    fallbacks: tuple[AppliedFallback, ...],
+) -> tuple[str, tuple[NeedsInput, ...], tuple[PlanWarning, ...], tuple[AppliedFallback, ...]]:
+    """Статус покрытия по уже выбранным входам. Повторный выбор не делает.
+
+    Неоднозначность и отсутствие читаются со строк. Это диагностика, не правило выбора.
+    """
+
+    rows = [dict(row) for row in bindings]
+    watched = {item.concept for item in items} | {"ebitda", "ebit"}
+    ambiguous = [name for name, grouped in _groups(rows).items() if len(grouped) > 1 and name in watched]
+    if not ambiguous:
+        ambiguous = [
+            declared_concept(row)
+            for row in rows
+            if row.get("status") == "ambiguous" and declared_concept(row) in watched
+        ]
+    if ambiguous:
+        return "needs_input", (NeedsInput("concept", "ambiguous", ambiguous[0]),), warnings, fallbacks
+    missing = [item.concept for item in items if item.row_key is None]
+    if missing:
+        subject = missing[0]
+        reason = "absent_in_book" if subject in _absent_names(rows, absent) else "concept_unknown"
+        return (
+            "missing_input",
+            tuple(
+                NeedsInput("concept", reason if name == subject else "concept_unknown", name)
+                for name in missing
+            ),
+            warnings,
+            fallbacks,
+        )
+    return "resolved", (), warnings, fallbacks
+
+
+def _absent_names(rows: Sequence[Mapping[str, Any]], absent: frozenset[str]) -> set[str]:
+    marked = {
+        declared_concept(row)
+        for row in rows
+        if row.get("source") == "confirmed" and row.get("status") == "unknown" and declared_concept(row)
+    }
+    restored = {
+        declared_concept(row)
+        for row in rows
+        if row.get("is_primary")
+        and row.get("status") in {"bound", "bound_with_warning"}
+        and not row.get("stale")
+        and declared_concept(row)
+        and row.get("source") in HUMAN_SOURCES
+    }
+    return (marked | set(absent)) - restored
 
 
 def _fcff_outcome(
@@ -415,91 +462,6 @@ def _fcff_outcome(
         if name not in present:
             return "missing_input", (NeedsInput("concept", "concept_unknown", name),), (), ()
     return "resolved", (), (), ()
-
-
-def _coverage_outcome(
-    metric: str,
-    bindings: Sequence[Mapping[str, Any]],
-    absent: frozenset[str],
-    interest_order: Mapping[str, Sequence[str]] | None,
-    row_fallbacks: Mapping[str, Any] | None,
-) -> tuple[str, tuple[NeedsInput, ...], tuple[PlanWarning, ...], tuple[AppliedFallback, ...]]:
-    rows = [dict(row) for row in bindings]
-    primaries = _primaries(rows, absent)
-    confirm_paid_interest(primaries, rows, absent)
-    order = dict(interest_order or {})
-    warnings: list[PlanWarning] = []
-    fallbacks: list[AppliedFallback] = []
-    if metric == "dscr":
-        needed, _denominator, parts, plan_warnings = dscr_denominator_plan(
-            primaries, order, dict(row_fallbacks) if row_fallbacks else None
-        )
-        warnings.extend(_plan_warning(item) for item in plan_warnings)
-        if parts is not None:
-            code = warnings[0].code if warnings else None
-            fallbacks.append(AppliedFallback("pf", "debt_service", parts[0], code))
-        numerator = "cfads"
-    else:
-        slot = "icr_ebit" if metric == "icr_ebit" else "icr"
-        chosen, warning = interest_choice(
-            primaries, order.get(slot, ("interest",)), row_fallbacks=dict(row_fallbacks or {})
-        )
-        needed = (chosen or "interest",)
-        if warning:
-            warnings.append(_plan_warning(warning))
-            fallbacks.append(AppliedFallback(slot, "interest", chosen or "interest", warning["code"]))
-        if metric == "icr_ebit":
-            numerator = choose_one_of(("ebit",), {name for name in ("ebit",) if name in primaries})
-        else:
-            present = {name for name in ("ebitda", "ebit") if name in primaries}
-            numerator = choose_one_of(("ebitda", "ebit"), present)
-            if numerator == "ebitda" and "ebit" in present:
-                warnings.append(PlanWarning("icr_numerator", (("concept", "ebitda"),)))
-    watched = set(needed) | {"ebitda", "ebit", numerator}
-    ambiguous = [name for name, grouped in _groups(rows).items() if len(grouped) > 1 and name in watched]
-    if not ambiguous:
-        ambiguous = [
-            declared_concept(row)
-            for row in rows
-            if row.get("status") == "ambiguous" and declared_concept(row) in watched
-        ]
-    if ambiguous:
-        return "needs_input", (NeedsInput("concept", "ambiguous", ambiguous[0]),), tuple(warnings), tuple(fallbacks)
-    missing = [name for name in needed if name not in primaries]
-    if numerator not in primaries:
-        missing.append(numerator)
-    if missing:
-        subject = missing[0]
-        reason = "absent_in_book" if subject in absent_concepts(rows, absent) else "concept_unknown"
-        return (
-            "missing_input",
-            tuple(NeedsInput("concept", reason if name == subject else "concept_unknown", name) for name in missing),
-            tuple(warnings),
-            tuple(fallbacks),
-        )
-    return "resolved", (), tuple(warnings), tuple(fallbacks)
-
-
-def _recorded_fallbacks(
-    items: tuple[SemanticInput, ...],
-    metric: str,
-    variant: str | None,
-    interest_order: Mapping[str, Sequence[str]] | None,
-    row_fallbacks: Mapping[str, Any] | None,
-) -> tuple[tuple[PlanWarning, ...], tuple[AppliedFallback, ...]]:
-    chosen = [item for item in items if item.source == "fallback"]
-    if not chosen:
-        return (), ()
-    slot = _interest_slot(metric, variant) or "interest"
-    present = {item.concept: {"concept": item.concept} for item in items if item.row_key}
-    _name, warning = interest_choice(
-        present, (interest_order or {}).get(slot, ()), row_fallbacks=dict(row_fallbacks or {})
-    )
-    code = warning["code"] if warning else None
-    return (
-        (_plan_warning(warning),) if warning else (),
-        tuple(AppliedFallback(slot, "interest", item.concept, code) for item in chosen),
-    )
 
 
 def _plan_warning(item: dict) -> PlanWarning:
@@ -542,7 +504,7 @@ def _rejected(
         for name in members:
             if name in chosen:
                 continue
-            row, _missing, _ambiguous = _select_primary(bindings, name)
+            row = _named_row(bindings, name)
             if row is not None:
                 add(
                     "not_selected_one_of",
@@ -557,7 +519,7 @@ def _rejected(
         for name in order:
             if name == picked or name in chosen:
                 continue
-            row, _missing, _ambiguous = _select_primary(bindings, name)
+            row = _named_row(bindings, name)
             if row is not None:
                 add(
                     "interest_order_skipped",
@@ -566,7 +528,7 @@ def _rejected(
                     str(row.get("row_key") or "") or None,
                 )
     if metric == "dscr" and "debt_service" in chosen:
-        row, _missing, _ambiguous = _select_primary(bindings, "interest_paid")
+        row = _named_row(bindings, "interest_paid")
         if row is not None and "interest_paid" not in chosen:
             add(
                 "debt_service_present",
@@ -577,6 +539,15 @@ def _rejected(
     if shield is not None and shield.basis not in _PAID_BASES:
         add("shield_not_applied", "interest_paid", None, None)
     return tuple(found)
+
+
+def _named_row(bindings: Sequence[Mapping[str, Any]], concept: str) -> Mapping[str, Any] | None:
+    """Свежая строка для диагноза отвергнутого пути. Правило выбора не вызывает."""
+
+    rows = _fresh(bindings, concept)
+    if not rows:
+        return None
+    return min(rows, key=lambda row: str(row.get("binding_key") or ""))
 
 
 def _fresh(bindings: Sequence[Mapping[str, Any]], concept: str) -> list[Mapping[str, Any]]:
@@ -684,6 +655,7 @@ def _specs(
     bindings: Sequence[Mapping[str, Any]],
     interest_order: Mapping[str, Sequence[str]] | None,
     row_fallbacks: Mapping[str, Any] | None,
+    selection: _Selection | None = None,
 ) -> list[tuple[str, str, str]]:
     specs: list[tuple[str, str, str]] = []
 
@@ -716,7 +688,14 @@ def _specs(
                     break
             else:
                 specs.append((chosen_name, source, "one_of"))
-    return _fallbacks(metric, variant, specs, bindings, interest_order, row_fallbacks)
+        if (
+            selection is not None
+            and metric == "icr"
+            and chosen_name == "ebitda"
+            and "ebit" in present
+        ):
+            selection.warnings.append(PlanWarning("icr_numerator", (("concept", "ebitda"),)))
+    return _fallbacks(metric, variant, specs, bindings, interest_order, row_fallbacks, selection)
 
 
 def _fallbacks(
@@ -726,6 +705,7 @@ def _fallbacks(
     bindings: Sequence[Mapping[str, Any]],
     interest_order: Mapping[str, Sequence[str]] | None,
     row_fallbacks: Mapping[str, Any] | None,
+    selection: _Selection | None = None,
 ) -> list[tuple[str, str, str]]:
     """Замена interest и debt_service — та же, что у coverage_ratio, один раз.
 
@@ -736,14 +716,19 @@ def _fallbacks(
     names = [name for name, _src, _role in specs]
     slot = _interest_slot(metric, variant)
     if "interest" in names and slot and order.get(slot) and _select_primary(bindings, "interest")[0] is None:
-        chosen = _interest_pick(bindings, order[slot], row_fallbacks)
+        chosen, warning = _interest_pick(bindings, order[slot], row_fallbacks)
         if chosen and chosen != "interest":
             specs = [
                 (chosen, "fallback", role) if name == "interest" else (name, src, role)
                 for name, src, role in specs
             ]
+            if selection is not None:
+                code = warning["code"] if warning else None
+                if warning:
+                    selection.warnings.append(_plan_warning(warning))
+                selection.fallbacks.append(AppliedFallback(slot, "interest", chosen, code))
     if metric == "dscr" and variant in {None, "pf"} and "debt_service" in names:
-        specs = _dscr_plan(specs, bindings, order, row_fallbacks)
+        specs = _dscr_plan(specs, bindings, order, row_fallbacks, selection)
     return specs
 
 
@@ -752,6 +737,7 @@ def _dscr_plan(
     bindings: Sequence[Mapping[str, Any]],
     order: Mapping[str, Sequence[str]],
     row_fallbacks: Mapping[str, Any] | None,
+    selection: _Selection | None = None,
 ) -> list[tuple[str, str, str]]:
     """Состав DSCR из dscr_denominator_plan. ADSCR сюда не заходит."""
 
@@ -761,7 +747,12 @@ def _dscr_plan(
         row, _missing, _ambiguous = _select_primary(bindings, name)
         if row is not None:
             primaries[name] = row
-    concepts, _denominator, _parts, _warnings = dscr_denominator_plan(primaries, order, row_fallbacks)
+    concepts, _denominator, parts, warnings = dscr_denominator_plan(primaries, order, row_fallbacks)
+    if selection is not None:
+        selection.warnings.extend(_plan_warning(item) for item in warnings)
+        if parts is not None:
+            code = warnings[0]["code"] if warnings else None
+            selection.fallbacks.append(AppliedFallback("pf", "debt_service", parts[0], code))
     previous = {name: (src, role) for name, src, role in specs}
     return [
         (name, *previous[name]) if name in previous else (name, "fallback", "all_of")
@@ -781,7 +772,7 @@ def _interest_pick(
     bindings: Sequence[Mapping[str, Any]],
     order: Sequence[str],
     row_fallbacks: Mapping[str, Any] | None,
-) -> str | None:
+) -> tuple[str | None, dict | None]:
     primaries: dict[str, Mapping[str, Any]] = {}
     for name in order:
         row, _, _ = _select_primary(bindings, name)
@@ -795,8 +786,7 @@ def _interest_pick(
             canonical_row, _, _ = _select_primary(bindings, canonical)
             if canonical_row is not None:
                 primaries[canonical] = canonical_row
-    chosen, _warning = interest_choice(primaries, order, row_fallbacks=dict(row_fallbacks or {}))
-    return chosen
+    return interest_choice(primaries, order, row_fallbacks=dict(row_fallbacks or {}))
 
 
 def _materialize(
@@ -840,24 +830,31 @@ def _with_shield(
     links: Sequence[Mapping[str, Any]],
     statement_sheets: frozenset[str],
     row_keys: Mapping[str, str] | None,
+    selection: _Selection | None = None,
 ) -> tuple[SemanticInput, ...]:
-    """Добавить понятия щита, которых нет в формуле. Базис берёт расчёт."""
+    """Добавить понятия щита, которых нет в формуле. Базис считается один раз."""
 
-    have = {item.concept for item in items}
-    extra = shield_concepts(
-        metric,
-        [dict(row) for row in bindings],
-        absent,
-        list(facts),
-        list(links),
-        statement_sheets,
+    if metric != "fcff":
+        return items
+    rows = [dict(row) for row in bindings]
+    statement = frozenset(sheet_name_key(name) for name in statement_sheets)
+    ocf_item = next(
+        (item for item in items if item.concept == "operating_cash_flow" and item.row_key),
+        None,
     )
-    added = [
-        _materialize(name, "paid_interest", "all_of", bindings, row_keys)
-        for name in extra
-        if name not in have
-    ]
-    return (*items, *added)
+    ocf = recover_row(rows, ocf_item) if ocf_item is not None else None
+    if ocf is None:
+        basis = "unknown"
+    else:
+        basis = _basis(dict(ocf), rows, absent, list(facts), list(links), statement)
+    if selection is not None:
+        selection.shield = ShieldDecision(basis, _SHIELD_REASON[basis])
+    if basis not in _PAID_BASES or any(item.concept == "interest_paid" for item in items):
+        return items
+    return (
+        *items,
+        _materialize("interest_paid", "paid_interest", "all_of", bindings, row_keys),
+    )
 
 
 def _visible(
