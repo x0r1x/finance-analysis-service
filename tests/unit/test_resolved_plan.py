@@ -81,6 +81,52 @@ def test_hash_uses_engine_version_and_ignores_semantic_model_version_and_array_o
     assert "semantic_model_version" not in left.content_sha256
 
 
+def test_missing_input_source_and_role_change_plan_identity():
+    """Строка без row_key живёт только в lineage. Её source и role меняют хеш."""
+
+    from finance_analysis.domain.resolved_plan import LineageRow, NeedsInput, seal
+
+    common = {
+        "metric_id": "dscr",
+        "variant": None,
+        "variant_source": "formula",
+        "catalog_version": None,
+        "semantic_model_version": "smv-a",
+        "build_key": None,
+        "model_id": None,
+        "status": "missing_input",
+        "inputs": (),
+        "diagnostic": (),
+        "rejected": (),
+        "fallbacks": (),
+        "warnings": (),
+        "needs_input": (NeedsInput("concept", "concept_unknown", "cfads"),),
+        "shield": None,
+    }
+    formula = LineageRow("cfads", "formula", "all_of", None, None, "concept_unknown", False)
+    fallback = LineageRow("cfads", "fallback", "one_of", None, None, "concept_unknown", False)
+    left = seal(**common, lineage=(formula,))
+    right = seal(**common, lineage=(fallback,))
+    other_version = seal(**{**common, "semantic_model_version": "smv-b"}, lineage=(formula,))
+    reordered = seal(
+        **common,
+        lineage=(
+            LineageRow("debt_service", "formula", "all_of", None, None, "concept_unknown", False),
+            formula,
+        ),
+    )
+    same = seal(
+        **common,
+        lineage=(
+            formula,
+            LineageRow("debt_service", "formula", "all_of", None, None, "concept_unknown", False),
+        ),
+    )
+    assert left.content_sha256 != right.content_sha256
+    assert left.content_sha256 == other_version.content_sha256
+    assert reordered.content_sha256 == same.content_sha256
+
+
 def test_engine_version_changes_the_digest():
     from finance_analysis.domain.resolved_plan import content_digest
 
@@ -127,6 +173,7 @@ def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
         warnings=left.warnings,
         needs_input=left.needs_input,
         shield=left.shield,
+        lineage=left.lineage,
     )
     assert body["input_read_stamp"] == INPUT_READ_STAMP
     assert "semantic_model_version" not in body

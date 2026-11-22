@@ -96,7 +96,12 @@ class ShieldDecision:
 
 @dataclass(frozen=True)
 class LineageRow:
-    """Порядок следа внутри процесса. В хеш и в JSON контракта не входит."""
+    """Порядок следа внутри процесса. В JSON контракта не входит.
+
+    Значимые поля входят в хеш: строка без ``row_key`` не попадает ни в
+    ``inputs``, ни в ``diagnostic``, и иначе два источника одного пропуска
+    получали один ``content_sha256``. Порядок массива перед хешем сортируется.
+    """
 
     concept: str
     source: str
@@ -233,6 +238,18 @@ def _need_row(item: NeedsInput) -> dict:
     return {"kind": item.kind, "reason": item.reason, "subject": item.subject}
 
 
+def _lineage_row(item: LineageRow) -> dict:
+    return {
+        "ambiguous": item.ambiguous,
+        "binding_key": _text(item.binding_key),
+        "concept": item.concept,
+        "missing": _text(item.missing),
+        "role": item.role,
+        "row_key": _text(item.row_key),
+        "source": item.source,
+    }
+
+
 def hashed_body(
     *,
     resolution_engine_version: str,
@@ -250,6 +267,7 @@ def hashed_body(
     warnings: tuple[PlanWarning, ...],
     needs_input: tuple[NeedsInput, ...],
     shield: ShieldDecision | None,
+    lineage: tuple[LineageRow, ...] = (),
 ) -> dict:
     """Тело хеша. Массивы уже отсортированы: canonical_json ключи сортирует, списки нет."""
 
@@ -271,6 +289,21 @@ def hashed_body(
             )
         ],
         "input_read_stamp": INPUT_READ_STAMP,
+        "lineage": [
+            _lineage_row(item)
+            for item in sorted(
+                lineage,
+                key=lambda item: (
+                    item.concept,
+                    item.source,
+                    item.role,
+                    _text(item.binding_key),
+                    _text(item.row_key),
+                    _text(item.missing),
+                    item.ambiguous,
+                ),
+            )
+        ],
         "inputs": [
             _input_row(item)
             for item in sorted(
@@ -348,6 +381,7 @@ def seal(
             warnings=warnings,
             needs_input=needs_input,
             shield=shield,
+            lineage=lineage,
         )
     )
     return ResolvedMetricPlan(
