@@ -52,11 +52,18 @@ def fact(row_key: str, cell: str, period: str, value: str | None, status: str = 
     }
 
 
-def link(cell: str, formula: str, row_key: str | None, period: str | None, refs: tuple[str, ...] = ("S!A1",)) -> list[dict]:
+def link(
+    cell: str,
+    formula: str,
+    row_key: str | None,
+    period: str | None,
+    refs: tuple[str, ...] = ("S!A1",),
+    formula_class: str = "same_period",
+) -> list[dict]:
     return [
-        {"cell": cell, "formula": formula, "formula_class": "same_period", "ref_cell": ref, "row_key": row_key, "period_id": period}
+        {"cell": cell, "formula": formula, "formula_class": formula_class, "ref_cell": ref, "row_key": row_key, "period_id": period}
         for ref in refs
-    ] or [{"cell": cell, "formula": formula, "formula_class": None, "ref_cell": None, "row_key": row_key, "period_id": period}]
+    ] or [{"cell": cell, "formula": formula, "formula_class": formula_class, "ref_cell": None, "row_key": row_key, "period_id": period}]
 
 
 def check(code: str, data: AuditInput) -> list[Finding]:

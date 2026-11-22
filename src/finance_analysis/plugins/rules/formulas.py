@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from finance_analysis.domain.audit import (
-    ROWS,
     ROWS_COUNTERS,
     ROWS_LINKS,
     AuditInput,
@@ -21,6 +20,7 @@ from finance_analysis.domain.audit import (
     group_cells,
     grouped_finding,
 )
+from finance_analysis.domain.formula_shape import row_shapes
 from finance_analysis.domain.formulas import FormulaFacts, analyze
 
 _VALUED = frozenset({"cached", "zero_explicit"})
@@ -58,8 +58,8 @@ class HardcodedFormula(Rule):
 
     Строка формул — строка, у ячеек которой на этой оси есть `formula_class`
     (класс формулы из `graph.json`). Константа — ячейка этой строки со значением
-    и без формулы. Ячейки из `formula_exceptions` — формулы с другим шаблоном,
-    это `formula_inconsistent_in_row`, а не константа.
+    и без формулы. Ячейки из `formula_exceptions` — другой шаблон строки,
+    это `formula_pattern_break` или `formula_segment`, а не константа.
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
@@ -127,30 +127,131 @@ class LiteralInFormula(FormulaRule):
         }
 
 
+def _shape_locations(data: AuditInput, cells: tuple[str, ...] | list[str]) -> list[Location]:
+    return [data.placed(cell) for cell in cells]
+
+
+def _pattern_params(shape) -> dict:
+    return {
+        "patterns": [
+            {"id": pattern_id, "cells": list(cells[:12]), "count": len(cells)}
+            for pattern_id, cells in shape.patterns
+        ]
+    }
+
+
 @dataclass(frozen=True)
-class FormulaInconsistent(Rule):
-    """Ячейки строки с шаблоном формулы, отличным от основного (`formula_exceptions`)."""
+class FormulaPatternBreak(Rule):
+    """Три и больше шаблона R1C1 или шаблон, который вернулся после другого.
+
+    Первая ячейка ряда и ровно два сплошных отрезка сюда не входят.
+    """
 
     def check(self, data: AuditInput) -> list[Finding]:
         findings = []
-        for row in data.rows:
-            exceptions = row.get("formula_exceptions") or ()
-            if not exceptions:
+        for shape in row_shapes(data):
+            if shape.kind != "break":
                 continue
-            by_axis: dict[str | None, list[Location]] = {}
-            for location in (data.placed(cell) for cell in exceptions):
-                by_axis.setdefault(location.axis_id, []).append(location)
-            for axis_id, cells in by_axis.items():
-                findings.append(
-                    self.finding(
-                        data,
-                        locations=sorted(cells, key=lambda item: item.cell_id or ""),
-                        row_key=row["row_key"],
-                        axis_id=axis_id,
-                        params={"row_formula": row.get("formula"), "cells": len(cells)},
-                        truncated=bool(row.get("formula_exceptions_truncated")),
-                    )
+            cells = [cell for _pattern, group in shape.patterns for cell in group]
+            findings.append(
+                self.finding(
+                    data,
+                    locations=_shape_locations(data, cells),
+                    row_key=shape.row_key,
+                    axis_id=shape.axis_id,
+                    params=_pattern_params(shape),
                 )
+            )
+        return findings
+
+
+@dataclass(frozen=True)
+class FormulaSegment(Rule):
+    """Ровно два сплошных шаблона. Это карта периода, не разрыв в середине."""
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        findings = []
+        for shape in row_shapes(data):
+            if shape.kind != "segment":
+                continue
+            cells = [cell for _pattern, group in shape.patterns for cell in group]
+            findings.append(
+                self.finding(
+                    data,
+                    locations=_shape_locations(data, cells),
+                    row_key=shape.row_key,
+                    axis_id=shape.axis_id,
+                    params=_pattern_params(shape),
+                )
+            )
+        return findings
+
+
+@dataclass(frozen=True)
+class CrossPeriodRef(Rule):
+    """Класс `cross_period`: формула берёт другой период, и это не штопор."""
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        findings = []
+        for shape in row_shapes(data):
+            if not shape.cross:
+                continue
+            findings.append(
+                self.finding(
+                    data,
+                    locations=_shape_locations(data, shape.cross),
+                    row_key=shape.row_key,
+                    axis_id=shape.axis_id,
+                    params={"cells": len(shape.cross)},
+                )
+            )
+        return findings
+
+
+@dataclass(frozen=True)
+class PriorColumn(Rule):
+    """Класс `rollforward`: предыдущий столбец без другой арифметики. Штопор ряда."""
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        findings = []
+        for shape in row_shapes(data):
+            if not shape.prior:
+                continue
+            findings.append(
+                self.finding(
+                    data,
+                    locations=_shape_locations(data, shape.prior),
+                    row_key=shape.row_key,
+                    axis_id=shape.axis_id,
+                    params={"cells": len(shape.prior)},
+                )
+            )
+        return findings
+
+
+@dataclass(frozen=True)
+class ZeroAddend(Rule):
+    """Слагаемое, сумма кэша которого равна нулю."""
+
+    def check(self, data: AuditInput) -> list[Finding]:
+        findings = []
+        for shape in row_shapes(data):
+            if not shape.zeros:
+                continue
+            cells = tuple(dict.fromkeys(cell for cell, _term in shape.zeros))
+            formula_cells = {cell for _pattern, group in shape.patterns for cell in group}
+            findings.append(
+                self.finding(
+                    data,
+                    locations=_shape_locations(data, cells),
+                    row_key=shape.row_key,
+                    axis_id=shape.axis_id,
+                    params={
+                        "cells": list(cells[:12]),
+                        "structural": set(cells) == formula_cells,
+                    },
+                )
+            )
         return findings
 
 
@@ -232,9 +333,25 @@ LITERAL_IN_FORMULA = LiteralInFormula(
     "literal_in_formula", "1", "qualitative", "low", ("FAST 3.04-01", "ICAEW avoid hardcoding"),
     "Числовой литерал в формуле", ROWS_LINKS,
 )
-FORMULA_INCONSISTENT_IN_ROW = FormulaInconsistent(
-    "formula_inconsistent_in_row", "1", "logic", "high", ("FAST 3.02-01", "FAST 3.02-02", "ICAEW"),
-    "Формула строки отличается в отдельных ячейках", ROWS,
+FORMULA_PATTERN_BREAK = FormulaPatternBreak(
+    "formula_pattern_break", "1", "logic", "high", ("FAST 3.02-01", "FAST 3.02-02", "ICAEW"),
+    "Шаблон формулы меняется вдоль ряда", ROWS_LINKS,
+)
+FORMULA_SEGMENT = FormulaSegment(
+    "formula_segment", "1", "qualitative", "info", ("FAST 3.02-01", "ICAEW"),
+    "Два шаблона формулы на ряде", ROWS_LINKS, finding_kind="methodology",
+)
+CROSS_PERIOD_REF = CrossPeriodRef(
+    "cross_period_ref", "1", "logic", "medium", ("ICAEW",),
+    "Формула ссылается на другой период", ROWS_LINKS,
+)
+PRIOR_COLUMN = PriorColumn(
+    "prior_column", "1", "qualitative", "info", ("FAST 2.02-05",),
+    "Штопор на предыдущий столбец", ROWS_LINKS, finding_kind="methodology",
+)
+ZERO_ADDEND = ZeroAddend(
+    "zero_addend", "1", "logic", "medium", ("ICAEW",),
+    "Нулевое слагаемое", ROWS_LINKS,
 )
 MISSING_CACHED_VALUE = MissingCachedValue(
     "missing_cached_value", "1", "omission", "medium", (), "Формула без значения в кэше",

@@ -64,6 +64,7 @@ from finance_analysis.domain.errors import (
     NotAcceptable,
     NotFound,
 )
+from finance_analysis.domain.formula_origin import origin_view
 from finance_analysis.domain.housing_cover import dispatch_cover
 from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
@@ -640,11 +641,14 @@ class Analyses:
         catalog = load_dimensions()
         pricing, billing = await self.service.glossary.concept_price_facts(target.head.versions.get("glossary"))
         profile = await self._profile(target.head)
+        link_file = next((item for item in files if str(item).endswith("/graph_links.parquet")), None)
+        links_loaded = "links" in needed and link_file is not None
         return AuditInput(
             rows=dim_rows,
             periods=periods,
             facts=await rows("fact_observation"),
-            links=await rows("graph_links") if "links" in needed else [],
+            links=await rows("graph_links") if links_loaded else [],
+            graph_links_available=links_loaded,
             counters=dict(target.manifest.get("builder_counters") or {}),
             bindings=bindings,
             semantics=row_semantics,
@@ -964,6 +968,7 @@ class Analyses:
             "absent": common["absent"],
             "applicability": uses,
             "model_type": verdict.as_dict(),
+            "dscr_variant": dscr_variant,
             "book_rows": cite_lbo_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,
@@ -996,7 +1001,12 @@ class Analyses:
         bound: set[str] = set()
         if "concepts" in scope:
             bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
-        data = AuditInput(periods=got["periods"], facts=got["facts"], bindings=got["bindings"])
+        data = AuditInput(
+            periods=got["periods"],
+            facts=got["facts"],
+            bindings=got["bindings"],
+            dscr_variant=got.get("dscr_variant"),
+        )
         attached = [item for item in candidates if _in_scope(item, scope, data, bound)]
         envelope = {
             "analysis_id": analysis_id,
@@ -1145,6 +1155,7 @@ class Analyses:
         }
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
+        envelope["result_data"]["formula_origin"] = self._formula_origin(data, findings)
         _attach_book_rows(envelope, got)
         await self._annotate(envelope)
         if op_id and await self._cancelled(op_id):
@@ -1328,7 +1339,7 @@ class Analyses:
         severity = Counter(item.severity for item in findings)
         by_rule = Counter((item.code, item.severity) for item in findings)
         head = target.head
-        return {
+        envelope = {
             "analysis_id": analysis_id,
             "status": "succeeded",
             "builder_ref": ref,
@@ -1365,6 +1376,18 @@ class Analyses:
             "needs_input": [],
             "warnings": warnings,
         }
+        envelope["result_data"]["formula_origin"] = self._formula_origin(data, findings)
+        return envelope
+
+    def _formula_origin(self, data, findings) -> dict:
+        catalog = self.service.model_types
+        return origin_view(
+            data,
+            findings,
+            catalog.metric_expressions,
+            interest_order=catalog.interest_order,
+            row_fallbacks=catalog.row_fallbacks,
+        )
 
     async def _save(self, job_id, target: Target, analysis_id, rules, findings, envelope, actor, started) -> None:
         svc = self.service

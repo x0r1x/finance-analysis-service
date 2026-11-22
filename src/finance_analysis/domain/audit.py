@@ -150,6 +150,8 @@ class LinkCell:
     row_key: str | None
     period_id: str | None
     refs: tuple[str, ...]
+    # Диапазон ссылок обрезан. Отсутствие ref_cell не доказывает, что в Excel зависимости нет.
+    truncated: bool = False
 
 
 @dataclass
@@ -189,6 +191,9 @@ class AuditInput:
     statement_sheets: frozenset[str] = frozenset()
     # Явная граница факта из решения `actuals_end.set`: период или дата конца.
     actuals_end: str | None = None
+    # Как graph_links_available у trace_metric: False — датасет не загружен.
+    # Пустой links при True — книга без формул, не отсутствующий граф.
+    graph_links_available: bool = True
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:
@@ -212,6 +217,7 @@ class AuditInput:
     def link_cells(self) -> dict[str, LinkCell]:
         refs: dict[str, list[str]] = {}
         first: dict[str, dict] = {}
+        cut: set[str] = set()
         for link in self.links:
             cell = link.get("cell")
             if not cell:
@@ -219,6 +225,8 @@ class AuditInput:
             first.setdefault(cell, link)
             if link.get("ref_cell"):
                 refs.setdefault(cell, []).append(link["ref_cell"])
+            if link.get("truncated"):
+                cut.add(cell)
         return {
             cell: LinkCell(
                 cell=cell,
@@ -227,6 +235,7 @@ class AuditInput:
                 row_key=link.get("row_key"),
                 period_id=link.get("period_id"),
                 refs=tuple(refs.get(cell, ())),
+                truncated=cell in cut,
             )
             for cell, link in first.items()
         }

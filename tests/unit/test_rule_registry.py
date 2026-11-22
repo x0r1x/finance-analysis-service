@@ -16,7 +16,11 @@ from finance_analysis.domain.errors import InvalidArgument
 PHASE1 = {
     "hardcoded_formula",
     "literal_in_formula",
-    "formula_inconsistent_in_row",
+    "formula_pattern_break",
+    "formula_segment",
+    "cross_period_ref",
+    "prior_column",
+    "zero_addend",
     "dangling_ref",
     "unresolved_ref",
     "external_ref",

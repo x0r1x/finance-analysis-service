@@ -634,8 +634,6 @@ class FasService:
         for dataset, rows in tables.items():
             if dataset not in keys.PROJECTION:
                 continue
-            if dataset == "graph_links" and not rows:
-                continue
             payload, count = await self.parquet.write(dataset, rows, build_key=build)
             rel = f"a/{attempt}/projection/{dataset}.parquet"
             key = keys.projection_key(job_id, build, attempt, dataset)

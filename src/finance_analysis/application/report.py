@@ -69,6 +69,29 @@ def render_markdown(result: dict) -> str:
             lines.append(f"- lease_source: {_show(row.get('lease_source'))}")
             if row.get("components"):
                 lines.append(f"- components: {_show(row.get('components'))}")
+    origin = data.get("formula_origin")
+    incomplete = isinstance(origin, dict) and origin.get("physical_lineage_complete") is False
+    if isinstance(origin, dict) and (origin.get("book") or origin.get("metrics") or incomplete):
+        lines.extend(["", "## Происхождение формул"])
+        for code, counts in (origin.get("book") or {}).items():
+            rendered = ", ".join(f"{severity} {count}" for severity, count in counts.items())
+            lines.append(f"- {code}: {rendered}")
+        for metric in origin.get("metrics") or []:
+            lines.append(f"### {metric.get('metric')}")
+            lines.append(f"- замыкание: {metric.get('closure')}")
+            for item in metric.get("inputs") or []:
+                lines.append(f"- вход {item.get('concept')}: {item.get('source')}")
+            for item in metric.get("counts") or []:
+                lines.append(f"- {item.get('code')} {item.get('severity')}: {item.get('count')}")
+            for row in metric.get("direct") or []:
+                cells = ", ".join(
+                    f"{cell.get('cell_id')} {cell.get('period_id') or ''} ({', '.join(cell.get('codes') or [])})"
+                    for cell in row.get("cells") or []
+                )
+                lines.append(f"- {row.get('label')} глубина {row.get('depth')}: {cells}")
+        lines.append("- цепь: formula_origin.chain")
+        if incomplete and origin.get("note"):
+            lines.append(f"- {origin['note']}")
     findings = data.get("findings") or []
     if findings:
         lines.extend(["", "## findings"])

@@ -962,8 +962,8 @@ class FormulaClassMismatch(CellRule):
     """Класс формулы ячейки (`graph.json`) отличается от основного класса серии.
 
     Первый период оси не проверяется: открытие корпуса и первая ячейка серии
-    законно отличаются. Ячейки из `formula_exceptions` — уже
-    `formula_inconsistent_in_row`.
+    законно отличаются. Ячейки из `formula_exceptions` не сравниваются: шаблон ряда
+    смотрит `formula_pattern_break`.
     """
 
     def cells(self, data: AuditInput) -> dict[str, dict]:

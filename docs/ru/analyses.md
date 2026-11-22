@@ -16,13 +16,13 @@
 
 ## Что делает каждый type
 
-`audit` гоняет выбранные правила. Нет ключа `rules` — гоняются все. Пустой список `rules` не гоняет ни одного.
+`audit` гоняет выбранные правила. Нет ключа `rules` — гоняются все. Пустой список `rules` не гоняет ни одного. В `result_data.formula_origin` — пометки формул по графу ссылок. `physical_lineage_complete: false` значит, что цепь не полный физический граф: `truncated_links` — обрезанный диапазон, а note «graph_links не загружен» — датасета не было. Публикация всегда пишет `graph_links`, в том числе пустой: это книга без формул, цепь полная. Файла нет только у старой сборки или если запись не удалась — тогда трассировка недоступна.
 
-`ratios` требует непустой список `metrics`. Допустимые имена — массив `metrics` в `GET /v1/capabilities`. При уверенном основном типе в `result_data.book_rows` — цитаты строк среза типа (`cited` / `absent` / `ambiguous` + `observations`). Контракт: `adapters/storage/schemas/book_rows.json` (`book_rows@1.0`).
+`ratios` требует непустой список `metrics`. Допустимые имена — массив `metrics` в `GET /v1/capabilities`. При уверенном основном типе в `result_data.book_rows` — цитаты строк среза типа (`cited` / `absent` / `ambiguous` + `observations`). Контракт: `adapters/storage/schemas/book_rows.json` (`book_rows@1.0`). Поля `formula_origin` у `ratios` нет: находки этого типа не про шаблон формулы.
 
 `impact` строит трассу одной цели. `target` — это `cell_id`, `row_key` или `concept`. `direction` — `precedents` или `dependents`. Пропущенный `depth` берёт значение по умолчанию.
 
-`full` считает коэффициенты, затем аудит, затем impact, если передан `target`.
+`full` считает коэффициенты, затем аудит, затем impact, если передан `target`. В `result_data` есть `formula_origin`, как у аудита.
 
 `POST /v1/books/{job_id}:compare` — не тип анализа. Он сравнивает две сборки, два сохранённых сценария или две книги (`other.job_id`). Разницу метрик между случаями не считает.
 

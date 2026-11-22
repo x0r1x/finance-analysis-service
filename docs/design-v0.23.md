@@ -452,7 +452,7 @@ class ObjectStorePort(Protocol):              # с 0.16 все методы ас
       a/{attempt_ulid}/projection/dim_row.parquet     # данные попытки; действительна только попытка, указанная в manifest
       a/{attempt_ulid}/projection/dim_period.parquet
       a/{attempt_ulid}/projection/fact_observation.parquet
-      a/{attempt_ulid}/projection/graph_links.parquet # опц.: развёрнутые refs из graph.json для правил
+      a/{attempt_ulid}/projection/graph_links.parquet # всегда, в том числе пустой (0 строк): книга без формул. Нет файла только у старой сборки или если запись не удалась
       derived/{derive_key}/_done.json               # маркер (put_if_absent, последним): входы derive_key + attempt + файлы
       derived/{derive_key}/a/{attempt}/row_semantics.parquet · period_semantics.parquet   # inferred ⊕ свёртка журнала до state_seq
       derived/{derive_key}/a/{attempt}/bindings.parquet   # все fact-строки, включая unknown/ambiguous (§5.10.1)
@@ -1884,7 +1884,11 @@ EBITDA меньше или равна нулю и знаменатель бол�
 |---|---|---|---|---|---|
 | 1 | `hardcoded_formula` (константа в строке формул) | logic | high | `formula_class`, `formula_exceptions` | FAST 3.02-01; ICAEW «consistent formulas» |
 | 1 | `literal_in_formula` (не 12/24/1000 и т. п.) | qualitative | low→medium, если значение меняется по строке | формула | FAST 3.04-01; ICAEW «avoid hardcoding» (универсальные константы допустимы) |
-| 1 | `formula_inconsistent_in_row` | logic | high | `formula_exceptions` | FAST 3.02-01/02; ICAEW |
+| 1 | `formula_pattern_break` | logic | high | R1C1 ссылок графа | FAST 3.02-01/02; ICAEW |
+| 1 | `formula_segment` | qualitative | info | R1C1 ссылок графа | FAST 3.02-01; ICAEW, два сплошных шаблона |
+| 1 | `cross_period_ref` | logic | medium | `formula_class=cross_period` | ICAEW |
+| 1 | `prior_column` | qualitative | info | `formula_class=rollforward` | FAST 2.02-05 |
+| 1 | `zero_addend` | logic | medium | формула и кэш слагаемого | ICAEW |
 | 1 | `dangling_ref`, `unresolved_ref` | mechanical | high | `summary.*`, `dangling_classes` | — |
 | 1 | `external_ref` | qualitative | medium | счётчик `external` (R1), ссылки `graph.json links[].refs` | FAST 1.03-02/04 |
 | 1 | `unexpected_cycle` | logic | high | счётчик `cycles` (R1); детали — `/graph/trace` (R5) | ICAEW «avoid circular references» |

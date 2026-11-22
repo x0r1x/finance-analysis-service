@@ -18,14 +18,18 @@ from finance_analysis.plugins.rules.cycles import (
     UNEXPECTED_CYCLE,
 )
 from finance_analysis.plugins.rules.formulas import (
+    CROSS_PERIOD_REF,
     EXCEL_NPV_USED,
-    FORMULA_INCONSISTENT_IN_ROW,
+    FORMULA_PATTERN_BREAK,
+    FORMULA_SEGMENT,
     HARDCODED_FORMULA,
     LITERAL_IN_FORMULA,
     LONG_FORMULA,
     MISSING_CACHED_VALUE,
     NESTED_IF,
     OFFSET_INDIRECT_USED,
+    PRIOR_COLUMN,
+    ZERO_ADDEND,
 )
 from finance_analysis.plugins.rules.noi import NOI_COVERAGE, NOI_METHOD, NOI_MISMATCH
 from finance_analysis.plugins.rules.ratios import (
@@ -64,7 +68,11 @@ from finance_analysis.plugins.rules.structure import (
 RULES = (
     HARDCODED_FORMULA,
     LITERAL_IN_FORMULA,
-    FORMULA_INCONSISTENT_IN_ROW,
+    FORMULA_PATTERN_BREAK,
+    FORMULA_SEGMENT,
+    CROSS_PERIOD_REF,
+    PRIOR_COLUMN,
+    ZERO_ADDEND,
     DANGLING_REF,
     UNRESOLVED_REF,
     EXTERNAL_REF,
