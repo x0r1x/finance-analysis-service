@@ -4,10 +4,15 @@
 и неосновная привязки, варианты DSCR/ADSCR и запасной путь — случаи того же правила.
 """
 
+import itertools
+
+import pytest
+
 from finance_analysis.application.model_types import (
     load_metric_catalog,
     load_model_types,
 )
+from finance_analysis.application.report import render_markdown
 from finance_analysis.domain.audit import AuditInput, Finding, Location
 from finance_analysis.domain.formula_origin import origin_view
 from finance_analysis.domain.graphs import trace_metric
@@ -279,3 +284,342 @@ def test_truncated_lineage_is_incomplete_for_trace_and_origin():
     assert view["truncated_links"] == 1
     assert trace.physical_lineage_complete is False
     assert view["physical_lineage_complete"] is trace.physical_lineage_complete
+
+
+def _coverage(metric: str, bindings: list[dict], facts: list[dict], catalog):
+    return coverage_ratio(
+        metric=metric,
+        facts=facts,
+        bindings=bindings,
+        periods=[_period()],
+        period_phase={},
+        explicit_phases=False,
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+
+
+def _components(got: dict) -> set[str]:
+    found: set[str] = set()
+    for row in got["rows"]:
+        found.update(row.get("components") or {})
+    return found
+
+
+def _confirmed(resolved) -> set[tuple[str, str]]:
+    return _rows((item.concept, item.row_key) for item in resolved if item.row_key and not item.ambiguous)
+
+
+_CATALOG_METRICS = sorted(name for name in _expressions() if "." not in name)
+
+
+@pytest.mark.parametrize("metric", _CATALOG_METRICS)
+def test_catalog_metric_trace_origin_and_coverage_inputs(metric: str):
+    catalog = _catalog()
+    expressions = _expressions()
+    data, bindings, facts = _book(_names(expressions), metrics=frozenset({metric}))
+    rows = _trace_rows(metric, data, expressions, catalog)
+    assert rows == _origin_rows(metric, data, expressions, catalog) == _resolved_rows(metric, data, expressions, catalog)
+    if metric in {"dscr", "icr", "icr_ebit"}:
+        assert {concept for concept, _row in rows} == _components(_coverage(metric, bindings, facts, catalog))
+
+
+def _dscr_expected(present: set[str]) -> set[str]:
+    """Ветки coverage_ratio для DSCR без debt_service и с ним. Порядок объявления не участвует."""
+
+    if "debt_service" in present:
+        return {"cfads", "debt_service"}
+    if "cfads" not in present:
+        return {"cfads"}
+    if "interest" not in present:
+        return {"cfads", "debt_service"}
+    if "principal" not in present:
+        return {"cfads", "principal"}
+    return {"cfads", "interest", "principal"}
+
+
+def _flag_id(flags: tuple[bool, ...]) -> str:
+    names = ("cfads", "debt_service", "interest", "principal")
+    picked = [name for name, flag in zip(names, flags, strict=True) if flag]
+    return "+".join(picked) or "none"
+
+
+@pytest.mark.parametrize(
+    "flags",
+    list(itertools.product((False, True), repeat=4)),
+    ids=_flag_id,
+)
+def test_every_dscr_input_combination_matches_coverage_ratio(flags):
+    present = {name for name, flag in zip(("cfads", "debt_service", "interest", "principal"), flags, strict=True) if flag}
+    catalog = _catalog()
+    expressions = _expressions()
+    data, bindings, facts = _book(sorted(present), variant="pf", metrics=frozenset({"dscr"}))
+    resolved = resolve_semantic_inputs(
+        "dscr",
+        bindings,
+        expressions,
+        dscr_variant="pf",
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    assert resolved is not None
+    expected = _dscr_expected(present)
+    assert {item.concept for item in resolved} == expected
+    got = _coverage("dscr", bindings, facts, catalog)
+    assert set(got.get("missing_inputs") or []) == expected - present
+    if got["status"] == "succeeded":
+        assert _components(got) == expected
+    rows = _trace_rows("dscr", data, expressions, catalog)
+    assert rows == _origin_rows("dscr", data, expressions, catalog)
+    assert {concept for concept, row in rows} == {item.concept for item in resolved if item.row_key}
+
+
+@pytest.mark.parametrize(
+    ("order", "bound", "numerator"),
+    [
+        (("ebit", "ebitda"), ("ebit", "ebitda"), "ebitda"),
+        (("ebitda", "ebit"), ("ebit", "ebitda"), "ebitda"),
+        (("ebit", "ebitda"), (), "ebitda"),
+        (("ebitda", "ebit"), (), "ebitda"),
+        (("ebit", "ebitda"), ("ebit",), "ebit"),
+        (("ebitda", "ebit"), ("ebit",), "ebit"),
+        (("ebit", "ebitda"), ("ebitda",), "ebitda"),
+        (("ebitda", "ebit"), ("ebitda",), "ebitda"),
+    ],
+)
+def test_one_of_follows_coverage_numerator_not_declaration_order(order, bound, numerator):
+    catalog = _catalog()
+    expressions = {
+        "icr": MetricExpression(
+            denominator_plus=("interest",),
+            one_of=frozenset(order),
+            one_of_order=tuple(order),
+        )
+    }
+    concepts = [*bound, "interest"]
+    data, bindings, facts = _book(concepts, metrics=frozenset({"icr"}))
+    resolved = resolve_semantic_inputs(
+        "icr",
+        bindings,
+        expressions,
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    assert resolved is not None
+    assert [item.concept for item in resolved if item.role == "one_of"] == [numerator]
+    got = _coverage("icr", bindings, facts, catalog)
+    if numerator in bound:
+        assert _components(got) == {numerator, "interest"}
+    else:
+        assert "ebitda" in set(got.get("missing_inputs") or [])
+        assert numerator == "ebitda"
+    assert _trace_rows("icr", data, expressions, catalog) == _origin_rows("icr", data, expressions, catalog)
+
+
+def test_adscr_housing_inherits_housing_and_not_the_dscr_fallback():
+    catalog = _catalog()
+    expressions = _expressions()
+    housing = {"cfo_statement", "cfi_statement", "financing_inflows", "senior_principal", "senior_interest_paid"}
+    data, _bindings, _facts = _book(sorted(housing), variant="housing", metrics=frozenset({"adscr"}))
+    rows = _trace_rows("adscr", data, expressions, catalog)
+    assert rows == _origin_rows("adscr", data, expressions, catalog)
+    assert {concept for concept, _row in rows} == housing
+
+    fallback_book, bindings, _facts = _book(
+        ["interest", "principal"],
+        variant="pf",
+        metrics=frozenset({"adscr"}),
+    )
+    resolved = resolve_semantic_inputs(
+        "adscr",
+        bindings,
+        expressions,
+        dscr_variant="pf",
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    assert resolved is not None
+    assert {item.concept for item in resolved} == {"cfads", "debt_service"}
+    assert _trace_rows("adscr", fallback_book, expressions, catalog) == _origin_rows(
+        "adscr", fallback_book, expressions, catalog
+    )
+
+
+def test_two_primaries_are_visible_in_the_trace_and_not_a_confirmed_origin_input():
+    catalog = _catalog()
+    expressions = {"dscr": MetricExpression(numerator_plus=("cfads",), denominator_plus=("debt_service",))}
+    later = _bind("cfads", 1, binding_key="bk-b", row_key="row-b")
+    earlier = _bind("cfads", 2, binding_key="bk-a", row_key="row-a")
+    debt = _bind("debt_service", 3)
+    data, bindings, facts = _book([], extra=[later, earlier, debt], metrics=frozenset({"dscr"}))
+    trace = trace_metric(
+        "dscr",
+        inputs=None,
+        bindings=bindings,
+        facts=data.facts,
+        expressions=expressions,
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    step = next(item for item in trace.steps if item.concept == "cfads")
+    assert (step.binding_key, step.row_key) == (earlier["binding_key"], earlier["row_key"])
+    assert any(item.reason == "ambiguous_primary_binding" and item.binding_key == "bk-a" for item in trace.integrity)
+    got = _coverage("dscr", bindings, facts, catalog)
+    assert got["status"] == "needs_input"
+    assert _components(got) == set()
+    view = origin_view(data, _marked(data), expressions, interest_order=catalog.interest_order)
+    marked = [item for item in view["metrics"][0]["inputs"] if item["concept"] == "cfads"]
+    assert marked and marked[0]["confirmed"] is False and marked[0]["ambiguous"] is True
+    assert all(item.get("confirmed") is not False or item["concept"] == "cfads" for item in view["metrics"][0]["inputs"])
+    assert any(item.get("ambiguous") is True and item.get("confirmed") is False for item in view["chain"])
+    text = render_markdown({"analysis_id": "a", "status": "succeeded", "result_data": {"formula_origin": view}})
+    assert "вход cfads: formula" not in text
+    assert "не подтверждён" in text
+
+
+def test_stale_fresh_several_stale_and_missing_row_key():
+    catalog = _catalog()
+    expressions = {"dscr": MetricExpression(numerator_plus=("cfads",), denominator_plus=("debt_service",))}
+    fresh = _bind("cfads", 1, binding_key="bk-fresh", row_key="row-fresh")
+    stale = _bind("cfads", 2, stale=True, binding_key="bk-stale", row_key="row-stale")
+    debt = _bind("debt_service", 3)
+    data, bindings, facts = _book([], extra=[stale, fresh, debt], metrics=frozenset({"dscr"}))
+    rows = _trace_rows("dscr", data, expressions, catalog)
+    assert rows == {( "cfads", "row-fresh"), ("debt_service", debt["row_key"])}
+    assert _components(_coverage("dscr", bindings, facts, catalog)) == {"cfads", "debt_service"}
+
+    only_stale = [_bind("cfads", index, stale=True, binding_key=f"bk-stale-{index}") for index in range(1, 4)]
+    debt = _bind("debt_service", 9)
+    resolved = resolve_semantic_inputs("dscr", [*only_stale, debt], expressions)
+    assert resolved is not None
+    cfads = next(item for item in resolved if item.concept == "cfads")
+    assert cfads.row_key is None and cfads.missing == "stale_binding"
+    assert _components(_coverage("dscr", [*only_stale, debt], [], catalog)) == set()
+
+    bare = _bind("cfads", 1, binding_key="bk-bare", row_key=None)
+    other = _bind("debt_service", 2, binding_key="bk-debt", row_key="row-debt")
+    traced = trace_metric(
+        "dscr",
+        inputs=None,
+        bindings=[bare, other],
+        rows=[{"binding_key": "bk-debt", "row_key": "row-foreign"}],
+        expressions=expressions,
+    )
+    bare_step = next(item for item in traced.steps if item.concept == "cfads")
+    debt_step = next(item for item in traced.steps if item.concept == "debt_service")
+    assert bare_step.binding_key == "bk-bare" and bare_step.row_key is None
+    assert (debt_step.binding_key, debt_step.row_key) == ("bk-debt", "row-debt")
+
+
+def test_absent_drops_inferred_and_keeps_confirmed():
+    catalog = _catalog()
+    expressions = {"dscr": MetricExpression(numerator_plus=("cfads",), denominator_plus=("debt_service",))}
+    inferred = _bind("cfads", 1, source="inferred", row_key="row-auto")
+    confirmed = _bind("debt_service", 2, source="confirmed", row_key="row-manual")
+    data = AuditInput(
+        bindings=[inferred, confirmed],
+        facts=[_fact("row-manual", "debt_service"), _fact("row-auto", "cfads")],
+        applicable_metrics=frozenset({"dscr"}),
+        absent=frozenset({"cfads", "debt_service"}),
+        graph_links_available=True,
+    )
+    resolved = resolve_semantic_inputs(
+        "dscr",
+        data.bindings,
+        expressions,
+        absent=data.absent,
+        interest_order=catalog.interest_order,
+    )
+    assert resolved is not None
+    by_concept = {item.concept: item for item in resolved}
+    assert by_concept["cfads"].row_key is None
+    assert by_concept["debt_service"].row_key == "row-manual"
+    assert _confirmed(resolved) == {("debt_service", "row-manual")}
+    assert _trace_rows("dscr", data, expressions, catalog) == _origin_rows("dscr", data, expressions, catalog)
+
+
+def test_unknown_variant_falls_back_and_explicit_variant_beats_dscr_variant():
+    catalog = _catalog()
+    expressions = _expressions()
+    concepts = ["cfads", "debt_service", "ebitda", "cash_taxes", "capex", "interest", "principal"]
+    _data, bindings, _facts = _book(concepts)
+    unknown = resolve_semantic_inputs("dscr", bindings, expressions, variant="not-a-variant")
+    assert unknown is not None
+    assert {item.concept for item in unknown} == {"cfads", "debt_service"}
+    assert {item.source for item in unknown} == {"formula"}
+    corporate = resolve_semantic_inputs(
+        "dscr",
+        bindings,
+        expressions,
+        variant="corporate_covenant",
+        dscr_variant="pf",
+        interest_order=catalog.interest_order,
+    )
+    assert corporate is not None
+    assert {item.concept for item in corporate} == {"ebitda", "cash_taxes", "capex", "interest", "principal"}
+    base = resolve_semantic_inputs("adscr", bindings, expressions)
+    assert base is not None
+    assert {item.source for item in base} == {"base:dscr"}
+
+
+def test_lineage_truncated_empty_missing_and_other_build():
+    expressions = {"dscr": MetricExpression(numerator_plus=("cfads",), denominator_plus=("debt_service",))}
+    binding = _bind("cfads", 1, build_key="this", row_key="row-cfads")
+    debt = _bind("debt_service", 2, build_key="this", row_key="row-debt")
+    fact = _fact("row-cfads", "cfads")
+    fact["cell_id"] = "S!C1"
+    fact["build_key"] = "this"
+    own = {
+        "cell": "S!C1",
+        "ref_cell": "S!A1",
+        "truncated": True,
+        "build_key": "this",
+        "formula_class": "same_period",
+    }
+    foreign = {**own, "build_key": "other", "ref_cell": "S!Z9"}
+    truncated = trace_metric(
+        "dscr",
+        inputs=None,
+        bindings=[binding, debt],
+        facts=[fact],
+        graph_links=[own],
+        expressions=expressions,
+        build_key="this",
+        graph_links_available=True,
+    )
+    assert truncated.physical_lineage_complete is False
+    empty = trace_metric(
+        "dscr",
+        inputs=None,
+        bindings=[binding, debt],
+        facts=[fact],
+        graph_links=[],
+        expressions=expressions,
+        build_key="this",
+        graph_links_available=True,
+    )
+    assert empty.physical_lineage_complete is True
+    missing = trace_metric(
+        "dscr",
+        inputs=None,
+        bindings=[binding, debt],
+        graph_links=[],
+        expressions=expressions,
+        build_key="this",
+        graph_links_available=False,
+    )
+    assert missing.physical_lineage_complete is False
+    other = trace_metric(
+        "dscr",
+        inputs=None,
+        bindings=[binding, debt],
+        facts=[fact],
+        graph_links=[foreign],
+        expressions=expressions,
+        build_key="this",
+        graph_links_available=True,
+    )
+    assert other.physical_lineage_complete is True
+    assert all(link.ref_cell != "S!Z9" for step in other.steps for link in step.excel_links)
+    step = next(item for item in other.steps if item.concept == "cfads")
+    assert (step.binding_key, step.row_key) == (binding["binding_key"], binding["row_key"])

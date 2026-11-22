@@ -75,13 +75,13 @@ def origin_view(
         if not resolved:
             continue
         seeded = tuple(item for item in resolved if item.row_key)
-        seeds = {item.row_key: (item.concept, item.source) for item in seeded if item.row_key}
+        seeds = {item.row_key: item for item in seeded if item.row_key}
         depth, via = _closure(set(seeds), edges)
         counts: Counter = Counter()
         links: list[FormulaChain] = []
         for row_key, distance in depth.items():
             root = _root(via, row_key)
-            concept, source = seeds.get(root, (None, None))
+            seed = seeds.get(root)
             for item in by_row.get(row_key, ()):
                 counts[(item.code, item.severity)] += 1
                 links.append(
@@ -92,9 +92,10 @@ def origin_view(
                         fingerprint=item.fingerprint,
                         depth=distance,
                         via=via.get(row_key),
-                        input=concept,
-                        source=source,
+                        input=seed.concept if seed else None,
+                        source=seed.source if seed else None,
                         cells=tuple(loc.cell_id for loc in item.locations if loc.cell_id),
+                        confirmed=not seed.ambiguous if seed else True,
                     )
                 )
         if not counts:

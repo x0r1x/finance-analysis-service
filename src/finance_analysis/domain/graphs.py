@@ -18,16 +18,14 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from finance_analysis.domain.binding_resolution import MISSING_NO_PRIMARY, MISSING_STALE
 from finance_analysis.domain.metrics import paid_interest_row
 from finance_analysis.domain.net_cash_flow import DASH_NOTE, dashed_lines
 
 _SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "meta_layer_graphs.json"
 
-_BOUND = frozenset({"bound", "bound_with_warning"})
 MISSING_METRIC_UNKNOWN = "metric_unknown"
-MISSING_NO_PRIMARY = "no_primary_binding"
 MISSING_NO_CELL = "no_cell"
-MISSING_STALE = "stale_binding"
 MISSING_FACT_UNAVAILABLE = "fact_dataset_unavailable"
 MISSING_DIM_UNAVAILABLE = "dim_row_unavailable"
 MISSING_CODES = frozenset(
@@ -198,7 +196,9 @@ def trace_metric(
     resolved_model, resolved_build = _book_keys(bindings, rows, facts, model_id, build_key)
     status = lineage_completeness(
         graph_links_available=graph_links_available,
-        truncated_links=sum(1 for link in graph_links if link.get("truncated")),
+        truncated_links=sum(
+            1 for link in _same_build(graph_links, resolved_build) if link.get("truncated")
+        ),
     )
     base = {
         "metric_id": metric_id,
@@ -553,40 +553,6 @@ def _step_for_resolved(
         ),
         findings,
     )
-
-
-def _select_primary(
-    bindings: Sequence[Mapping[str, Any]], concept: str
-) -> tuple[Mapping[str, Any] | None, str | None, bool]:
-    """Вернуть (primary, missing_code, ambiguous).
-
-    Учитываются только не-stale основные bound-привязки. При нескольких —
-    детерминированно выбирается минимальный ``binding_key``.
-    """
-
-    fresh = [
-        row
-        for row in bindings
-        if row.get("is_primary")
-        and row.get("status") in _BOUND
-        and not row.get("stale")
-        and str(row.get("effective_concept") or row.get("concept") or "") == concept
-    ]
-    if fresh:
-        ordered = sorted(fresh, key=lambda row: str(row.get("binding_key") or ""))
-        return ordered[0], None, len(ordered) > 1
-
-    stale = [
-        row
-        for row in bindings
-        if row.get("is_primary")
-        and row.get("status") in _BOUND
-        and row.get("stale")
-        and str(row.get("effective_concept") or row.get("concept") or "") == concept
-    ]
-    if stale:
-        return None, MISSING_STALE, False
-    return None, MISSING_NO_PRIMARY, False
 
 
 def _row_keys(

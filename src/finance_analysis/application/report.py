@@ -80,7 +80,10 @@ def render_markdown(result: dict) -> str:
             lines.append(f"### {metric.get('metric')}")
             lines.append(f"- замыкание: {metric.get('closure')}")
             for item in metric.get("inputs") or []:
-                lines.append(f"- вход {item.get('concept')}: {item.get('source')}")
+                if item.get("confirmed") is False:
+                    lines.append(f"- вход {item.get('concept')}: неоднозначен, не подтверждён")
+                else:
+                    lines.append(f"- вход {item.get('concept')}: {item.get('source')}")
             for item in metric.get("counts") or []:
                 lines.append(f"- {item.get('code')} {item.get('severity')}: {item.get('count')}")
             for row in metric.get("direct") or []:

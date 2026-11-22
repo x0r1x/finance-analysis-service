@@ -242,6 +242,53 @@ def _methodology_message(kind: str) -> str:
 
 # Запасной знаменатель DSCR читает interest, interest_paid и principal, хотя каталог называет только cfads и debt_service.
 DSCR_INPUTS = ("cfads", "debt_service", "interest", "interest_paid", "principal")
+# EBITDA выше EBIT. Порядок объявления one_of этот выбор не меняет.
+_NUMERATOR_RANK = ("ebitda", "ebit")
+
+
+def choose_one_of(members: tuple[str, ...] | list[str], present: set[str]) -> str:
+    """Член one_of, который берёт расчёт.
+
+    Оба числителя ICR — EBITDA. Один доступный — он. Ни одного — EBITDA, если она
+    в списке, иначе единственное имя. Порядок YAML сюда не входит.
+    """
+
+    pool = set(members)
+    for name in _NUMERATOR_RANK:
+        if name in pool and name in present:
+            return name
+    available = sorted(name for name in pool if name in present)
+    if available:
+        return available[0]
+    for name in _NUMERATOR_RANK:
+        if name in pool:
+            return name
+    return min(pool)
+
+
+def dscr_denominator_plan(
+    primaries: dict,
+    interest_order: dict | None,
+    row_fallbacks: dict | None = None,
+) -> tuple[tuple[str, ...], str, tuple[str, str] | None, tuple[dict, ...]]:
+    """Входы DSCR: понятия, имя знаменателя, части запаса, предупреждения.
+
+    Нет debt_service и нет CFADS — ждём только CFADS. CFADS есть, тела нет —
+    ждём CFADS и тело. Всё есть — CFADS, выбранные проценты и тело.
+    """
+
+    order = interest_order or {}
+    if "debt_service" in primaries or not order.get("pf"):
+        return ("cfads", "debt_service"), "debt_service", None, ()
+    chosen, warning = interest_choice(primaries, order["pf"], row_fallbacks=row_fallbacks)
+    if "cfads" not in primaries:
+        return ("cfads",), "debt_service", None, ()
+    if chosen is None:
+        return ("cfads", "debt_service"), "debt_service", None, ()
+    if "principal" not in primaries:
+        return ("cfads", "principal"), "principal", None, ()
+    warnings = (warning,) if warning else ()
+    return ("cfads", chosen, "principal"), chosen, (chosen, "principal"), warnings
 ICR_INPUTS = ("ebitda", "ebit", "interest", "interest_paid")
 ICR_EBIT_INPUTS = ("ebit", "interest", "interest_paid")
 _COVERAGE_INPUTS = {"dscr": DSCR_INPUTS, "icr": ICR_INPUTS, "icr_ebit": ICR_EBIT_INPUTS}
@@ -287,26 +334,10 @@ def coverage_ratio(
     warnings: list[dict] = []
     fallback_parts: tuple[str, str] | None = None
     if metric == "dscr":
-        if "debt_service" in primaries or not order.get("pf"):
-            needed = ("cfads", "debt_service")
-            denominator_name = "debt_service"
-        else:
-            chosen, warning = interest_choice(primaries, order["pf"], row_fallbacks=row_fallbacks)
-            if "cfads" not in primaries:
-                needed = ("cfads",)
-                denominator_name = "debt_service"
-            elif chosen is None:
-                needed = ("cfads", "debt_service")
-                denominator_name = "debt_service"
-            elif "principal" not in primaries:
-                needed = ("cfads", "principal")
-                denominator_name = "principal"
-            else:
-                needed = ("cfads", chosen, "principal")
-                denominator_name = chosen
-                fallback_parts = (chosen, "principal")
-                if warning:
-                    warnings.append(warning)
+        needed, denominator_name, fallback_parts, plan_warnings = dscr_denominator_plan(
+            primaries, order, row_fallbacks
+        )
+        warnings.extend(plan_warnings)
     elif metric in {"icr", "icr_ebit"}:
         slot = "icr_ebit" if metric == "icr_ebit" else "icr"
         chosen, warning = interest_choice(
@@ -321,20 +352,16 @@ def coverage_ratio(
     missing = [name for name in needed if name not in primaries]
     numerator_name = None
     if metric == "icr_ebit":
-        if "ebit" in primaries:
-            numerator_name = "ebit"
-        else:
-            missing.append("ebit")
+        numerator_name = choose_one_of(("ebit",), {name for name in ("ebit",) if name in primaries})
+        if numerator_name not in primaries:
+            missing.append(numerator_name)
     elif metric == "icr":
-        if "ebitda" in primaries and "ebit" in primaries:
-            numerator_name = "ebitda"
+        present = {name for name in ("ebitda", "ebit") if name in primaries}
+        numerator_name = choose_one_of(("ebitda", "ebit"), present)
+        if numerator_name == "ebitda" and "ebit" in present:
             warnings.append({"code": "icr_numerator", "params": {"concept": "ebitda"}})
-        elif "ebitda" in primaries:
-            numerator_name = "ebitda"
-        elif "ebit" in primaries:
-            numerator_name = "ebit"
-        else:
-            missing.append("ebitda")
+        elif numerator_name not in present:
+            missing.append(numerator_name)
     else:
         numerator_name = "cfads"
     watched = set(needed) | {"ebitda", "ebit"}

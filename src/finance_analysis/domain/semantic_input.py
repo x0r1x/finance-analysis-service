@@ -15,8 +15,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from finance_analysis.domain.graphs import _select_primary
-from finance_analysis.domain.metrics import HUMAN_SOURCES, interest_choice
+from finance_analysis.domain.binding_resolution import select_primary as _select_primary
+from finance_analysis.domain.metrics import (
+    HUMAN_SOURCES,
+    choose_one_of,
+    dscr_denominator_plan,
+    interest_choice,
+)
 from finance_analysis.domain.model_type import MetricExpression
 
 # ADSCR и сводки наследуют housing, как housing_cover._FAMILY.
@@ -35,8 +40,16 @@ class SemanticInput:
     missing: str | None = None
     ambiguous: bool = False
 
-    def as_origin(self) -> dict[str, str | None]:
-        return {"concept": self.concept, "source": self.source, "row_key": self.row_key}
+    def as_origin(self) -> dict[str, str | bool | None]:
+        body: dict[str, str | bool | None] = {
+            "concept": self.concept,
+            "source": self.source,
+            "row_key": self.row_key,
+        }
+        if self.ambiguous:
+            body["ambiguous"] = True
+            body["confirmed"] = False
+        return body
 
 
 @dataclass(frozen=True)
@@ -85,9 +98,10 @@ class FormulaChain:
     input: str | None
     source: str | None
     cells: tuple[str, ...]
+    confirmed: bool = True
 
     def as_dict(self) -> dict:
-        return {
+        body = {
             "metric": self.metric,
             "code": self.code,
             "severity": self.severity,
@@ -98,10 +112,18 @@ class FormulaChain:
             "source": self.source,
             "cells": list(self.cells),
         }
+        if not self.confirmed:
+            body["confirmed"] = False
+            body["ambiguous"] = True
+        return body
 
 
 def lineage_completeness(*, graph_links_available: bool, truncated_links: int) -> LineageCompleteness:
-    """Пустой загруженный граф полон. Нет файла или обрезанная ссылка — нет."""
+    """Пустой загруженный граф полон. Нет файла или обрезанная ссылка — нет.
+
+    Позже разделить graph_available, graph_truncation_free и physical_lineage_complete.
+    Сейчас наружу по-прежнему один флаг.
+    """
 
     if not graph_links_available:
         return LineageCompleteness(
@@ -221,12 +243,10 @@ def _specs(
     if expr.add_back:
         add(expr.add_back[0], source)
         add(expr.add_back[1], source)
-    order = expr.one_of_order or tuple(sorted(expr.one_of))
-    present = [name for name in order if _select_primary(bindings, name)[0] is not None]
-    if present:
-        add(present[0], "one_of", "one_of")
-    elif order:
-        add(order[0], "one_of", "one_of")
+    members = expr.one_of_order or tuple(sorted(expr.one_of))
+    if members:
+        present = {name for name in members if _select_primary(bindings, name)[0] is not None}
+        add(choose_one_of(members, present), "one_of", "one_of")
     return _fallbacks(metric, variant, specs, bindings, interest_order, row_fallbacks)
 
 
@@ -253,22 +273,31 @@ def _fallbacks(
                 (chosen, "fallback", role) if name == "interest" else (name, src, role)
                 for name, src, role in specs
             ]
-    if (
-        metric == "dscr"
-        and variant in {None, "pf"}
-        and "debt_service" in names
-        and _select_primary(bindings, "debt_service")[0] is None
-        and order.get("pf")
-    ):
-        chosen = _interest_pick(bindings, order["pf"], row_fallbacks)
-        if chosen and _select_primary(bindings, "principal")[0] is not None:
-            specs = [item for item in specs if item[0] != "debt_service"]
-            have = {name for name, _src, _role in specs}
-            if chosen not in have:
-                specs.append((chosen, "fallback", "all_of"))
-            if "principal" not in have:
-                specs.append(("principal", "fallback", "all_of"))
+    if metric == "dscr" and variant in {None, "pf"} and "debt_service" in names:
+        specs = _dscr_plan(specs, bindings, order, row_fallbacks)
     return specs
+
+
+def _dscr_plan(
+    specs: list[tuple[str, str, str]],
+    bindings: Sequence[Mapping[str, Any]],
+    order: Mapping[str, Sequence[str]],
+    row_fallbacks: Mapping[str, Any] | None,
+) -> list[tuple[str, str, str]]:
+    """Состав DSCR из dscr_denominator_plan. ADSCR сюда не заходит."""
+
+    watch = ("cfads", "debt_service", "principal", "interest", "interest_paid", *order.get("pf", ()))
+    primaries: dict[str, Mapping[str, Any]] = {}
+    for name in dict.fromkeys(watch):
+        row, _missing, _ambiguous = _select_primary(bindings, name)
+        if row is not None:
+            primaries[name] = row
+    concepts, _denominator, _parts, _warnings = dscr_denominator_plan(primaries, order, row_fallbacks)
+    previous = {name: (src, role) for name, src, role in specs}
+    return [
+        (name, *previous[name]) if name in previous else (name, "fallback", "all_of")
+        for name in concepts
+    ]
 
 
 def _interest_slot(metric: str, variant: str | None) -> str | None:
