@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.book import question_digest
 from finance_analysis.domain.mapping import absent_in_journal
 from finance_analysis.domain.metrics import _primaries, absent_concepts
@@ -135,7 +136,7 @@ def _candidates(
         score = _score(hit, row)
         dim = by_key.get(key) or {}
         # Строка с этим effective_concept выше слабого кандидата модели: у лексики p нет.
-        tier = 1 if row.get("effective_concept") == concept else 0
+        tier = 1 if declared_concept(row) == concept else 0
         found.append(
             (
                 tier,
@@ -170,7 +171,7 @@ def _hit(row: dict, evidence: dict, concept: str) -> dict | None:
         and item.get("concept") == concept
         and item.get("structure_pass", True)
     ]
-    if row.get("effective_concept") == concept:
+    if declared_concept(row) == concept:
         return items[0] if items else {}
     return items[0] if items else None
 

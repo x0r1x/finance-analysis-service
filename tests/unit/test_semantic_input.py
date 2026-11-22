@@ -91,9 +91,17 @@ def _book(concepts: list[str], *, extra: list[dict] | None = None, variant: str 
     bindings = [_bind(name, index) for index, name in enumerate(concepts, start=1)]
     if extra:
         bindings.extend(extra)
-    facts = [_fact(row["row_key"], row["effective_concept"]) for row in bindings if row.get("row_key")]
+    facts = [
+        _fact(row["row_key"], row.get("effective_concept") or row.get("concept") or "")
+        for row in bindings
+        if row.get("row_key")
+    ]
     data = AuditInput(
-        rows=[{"row_key": row["row_key"], "label": row["effective_concept"]} for row in bindings if row.get("row_key")],
+        rows=[
+            {"row_key": row["row_key"], "label": row.get("effective_concept") or row.get("concept") or ""}
+            for row in bindings
+            if row.get("row_key")
+        ],
         facts=facts,
         bindings=bindings,
         applicable_metrics=metrics,
@@ -322,11 +330,29 @@ def _confirmed(resolved) -> set[tuple[str, str]]:
 _CATALOG_METRICS = sorted(name for name in _expressions() if "." not in name)
 
 
+def _concept_only(rows: list[dict]) -> list[dict]:
+    """То же понятие в ``concept``, без ``effective_concept``."""
+
+    found = []
+    for row in rows:
+        item = dict(row)
+        name = item.get("effective_concept") or item.get("concept")
+        item.pop("effective_concept", None)
+        if name:
+            item["concept"] = name
+        found.append(item)
+    return found
+
+
 @pytest.mark.parametrize("metric", _CATALOG_METRICS)
-def test_catalog_metric_trace_origin_and_coverage_inputs(metric: str):
+@pytest.mark.parametrize("concept_only", [False, True], ids=["effective", "concept_only"])
+def test_catalog_metric_trace_origin_and_coverage_inputs(metric: str, concept_only: bool):
     catalog = _catalog()
     expressions = _expressions()
     data, bindings, facts = _book(_names(expressions), metrics=frozenset({metric}))
+    if concept_only:
+        bindings = _concept_only(bindings)
+        data.bindings = bindings
     rows = _trace_rows(metric, data, expressions, catalog)
     assert rows == _origin_rows(metric, data, expressions, catalog) == _resolved_rows(metric, data, expressions, catalog)
     if metric in {"dscr", "icr", "icr_ebit"}:
@@ -785,6 +811,47 @@ def test_two_concept_only_primaries_block_calculation_and_stay_ambiguous_on_the_
     assert chosen.binding_key == "bk-a"
 
 
+def test_concept_only_4123_row_is_interest_paid_in_trace_origin_resolver_and_calculation():
+    catalog = _catalog()
+    expressions = _expressions()
+    cfads = _bind("cfads", 1, row_key="row-cfads")
+    principal = _bind("principal", 2, row_key="row-principal")
+    paid = _concept_only([
+        _line("interest", 3, "стр. 4123", is_primary=False, row_key="row-paid", binding_key="bk-paid")
+    ])[0]
+    data, bindings, facts = _book(
+        [],
+        extra=[cfads, principal, paid],
+        variant="pf",
+        metrics=frozenset({"dscr"}),
+    )
+    rows = _trace_rows("dscr", data, expressions, catalog)
+    assert ("interest_paid", "row-paid") in rows
+    assert rows == _origin_rows("dscr", data, expressions, catalog) == _resolved_rows("dscr", data, expressions, catalog)
+    assert {concept for concept, _row in rows} == {"cfads", "interest_paid", "principal"}
+    assert {concept for concept, _row in rows} == _components(_coverage("dscr", bindings, facts, catalog))
+
+
+def test_fcff_shield_sees_concept_only_4123_row():
+    catalog = _catalog()
+    expressions = _expressions()
+    data = _fcff_book(statement=True)
+    paid = next(row for row in data.bindings if row["row_key"] == "row-paid")
+    paid.pop("effective_concept")
+    paid["concept"] = "interest"
+    got = free_cash_flow(
+        facts=data.facts,
+        bindings=data.bindings,
+        periods=[_period()],
+        statement_sheets=data.statement_sheets,
+    )
+    assert "interest_paid" in _used_concepts(got)
+    rows = _trace_rows("fcff", data, expressions, catalog)
+    assert ("interest_paid", "row-paid") in rows
+    assert rows == _origin_rows("fcff", data, expressions, catalog) == _resolved_rows("fcff", data, expressions, catalog)
+    assert {concept for concept, _row in rows} == _used_concepts(got)
+
+
 def test_dscr_fallback_uses_the_4123_row_in_trace_origin_resolver_and_calculation():
     catalog = _catalog()
     expressions = _expressions()
@@ -879,3 +946,32 @@ def test_fcff_without_a_shield_does_not_take_the_4123_row():
     assert "interest_paid" not in {concept for concept, _row in rows}
     assert ("interest_paid", "row-paid") not in rows
     assert rows == _origin_rows("fcff", data, expressions, catalog) == _resolved_rows("fcff", data, expressions, catalog)
+
+
+# Строки, которые читают сохранённое поле не как понятие расчёта.
+_STORED_CONCEPT_READS = (
+    'return str(row.get("effective_concept") or row.get("concept") or "")',
+    '_concept(row.get("concept")), _concept(row.get("effective_concept"))',
+    'concept not in {row.get("concept"), row.get("effective_concept")}',
+    'prev.get("effective_concept")',
+    '"to": {"status": row.get("status"), "concept": row.get("effective_concept")}',
+)
+
+
+def test_row_concept_is_not_read_beside_declared_concept():
+    """Понятие строки решает declared_concept. Прямое чтение поля остаётся только у определения и у сверки сохранённой колонки."""
+
+    import re
+    from pathlib import Path
+
+    pattern = re.compile(r"""\.get\(\s*["']effective_concept["']\s*\)""")
+    root = Path("src/finance_analysis")
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not pattern.search(line):
+                continue
+            if any(snippet in line for snippet in _STORED_CONCEPT_READS):
+                continue
+            offenders.append(f"{path.relative_to(root)}:{number}: {line.strip()}")
+    assert offenders == []

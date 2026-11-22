@@ -112,7 +112,7 @@ metric_id → concept → binding_key → cell_id
 
 ### Ответ API
 
-Полное тело (валидируется JSON Schema перед возвратом): `metric_id`, `variant`, `build_key`, `model_id`, `catalog_version`, `missing_trace`, `steps[]`, `integrity[]`, `graph_available`, `graph_truncation_free`, `physical_lineage_complete`.
+Схема — `meta_layer_graphs@2.0`. Полное тело (валидируется JSON Schema перед возвратом): `metric_id`, `variant`, `build_key`, `model_id`, `catalog_version`, `missing_trace`, `steps[]`, `integrity[]`, `physical_lineage_complete`. Сервер также шлёт `graph_available` и `graph_truncation_free`. В `required` их нет: схема 2.0 принимает тело без них. Закрытая схема 1.0 (`additionalProperties: false`) тело с этими полями отвергает. Подробности — [ru/api.md](ru/api.md).
 
 `integrity[]` — findings по исходным данным и инварианту DTO (`ambiguous_primary_binding`, `primary_binding_without_trace_or_reason`, …).
 

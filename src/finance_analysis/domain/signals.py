@@ -6,6 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.dimensions import UnitSpec
 from finance_analysis.domain.glossary import normalize_label
 
@@ -72,7 +73,7 @@ class LabelingInput:
         found = [
             row["row_key"]
             for row in self.bindings.values()
-            if row.get("effective_concept") == concept
+            if declared_concept(row) == concept
             and row.get("is_primary")
             and row.get("status") in {"bound", "bound_with_warning"}
             and (sources is None or row.get("source") in sources)

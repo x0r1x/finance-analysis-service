@@ -121,7 +121,7 @@ def confirm_paid_interest(
 def paid_interest_row(row: dict, absent: frozenset[str]) -> bool:
     """Строка interest с явной подписью 4123. Основную interest эта функция не меняет."""
 
-    if row.get("effective_concept") != "interest" or row.get("status") not in _BOUND:
+    if declared_concept(row) != "interest" or row.get("status") not in _BOUND:
         return False
     if "interest" in absent and row.get("source") not in HUMAN_SOURCES:
         return False
@@ -369,9 +369,9 @@ def coverage_ratio(
     ambiguous = [name for name, rows in _groups(bindings).items() if len(rows) > 1 and name in watched]
     if not ambiguous:
         ambiguous = [
-            row.get("effective_concept")
+            declared_concept(row)
             for row in bindings
-            if row.get("status") == "ambiguous" and row.get("effective_concept") in watched
+            if row.get("status") == "ambiguous" and declared_concept(row) in watched
         ]
     if ambiguous:
         return {
@@ -1133,9 +1133,9 @@ def _basis_message(numerator_name: str, numerator: dict, denominator: dict) -> s
 
 
 def _bound_name(binding: dict, default: str) -> str:
-    """Имя понятия основной строки. Берётся `effective_concept`, а не сырое `concept`."""
+    """Имя понятия основной строки: ``effective_concept``, иначе ``concept``."""
 
-    return str(binding.get("effective_concept") or binding.get("concept") or default)
+    return declared_concept(binding) or default
 
 
 def _flow_basis(binding: dict) -> str:
@@ -1180,9 +1180,9 @@ def absent_concepts(bindings: list[dict], absent: frozenset[str] = frozenset()) 
     """`concept.absent` из журнала и строки, которые человек снял с отсутствующего понятия."""
 
     marked = {
-        row.get("effective_concept")
+        declared_concept(row)
         for row in bindings
-        if row.get("source") == "confirmed" and row.get("status") == "unknown" and row.get("effective_concept")
+        if row.get("source") == "confirmed" and row.get("status") == "unknown" and declared_concept(row)
     }
     restored = {concept for concept, row in _primaries(bindings).items() if row.get("source") in HUMAN_SOURCES}
     return (marked | set(absent)) - restored

@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from decimal import Decimal, localcontext
 from itertools import pairwise
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.coverage import is_coverage_test_period
 from finance_analysis.domain.metric_contract import BoundInputs, implements
 from finance_analysis.domain.metrics import (
@@ -126,9 +127,9 @@ def _missing(metric: str, bindings: list[dict], needed: tuple[str, ...], absent:
     ambiguous = [name for name, rows in _groups(bindings).items() if len(rows) > 1 and name in needed]
     if not ambiguous:
         ambiguous = [
-            row.get("effective_concept")
+            declared_concept(row)
             for row in bindings
-            if row.get("status") == "ambiguous" and row.get("effective_concept") in needed
+            if row.get("status") == "ambiguous" and declared_concept(row) in needed
         ]
     names = [name for name in needed if name not in primaries]
     if ambiguous:

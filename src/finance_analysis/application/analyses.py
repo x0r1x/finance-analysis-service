@@ -35,6 +35,7 @@ from finance_analysis.domain.audit import (
     actuals_end_from_journal,
     promote_needs_findings,
 )
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.book import (
     FAS_VERSION,
     Actor,
@@ -1579,7 +1580,7 @@ class Analyses:
             )
         pinned = Head(build_key=target.build, state_seq=target.head.state_seq, derive_key=derive, versions={})
         bindings = await self.service._dataset_rows(job_id, pinned, "bindings")
-        return {row["binding_key"] for row in bindings if row.get("effective_concept") in concepts}
+        return {row["binding_key"] for row in bindings if declared_concept(row) in concepts}
 
     async def finding(self, job_id: str, print_: str, actor: Actor, query: dict, *, wait_sec: float):
         from finance_analysis.application.service import Accepted

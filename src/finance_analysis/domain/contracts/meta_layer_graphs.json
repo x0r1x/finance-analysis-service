@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fas.local/contracts/meta_layer_graphs.json",
+  "$id": "https://fas.local/contracts/meta_layer_graphs@2.0.json",
   "title": "MetaLayerGraphs",
-  "description": "Фаза 4 метаслоя (G2): стабильные id рёбер трёх графов и ответ трассировки. Три графа не схлопываются в один датасет.",
+  "description": "Фаза 4 метаслоя (G2), контракт 2.0. Стабильные id рёбер трёх графов и ответ трассировки. Три графа не схлопываются в один датасет. MAJOR: у закрытого metricTrace появились graph_available и graph_truncation_free. В required их нет: тело без этих полей остаётся верным для этой схемы. Схема 1.0 с additionalProperties false такое тело отвергает.",
   "type": "object",
   "$defs": {
     "edgeId": {
@@ -119,8 +119,6 @@
         "steps",
         "missing_trace",
         "integrity",
-        "graph_available",
-        "graph_truncation_free",
         "physical_lineage_complete"
       ],
       "additionalProperties": false,

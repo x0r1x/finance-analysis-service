@@ -366,6 +366,46 @@ def test_assemble_response_rejects_extra_properties() -> None:
         validate_metric_trace_document(body)
 
 
+def test_trace_contract_2_0_keeps_an_old_body_valid_and_a_closed_1_0_schema_rejects_the_new_body() -> None:
+    """MAJOR 2.0: закрытая схема 1.0 не принимает новые поля. Новая схема принимает тело без них."""
+
+    import json
+    from pathlib import Path
+
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads(
+        Path("src/finance_analysis/domain/contracts/meta_layer_graphs.json").read_text(encoding="utf-8")
+    )
+    assert schema["$id"] == "https://fas.local/contracts/meta_layer_graphs@2.0.json"
+    trace = schema["$defs"]["metricTrace"]
+    assert "graph_available" not in trace["required"]
+    assert "graph_truncation_free" not in trace["required"]
+    assert "physical_lineage_complete" in trace["required"]
+    assert trace["additionalProperties"] is False
+    root = {"$schema": schema["$schema"], "$defs": schema["$defs"], **trace}
+    current = Draft202012Validator(root)
+    body = assemble_metric_trace_response(
+        trace_metric(
+            "icr",
+            inputs={"all_of": [], "one_of": ["ebitda"]},
+            bindings=_bindings(),
+            rows=_rows(),
+            facts=_facts(),
+        )
+    )
+    assert list(current.iter_errors(body)) == []
+    previous = {key: value for key, value in body.items() if key not in {"graph_available", "graph_truncation_free"}}
+    assert list(current.iter_errors(previous)) == []
+    closed = json.loads(json.dumps(trace))
+    for name in ("graph_available", "graph_truncation_free"):
+        closed["properties"].pop(name, None)
+        closed["required"] = [item for item in closed["required"] if item != name]
+    old = Draft202012Validator({"$schema": schema["$schema"], "$defs": schema["$defs"], **closed})
+    assert list(old.iter_errors(previous)) == []
+    assert list(old.iter_errors(body))
+
+
 def test_projection_datasets_do_not_collapse_graphs() -> None:
     assert_graphs_not_collapsed(sorted(PROJECTION))
     assert "graph_links" in PROJECTION

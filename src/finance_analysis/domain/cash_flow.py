@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.glossary import normalize_label
 from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
@@ -146,7 +147,7 @@ def _side(
     section_rows: list[dict] = []
     unlabeled: list[dict] = []
     for row in bindings:
-        if row.get("effective_concept") != concept or row.get("status") not in _BOUND:
+        if declared_concept(row) != concept or row.get("status") not in _BOUND:
             continue
         if concept in absent and row.get("source") not in _HUMAN:
             continue
@@ -221,7 +222,7 @@ def _currencies(facts: list[dict], rows: list[dict]) -> set[str]:
 def _primaries(bindings: list[dict], concept: str, absent: frozenset[str]) -> list[dict]:
     found: list[dict] = []
     for row in bindings:
-        if row.get("effective_concept") != concept or not row.get("is_primary"):
+        if declared_concept(row) != concept or not row.get("is_primary"):
             continue
         if row.get("status") not in _BOUND:
             continue

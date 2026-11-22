@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.binding_resolution import select_primary as _select_primary
 from finance_analysis.domain.free_cash_flow import shield_concepts
 from finance_analysis.domain.metrics import (
@@ -423,7 +424,7 @@ def _visible(
         return list(bindings)
     kept: list[Mapping[str, Any]] = []
     for row in bindings:
-        concept = str(row.get("effective_concept") or row.get("concept") or "")
+        concept = declared_concept(row)
         if concept in absent and row.get("source") not in HUMAN_SOURCES:
             continue
         kept.append(row)

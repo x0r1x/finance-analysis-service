@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, localcontext
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     HUMAN_SOURCES,
@@ -266,10 +267,7 @@ def _basis(
 def _interest_rows(bindings: list[dict], absent: frozenset[str]) -> list[dict]:
     found = []
     for row in bindings:
-        if (
-            row.get("effective_concept") != "interest"
-            or row.get("status") not in _BOUND
-        ):
+        if declared_concept(row) != "interest" or row.get("status") not in _BOUND:
             continue
         if "interest" in absent and row.get("source") not in HUMAN_SOURCES:
             continue
@@ -343,8 +341,8 @@ def _precedent_concepts(
         if row.get("status") not in _BOUND:
             continue
         key = row.get("row_key")
-        concept = row.get("effective_concept")
-        if not isinstance(key, str) or not isinstance(concept, str) or not concept:
+        concept = declared_concept(row)
+        if not isinstance(key, str) or not concept:
             continue
         if concept in absent and row.get("source") not in HUMAN_SOURCES:
             continue
@@ -675,7 +673,7 @@ def _ambiguous_primary(bindings: list[dict], absent: frozenset[str]) -> str | No
 
     counts = {name: 0 for name in _GUARDED}
     for row in bindings:
-        concept = row.get("effective_concept")
+        concept = declared_concept(row)
         if concept not in counts:
             continue
         if not (row.get("is_primary") and row.get("status") in _BOUND):

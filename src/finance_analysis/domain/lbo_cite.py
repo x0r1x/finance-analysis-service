@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metrics import _BOUND, HUMAN_SOURCES
 
 # Порядок — как в утверждении среза: сначала MOIC, затем стоимость на выходе.
@@ -68,7 +69,7 @@ def _one_primary(bindings: list[dict], concept: str, absent: frozenset[str]):
 
     found: dict[str, dict] = {}
     for row in bindings:
-        name = row.get("effective_concept")
+        name = declared_concept(row)
         if not (
             row.get("is_primary") and row.get("status") in _BOUND and name == concept
         ):

@@ -23,6 +23,7 @@ from finance_analysis.application.examples import (
     unpack_vector,
 )
 from finance_analysis.application.mapping_pipeline import few_shot_state
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.deadline import Deadline
 from finance_analysis.domain.errors import (
     GlossaryRegression,
@@ -117,7 +118,7 @@ class Learning:
             actor = (record.get("actor") or {}).get("user_id")
             ref = f"{job_id}:{record.get('seq')}"
             current = bindings.get(key) or {}
-            before = current.get("effective_concept")
+            before = declared_concept(current) or None
             common = {"actor": actor, "evidence_ref": ref, "glossary_version": glossary_version}
             if kind == "concept.confirmed" and concept:
                 signals.append(_signal(job_id, profile, key, label, concept, "+", "human.confirmed", **common))

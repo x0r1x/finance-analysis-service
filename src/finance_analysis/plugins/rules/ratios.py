@@ -15,6 +15,7 @@ from finance_analysis.domain.audit import (
     Rule,
     project_finance_dscr,
 )
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.measure import (
     dependency_measure,
     metadata_factor,
@@ -53,7 +54,7 @@ def _primary(data: AuditInput, concept: str) -> dict | None:
     found = [
         row
         for row in data.bindings
-        if row.get("is_primary") and row.get("status") in _BOUND and (row.get("effective_concept") or row.get("concept")) == concept
+        if row.get("is_primary") and row.get("status") in _BOUND and declared_concept(row) == concept
     ]
     return found[0] if len(found) == 1 else None
 
@@ -318,7 +319,7 @@ def _bound_rows(data: AuditInput, concept: str) -> list[str]:
     for row in data.bindings:
         if row.get("status") not in _BOUND:
             continue
-        if (row.get("effective_concept") or row.get("concept")) != concept or not row.get("row_key"):
+        if declared_concept(row) != concept or not row.get("row_key"):
             continue
         if row["row_key"] not in found:
             found.append(row["row_key"])
@@ -1528,7 +1529,7 @@ def _scale_conflicts(data: AuditInput, concept: str, row_key: str, factor: Decim
         other = binding.get("row_key")
         if not other or other == row_key or binding.get("status") not in _BOUND:
             continue
-        if (binding.get("effective_concept") or binding.get("concept")) != concept:
+        if declared_concept(binding) != concept:
             continue
         own = _row_factor(data, other)
         if own is not None and own != factor:
@@ -1718,7 +1719,7 @@ def _form_rows(data: AuditInput, concept: str, primary: dict) -> list[dict]:
     for row in data.bindings:
         if not row.get("row_key") or row.get("row_key") == primary.get("row_key"):
             continue
-        if (row.get("effective_concept") or row.get("concept")) != concept:
+        if declared_concept(row) != concept:
             continue
         if row.get("status") not in _BOUND:
             continue
@@ -1804,7 +1805,7 @@ class UnmappedInMetricChain(Rule):
         if not data.bindings:
             return []
         concept_of = {
-            row["row_key"]: row.get("effective_concept") or row.get("concept")
+            row["row_key"]: declared_concept(row)
             for row in data.bindings
             if row.get("is_primary") and row.get("status") in _BOUND and row.get("row_key")
         }

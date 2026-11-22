@@ -9,6 +9,7 @@ import json
 import re
 from decimal import Decimal
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import (
     ConceptDependency,
     ConceptGroup,
@@ -558,7 +559,7 @@ def _bound(bindings: list[dict], concept: str) -> list[dict]:
     return [
         row
         for row in bindings
-        if row.get("effective_concept") == concept and row.get("status") in _BOUND
+        if declared_concept(row) == concept and row.get("status") in _BOUND
     ]
 
 
