@@ -253,6 +253,78 @@ def test_calculators_read_the_plan_and_do_not_select(monkeypatch):
     assert [row["status"] for row in fcff_after["rows"]] == [row["status"] for row in fcff_before["rows"]]
 
 
+def test_covenant_reads_the_plan_and_ratios_primary_does_not_select(monkeypatch):
+    from finance_analysis.application.model_types import (
+        load_metric_catalog,
+        load_model_types,
+    )
+    from finance_analysis.domain.covenant import covenant_dscr
+    from finance_analysis.plugins.rules.ratios import _primary
+
+    catalog = load_model_types()
+    _inputs, _variants, _composed, _bases, _rates, expressions = load_metric_catalog()
+    bindings = [
+        _bind("ebitda", 1, row_key="e"),
+        _bind("cash_taxes", 2, row_key="t"),
+        _bind("capex", 3, row_key="c"),
+        _bind("interest", 4, row_key="i"),
+        _bind("principal", 5, row_key="p"),
+    ]
+    facts = [
+        _fact("e", "ebitda") | {"normalized_value": "100"},
+        _fact("t", "cash_taxes") | {"normalized_value": "10"},
+        _fact("c", "capex") | {"normalized_value": "20"},
+        _fact("i", "interest") | {"normalized_value": "15"},
+        _fact("p", "principal") | {"normalized_value": "5"},
+    ]
+    periods = [_period()]
+    plan = resolve_metric_plan(
+        "dscr",
+        bindings,
+        expressions,
+        variant="corporate_covenant",
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    assert plan is not None and plan.status == "resolved"
+    before = covenant_dscr(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        default=catalog.composed["dscr.corporate_covenant"],
+        concepts=frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal", "dscr"}),
+        money=frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal"}),
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+    )
+    data = AuditInput(bindings=list(bindings), plans={"dscr": plan})
+    stale = _bind("cfads", 9, stale=True, row_key="stale")
+    stale_data = AuditInput(bindings=[stale])
+    assert _primary(stale_data, "cfads")["row_key"] == "stale"
+    _silence(monkeypatch)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("selection repeated")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.confirm_paid_interest", boom)
+    monkeypatch.setattr("finance_analysis.domain.covenant.interest_choice", boom)
+    after = covenant_dscr(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        default=catalog.composed["dscr.corporate_covenant"],
+        concepts=frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal", "dscr"}),
+        money=frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal"}),
+        interest_order=catalog.interest_order,
+        row_fallbacks=catalog.row_fallbacks,
+        plan=plan,
+    )
+    assert after["rows"] == before["rows"]
+    assert after["definition_source"] == before["definition_source"]
+    assert _primary(data, "ebitda", metric="dscr")["row_key"] == "e"
+    assert _primary(data, "dscr", metric="dscr") is None
+
+
 def test_icr_keeps_only_the_chosen_numerator_in_inputs():
     bindings = [_bind("ebitda", 1), _bind("ebit", 2), _bind("interest", 3)]
     plan = resolve_metric_plan("icr", bindings, EXPRESSIONS)

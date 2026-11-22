@@ -285,6 +285,7 @@ def resolve_metric_plan(
         interest_order,
         row_fallbacks,
         shield,
+        chosen_variant,
     )
     return seal(
         metric_id=metric,
@@ -373,10 +374,11 @@ def _outcome(
     interest_order: Mapping[str, Sequence[str]] | None,
     row_fallbacks: Mapping[str, Any] | None,
     shield: ShieldDecision | None,
+    variant: str | None = None,
 ) -> tuple[str, tuple[NeedsInput, ...], tuple[PlanWarning, ...], tuple[AppliedFallback, ...]]:
     if metric == "fcff":
         return _fcff_outcome(bindings, items, absent)
-    if metric in {"dscr", "icr", "icr_ebit"}:
+    if metric == "dscr" and variant in {None, "pf"} or metric in {"icr", "icr_ebit"}:
         return _coverage_outcome(metric, bindings, absent, interest_order, row_fallbacks)
     if any(item.ambiguous for item in items):
         return (
@@ -394,7 +396,10 @@ def _outcome(
             (),
         )
     del shield
-    return "resolved", (), (), ()
+    extra_warnings, extra_fallbacks = _recorded_fallbacks(
+        items, metric, variant, interest_order, row_fallbacks
+    )
+    return "resolved", (), extra_warnings, extra_fallbacks
 
 
 def _fcff_outcome(
@@ -473,6 +478,28 @@ def _coverage_outcome(
             tuple(fallbacks),
         )
     return "resolved", (), tuple(warnings), tuple(fallbacks)
+
+
+def _recorded_fallbacks(
+    items: tuple[SemanticInput, ...],
+    metric: str,
+    variant: str | None,
+    interest_order: Mapping[str, Sequence[str]] | None,
+    row_fallbacks: Mapping[str, Any] | None,
+) -> tuple[tuple[PlanWarning, ...], tuple[AppliedFallback, ...]]:
+    chosen = [item for item in items if item.source == "fallback"]
+    if not chosen:
+        return (), ()
+    slot = _interest_slot(metric, variant) or "interest"
+    present = {item.concept: {"concept": item.concept} for item in items if item.row_key}
+    _name, warning = interest_choice(
+        present, (interest_order or {}).get(slot, ()), row_fallbacks=dict(row_fallbacks or {})
+    )
+    code = warning["code"] if warning else None
+    return (
+        (_plan_warning(warning),) if warning else (),
+        tuple(AppliedFallback(slot, "interest", item.concept, code) for item in chosen),
+    )
 
 
 def _plan_warning(item: dict) -> PlanWarning:

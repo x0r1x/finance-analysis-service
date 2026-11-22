@@ -50,7 +50,24 @@ _STATEMENT_CONCEPTS = ("revenue", "operating_profit", "net_income")
 _GRAIN_WORD = {"quarter": "квартале", "month": "месяце", "year": "году"}
 
 
-def _primary(data: AuditInput, concept: str) -> dict | None:
+def _primary(data: AuditInput, concept: str, metric: str | None = None) -> dict | None:
+    """Строка понятия. С планом метрики берёт подтверждённый вход и не выбирает заново.
+
+    Без плана остаётся прежний просмотр: первая bound-строка, если она одна.
+    Устаревшая единственная строка здесь остаётся, а план её не подтверждает.
+    Это расхождение не закрыто: ожидания golden не переписываются.
+    """
+
+    plan = (data.plans or {}).get(metric or "")
+    if plan is not None:
+        item = next((row for row in plan.inputs if row.concept == concept), None)
+        if item is not None:
+            for row in data.bindings:
+                if item.binding_key and str(row.get("binding_key") or "") == item.binding_key:
+                    return row
+                if not item.binding_key and item.row_key and row.get("row_key") == item.row_key:
+                    return row
+            return None
     found = [
         row
         for row in data.bindings

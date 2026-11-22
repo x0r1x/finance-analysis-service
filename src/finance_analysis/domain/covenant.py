@@ -12,7 +12,9 @@ from collections.abc import Mapping
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
+from typing import Any
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.cash_flow import net_cash_flow as period_net_cash_flow
 from finance_analysis.domain.cover_metrics import (
     _missing,
@@ -236,6 +238,7 @@ def covenant_dscr(
     row_fallbacks: dict | None = None,
     composed: dict[str, Composed] | None = None,
     aggregations: Mapping[str, str] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
         profile, profile_ref, default, concepts=concepts, money=money, composed=composed
@@ -245,18 +248,21 @@ def covenant_dscr(
     order = orders.get(order_name or "corporate_covenant", ())
     if not order:
         order = orders.get("corporate_covenant", ())
-    primaries = _primaries(bindings, absent)
-    injected = confirm_paid_interest(primaries, bindings, absent)
-    definition, fallback = _swap_interest(
-        definition,
-        primaries,
-        order,
-        row_fallbacks=row_fallbacks,
-    )
-    if injected is not None:
-        bindings = [*bindings, injected]
-    if fallback:
-        notes = [*notes, fallback]
+    if plan is not None:
+        definition, notes, bindings = _apply_plan(definition, notes, plan, bindings)
+    else:
+        primaries = _primaries(bindings, absent)
+        injected = confirm_paid_interest(primaries, bindings, absent)
+        definition, fallback = _swap_interest(
+            definition,
+            primaries,
+            order,
+            row_fallbacks=row_fallbacks,
+        )
+        if injected is not None:
+            bindings = [*bindings, injected]
+        if fallback:
+            notes = [*notes, fallback]
     result = composed_ratio(
         "dscr",
         definition,
@@ -1901,6 +1907,44 @@ def select_ratio(
         profile=profile,
         **common,
     )
+
+
+def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dict]):
+    """Подмена процентов и строка 4123 уже записаны в плане."""
+
+    fallback = next((item for item in plan.fallbacks if item.replaced == "interest"), None)
+    if fallback is not None and fallback.chosen != "interest":
+        definition = _rename(definition, fallback.chosen)
+        warning = next((item.as_dict() for item in plan.warnings if item.code == (fallback.warning_code or "")), None)
+        if warning:
+            notes = [*notes, warning]
+    paid = next((item for item in plan.inputs if item.concept == "interest_paid"), None)
+    if paid is not None and not any(
+        declared_concept(row) == "interest_paid" and row.get("is_primary") for row in bindings
+    ):
+        source = _row_for(bindings, paid)
+        if source is not None and declared_concept(source) != "interest_paid":
+            bindings = [*bindings, {**source, "effective_concept": "interest_paid", "is_primary": True}]
+    return definition, notes, bindings
+
+
+def _rename(formula: Composed, chosen: str) -> Composed:
+    def replace(side: Side) -> Side:
+        return Side(
+            tuple(chosen if name == "interest" else name for name in side.plus),
+            tuple(chosen if name == "interest" else name for name in side.minus),
+        )
+
+    return Composed(replace(formula.numerator), replace(formula.denominator), formula.window)
+
+
+def _row_for(bindings: list[dict], item: Any) -> dict | None:
+    for row in bindings:
+        if item.binding_key and str(row.get("binding_key") or "") == item.binding_key:
+            return row
+        if item.row_key and row.get("row_key") == item.row_key:
+            return row
+    return None
 
 
 def _swap_interest(
