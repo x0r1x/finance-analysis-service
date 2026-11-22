@@ -47,16 +47,65 @@ def test_literal_severity_rises_when_literal_changes_along_row():
     assert low.fingerprint == medium.fingerprint
 
 
-def test_formula_inconsistent_uses_builder_exceptions():
+def test_pattern_break_on_unbound_row_and_opening_is_quiet():
     key = "S|12|S!r2"
-    data = AuditInput(
-        rows=[row(key, formula_exceptions=["S!D12"], formula_exceptions_truncated=True)],
+    facts = [fact(key, "S!C12", "2024", "1"), fact(key, "S!D12", "2025", "1"), fact(key, "S!E12", "2026@план", "1")]
+    broken = AuditInput(
+        rows=[row(key)],
         periods=PERIODS,
-        facts=[fact(key, "S!C12", "2024", "1"), fact(key, "S!D12", "2025", "2")],
+        facts=facts,
+        links=link("S!C12", "C11+1", key, "2024") + link("S!D12", "D11+2", key, "2025") + link("S!E12", "E11+3", key, "2026@план"),
     )
-    [found] = check("formula_inconsistent_in_row", data)
-    assert [item.cell_id for item in found.locations] == ["S!D12"]
-    assert found.truncated is True
+    [found] = check("formula_pattern_break", broken)
+    assert found.params["patterns"][0]["id"] == "A"
+    assert {item.cell_id for item in found.locations} == {"S!C12", "S!D12", "S!E12"}
+    assert check("formula_segment", broken) == []
+    opening = AuditInput(
+        rows=[row(key)],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C12", "B12", key, "2024") + link("S!D12", "D11+1", key, "2025") + link("S!E12", "E11+1", key, "2026@план"),
+    )
+    assert check("formula_pattern_break", opening) == []
+    assert check("formula_segment", opening) == []
+
+
+def test_two_segments_are_info_not_a_break():
+    key = "S|13|S!r2"
+    facts = [fact(key, f"S!{col}13", period, "1") for col, period in (("C", "2024"), ("D", "2025"), ("E", "2026@план"))]
+    data = AuditInput(
+        rows=[row(key)],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!C13", "C12+1", key, "2024") + link("S!D13", "D12+1", key, "2025") + link("S!E13", "E12+5", key, "2026@план"),
+    )
+    assert check("formula_pattern_break", data) == []
+    [found] = check("formula_segment", data)
+    assert found.severity == "info"
+    assert [item["id"] for item in found.params["patterns"]] == ["A", "B"]
+
+
+def test_cross_period_prior_column_and_zero_addend():
+    key = "S|14|S!r2"
+    other = "S|2|S!r2"
+    facts = [
+        fact(key, "S!C14", "2024", "1"),
+        fact(key, "S!D14", "2025", "1"),
+        fact(other, "S!D2", "2025", "0", axis="S!r2"),
+    ]
+    data = AuditInput(
+        rows=[row(key), row(other)],
+        periods=PERIODS,
+        facts=facts,
+        links=link("S!D14", "D13+D2", key, "2025", refs=("S!D13", "S!D2"), formula_class="cross_period")
+        + link("S!C14", "B14", key, "2024", refs=("S!B14",), formula_class="rollforward"),
+    )
+    [cross] = check("cross_period_ref", data)
+    assert cross.locations[0].cell_id == "S!D14"
+    [prior] = check("prior_column", data)
+    assert prior.severity == "info" and prior.locations[0].cell_id == "S!C14"
+    [zero] = check("zero_addend", data)
+    assert zero.locations[0].cell_id == "S!D14"
 
 
 def test_missing_cached_value_counter_only():
@@ -109,8 +158,18 @@ def test_golden_missing_cached_value():
     assert golden_count("packt", "missing_cached_value") == 0
 
 
-def test_golden_formula_inconsistent_in_row():
-    assert golden_count("rvi", "formula_inconsistent_in_row") == 13
+def test_golden_formula_patterns_on_packt_and_rvi():
+    # Ложные разрывы шаблона: Packt молчит, у RVI четыре ряда из одной ячейки на шаблон.
+    assert golden_count("packt", "formula_pattern_break") == 0
+    assert golden_count("rvi", "formula_pattern_break") == 4
+    assert golden_count("packt", "formula_segment") == 0
+    assert golden_count("rvi", "formula_segment") == 0
+    assert golden_count("packt", "cross_period_ref") == 2
+    assert golden_count("rvi", "cross_period_ref") == 10
+    assert golden_count("packt", "prior_column") == 5
+    assert golden_count("rvi", "prior_column") == 10
+    assert golden_count("packt", "zero_addend") == 49
+    assert golden_count("rvi", "zero_addend") == 125
 
 
 def test_golden_offset_indirect_used():

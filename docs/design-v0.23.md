@@ -1884,7 +1884,11 @@ EBITDA меньше или равна нулю и знаменатель бол�
 |---|---|---|---|---|---|
 | 1 | `hardcoded_formula` (константа в строке формул) | logic | high | `formula_class`, `formula_exceptions` | FAST 3.02-01; ICAEW «consistent formulas» |
 | 1 | `literal_in_formula` (не 12/24/1000 и т. п.) | qualitative | low→medium, если значение меняется по строке | формула | FAST 3.04-01; ICAEW «avoid hardcoding» (универсальные константы допустимы) |
-| 1 | `formula_inconsistent_in_row` | logic | high | `formula_exceptions` | FAST 3.02-01/02; ICAEW |
+| 1 | `formula_pattern_break` | logic | high | R1C1 ссылок графа | FAST 3.02-01/02; ICAEW |
+| 1 | `formula_segment` | qualitative | info | R1C1 ссылок графа | FAST 3.02-01; ICAEW, два сплошных шаблона |
+| 1 | `cross_period_ref` | logic | medium | `formula_class=cross_period` | ICAEW |
+| 1 | `prior_column` | qualitative | info | `formula_class=rollforward` | FAST 2.02-05 |
+| 1 | `zero_addend` | logic | medium | формула и кэш слагаемого | ICAEW |
 | 1 | `dangling_ref`, `unresolved_ref` | mechanical | high | `summary.*`, `dangling_classes` | — |
 | 1 | `external_ref` | qualitative | medium | счётчик `external` (R1), ссылки `graph.json links[].refs` | FAST 1.03-02/04 |
 | 1 | `unexpected_cycle` | logic | high | счётчик `cycles` (R1); детали — `/graph/trace` (R5) | ICAEW «avoid circular references» |
