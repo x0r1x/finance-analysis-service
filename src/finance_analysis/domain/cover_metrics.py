@@ -27,8 +27,10 @@ from finance_analysis.domain.metrics import (
     _sums,
     absent_concepts,
     aligned_keys,
+    calculate_coverage,
     coverage_ratio,
     quantize_ratio,
+    remembered,
 )
 from finance_analysis.domain.period_basis import keys_for_basis
 
@@ -175,6 +177,7 @@ def adscr(
     direction: str = "lookback",
     absent: frozenset[str] = frozenset(),
     plan: Any | None = None,
+    collect: list | None = None,
 ) -> dict:
     """Сумма CFADS ÷ сумма обслуживания долга за 12 месяцев на каждом тестовом периоде.
 
@@ -184,18 +187,36 @@ def adscr(
     не считается.
     """
 
-    dscr = coverage_ratio(
-        metric="dscr",
-        facts=facts,
-        bindings=bindings,
-        periods=periods,
-        period_phase=period_phase,
-        explicit_phases=explicit_phases,
-        sign_convention=sign_convention,
-        marker_class=marker_class,
-        absent=absent,
-        plan=plan,
-    )
+    if collect is None:
+        dscr = coverage_ratio(
+            metric="dscr",
+            facts=facts,
+            bindings=bindings,
+            periods=periods,
+            period_phase=period_phase,
+            explicit_phases=explicit_phases,
+            sign_convention=sign_convention,
+            marker_class=marker_class,
+            absent=absent,
+            plan=plan,
+        )
+    else:
+        dscr = remembered(
+            calculate_coverage(
+                metric="dscr",
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                period_phase=period_phase,
+                explicit_phases=explicit_phases,
+                sign_convention=sign_convention,
+                marker_class=marker_class,
+                absent=absent,
+                plan=plan,
+                evidence=True,
+            ),
+            collect,
+        )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": "adscr"}
     primaries = _core_rows(bindings, absent, plan)
@@ -279,6 +300,7 @@ def dscr_reductions(
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
     plan: Any | None = None,
+    collect: list | None = None,
 ) -> dict:
     """`dscr_min` — минимум по тестовым периодам; `dscr_avg` — двумя способами.
 
@@ -287,18 +309,36 @@ def dscr_reductions(
     в отношение сумм входит один раз, на последний тестовый период.
     """
 
-    dscr = coverage_ratio(
-        metric="dscr",
-        facts=facts,
-        bindings=bindings,
-        periods=periods,
-        period_phase=period_phase,
-        explicit_phases=explicit_phases,
-        sign_convention=sign_convention,
-        marker_class=marker_class,
-        absent=absent,
-        plan=plan,
-    )
+    if collect is None:
+        dscr = coverage_ratio(
+            metric="dscr",
+            facts=facts,
+            bindings=bindings,
+            periods=periods,
+            period_phase=period_phase,
+            explicit_phases=explicit_phases,
+            sign_convention=sign_convention,
+            marker_class=marker_class,
+            absent=absent,
+            plan=plan,
+        )
+    else:
+        dscr = remembered(
+            calculate_coverage(
+                metric="dscr",
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                period_phase=period_phase,
+                explicit_phases=explicit_phases,
+                sign_convention=sign_convention,
+                marker_class=marker_class,
+                absent=absent,
+                plan=plan,
+                evidence=True,
+            ),
+            collect,
+        )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": metric}
     primaries = _core_rows(bindings, absent, plan)

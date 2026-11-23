@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from finance_analysis.domain.calculation_evidence import CalculationEvidence
 
@@ -123,34 +125,33 @@ def limit_trace(periods: list[dict], *, fact_uses: list[dict] | None = None) -> 
 
 
 def view_from_evidence(evidence: CalculationEvidence) -> dict:
-    """DTO из улики прохода. Роли, окно и ссылки шагов сохраняются."""
+    """Полный DTO прохода. Урезанная ячейка в компактном виде помечена, не спрятана."""
 
     periods = []
     for period in evidence.period_results:
-        periods.append(
-            {
-                "axis_id": period.axis_id,
-                "period_id": period.period_id,
-                "status": period.status,
-                "reason": period.reason,
-                "window_periods": _lists(period.window_periods),
-                "window_missing": _lists(period.window_missing),
-                "missing_concepts": _lists(period.missing_concepts),
-                "steps": [
-                    {
-                        "step_id": step.step_id,
-                        "operation": step.operation,
-                        "input_refs": list(step.input_refs),
-                    }
-                    for step in period.steps
-                ],
-            }
-        )
-    uses = []
-    for item in evidence.fact_uses:
-        ref = f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}"
-        uses.append({"concept": item.concept, "cell_ref": ref, "operand": item.operand})
-    return limit_trace(periods, fact_uses=uses)
+        item = _record(period)
+        item["steps"] = [_record(step) for step in period.steps]
+        periods.append(item)
+    uses = [_record(item, cell_ref=_cell_ref(item)) for item in evidence.fact_uses]
+    limited = limit_trace(periods, fact_uses=uses)
+    dropped = set(limited["dropped_cells"])
+    for use in limited["fact_uses"]:
+        ref = use.get("cell_ref")
+        if isinstance(ref, str) and ref.startswith("truncated:"):
+            use["cell_id"] = None
+    limited["fact_observations"] = [_observation(item, dropped) for item in evidence.fact_observations]
+    limited["metric"] = evidence.metric
+    limited["execution_status"] = evidence.execution_status
+    limited["implementation"] = evidence.implementation
+    limited["calculation_stamp"] = evidence.calculation_stamp
+    limited["plan_content_sha256"] = evidence.plan_content_sha256
+    limited["sign_convention"] = evidence.sign_convention
+    limited["marker_class"] = evidence.marker_class
+    limited["explicit_phases"] = evidence.explicit_phases
+    limited["sheet"] = evidence.sheet
+    limited["sums_additions"] = evidence.sums_additions
+    limited["basis_sides"] = [_record(side) for side in evidence.basis_sides]
+    return limited
 
 
 def _cited(ref: str) -> bool:
@@ -175,10 +176,37 @@ def _cited_count(view: dict) -> int:
     return len(seen)
 
 
-def _lists(value):
-    if isinstance(value, tuple):
-        return [_lists(item) for item in value]
-    return value
+def _cell_ref(item) -> str:
+    if item.cell_id:
+        return f"cell:{item.cell_id}"
+    return f"fact:{item.axis_id}:{item.period_id}"
+
+
+def _observation(item, dropped: set[str]) -> dict:
+    ref = _cell_ref(item)
+    body = _record(item, cell_ref=ref)
+    if ref in dropped:
+        body["cell_ref"] = f"truncated:{ref}"
+        body["cell_id"] = None
+    return body
+
+
+def _record(item, **extra) -> dict:
+    body = {key: _plain(value) for key, value in asdict(item).items()}
+    body.update(extra)
+    return body
+
+
+def _plain(value):
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_plain(item) for item in value]
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    return str(value)
 
 
 def _add_years(moment: datetime, years: int) -> datetime:

@@ -42,6 +42,17 @@ def register(app, settings, *, actor, limited, svc, support, calc, findings_read
         finally:
             app.state.inflight -= 1
 
+    @app.delete("/v1/books/{job_id}/analyses/{analysis_id}")
+    async def delete_analysis(job_id: str, analysis_id: str, request: Request):
+        checked = check_job(job_id)
+        who = actor(request)
+        await limited(request, who)
+        try:
+            async with support().user_inflight(who):
+                return await svc().analyses.delete(checked, analysis_id)
+        finally:
+            app.state.inflight -= 1
+
     @app.get("/v1/books/{job_id}/analyses/{analysis_id}")
     async def get_analysis(job_id: str, analysis_id: str, request: Request):
         checked = check_job(job_id)

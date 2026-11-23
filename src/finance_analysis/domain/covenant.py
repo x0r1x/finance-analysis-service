@@ -44,6 +44,8 @@ from finance_analysis.domain.metrics import (
     _primaries,
     _sums,
     aligned_keys,
+    calculate_coverage,
+    calculate_dscr_pf,
     confirm_paid_interest,
     coverage_ratio,
     dscr_pf,
@@ -51,6 +53,7 @@ from finance_analysis.domain.metrics import (
     interest_choice,
     lease_interest_coverage,
     methodology_block,
+    remembered,
     unconfirmed_scale,
 )
 from finance_analysis.domain.model_type import Composed, MetricExpression, Side
@@ -1796,6 +1799,7 @@ def select_ratio(
     statement_sheets: frozenset[str] | None = None,
     aggregations: Mapping[str, str] | None = None,
     plan: Any | None = None,
+    collect: list | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -1956,12 +1960,24 @@ def select_ratio(
             plan=plan,
         )
     if metric == "dscr" and variant == "pf":
-        return dscr_pf(
-            interest_order=interest_order,
-            row_fallbacks=row_fallbacks,
-            profile=profile,
-            plan=plan,
-            **common,
+        if collect is None:
+            return dscr_pf(
+                interest_order=interest_order,
+                row_fallbacks=row_fallbacks,
+                profile=profile,
+                plan=plan,
+                **common,
+            )
+        return remembered(
+            calculate_dscr_pf(
+                interest_order=interest_order,
+                row_fallbacks=row_fallbacks,
+                profile=profile,
+                plan=plan,
+                evidence=True,
+                **common,
+            ),
+            collect,
         )
     if metric == "icr" and bank_requested(variant, profile):
         return bank_icr(
@@ -1989,13 +2005,26 @@ def select_ratio(
             aggregations=aggregations,
             plan=plan,
         )
-    return coverage_ratio(
-        metric=metric,
-        interest_order=interest_order,
-        row_fallbacks=row_fallbacks,
-        profile=profile,
-        plan=plan,
-        **common,
+    if collect is None:
+        return coverage_ratio(
+            metric=metric,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            profile=profile,
+            plan=plan,
+            **common,
+        )
+    return remembered(
+        calculate_coverage(
+            metric=metric,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            profile=profile,
+            plan=plan,
+            evidence=True,
+            **common,
+        ),
+        collect,
     )
 
 

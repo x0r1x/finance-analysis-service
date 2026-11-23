@@ -697,6 +697,14 @@ def coverage_ratio(
     ).result
 
 
+def remembered(outcome: CalculationOutcome, collect: list | None) -> dict:
+    """Кладёт улику в сбор анализа и возвращает прежний словарь результата."""
+
+    if collect is not None and outcome.evidence is not None:
+        collect.append(outcome.evidence)
+    return outcome.result
+
+
 def calculate_coverage(
     *,
     metric: str,

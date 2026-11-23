@@ -19,10 +19,15 @@ from finance_analysis.application.trace_tail import (
     log_trace_metrics,
     publish_trace,
     read_trace,
+    read_trace_archive,
+    reconcile_traces,
+    sweep_expired_traces,
 )
 from finance_analysis.domain.calculation_evidence import (
+    BasisSide,
     CalculationEvidence,
     EvidenceBook,
+    FactObservation,
     FactUse,
     PeriodResult,
     TransformationStep,
@@ -304,7 +309,7 @@ async def test_governance_keeps_the_object_when_the_analysis_is_deleted(tmp_path
     assert key == "traces/analysis-2/exec-2.json"
     assert mode == "GOVERNANCE"
     assert until == datetime(2026, 1, 2, tzinfo=UTC)
-    await delete_analysis_traces(store, pointer, "analysis-2")
+    await delete_analysis_traces(store, pointer, "analysis-2", now=NOW)
     row = pointer.get("analysis-2", "exec-2")
     assert row["retained_until"] == "2026-01-02T00:00:00+00:00"
     assert json.loads(await store.get(key))["dropped_cells"] == []
@@ -386,6 +391,343 @@ def test_minio_governance_retention_is_six_and_five_years():
             assert recorded[-1]["Key"] == name
             assert recorded[-1]["Retention"] == {"Mode": "GOVERNANCE", "RetainUntilDate": expected}
             retainer.hold_key(name, until=policy.until)
+
+
+def _rich_evidence() -> CalculationEvidence:
+    return CalculationEvidence(
+        metric="dscr",
+        execution_status="succeeded",
+        implementation="dscr@1",
+        calculation_stamp="abcd1234abcd1234",
+        plan_content_sha256="plan-sha",
+        sign_convention="outflow_negative",
+        marker_class="actual",
+        explicit_phases=True,
+        sheet=False,
+        sums_additions=2,
+        fact_observations=(
+            FactObservation(
+                concept="cfads",
+                cell_id="CFS!A",
+                axis_id="CFS!r3",
+                period_id="2025",
+                timeline_id="tl",
+                period_index=0,
+                field="value",
+                sheet=False,
+                raw_value=Decimal(10),
+                effective_value=Decimal(10000),
+                scale_factor=Decimal(1000),
+                scale_policy="scale",
+                scale_applied=True,
+                normalization_source="factor",
+                considered=None,
+            ),
+        ),
+        fact_uses=(
+            FactUse(
+                concept="debt_service",
+                cell_id="Debt!D",
+                axis_id="Debt!r3",
+                period_id="2025",
+                timeline_id="tl",
+                period_index=0,
+                field="value",
+                sheet=False,
+                raw_value=Decimal(4),
+                effective_value=Decimal(4000),
+                scale_factor=Decimal(1000),
+                scale_policy="scale",
+                scale_applied=True,
+                normalization_source="factor",
+                result_axis_id="Debt!r3",
+                result_period_id="2025",
+                operand="eligibility",
+            ),
+        ),
+        period_results=(
+            PeriodResult(
+                axis_id="Debt!r3",
+                period_id="2025",
+                status="skipped",
+                reason="not_coverage_test_period",
+                value=None,
+                numerator=Decimal(10000),
+                denominator=Decimal(4000),
+                steps=(
+                    TransformationStep(
+                        1,
+                        "scale_normalization",
+                        ("cell:Debt!D",),
+                        Decimal(4000),
+                        {"scale_factor": Decimal(1000)},
+                    ),
+                ),
+                window_periods=("2025",),
+                window_missing=(),
+                missing_concepts=(),
+            ),
+        ),
+        basis_sides=(BasisSide(concept="cfads", period_basis="period", source="header"),),
+    )
+
+
+def test_trace_schema_keeps_identity_stamp_and_fact_provenance():
+    view = view_from_evidence(_rich_evidence())
+    assert view["implementation"] == "dscr@1"
+    assert view["calculation_stamp"] == "abcd1234abcd1234"
+    assert view["plan_content_sha256"] == "plan-sha"
+    assert view["execution_status"] == "succeeded"
+    assert view["sign_convention"] == "outflow_negative"
+    assert view["explicit_phases"] is True
+    assert view["sheet"] is False
+    assert view["marker_class"] == "actual"
+    assert view["sums_additions"] == 2
+    assert view["basis_sides"] == [{"concept": "cfads", "period_basis": "period", "source": "header"}]
+    observed = view["fact_observations"][0]
+    assert observed["scale_factor"] == "1000"
+    assert observed["scale_policy"] == "scale"
+    assert observed["scale_applied"] is True
+    assert observed["normalization_source"] == "factor"
+    assert observed["raw_value"] == "10"
+    used = view["fact_uses"][0]
+    assert used["operand"] == "eligibility"
+    assert used["scale_factor"] == "1000"
+    assert used["scale_policy"] == "scale"
+    assert used["scale_applied"] is True
+    assert used["normalization_source"] == "factor"
+    step = view["periods"][0]["steps"][0]
+    assert step["output_value"] == "4000"
+    assert step["parameters"] == {"scale_factor": "1000"}
+
+
+@pytest.mark.asyncio
+async def test_publication_logs_the_book_additions(caplog, tmp_path):
+    book = EvidenceBook(
+        metric="dscr",
+        sign_convention="outflow_negative",
+        marker_class=None,
+        explicit_phases=False,
+        plan_content_sha256=None,
+    )
+    facts = [
+        {"row_key": "r", "axis_id": "a", "period_id": "1", "value": "2", "normalized_value": "2"},
+        {"row_key": "r", "axis_id": "a", "period_id": "2", "value": "3", "normalized_value": "3"},
+    ]
+    _sums(facts, {"row_key": "r"}, book=book, concept="cfads")
+    evidence = book.freeze("succeeded", "dscr@1")
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    with caplog.at_level(logging.INFO, logger=LOG):
+        await publish_trace(
+            store,
+            pointer,
+            analysis_id="analysis-sums",
+            execution_id="exec-sums",
+            evidence=evidence,
+            retention="analysis",
+            now=NOW,
+        )
+    assert "sums_additions=2" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_read_trace_archive_keeps_dropped_cells(tmp_path):
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    cells = [f"cell:c{index}" for index in range(513)]
+    await publish_trace(
+        store,
+        pointer,
+        analysis_id="analysis-archive",
+        execution_id="exec-archive",
+        periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": cells}]}],
+        retention="analysis",
+        now=NOW,
+    )
+    await publish_trace(
+        store,
+        pointer,
+        analysis_id="analysis-archive",
+        execution_id="exec-archive",
+        periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": cells}]}],
+        retention="analysis",
+        now=NOW,
+    )
+    assert pointer.count("analysis-archive") == 1
+    compact = await read_trace(store, pointer, analysis_id="analysis-archive", execution_id="exec-archive")
+    archive = await read_trace_archive(store, pointer, analysis_id="analysis-archive", execution_id="exec-archive")
+    assert "cell:c512" not in compact["cited_cells"]
+    assert "dropped_cells" not in compact
+    assert archive["dropped_cells"] == ["cell:c512"]
+    assert archive["trace"]["evidence_complete"] is False
+
+
+def test_parallel_reserve_stops_at_sixty_four(tmp_path):
+    import asyncio
+    import threading
+
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    store = LocalStore(tmp_path / "objects")
+
+    async def _fill() -> None:
+        for index in range(63):
+            await publish_trace(
+                store,
+                pointer,
+                analysis_id="analysis-race",
+                execution_id=f"exec-{index}",
+                periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:one"]}]}],
+                retention="analysis",
+                now=NOW,
+            )
+
+    asyncio.run(_fill())
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def _once(execution_id: str) -> None:
+        barrier.wait()
+
+        async def _publish() -> None:
+            await publish_trace(
+                store,
+                pointer,
+                analysis_id="analysis-race",
+                execution_id=execution_id,
+                periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:one"]}]}],
+                retention="analysis",
+                now=NOW,
+            )
+
+        try:
+            asyncio.run(_publish())
+            outcomes.append("ok")
+        except TraceLimitError:
+            outcomes.append("limited")
+
+    threads = [threading.Thread(target=_once, args=(f"exec-extra-{index}",)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(outcomes) == ["limited", "ok"]
+    assert pointer.count("analysis-race") == 64
+
+
+class _Boom:
+    async def hold(self, key: str, *, mode: str, until: datetime) -> None:
+        raise RuntimeError("lock failed")
+
+
+@pytest.mark.asyncio
+async def test_hold_failure_does_not_leave_a_locked_object_without_a_pointer(tmp_path):
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    with pytest.raises(RuntimeError, match="lock failed"):
+        await publish_trace(
+            store,
+            pointer,
+            analysis_id="analysis-hold",
+            execution_id="exec-hold",
+            periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}],
+            retention="sec_17a4",
+            now=NOW,
+            retainer=_Boom(),
+        )
+    assert pointer.get("analysis-hold", "exec-hold") is None
+    assert await store.stat("traces/analysis-hold/exec-hold.json") is None
+
+
+@pytest.mark.asyncio
+async def test_pointer_commit_failure_stays_pending_until_reconcile(tmp_path):
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+
+    def _fail(row: dict) -> None:
+        raise RuntimeError("commit failed")
+
+    original = pointer.commit
+    pointer.commit = _fail  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await publish_trace(
+            store,
+            pointer,
+            analysis_id="analysis-commit",
+            execution_id="exec-commit",
+            periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}],
+            retention="analysis",
+            now=NOW,
+        )
+    pointer.commit = original
+    pending = pointer.get("analysis-commit", "exec-commit")
+    assert pending is not None
+    assert pending["state"] == "pending"
+    assert await store.stat("traces/analysis-commit/exec-commit.json") is not None
+    await store.put("traces/analysis-commit/orphan.json", b"{}")
+    report = await reconcile_traces(store, pointer)
+    assert pointer.get("analysis-commit", "exec-commit")["state"] == "committed"
+    assert "traces/analysis-commit/orphan.json" in report["orphans"]
+
+
+@pytest.mark.asyncio
+async def test_expired_retention_is_deleted_and_swept(tmp_path):
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    retainer = _Retainer()
+    await publish_trace(
+        store,
+        pointer,
+        analysis_id="analysis-expire",
+        execution_id="exec-expire",
+        periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}],
+        retention="days:10",
+        now=NOW,
+        retainer=retainer,
+    )
+    await delete_analysis_traces(store, pointer, "analysis-expire", now=NOW)
+    assert pointer.get("analysis-expire", "exec-expire") is not None
+    await delete_analysis_traces(store, pointer, "analysis-expire", now=NOW + timedelta(days=11))
+    assert pointer.get("analysis-expire", "exec-expire") is None
+    assert await store.stat("traces/analysis-expire/exec-expire.json") is None
+    await publish_trace(
+        store,
+        pointer,
+        analysis_id="analysis-sweep",
+        execution_id="exec-sweep",
+        periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}],
+        retention="days:10",
+        now=NOW,
+        retainer=retainer,
+    )
+    await sweep_expired_traces(store, pointer, now=NOW + timedelta(days=11))
+    assert pointer.get("analysis-sweep", "exec-sweep") is None
+
+
+@pytest.mark.asyncio
+async def test_analysis_publish_writes_the_object_and_the_pointer(tmp_path):
+    from finance_analysis.application.analyses import Analyses
+
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+
+    class _Host:
+        def __init__(self) -> None:
+            self.store = store
+            self.service = type("Svc", (), {})()
+            self.service.store = store
+            self.service.trace_pointer = pointer
+            self.service.trace_retainer = None
+            self.service.settings = Settings(_env_file=None)
+
+    await Analyses._publish_traces(_Host(), "01ARZ3NDEKTSV4RRFFQ69G5FAV", [_rich_evidence()])
+    rows = pointer.list_analysis("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    assert len(rows) == 1
+    assert rows[0]["state"] == "committed"
+    payload = json.loads(await store.get(rows[0]["object_key"]))
+    assert payload["trace"]["implementation"] == "dscr@1"
+    assert payload["trace"]["sums_additions"] == 2
+    assert payload["dropped_cells"] == []
 
 
 def test_public_result_does_not_grow_a_trace_field():

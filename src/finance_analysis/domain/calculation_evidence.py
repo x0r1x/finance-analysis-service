@@ -109,6 +109,7 @@ class CalculationEvidence:
     fact_uses: tuple[FactUse, ...]
     period_results: tuple[PeriodResult, ...]
     basis_sides: tuple[BasisSide, ...] = ()
+    sums_additions: int = 0
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,7 @@ class EvidenceBook:
             fact_uses=tuple(self.fact_uses or ()),
             period_results=tuple(self.periods or ()),
             basis_sides=tuple(self.basis_sides or ()),
+            sums_additions=self.sums_additions,
         )
 
 

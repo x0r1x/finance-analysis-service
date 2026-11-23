@@ -1,4 +1,10 @@
-"""Хвост следа: объект в хранилище, указатель в DuckDB, журнал трёх счётчиков."""
+"""Хвост следа: объект в хранилище, указатель в DuckDB, журнал трёх счётчиков.
+
+Запись объекта условная: S3 `PutObject` с `If-None-Match: *`
+(https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html).
+Замок — GOVERNANCE, MinIO Object Lock
+(https://www.min.io/docs/minio/linux/administration/object-management/object-retention.html).
+"""
 
 from __future__ import annotations
 
@@ -6,10 +12,8 @@ import json
 import logging
 from datetime import UTC, datetime
 
-from finance_analysis.domain.errors import InvalidArgument, NotFound
+from finance_analysis.domain.errors import AlreadyExists, InvalidArgument, NotFound
 from finance_analysis.domain.trace_limit import (
-    TRACE_LIMIT,
-    TraceLimitError,
     limit_trace,
     retention_policy,
     view_from_evidence,
@@ -50,15 +54,16 @@ async def publish_trace(
     now: datetime | None = None,
     retainer=None,
 ) -> dict:
-    """Пишет хвост и указатель. 65-й след анализа не пишется. Ячейки сверх 512 помечаются."""
+    """Резервирует слот, пишет объект, затем подтверждает указатель.
 
-    # shortcut: счётчик читается до записи. Два параллельных публикующих могут оба пройти. Поднять, когда следы одного анализа пишутся параллельно.
-    if pointer.count(analysis_id) >= TRACE_LIMIT:
-        raise TraceLimitError(f"следов больше {TRACE_LIMIT}")
+    Тот же `execution_id` повторно слот не занимает. Сбой замка снимает объект
+    и строку. Сбой подтверждения оставляет `pending`, чтобы сверка нашла объект.
+    """
+
     moment = now or datetime.now(UTC)
     view = view_from_evidence(evidence) if evidence is not None else limit_trace(periods or [], fact_uses=fact_uses)
     policy = retention_policy(retention, now=moment)
-    dropped = view.pop("dropped_cells")
+    dropped = list(view.pop("dropped_cells"))
     key = _object_key(analysis_id, execution_id)
     body = json.dumps(
         {
@@ -69,54 +74,141 @@ async def publish_trace(
         },
         ensure_ascii=False,
     ).encode()
-    await store.put(key, body)
+    retained = None if policy is None else policy.until.isoformat()
+    slot = pointer.reserve(
+        analysis_id,
+        execution_id,
+        object_key=key,
+        evidence_complete=view["evidence_complete"],
+        dropped_cell_count=view["dropped_cell_count"],
+        retained_until=retained,
+    )
+    if slot == "committed":
+        stored = await read_trace(store, pointer, analysis_id=analysis_id, execution_id=execution_id)
+        return stored
+    row = {
+        "analysis_id": analysis_id,
+        "execution_id": execution_id,
+        "object_key": key,
+        "evidence_complete": view["evidence_complete"],
+        "dropped_cell_count": view["dropped_cell_count"],
+        "retained_until": retained,
+        "state": "committed",
+    }
+    try:
+        await store.put_if_absent(key, body)
+    except AlreadyExists:
+        found = await store.get(key)
+        if found != body:
+            raise InvalidArgument("след с этим execution_id уже записан другим телом") from None
+    except Exception:
+        if slot == "reserved":
+            pointer.delete(analysis_id, execution_id)
+        raise
     if policy is not None:
         if retainer is None:
-            await store.delete_prefix(key)
+            await _drop_uncommitted(store, pointer, analysis_id, execution_id, key)
             raise InvalidArgument("для удержания нужен замок объекта")
-        await retainer.hold(key, mode=policy.mode, until=policy.until)
-    pointer.put(
-        {
-            "analysis_id": analysis_id,
-            "execution_id": execution_id,
-            "object_key": key,
-            "evidence_complete": view["evidence_complete"],
-            "dropped_cell_count": view["dropped_cell_count"],
-            "retained_until": None if policy is None else policy.until.isoformat(),
-        }
-    )
-    log_trace_metrics(
-        cells=len(view["cited_cells"]),
-        dropped=view["dropped_cell_count"],
-        additions=sums_additions,
-    )
+        try:
+            await retainer.hold(key, mode=policy.mode, until=policy.until)
+        except Exception:
+            await _drop_uncommitted(store, pointer, analysis_id, execution_id, key)
+            raise
+    pointer.commit(row)
+    additions = sums_additions if evidence is None else evidence.sums_additions
+    log_trace_metrics(cells=len(view["cited_cells"]), dropped=view["dropped_cell_count"], additions=additions)
     return view
 
 
 async def read_trace(store, pointer, *, analysis_id: str, execution_id: str) -> dict:
-    """Читает DTO. Сломанный указатель не достраивает ячейки из хвоста."""
+    """Компактный DTO. Отброшенные ячейки сюда не возвращаются."""
 
-    row = pointer.get(analysis_id, execution_id)
-    if row is None:
-        return dict(_MISSING)
-    try:
-        payload = json.loads(await store.get(row["object_key"]))
-    except NotFound:
-        return dict(_MISSING)
+    payload = await _payload(store, pointer, analysis_id=analysis_id, execution_id=execution_id)
     trace = payload.get("trace")
     if not isinstance(trace, dict):
         return dict(_MISSING)
     return trace
 
 
-async def delete_analysis_traces(store, pointer, analysis_id: str) -> None:
-    """Жизнь анализа: без замка объект и строка удаляются. С замком объект остаётся."""
+async def read_trace_archive(store, pointer, *, analysis_id: str, execution_id: str) -> dict:
+    """Полный объект, включая `dropped_cells`."""
 
+    payload = await _payload(store, pointer, analysis_id=analysis_id, execution_id=execution_id)
+    if not isinstance(payload.get("trace"), dict):
+        return {"dropped_cells": [], "trace": dict(_MISSING)}
+    return payload
+
+
+async def reconcile_traces(store, pointer) -> dict:
+    """Подтверждает `pending`, у которого объект уже есть, и называет объекты без указателя."""
+
+    present = await _trace_keys(store)
+    known = {row["object_key"] for row in pointer.list_all()}
+    committed = []
+    for row in pointer.list_all():
+        if row.get("state") == "pending" and row["object_key"] in present:
+            pointer.commit(row)
+            committed.append(row["object_key"])
+    return {"orphans": sorted(present - known), "committed": committed}
+
+
+async def delete_analysis_traces(store, pointer, analysis_id: str, *, now: datetime | None = None) -> None:
+    """До `retained_until` объект остаётся. После даты удаляются объект и строка."""
+
+    moment = now or datetime.now(UTC)
     for row in pointer.list_analysis(analysis_id):
-        if row.get("retained_until"):
+        if _still_held(row, moment):
             continue
         await store.delete_prefix(row["object_key"])
         pointer.delete(analysis_id, row["execution_id"])
+
+
+async def sweep_expired_traces(store, pointer, *, now: datetime) -> None:
+    """Отдельный проход: срок вышел, анализ ещё не удаляли."""
+
+    for row in pointer.list_all():
+        if _still_held(row, now) or not row.get("retained_until"):
+            continue
+        await store.delete_prefix(row["object_key"])
+        pointer.delete(row["analysis_id"], row["execution_id"])
+
+
+async def _payload(store, pointer, *, analysis_id: str, execution_id: str) -> dict:
+    row = pointer.get(analysis_id, execution_id)
+    if row is None:
+        return {"trace": dict(_MISSING)}
+    try:
+        payload = json.loads(await store.get(row["object_key"]))
+    except NotFound:
+        return {"trace": dict(_MISSING)}
+    if not isinstance(payload, dict):
+        return {"trace": dict(_MISSING)}
+    return payload
+
+
+async def _trace_keys(store) -> set[str]:
+    found = set()
+    async for item in store.list("traces/"):
+        found.add(item.key)
+    return found
+
+
+async def _drop_uncommitted(store, pointer, analysis_id: str, execution_id: str, key: str) -> None:
+    try:
+        await store.delete_prefix(key)
+    except Exception:  # noqa: BLE001 — сбой удаления оставляет указатель, объект не теряется
+        return
+    pointer.delete(analysis_id, execution_id)
+
+
+def _still_held(row: dict, now: datetime) -> bool:
+    raw = row.get("retained_until")
+    if not raw:
+        return False
+    moment = datetime.fromisoformat(raw)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment > now
 
 
 def _object_key(analysis_id: str, execution_id: str) -> str:

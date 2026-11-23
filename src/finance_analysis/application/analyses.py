@@ -885,6 +885,7 @@ class Analyses:
         needs = []
         warnings = []
         uses = []
+        evidences: list = []
         money = frozenset(name for name, item in svc.catalog.concepts.items() if item.unit == "money")
         aggregations = {
             name: item.effective_aggregation for name, item in svc.catalog.concepts.items()
@@ -937,9 +938,9 @@ class Analyses:
             elif metric in LOAN_LIFE:
                 result = loan_life_ratio(metric, basis=basis, plan=plans.get(metric), **common)
             elif metric in REDUCED:
-                result = dscr_reductions(metric, plan=plans.get("dscr"), **common)
+                result = dscr_reductions(metric, plan=plans.get("dscr"), collect=evidences, **common)
             elif metric == "adscr":
-                result = adscr(direction=direction, plan=plans.get("dscr"), **common)
+                result = adscr(direction=direction, plan=plans.get("dscr"), collect=evidences, **common)
             else:
                 result = select_ratio(
                     metric,
@@ -956,6 +957,7 @@ class Analyses:
                     links=links,
                     statement_sheets=statement_sheets,
                     plan=plans.get(metric),
+                    collect=evidences,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
@@ -998,6 +1000,7 @@ class Analyses:
             "model_type": verdict.as_dict(),
             "dscr_variant": dscr_variant,
             "plans": plans,
+            "evidences": evidences,
             "book_rows": cite_lbo_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,
@@ -1021,6 +1024,7 @@ class Analyses:
         head = target.head
         scope = _scope(body)
         got = await self.compute_metrics(job_id, target, metrics)
+        await self._publish_traces(analysis_id, got.get("evidences") or [])
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
@@ -1150,6 +1154,7 @@ class Analyses:
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
         got = await self.compute_metrics(job_id, target, metrics)
+        await self._publish_traces(analysis_id, got.get("evidences") or [])
         data.plans = got.get("plans") or {}
         self._trace_plans(data, metrics)
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
@@ -1590,6 +1595,39 @@ class Analyses:
     async def _marker(self, job_id: str, report: dict) -> dict:
         key = keys.result_key(job_id, report["build_key"], report["analysis_id"], "result.json")
         return json.loads(await self.store.get(key))
+
+    async def delete(self, job_id: str, analysis_id: str) -> dict:
+        check_ulid(analysis_id)
+        pointer = getattr(self.service, "trace_pointer", None)
+        removed = 0
+        if pointer is not None:
+            from finance_analysis.application.trace_tail import delete_analysis_traces
+
+            before = pointer.count(analysis_id)
+            await delete_analysis_traces(self.store, pointer, analysis_id)
+            removed = before - pointer.count(analysis_id)
+        return {"job_id": job_id, "analysis_id": analysis_id, "traces_removed": removed}
+
+    async def _publish_traces(self, analysis_id: str, evidences: list) -> None:
+        pointer = getattr(self.service, "trace_pointer", None)
+        if pointer is None or not evidences:
+            return
+        from finance_analysis.application.trace_tail import publish_trace
+
+        retention = self.service.settings.fas_trace_retention
+        retainer = getattr(self.service, "trace_retainer", None)
+        for index, evidence in enumerate(evidences):
+            if evidence is None:
+                continue
+            await publish_trace(
+                self.store,
+                pointer,
+                analysis_id=analysis_id,
+                execution_id=f"{evidence.metric}-{index}",
+                evidence=evidence,
+                retention=retention,
+                retainer=retainer,
+            )
 
     async def result(self, job_id: str, analysis_id: str) -> dict:
         check_ulid(analysis_id)

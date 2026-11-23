@@ -325,9 +325,13 @@ class FasService:
         models: Models | None = None,
         vector_index=None,
         cluster=None,
+        trace_pointer=None,
+        trace_retainer=None,
     ) -> None:
         self.settings = settings
         self.store = store
+        self.trace_pointer = trace_pointer
+        self.trace_retainer = trace_retainer
         self.parquet = parquet
         self.builder = builder
         self.query = query
