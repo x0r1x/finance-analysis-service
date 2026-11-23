@@ -1040,7 +1040,7 @@ class Analyses:
         head = target.head
         scope = _scope(body)
         got = await self.compute_metrics(job_id, target, metrics)
-        await self._publish_traces(analysis_id, got.get("evidences") or [])
+        await self._publish_traces(analysis_id, got.get("evidences") or [], got.get("applicability"))
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
@@ -1170,7 +1170,7 @@ class Analyses:
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
         got = await self.compute_metrics(job_id, target, metrics)
-        await self._publish_traces(analysis_id, got.get("evidences") or [])
+        await self._publish_traces(analysis_id, got.get("evidences") or [], got.get("applicability"))
         data.plans = got.get("plans") or {}
         self._trace_plans(data, metrics)
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
@@ -1638,26 +1638,46 @@ class Analyses:
             await self.store.delete_prefix(f"{keys.book(job_id)}/{build}/results/{analysis_id}/")
         return {"job_id": job_id, "analysis_id": analysis_id, "traces_removed": removed}
 
-    async def _publish_traces(self, analysis_id: str, evidences: list) -> None:
+    async def _publish_traces(self, analysis_id: str, evidences: list, metrics: list | None = None) -> None:
+        """Пишет следы. Сбой записи не меняет статус анализа и помечает метрики неполными."""
+
         pointer = getattr(self.service, "trace_pointer", None)
         if pointer is None or not evidences:
             return
-        from finance_analysis.application.trace_tail import publish_trace
+        from finance_analysis.application.trace_tail import (
+            TracePublishError,
+            publish_trace,
+            record_trace_failure,
+        )
+        from finance_analysis.domain.trace_limit import TraceLimitError
 
         retention = self.service.settings.fas_trace_retention
         retainer = getattr(self.service, "trace_retainer", None)
+        failed = False
         for index, evidence in enumerate(evidences):
             if evidence is None:
                 continue
-            await publish_trace(
-                self.store,
-                pointer,
-                analysis_id=analysis_id,
-                execution_id=f"{evidence.metric}-{index}",
-                evidence=evidence,
-                retention=retention,
-                retainer=retainer,
-            )
+            execution_id = f"{evidence.metric}-{index}"
+            try:
+                await publish_trace(
+                    self.store,
+                    pointer,
+                    analysis_id=analysis_id,
+                    execution_id=execution_id,
+                    evidence=evidence,
+                    retention=retention,
+                    retainer=retainer,
+                )
+            except TracePublishError as exc:
+                failed = True
+                record_trace_failure(analysis_id, execution_id, exc.stage, exc.__cause__ or exc)
+            except TraceLimitError as exc:
+                failed = True
+                record_trace_failure(analysis_id, execution_id, "limit", exc)
+        if failed and metrics:
+            for item in metrics:
+                if isinstance(item, dict):
+                    item["evidence_complete"] = False
 
     async def result(self, job_id: str, analysis_id: str) -> dict:
         check_ulid(analysis_id)

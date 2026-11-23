@@ -15,6 +15,7 @@ from finance_analysis.adapters.storage.store import LocalStore
 from finance_analysis.adapters.storage.trace_pointer import DuckDBTracePointer
 from finance_analysis.adapters.storage.trace_retention import put_object_governance
 from finance_analysis.application.trace_tail import (
+    TracePublishError,
     delete_analysis_traces,
     log_trace_metrics,
     publish_trace,
@@ -679,7 +680,7 @@ class _Boom:
 async def test_hold_failure_does_not_leave_a_locked_object_without_a_pointer(tmp_path):
     store = LocalStore(tmp_path / "objects")
     pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
-    with pytest.raises(RuntimeError, match="lock failed"):
+    with pytest.raises(TracePublishError) as raised:
         await publish_trace(
             store,
             pointer,
@@ -690,8 +691,17 @@ async def test_hold_failure_does_not_leave_a_locked_object_without_a_pointer(tmp
             now=NOW,
             retainer=_Boom(),
         )
-    assert pointer.get("analysis-hold", "exec-hold") is None
-    assert await store.stat("traces/analysis-hold/exec-hold.json") is None
+    assert raised.value.stage == "retention"
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    row = pointer.get("analysis-hold", "exec-hold")
+    assert row is not None
+    assert row["state"] == "pending_retention"
+    assert await store.stat("traces/analysis-hold/exec-hold.json") is not None
+    report = await reconcile_traces(store, pointer)
+    assert row["object_key"] in report["held"]
+    assert row["object_key"] in report["unfinished"]
+    assert row["object_key"] not in report["committed"]
+    assert pointer.get("analysis-hold", "exec-hold")["state"] == "pending_retention"
 
 
 @pytest.mark.asyncio
@@ -704,7 +714,7 @@ async def test_pointer_commit_failure_stays_pending_until_reconcile(tmp_path):
 
     original = pointer.commit
     pointer.commit = _fail  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError, match="commit failed"):
+    with pytest.raises(TracePublishError) as raised:
         await publish_trace(
             store,
             pointer,
@@ -715,6 +725,8 @@ async def test_pointer_commit_failure_stays_pending_until_reconcile(tmp_path):
             now=NOW,
         )
     pointer.commit = original
+    assert raised.value.stage == "pointer"
+    assert isinstance(raised.value.__cause__, RuntimeError)
     pending = pointer.get("analysis-commit", "exec-commit")
     assert pending is not None
     assert pending["state"] == "pending_commit"
@@ -803,7 +815,7 @@ class _Sticky(LocalStore):
 async def test_failed_hold_and_failed_delete_stays_pending_retention(tmp_path):
     store = _Sticky(tmp_path / "objects")
     pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
-    with pytest.raises(RuntimeError, match="lock failed"):
+    with pytest.raises(TracePublishError) as raised:
         await publish_trace(
             store,
             pointer,
@@ -814,6 +826,7 @@ async def test_failed_hold_and_failed_delete_stays_pending_retention(tmp_path):
             now=NOW,
             retainer=_Boom(),
         )
+    assert raised.value.stage == "retention"
     row = pointer.get("analysis-stuck", "exec-stuck")
     assert row is not None
     assert row["state"] == "pending_retention"
@@ -1035,3 +1048,176 @@ async def test_delete_checks_the_parent_analysis(tmp_path):
     read = text.split("async def get_analysis")[1].split("async def get_report")[0]
     assert "actor(request)" in delete and "limited(request, who)" in delete and "user_inflight" in delete
     assert "actor(request)" in read and "limited(request, who)" in read and "user_inflight" in read
+
+
+_SENTINEL = Decimal("2.718281828")
+
+
+class _PutFails(LocalStore):
+    async def put_if_absent(self, key: str, data: bytes):
+        if key.startswith("traces/"):
+            raise RuntimeError("put failed")
+        return await super().put_if_absent(key, data)
+
+
+def _ratio_got() -> dict:
+    evidence = _rich_evidence()
+    return {
+        "rows": [
+            {
+                "metric": "dscr",
+                "axis_id": "Debt!r3",
+                "period_id": "2025",
+                "value": _SENTINEL,
+                "status": "computed",
+            }
+        ],
+        "needs_input": [],
+        "warnings": [],
+        "bindings": [],
+        "facts": [],
+        "periods": [],
+        "phase_of": {},
+        "profile": {},
+        "absent": frozenset(),
+        "evidences": [evidence],
+        "applicability": [
+            {"metric": "dscr", "applicability": "applicable"},
+            {"metric": "icr", "applicability": "not_applicable"},
+        ],
+        "model_type": "project_finance",
+    }
+
+
+def _ratio_target():
+    from finance_analysis.application.analyses import Target
+    from finance_analysis.domain.book import Head
+
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    return Target(head=head, build="build", manifest={}, fresh=True)
+
+
+def _ratio_analyses(store, pointer, *, retention: str, retainer=None, got: dict | None = None):
+    from types import SimpleNamespace
+
+    from finance_analysis.application.analyses import Analyses
+    from finance_analysis.settings import Settings
+
+    service = SimpleNamespace(
+        store=store,
+        trace_pointer=pointer,
+        trace_retainer=retainer,
+        settings=Settings(_env_file=None, fas_trace_retention=retention),
+        model_types=SimpleNamespace(version="e5e47aa50edf3a3e"),
+    )
+    analyses = Analyses(service)
+    payload = got if got is not None else _ratio_got()
+
+    async def _metrics(job_id, target, metrics):
+        return payload
+
+    async def _findings(*args, **kwargs):
+        return []
+
+    async def _annotate(envelope):
+        return None
+
+    async def _save(job_id, target, analysis_id, kind, tables, envelope, actor, started):
+        analyses.saved = envelope
+
+    analyses.compute_metrics = _metrics
+    analyses._metric_findings = _findings
+    analyses._annotate = _annotate
+    analyses._save_tables = _save
+    return analyses, payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["put", "retention", "pointer"])
+async def test_trace_write_failure_keeps_the_analysis(tmp_path, caplog, stage, monkeypatch):
+    from prometheus_client import REGISTRY
+
+    from finance_analysis.application.trace_tail import reconcile_traces
+    from finance_analysis.domain.book import Actor
+
+    monkeypatch.setattr("finance_analysis.application.analyses.ratio_cells", lambda *args, **kwargs: [])
+    retainer = _Boom() if stage == "retention" else None
+    store = _PutFails(tmp_path / "objects") if stage == "put" else LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    retention = "sec_17a4" if stage == "retention" else "analysis"
+    analyses, _payload = _ratio_analyses(store, pointer, retention=retention, retainer=retainer)
+    original = pointer.commit
+    if stage == "pointer":
+
+        def _fail(row: dict) -> None:
+            raise RuntimeError("commit failed")
+
+        pointer.commit = _fail  # type: ignore[method-assign]
+    before = REGISTRY.get_sample_value("fas_trace_write_failures_total") or 0
+    analysis_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    with caplog.at_level(logging.ERROR, logger="fas.trace"):
+        envelope = await analyses._execute_ratios("job", _ratio_target(), analysis_id, ["dscr"], {}, Actor())
+    if stage == "pointer":
+        pointer.commit = original  # type: ignore[method-assign]
+    assert envelope["status"] == "succeeded"
+    assert envelope["result_data"]["ratios"][0]["value"] == "2.718281828"
+    assert analyses.saved["status"] == "succeeded"
+    assert all(item["evidence_complete"] is False for item in envelope["result_data"]["metrics"])
+    assert {item["metric"] for item in envelope["result_data"]["metrics"]} == {"dscr", "icr"}
+    after = REGISTRY.get_sample_value("fas_trace_write_failures_total") or 0
+    assert after == before + 1
+    errors = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(errors) == 1
+    message = errors[0].getMessage()
+    assert analysis_id in message
+    assert "dscr-0" in message
+    assert f"stage={stage}" in message
+    assert "RuntimeError" in message
+    assert "2.718281828" not in caplog.text
+    assert "10000" not in caplog.text
+    assert "put failed" not in message
+    assert "lock failed" not in message
+    assert "commit failed" not in message
+    row = pointer.get(analysis_id, "dscr-0")
+    assert row is not None
+    report = await reconcile_traces(store, pointer)
+    key = row["object_key"]
+    if stage == "put":
+        assert row["state"] == "pending_object"
+        assert await store.stat(key) is None
+        assert key in report["unfinished"]
+        assert key not in report["committed"]
+    elif stage == "retention":
+        assert row["state"] == "pending_retention"
+        assert await store.stat(key) is not None
+        assert key in report["unfinished"]
+        assert key in report["held"]
+        assert key not in report["committed"]
+        assert pointer.get(analysis_id, "dscr-0")["state"] == "pending_retention"
+    else:
+        assert row["state"] == "pending_commit"
+        assert key in report["committed"]
+        assert pointer.get(analysis_id, "dscr-0")["state"] == "committed"
+
+
+@pytest.mark.asyncio
+async def test_metric_calculation_failure_still_fails_the_analysis(tmp_path, caplog):
+    from prometheus_client import REGISTRY
+
+    from finance_analysis.domain.book import Actor
+
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    analyses, _payload = _ratio_analyses(store, pointer, retention="analysis")
+
+    async def _boom(job_id, target, metrics):
+        raise RuntimeError("metric failed")
+
+    analyses.compute_metrics = _boom
+    before = REGISTRY.get_sample_value("fas_trace_write_failures_total") or 0
+    with caplog.at_level(logging.ERROR, logger="fas.trace"), pytest.raises(RuntimeError, match="metric failed"):
+        await analyses._execute_ratios("job", _ratio_target(), "01ARZ3NDEKTSV4RRFFQ69G5FAV", ["dscr"], {}, Actor())
+    after = REGISTRY.get_sample_value("fas_trace_write_failures_total") or 0
+    assert after == before
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+    assert pointer.list_analysis("01ARZ3NDEKTSV4RRFFQ69G5FAV") == []
