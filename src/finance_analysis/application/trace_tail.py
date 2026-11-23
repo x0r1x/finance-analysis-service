@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 
 from finance_analysis.domain.errors import AlreadyExists, InvalidArgument, NotFound
 from finance_analysis.domain.trace_limit import (
+    OBJECT_BYTE_LIMIT,
+    fit_object,
     limit_trace,
     retention_policy,
     view_from_evidence,
@@ -54,26 +56,25 @@ async def publish_trace(
     now: datetime | None = None,
     retainer=None,
 ) -> dict:
-    """Резервирует слот, пишет объект, затем подтверждает указатель.
+    """Резервирует слот, пишет объект, держит замок, затем подтверждает указатель.
 
-    Тот же `execution_id` повторно слот не занимает. Сбой замка снимает объект
-    и строку. Сбой подтверждения оставляет `pending`, чтобы сверка нашла объект.
+    Состояния: `pending_object`, `pending_retention`, `pending_commit`, `committed`.
+    Сверка подтверждает только `pending_commit`. Тот же `execution_id` повторно
+    слот не занимает. Сбой замка снимает объект и строку; если снять не удалось,
+    строка остаётся `pending_retention`.
     """
 
     moment = now or datetime.now(UTC)
     view = view_from_evidence(evidence) if evidence is not None else limit_trace(periods or [], fact_uses=fact_uses)
     policy = retention_policy(retention, now=moment)
-    dropped = list(view.pop("dropped_cells"))
+    dropped = list(view.pop("dropped_cells", []))
     key = _object_key(analysis_id, execution_id)
-    body = json.dumps(
-        {
-            "analysis_id": analysis_id,
-            "execution_id": execution_id,
-            "dropped_cells": dropped,
-            "trace": view,
-        },
-        ensure_ascii=False,
-    ).encode()
+    envelope = {
+        "analysis_id": analysis_id,
+        "execution_id": execution_id,
+        "dropped_cells": dropped,
+    }
+    body = fit_object(view, envelope, byte_limit=OBJECT_BYTE_LIMIT)
     retained = None if policy is None else policy.until.isoformat()
     slot = pointer.reserve(
         analysis_id,
@@ -84,8 +85,31 @@ async def publish_trace(
         retained_until=retained,
     )
     if slot == "committed":
-        stored = await read_trace(store, pointer, analysis_id=analysis_id, execution_id=execution_id)
-        return stored
+        return await read_trace(store, pointer, analysis_id=analysis_id, execution_id=execution_id)
+    if slot in {"reserved", "pending_object", "pending"}:
+        try:
+            await store.put_if_absent(key, body)
+        except AlreadyExists:
+            found = await store.get(key)
+            if found != body:
+                raise InvalidArgument("след с этим execution_id уже записан другим телом") from None
+        except Exception:
+            if slot == "reserved":
+                pointer.delete(analysis_id, execution_id)
+            raise
+        slot = "pending_retention" if policy is not None else "pending_commit"
+        pointer.set_state(analysis_id, execution_id, slot)
+    if slot == "pending_retention":
+        if policy is None or retainer is None:
+            await _drop_uncommitted(store, pointer, analysis_id, execution_id, key)
+            raise InvalidArgument("для удержания нужен замок объекта")
+        try:
+            await retainer.hold(key, mode=policy.mode, until=policy.until)
+        except Exception:
+            await _drop_uncommitted(store, pointer, analysis_id, execution_id, key)
+            raise
+        slot = "pending_commit"
+        pointer.set_state(analysis_id, execution_id, slot)
     row = {
         "analysis_id": analysis_id,
         "execution_id": execution_id,
@@ -95,25 +119,6 @@ async def publish_trace(
         "retained_until": retained,
         "state": "committed",
     }
-    try:
-        await store.put_if_absent(key, body)
-    except AlreadyExists:
-        found = await store.get(key)
-        if found != body:
-            raise InvalidArgument("след с этим execution_id уже записан другим телом") from None
-    except Exception:
-        if slot == "reserved":
-            pointer.delete(analysis_id, execution_id)
-        raise
-    if policy is not None:
-        if retainer is None:
-            await _drop_uncommitted(store, pointer, analysis_id, execution_id, key)
-            raise InvalidArgument("для удержания нужен замок объекта")
-        try:
-            await retainer.hold(key, mode=policy.mode, until=policy.until)
-        except Exception:
-            await _drop_uncommitted(store, pointer, analysis_id, execution_id, key)
-            raise
     pointer.commit(row)
     additions = sums_additions if evidence is None else evidence.sums_additions
     log_trace_metrics(cells=len(view["cited_cells"]), dropped=view["dropped_cell_count"], additions=additions)
@@ -140,16 +145,31 @@ async def read_trace_archive(store, pointer, *, analysis_id: str, execution_id: 
 
 
 async def reconcile_traces(store, pointer) -> dict:
-    """Подтверждает `pending`, у которого объект уже есть, и называет объекты без указателя."""
+    """Подтверждает только строку, у которой пройдены все обязательные стадии.
+
+    `pending_retention` не становится `committed`: объект без замка замком не считается.
+    Старый `pending` без `retained_until` — режим analysis, замок не требовался.
+    """
 
     present = await _trace_keys(store)
     known = {row["object_key"] for row in pointer.list_all()}
     committed = []
+    held = []
     for row in pointer.list_all():
-        if row.get("state") == "pending" and row["object_key"] in present:
+        state = row.get("state") or "pending"
+        exists = row["object_key"] in present
+        if state == "pending_retention" or (state == "pending" and row.get("retained_until")):
+            if exists:
+                held.append(row["object_key"])
+            continue
+        if state == "pending_object" and row.get("retained_until"):
+            if exists:
+                held.append(row["object_key"])
+            continue
+        if exists and state in {"pending_commit", "pending", "pending_object"}:
             pointer.commit(row)
             committed.append(row["object_key"])
-    return {"orphans": sorted(present - known), "committed": committed}
+    return {"orphans": sorted(present - known), "committed": committed, "held": held}
 
 
 async def delete_analysis_traces(store, pointer, analysis_id: str, *, now: datetime | None = None) -> None:

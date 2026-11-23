@@ -14,8 +14,13 @@ from itertools import pairwise
 from typing import Any
 
 from finance_analysis.domain.binding_resolution import declared_concept
+from finance_analysis.domain.calculation_evidence import (
+    EvidenceBook,
+    PeriodResult,
+    TransformationStep,
+)
 from finance_analysis.domain.coverage import is_coverage_test_period
-from finance_analysis.domain.metric_contract import BoundInputs, implements
+from finance_analysis.domain.metric_contract import REGISTRY, BoundInputs, implements
 from finance_analysis.domain.metrics import (
     RATIO,
     _assume_sheet_units,
@@ -30,7 +35,6 @@ from finance_analysis.domain.metrics import (
     calculate_coverage,
     coverage_ratio,
     quantize_ratio,
-    remembered,
 )
 from finance_analysis.domain.period_basis import keys_for_basis
 
@@ -187,36 +191,18 @@ def adscr(
     не считается.
     """
 
-    if collect is None:
-        dscr = coverage_ratio(
-            metric="dscr",
-            facts=facts,
-            bindings=bindings,
-            periods=periods,
-            period_phase=period_phase,
-            explicit_phases=explicit_phases,
-            sign_convention=sign_convention,
-            marker_class=marker_class,
-            absent=absent,
-            plan=plan,
-        )
-    else:
-        dscr = remembered(
-            calculate_coverage(
-                metric="dscr",
-                facts=facts,
-                bindings=bindings,
-                periods=periods,
-                period_phase=period_phase,
-                explicit_phases=explicit_phases,
-                sign_convention=sign_convention,
-                marker_class=marker_class,
-                absent=absent,
-                plan=plan,
-                evidence=True,
-            ),
-            collect,
-        )
+    dscr = _dscr_result(
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase=period_phase,
+        explicit_phases=explicit_phases,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        absent=absent,
+        plan=plan,
+        with_evidence=collect is not None,
+    )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": "adscr"}
     primaries = _core_rows(bindings, absent, plan)
@@ -225,6 +211,7 @@ def adscr(
     cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
     debt = _sums(facts, primaries["debt_service"], aligned, periods, sheet=sheet)
     rows: list[dict] = []
+    sums: dict[tuple, tuple[Decimal, Decimal]] = {}
     warnings = list(dscr["warnings"])
     for axis in sorted(_axes_of(facts, primaries["debt_service"])):
         ordered = _ordered(periods, axis)
@@ -256,6 +243,7 @@ def adscr(
             if paid == 0:
                 rows.append(_row("adscr", period, None, "no_debt_service", "zero_denominator", direction=direction))
                 continue
+            sums[(axis, period["period_id"])] = (earned, paid)
             rows.append(
                 _row(
                     "adscr",
@@ -267,6 +255,16 @@ def adscr(
                     window=[item["period_id"] for item in window],
                 )
             )
+    if collect is not None:
+        _keep_adscr(
+            collect,
+            rows,
+            sums,
+            sign_convention=sign_convention,
+            marker_class=marker_class,
+            explicit_phases=explicit_phases,
+            direction=direction,
+        )
     return _result("adscr", rows, warnings=warnings)
 
 
@@ -309,8 +307,22 @@ def dscr_reductions(
     в отношение сумм входит один раз, на последний тестовый период.
     """
 
+    source = None
     if collect is None:
-        dscr = coverage_ratio(
+        dscr = _dscr_result(
+            facts=facts,
+            bindings=bindings,
+            periods=periods,
+            period_phase=period_phase,
+            explicit_phases=explicit_phases,
+            sign_convention=sign_convention,
+            marker_class=marker_class,
+            absent=absent,
+            plan=plan,
+            with_evidence=False,
+        )
+    else:
+        outcome = calculate_coverage(
             metric="dscr",
             facts=facts,
             bindings=bindings,
@@ -321,24 +333,10 @@ def dscr_reductions(
             marker_class=marker_class,
             absent=absent,
             plan=plan,
+            evidence=True,
         )
-    else:
-        dscr = remembered(
-            calculate_coverage(
-                metric="dscr",
-                facts=facts,
-                bindings=bindings,
-                periods=periods,
-                period_phase=period_phase,
-                explicit_phases=explicit_phases,
-                sign_convention=sign_convention,
-                marker_class=marker_class,
-                absent=absent,
-                plan=plan,
-                evidence=True,
-            ),
-            collect,
-        )
+        dscr = outcome.result
+        source = outcome.evidence
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": metric}
     primaries = _core_rows(bindings, absent, plan)
@@ -373,7 +371,110 @@ def dscr_reductions(
         base = {"axis_id": axis, "period_id": None}
         rows.append(_row(metric, base, mean, "computed", None, variant="mean_of_ratios", over=tested))
         rows.append(_row(metric, base, _ratio(earned, paid), "computed", None, variant="ratio_of_sums", over=tested))
+    if collect is not None and source is not None:
+        _keep_reduction(
+            collect,
+            metric,
+            rows,
+            source,
+            sign_convention=sign_convention,
+            marker_class=marker_class,
+            explicit_phases=explicit_phases,
+        )
     return _result(metric, rows, warnings=dscr["warnings"])
+
+
+def _dscr_result(**kwargs) -> dict:
+    with_evidence = kwargs.pop("with_evidence")
+    if not with_evidence:
+        return coverage_ratio(metric="dscr", **kwargs)
+    return calculate_coverage(metric="dscr", evidence=True, **kwargs).result
+
+
+def _keep_adscr(collect, rows, sums, *, sign_convention, marker_class, explicit_phases, direction) -> None:
+    periods = []
+    for row in rows:
+        if row["status"] != "computed":
+            continue
+        window = tuple(row.get("window") or ())
+        earned, paid = sums[(row["axis_id"], row["period_id"])]
+        periods.append(
+            PeriodResult(
+                axis_id=row["axis_id"],
+                period_id=row["period_id"],
+                status="computed",
+                reason=None,
+                value=row["value"],
+                numerator=earned,
+                denominator=paid,
+                steps=(
+                    TransformationStep(
+                        1,
+                        "adscr_window",
+                        tuple(f"period:{row['axis_id']}:{period_id}" for period_id in window),
+                        row["value"],
+                        {
+                            "window_months": WINDOW_MONTHS,
+                            "direction": direction,
+                            "input_periods": list(window),
+                            "cfads_sum": earned,
+                            "debt_service_sum": paid,
+                        },
+                    ),
+                ),
+                window_periods=window,
+            )
+        )
+    if not periods:
+        return
+    book = EvidenceBook(
+        metric="adscr",
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        explicit_phases=explicit_phases,
+        plan_content_sha256=None,
+    )
+    book.periods = periods
+    collect.append(book.freeze("succeeded", REGISTRY[("adscr", "adscr")].implementation_version))
+
+
+def _keep_reduction(collect, metric, rows, source, *, sign_convention, marker_class, explicit_phases) -> None:
+    cited = [period for period in source.period_results if period.status == "computed"]
+    refs = tuple(f"period:{period.axis_id}:{period.period_id}" for period in cited)
+    steps = []
+    for row in rows:
+        if row.get("status") != "computed":
+            continue
+        steps.append(
+            TransformationStep(
+                len(steps) + 1,
+                metric,
+                refs,
+                row["value"],
+                {"variant": row.get("variant"), "over": list(row.get("over") or [])},
+            )
+        )
+    if not steps:
+        return
+    summary = PeriodResult(
+        axis_id=rows[0].get("axis_id"),
+        period_id=None,
+        status="computed",
+        reason=None,
+        value=rows[0]["value"],
+        numerator=None,
+        denominator=None,
+        steps=tuple(steps),
+    )
+    book = EvidenceBook(
+        metric=metric,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        explicit_phases=explicit_phases,
+        plan_content_sha256=source.plan_content_sha256,
+    )
+    book.periods = [*cited, summary]
+    collect.append(book.freeze("succeeded", REGISTRY[(metric, metric)].implementation_version))
 
 
 LOAN_LIFE_INPUTS = ("debt_service", "cfads", "debt_outstanding", "discount_rate")

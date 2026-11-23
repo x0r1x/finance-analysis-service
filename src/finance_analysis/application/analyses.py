@@ -110,6 +110,18 @@ RATIO_METRICS = (
     "fcf_identity",
     "ncf_period",
 )
+# Реализации, которые собирают EvidenceBook. Остальные каталожные — evidence_not_supported.
+EVIDENCE_AVAILABLE = frozenset(
+    {
+        ("dscr", "dscr@1"),
+        ("dscr", "dscr.pf@1"),
+        ("icr", "icr@1"),
+        ("icr_ebit", "icr_ebit@1"),
+        ("adscr", "adscr@1"),
+        ("dscr_min", "dscr_min@1"),
+        ("dscr_avg", "dscr_avg@1"),
+    }
+)
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs", "ebitda_sign")
 # `scope` из §3.2: списки и одиночные значения.
@@ -912,6 +924,7 @@ class Analyses:
             dscr_expression=_profile_dscr(body),
         )
         for metric in metrics:
+            before = len(evidences)
             use = applicability(svc.model_types, labels, metric)
             if use == "not_applicable":
                 uses.append(
@@ -969,7 +982,10 @@ class Analyses:
                 continue
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
-            computed.extend({**row, "metric": metric} for row in result["rows"])
+            published = [{**row, "metric": metric} for row in result["rows"]]
+            computed.extend(published)
+            if published and not evidences[before:]:
+                evidences.append(_unsupported(metric, common["sign_convention"]))
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
                 entry["definition_source"] = result["definition_source"]
@@ -1597,7 +1613,17 @@ class Analyses:
         return json.loads(await self.store.get(key))
 
     async def delete(self, job_id: str, analysis_id: str) -> dict:
+        """Удаляет анализ целиком: карточку отчёта и его следы.
+
+        Чужой `analysis_id` — тот же `NotFound`, что у чтения. Следы до проверки
+        карточки не трогаются. Авторизация маршрута та же, что у GET.
+        """
+
         check_ulid(analysis_id)
+        try:
+            report = json.loads(await self.store.get(keys.report_index_key(job_id, analysis_id)))
+        except NotFound:
+            raise NotFound("анализ не найден") from None
         pointer = getattr(self.service, "trace_pointer", None)
         removed = 0
         if pointer is not None:
@@ -1606,6 +1632,10 @@ class Analyses:
             before = pointer.count(analysis_id)
             await delete_analysis_traces(self.store, pointer, analysis_id)
             removed = before - pointer.count(analysis_id)
+        await self.store.delete_prefix(keys.report_index_key(job_id, analysis_id))
+        build = report.get("build_key")
+        if isinstance(build, str) and build:
+            await self.store.delete_prefix(f"{keys.book(job_id)}/{build}/results/{analysis_id}/")
         return {"job_id": job_id, "analysis_id": analysis_id, "traces_removed": removed}
 
     async def _publish_traces(self, analysis_id: str, evidences: list) -> None:
@@ -1796,6 +1826,35 @@ class Analyses:
             return None
         await svc.support.cache_set(key, _dumps(found), svc.settings.etag_ttl)
         return found
+
+
+def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
+    """Каждая реализация каталожной метрики: evidence_available или evidence_not_supported."""
+
+    import finance_analysis.domain.covenant
+    import finance_analysis.domain.cover_metrics
+    import finance_analysis.domain.debt_incl_off_balance
+    import finance_analysis.domain.housing_cover
+    import finance_analysis.domain.metrics
+    import finance_analysis.domain.total_debt  # noqa: F401
+    from finance_analysis.domain.metric_contract import REGISTRY
+
+    rows = []
+    for (metric, formula), item in sorted(REGISTRY.items()):
+        if metric not in RATIO_METRICS:
+            continue
+        version = item.implementation_version or formula
+        status = "evidence_available" if (metric, version) in EVIDENCE_AVAILABLE else "evidence_not_supported"
+        rows.append((metric, version, status))
+    return tuple(rows)
+
+
+def _unsupported(metric: str, sign_convention: str):
+    from finance_analysis.domain.trace_limit import not_supported_evidence
+
+    versions = [version for name, version, status in evidence_matrix() if name == metric and status == "evidence_not_supported"]
+    implementation = versions[0] if versions else f"{metric}@1"
+    return not_supported_evidence(metric, implementation, sign_convention)
 
 
 _NULL_ABSENT = ("metrics", "rules", "render", "build_key", "scope")

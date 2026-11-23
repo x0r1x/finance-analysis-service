@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from finance_analysis.domain.calculation_evidence import CalculationEvidence
+from finance_analysis.domain.calculation_evidence import (
+    CalculationEvidence,
+    EvidenceBook,
+)
 
 CELL_LIMIT = 512
 TRACE_LIMIT = 64
+OBSERVATION_LIMIT = 512
+OBJECT_BYTE_LIMIT = 1_048_576
+_OBSERVATION_VALUES = ("raw_value", "effective_value", "scale_factor")
 _COMPLIANCE = (
     "COMPLIANCE включает только оператор бакета: "
     "mc mb --with-lock ALIAS/BUCKET и "
@@ -139,8 +146,15 @@ def view_from_evidence(evidence: CalculationEvidence) -> dict:
         ref = use.get("cell_ref")
         if isinstance(ref, str) and ref.startswith("truncated:"):
             use["cell_id"] = None
-    limited["fact_observations"] = [_observation(item, dropped) for item in evidence.fact_observations]
+    observations = [_observation(item, dropped) for item in evidence.fact_observations]
+    kept, stripped = _cap_observations(observations, OBSERVATION_LIMIT)
+    limited["fact_observations"] = kept
+    limited["dropped_observations"] = stripped
+    limited["observation_count"] = len(observations)
+    limited["observation_dropped_count"] = len(stripped)
+    limited["observation_status"] = "complete" if not stripped else "truncated"
     limited["metric"] = evidence.metric
+    limited["evidence_status"] = evidence.evidence_status
     limited["execution_status"] = evidence.execution_status
     limited["implementation"] = evidence.implementation
     limited["calculation_stamp"] = evidence.calculation_stamp
@@ -186,13 +200,85 @@ def _observation(item, dropped: set[str]) -> dict:
     ref = _cell_ref(item)
     body = _record(item, cell_ref=ref)
     if ref in dropped:
+        body = _strip_observation(body)
         body["cell_ref"] = f"truncated:{ref}"
         body["cell_id"] = None
     return body
 
 
+def _strip_observation(item: dict) -> dict:
+    body = dict(item)
+    for key in _OBSERVATION_VALUES:
+        body.pop(key, None)
+    body["observation_status"] = "dropped"
+    return body
+
+
+def _cap_observations(observations: list[dict], limit: int) -> tuple[list[dict], list[dict]]:
+    kept = []
+    stripped = []
+    for item in observations:
+        if item.get("observation_status") == "dropped" or len(kept) >= limit:
+            stripped.append(_strip_observation(item))
+        else:
+            kept.append(item)
+    return kept, stripped
+
+
+def fit_object(view: dict, envelope: dict, *, byte_limit: int = OBJECT_BYTE_LIMIT) -> bytes:
+    """Держит объект не больше предела. Сверх предела наблюдение теряет значения."""
+
+    view.setdefault("fact_observations", [])
+    view.setdefault("dropped_observations", [])
+    view.setdefault("observation_count", len(view["fact_observations"]) + len(view["dropped_observations"]))
+    view.setdefault("observation_dropped_count", len(view["dropped_observations"]))
+    view.setdefault("observation_status", "complete" if not view["dropped_observations"] else "truncated")
+    body = _dump(view, envelope)
+    for _ in range(int(view["observation_count"]) + 4):
+        view["payload_bytes"] = len(body)
+        nxt = _dump(view, envelope)
+        if nxt == body and len(body) <= byte_limit:
+            return body
+        body = nxt
+        if len(body) <= byte_limit:
+            continue
+        if not view["fact_observations"]:
+            view["payload_bytes"] = len(body)
+            return _dump(view, envelope)
+        moved = view["fact_observations"].pop()
+        view["dropped_observations"].append(_strip_observation(moved))
+        view["observation_dropped_count"] = len(view["dropped_observations"])
+        view["observation_status"] = "truncated"
+        view["payload_bytes"] = 0
+        body = _dump(view, envelope)
+    view["payload_bytes"] = len(body)
+    return _dump(view, envelope)
+
+
+def _dump(view: dict, envelope: dict) -> bytes:
+    payload = dict(envelope)
+    payload["trace"] = view
+    return json.dumps(payload, ensure_ascii=False).encode()
+
+
+def not_supported_evidence(metric: str, implementation: str, sign_convention: str) -> CalculationEvidence:
+    """Явная отметка: метрика опубликована, улики расчёта у этой реализации нет."""
+
+    book = EvidenceBook(
+        metric=metric,
+        sign_convention=sign_convention,
+        marker_class=None,
+        explicit_phases=False,
+        plan_content_sha256=None,
+    )
+    return replace(
+        book.freeze("not_run", implementation),
+        evidence_status="evidence_not_supported",
+    )
+
+
 def _record(item, **extra) -> dict:
-    body = {key: _plain(value) for key, value in asdict(item).items()}
+    body = {field.name: _plain(getattr(item, field.name)) for field in fields(item)}
     body.update(extra)
     return body
 
@@ -200,8 +286,10 @@ def _record(item, **extra) -> dict:
 def _plain(value):
     if isinstance(value, Decimal):
         return format(value, "f")
+    if is_dataclass(value) and not isinstance(value, type):
+        return _record(value)
     if isinstance(value, Mapping):
-        return {str(key): _plain(item) for key, item in value.items()}
+        return {str(key): _plain(item) for key, item in dict(value).items()}
     if isinstance(value, tuple | list):
         return [_plain(item) for item in value]
     if value is None or isinstance(value, str | int | float | bool):

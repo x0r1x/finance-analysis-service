@@ -502,6 +502,61 @@ def test_trace_schema_keeps_identity_stamp_and_fact_provenance():
 
 
 @pytest.mark.asyncio
+async def test_publish_keeps_mappingproxy_step_parameters(tmp_path):
+    from types import MappingProxyType
+
+    book = EvidenceBook(
+        metric="dscr",
+        sign_convention="outflow_negative",
+        marker_class=None,
+        explicit_phases=False,
+        plan_content_sha256=None,
+    )
+    book.periods.append(
+        PeriodResult(
+            axis_id="Debt!r3",
+            period_id="2025",
+            status="computed",
+            reason=None,
+            value=Decimal("2.71"),
+            numerator=Decimal("8129962.942385"),
+            denominator=Decimal("3000000.000000"),
+            steps=(
+                TransformationStep(
+                    1,
+                    "divide",
+                    ("cell:A",),
+                    Decimal("2.71"),
+                    MappingProxyType(
+                        {
+                            "numerator": Decimal("8129962.942385"),
+                            "denominator": Decimal("3000000.000000"),
+                        }
+                    ),
+                ),
+            ),
+        )
+    )
+    evidence = book.freeze("succeeded", "dscr@1")
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    await publish_trace(
+        store,
+        pointer,
+        analysis_id="analysis-proxy",
+        execution_id="exec-proxy",
+        evidence=evidence,
+        retention="analysis",
+        now=NOW,
+    )
+    payload = json.loads(await store.get("traces/analysis-proxy/exec-proxy.json"))
+    assert payload["trace"]["periods"][0]["steps"][0]["parameters"] == {
+        "numerator": "8129962.942385",
+        "denominator": "3000000.000000",
+    }
+
+
+@pytest.mark.asyncio
 async def test_publication_logs_the_book_additions(caplog, tmp_path):
     book = EvidenceBook(
         metric="dscr",
@@ -662,7 +717,7 @@ async def test_pointer_commit_failure_stays_pending_until_reconcile(tmp_path):
     pointer.commit = original
     pending = pointer.get("analysis-commit", "exec-commit")
     assert pending is not None
-    assert pending["state"] == "pending"
+    assert pending["state"] == "pending_commit"
     assert await store.stat("traces/analysis-commit/exec-commit.json") is not None
     await store.put("traces/analysis-commit/orphan.json", b"{}")
     report = await reconcile_traces(store, pointer)
@@ -737,3 +792,246 @@ def test_public_result_does_not_grow_a_trace_field():
 
     assert "calculation_traces" not in inspect.getsource(Analyses.compute_metrics)
     assert "calculation_traces" not in inspect.getsource(Analyses._execute_ratios)
+
+
+class _Sticky(LocalStore):
+    async def delete_prefix(self, prefix: str) -> int:
+        raise RuntimeError("delete failed")
+
+
+@pytest.mark.asyncio
+async def test_failed_hold_and_failed_delete_stays_pending_retention(tmp_path):
+    store = _Sticky(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    with pytest.raises(RuntimeError, match="lock failed"):
+        await publish_trace(
+            store,
+            pointer,
+            analysis_id="analysis-stuck",
+            execution_id="exec-stuck",
+            periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}],
+            retention="sec_17a4",
+            now=NOW,
+            retainer=_Boom(),
+        )
+    row = pointer.get("analysis-stuck", "exec-stuck")
+    assert row is not None
+    assert row["state"] == "pending_retention"
+    report = await reconcile_traces(store, pointer)
+    assert pointer.get("analysis-stuck", "exec-stuck")["state"] == "pending_retention"
+    assert row["object_key"] in report["held"]
+    assert row["object_key"] not in report["committed"]
+
+
+def _reserve_many(path: str, analysis: str, start: int, count: int, queue) -> None:
+    pointer = DuckDBTracePointer(Path(path))
+    refused = 0
+    for index in range(start, start + count):
+        try:
+            pointer.reserve(
+                analysis,
+                f"exec-{index}",
+                object_key=f"traces/{analysis}/exec-{index}.json",
+                evidence_complete=True,
+                dropped_cell_count=0,
+                retained_until=None,
+            )
+        except TraceLimitError:
+            refused += 1
+    queue.put(refused)
+
+
+def test_two_pointer_instances_share_the_sixty_four_limit(tmp_path):
+    import threading
+
+    path = tmp_path / "shared.duckdb"
+    DuckDBTracePointer(path).count("warm")
+    barrier = threading.Barrier(2)
+    errors: list[int] = []
+
+    def run(start: int) -> None:
+        pointer = DuckDBTracePointer(path)
+        barrier.wait()
+        for index in range(start, start + 40):
+            try:
+                pointer.reserve(
+                    "analysis-two",
+                    f"exec-{index}",
+                    object_key=f"k-{index}",
+                    evidence_complete=True,
+                    dropped_cell_count=0,
+                    retained_until=None,
+                )
+            except TraceLimitError:
+                errors.append(index)
+
+    threads = [threading.Thread(target=run, args=(0,)), threading.Thread(target=run, args=(40,))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert DuckDBTracePointer(path).count("analysis-two") == 64
+    assert len(errors) == 16
+
+
+def test_two_processes_share_the_sixty_four_limit(tmp_path):
+    import multiprocessing
+
+    path = tmp_path / "shared.duckdb"
+    DuckDBTracePointer(path).count("warm")
+    context = multiprocessing.get_context("fork")
+    queue = context.Queue()
+    first = context.Process(target=_reserve_many, args=(str(path), "analysis-proc", 0, 40, queue))
+    second = context.Process(target=_reserve_many, args=(str(path), "analysis-proc", 40, 40, queue))
+    first.start()
+    second.start()
+    first.join(30)
+    second.join(30)
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    refused = queue.get() + queue.get()
+    assert DuckDBTracePointer(path).count("analysis-proc") == 64
+    assert refused == 16
+
+
+def test_observation_cap_strips_values_past_the_limit():
+    observations = tuple(
+        FactObservation(
+            concept="cfads",
+            cell_id=f"CFS!{index}",
+            axis_id="CFS!r3",
+            period_id="2025",
+            timeline_id="tl",
+            period_index=index,
+            field="value",
+            sheet=False,
+            raw_value=Decimal(index),
+            effective_value=Decimal(index),
+            scale_factor=Decimal(1000),
+            scale_policy="scale",
+            scale_applied=True,
+            normalization_source="factor",
+        )
+        for index in range(513)
+    )
+    evidence = CalculationEvidence(
+        metric="dscr",
+        execution_status="succeeded",
+        implementation="dscr@1",
+        calculation_stamp="abcd1234abcd1234",
+        plan_content_sha256=None,
+        sign_convention="outflow_negative",
+        marker_class=None,
+        explicit_phases=False,
+        sheet=False,
+        fact_observations=observations,
+        fact_uses=(),
+        period_results=(),
+    )
+    view = view_from_evidence(evidence)
+    assert view["observation_count"] == 513
+    assert view["observation_dropped_count"] == 1
+    assert view["observation_status"] == "truncated"
+    assert view["evidence_complete"] is True
+    assert "raw_value" not in view["dropped_observations"][0]
+    assert "effective_value" not in view["dropped_observations"][0]
+    assert "scale_factor" not in view["dropped_observations"][0]
+    assert view["fact_observations"][0]["raw_value"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_object_byte_limit_strips_observation_values(tmp_path, monkeypatch):
+    monkeypatch.setattr("finance_analysis.application.trace_tail.OBJECT_BYTE_LIMIT", 1)
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    await publish_trace(
+        store,
+        pointer,
+        analysis_id="analysis-bytes",
+        execution_id="exec-bytes",
+        evidence=_rich_evidence(),
+        retention="analysis",
+        now=NOW,
+    )
+    stored = await read_trace(store, pointer, analysis_id="analysis-bytes", execution_id="exec-bytes")
+    assert stored["observation_status"] == "truncated"
+    assert stored["fact_observations"] == []
+    assert stored["observation_dropped_count"] >= 1
+    assert "raw_value" not in stored["dropped_observations"][0]
+    body = await store.get("traces/analysis-bytes/exec-bytes.json")
+    assert stored["payload_bytes"] == len(body)
+
+
+def test_every_catalog_metric_names_its_evidence():
+    from finance_analysis.application.analyses import RATIO_METRICS, evidence_matrix
+
+    rows = evidence_matrix()
+    assert {row[0] for row in rows} == set(RATIO_METRICS)
+    assert {row[2] for row in rows} <= {"evidence_available", "evidence_not_supported"}
+    available = {(metric, implementation) for metric, implementation, status in rows if status == "evidence_available"}
+    assert available == {
+        ("dscr", "dscr@1"),
+        ("dscr", "dscr.pf@1"),
+        ("icr", "icr@1"),
+        ("icr_ebit", "icr_ebit@1"),
+        ("adscr", "adscr@1"),
+        ("dscr_min", "dscr_min@1"),
+        ("dscr_avg", "dscr_avg@1"),
+    }
+    missing = {(metric, implementation) for metric, implementation, status in rows if status == "evidence_not_supported"}
+    assert ("llcr", "llcr@1") in missing
+    assert ("plcr", "plcr@1") in missing
+    assert ("icr", "icr.bank@1") in missing
+    assert ("dscr", "dscr.housing@1") in missing
+    assert ("llcr", "llcr.domrf@1") in missing
+    assert any(metric == "escrow_coverage" and status == "evidence_not_supported" for metric, _, status in rows)
+
+
+@pytest.mark.asyncio
+async def test_delete_checks_the_parent_analysis(tmp_path):
+    import inspect
+
+    from finance_analysis.adapters.api.route import analyses as route
+    from finance_analysis.application import keys
+    from finance_analysis.application.analyses import Analyses
+    from finance_analysis.domain.errors import NotFound
+
+    job = "ab" * 32
+    own = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    foreign = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    build = "bbbbbbbbbbbbbbbb"
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    host = type("Svc", (), {})()
+    host.store = store
+    host.trace_pointer = pointer
+    analyses = Analyses(host)
+    await store.put(keys.report_index_key(job, own), json.dumps({"analysis_id": own, "build_key": build}).encode())
+    await store.put(keys.result_key(job, build, own, "result.json"), b"{}")
+    for analysis_id in (own, foreign):
+        await publish_trace(
+            store,
+            pointer,
+            analysis_id=analysis_id,
+            execution_id="exec-one",
+            periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}],
+            retention="analysis",
+            now=NOW,
+        )
+    with pytest.raises(NotFound) as raised:
+        await analyses.delete(job, foreign)
+    assert raised.value.status == 404
+    assert pointer.get(foreign, "exec-one") is not None
+    assert pointer.get(own, "exec-one") is not None
+    assert await store.stat(keys.report_index_key(job, own)) is not None
+    removed = await analyses.delete(job, own)
+    assert removed["traces_removed"] == 1
+    assert pointer.get(own, "exec-one") is None
+    assert pointer.get(foreign, "exec-one") is not None
+    assert await store.stat(keys.report_index_key(job, own)) is None
+    assert await store.stat(keys.result_key(job, build, own, "result.json")) is None
+    text = inspect.getsource(route.register)
+    delete = text.split("async def delete_analysis")[1].split("async def get_analysis")[0]
+    read = text.split("async def get_analysis")[1].split("async def get_report")[0]
+    assert "actor(request)" in delete and "limited(request, who)" in delete and "user_inflight" in delete
+    assert "actor(request)" in read and "limited(request, who)" in read and "user_inflight" in read

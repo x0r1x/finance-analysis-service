@@ -110,6 +110,7 @@ class CalculationEvidence:
     period_results: tuple[PeriodResult, ...]
     basis_sides: tuple[BasisSide, ...] = ()
     sums_additions: int = 0
+    evidence_status: str = "evidence_available"
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,7 @@ class EvidenceBook:
             period_results=tuple(self.periods or ()),
             basis_sides=tuple(self.basis_sides or ()),
             sums_additions=self.sums_additions,
+            evidence_status="evidence_available",
         )
 
 
