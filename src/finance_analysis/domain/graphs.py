@@ -189,7 +189,8 @@ def trace_metric(
     ``facts_available=False`` / ``rows_available=False`` — датасет отсутствует в
     манифесте (не пустой список). Пустой ``facts`` при ``facts_available=True``
     значит датасет есть, но ячеек по строке нет → ``no_cell``.
-    Понятия берёт ``resolve_semantic_inputs``. Полнота цепи — ``lineage_completeness``.
+    Переданный план читает ``plan.lineage``. Без плана понятия берёт
+    ``resolve_semantic_inputs``. Полнота цепи — ``lineage_completeness``.
     """
 
     from finance_analysis.domain.semantic_input import (
