@@ -697,6 +697,14 @@ def coverage_ratio(
     ).result
 
 
+def remembered(outcome: CalculationOutcome, collect: list | None) -> dict:
+    """Кладёт улику в сбор анализа и возвращает прежний словарь результата."""
+
+    if collect is not None and outcome.evidence is not None:
+        collect.append(outcome.evidence)
+    return outcome.result
+
+
 def calculate_coverage(
     *,
     metric: str,
@@ -2174,6 +2182,8 @@ def _sums(
         own = (fact["axis_id"], fact["period_id"])
         key = aligned.get(own, own)
         totals[key] = totals.get(key, Decimal(0)) + Decimal(number)
+        if book is not None:
+            book.sums_additions += 1
         cell = fact.get("cell_id")
         ref = f"cell:{cell}" if cell else f"fact:{fact['axis_id']}:{fact['period_id']}"
         grouped.setdefault(key, []).append({"cell": str(cell) if cell else None, "ref": ref, "raw": raw, "effective": number})

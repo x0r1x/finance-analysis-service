@@ -49,6 +49,9 @@ async def assemble(settings: Settings) -> tuple[FasService, RedisRuntime]:
         builder = FixtureBuilder(Path(fixture))
     else:
         builder = HttpBuilder(settings)
+    from finance_analysis.adapters.storage.trace_wiring import open_trace_tail
+
+    pointer, retainer = open_trace_tail(settings)
     service = FasService(
         settings,
         store,
@@ -59,6 +62,8 @@ async def assemble(settings: Settings) -> tuple[FasService, RedisRuntime]:
         models=build_models(settings),
         vector_index=NumpyIndex(),
         cluster=HdbscanCluster(),
+        trace_pointer=pointer,
+        trace_retainer=retainer,
     )
     service.jobs = await TaskiqJobs.open(settings)
     await service.jobs.startup()

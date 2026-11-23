@@ -39,6 +39,7 @@ class PeriodResult:
     window_periods: tuple[str, ...] = ()
     window_missing: tuple[str, ...] = ()
     missing_concepts: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    node_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,8 @@ class CalculationEvidence:
     fact_uses: tuple[FactUse, ...]
     period_results: tuple[PeriodResult, ...]
     basis_sides: tuple[BasisSide, ...] = ()
+    sums_additions: int = 0
+    evidence_status: str = "evidence_available"
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,7 @@ class EvidenceBook:
     periods: list[PeriodResult] | None = None
     fallback: dict | None = None
     basis_sides: list[BasisSide] | None = None
+    sums_additions: int = 0
 
     def __post_init__(self) -> None:
         self.observations = [] if self.observations is None else self.observations
@@ -159,6 +163,8 @@ class EvidenceBook:
             fact_uses=tuple(self.fact_uses or ()),
             period_results=tuple(self.periods or ()),
             basis_sides=tuple(self.basis_sides or ()),
+            sums_additions=self.sums_additions,
+            evidence_status="evidence_available",
         )
 
 

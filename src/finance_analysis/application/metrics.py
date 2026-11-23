@@ -6,6 +6,14 @@ BUILDER_INCONSISTENT = Counter(
     "fas_builder_inconsistent_total",
     "Публикации builder, не прошедшие проверку согласованности",
 )
+TRACE_WRITE_FAILURES = Counter(
+    "fas_trace_write_failures_total",
+    "Сбои записи следа расчёта: объект, замок, указатель или предел",
+)
+TRACE_SWEPT = Counter(
+    "fas_trace_swept_total",
+    "Следы, снятые проходом после retained_until",
+)
 GLOSSARY_UNKNOWN_SHARE = Gauge("fas_glossary_unknown_share", "Доля unknown за последний месяц покрытия")
 GLOSSARY_AUTO_ROLLBACK = Gauge("fas_glossary_auto_rollback_rate", "Доля авто-меток, отвергнутых за 30 дней")
 GLOSSARY_REVIEW_OPEN = Gauge("fas_glossary_review_open", "Открытые предложения глоссария")

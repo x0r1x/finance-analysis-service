@@ -110,6 +110,18 @@ RATIO_METRICS = (
     "fcf_identity",
     "ncf_period",
 )
+# Реализации, которые собирают EvidenceBook. Остальные каталожные — evidence_not_supported.
+EVIDENCE_AVAILABLE = frozenset(
+    {
+        ("dscr", "dscr@1"),
+        ("dscr", "dscr.pf@1"),
+        ("icr", "icr@1"),
+        ("icr_ebit", "icr_ebit@1"),
+        ("adscr", "adscr@1"),
+        ("dscr_min", "dscr_min@1"),
+        ("dscr_avg", "dscr_avg@1"),
+    }
+)
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs", "ebitda_sign")
 # `scope` из §3.2: списки и одиночные значения.
@@ -885,6 +897,7 @@ class Analyses:
         needs = []
         warnings = []
         uses = []
+        evidences: list = []
         money = frozenset(name for name, item in svc.catalog.concepts.items() if item.unit == "money")
         aggregations = {
             name: item.effective_aggregation for name, item in svc.catalog.concepts.items()
@@ -911,6 +924,7 @@ class Analyses:
             dscr_expression=_profile_dscr(body),
         )
         for metric in metrics:
+            before = len(evidences)
             use = applicability(svc.model_types, labels, metric)
             if use == "not_applicable":
                 uses.append(
@@ -937,9 +951,9 @@ class Analyses:
             elif metric in LOAN_LIFE:
                 result = loan_life_ratio(metric, basis=basis, plan=plans.get(metric), **common)
             elif metric in REDUCED:
-                result = dscr_reductions(metric, plan=plans.get("dscr"), **common)
+                result = dscr_reductions(metric, plan=plans.get("dscr"), collect=evidences, **common)
             elif metric == "adscr":
-                result = adscr(direction=direction, plan=plans.get("dscr"), **common)
+                result = adscr(direction=direction, plan=plans.get("dscr"), collect=evidences, **common)
             else:
                 result = select_ratio(
                     metric,
@@ -956,6 +970,7 @@ class Analyses:
                     links=links,
                     statement_sheets=statement_sheets,
                     plan=plans.get(metric),
+                    collect=evidences,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
@@ -967,7 +982,10 @@ class Analyses:
                 continue
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
-            computed.extend({**row, "metric": metric} for row in result["rows"])
+            published = [{**row, "metric": metric} for row in result["rows"]]
+            computed.extend(published)
+            if published and not evidences[before:]:
+                evidences.append(_unsupported(metric, common["sign_convention"]))
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
                 entry["definition_source"] = result["definition_source"]
@@ -998,6 +1016,7 @@ class Analyses:
             "model_type": verdict.as_dict(),
             "dscr_variant": dscr_variant,
             "plans": plans,
+            "evidences": evidences,
             "book_rows": cite_lbo_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,
@@ -1021,6 +1040,7 @@ class Analyses:
         head = target.head
         scope = _scope(body)
         got = await self.compute_metrics(job_id, target, metrics)
+        await self._publish_traces(analysis_id, got.get("evidences") or [], got.get("applicability"))
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
@@ -1150,6 +1170,7 @@ class Analyses:
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
         got = await self.compute_metrics(job_id, target, metrics)
+        await self._publish_traces(analysis_id, got.get("evidences") or [], got.get("applicability"))
         data.plans = got.get("plans") or {}
         self._trace_plans(data, metrics)
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
@@ -1591,6 +1612,73 @@ class Analyses:
         key = keys.result_key(job_id, report["build_key"], report["analysis_id"], "result.json")
         return json.loads(await self.store.get(key))
 
+    async def delete(self, job_id: str, analysis_id: str) -> dict:
+        """Удаляет анализ целиком: карточку отчёта и его следы.
+
+        Чужой `analysis_id` — тот же `NotFound`, что у чтения. Следы до проверки
+        карточки не трогаются. Авторизация маршрута та же, что у GET.
+        """
+
+        check_ulid(analysis_id)
+        try:
+            report = json.loads(await self.store.get(keys.report_index_key(job_id, analysis_id)))
+        except NotFound:
+            raise NotFound("анализ не найден") from None
+        pointer = getattr(self.service, "trace_pointer", None)
+        removed = 0
+        if pointer is not None:
+            from finance_analysis.application.trace_tail import delete_analysis_traces
+
+            before = pointer.count(analysis_id)
+            await delete_analysis_traces(self.store, pointer, analysis_id)
+            removed = before - pointer.count(analysis_id)
+        await self.store.delete_prefix(keys.report_index_key(job_id, analysis_id))
+        build = report.get("build_key")
+        if isinstance(build, str) and build:
+            await self.store.delete_prefix(f"{keys.book(job_id)}/{build}/results/{analysis_id}/")
+        return {"job_id": job_id, "analysis_id": analysis_id, "traces_removed": removed}
+
+    async def _publish_traces(self, analysis_id: str, evidences: list, metrics: list | None = None) -> None:
+        """Пишет следы. Сбой записи не меняет статус анализа и помечает метрики неполными."""
+
+        pointer = getattr(self.service, "trace_pointer", None)
+        if pointer is None or not evidences:
+            return
+        from finance_analysis.application.trace_tail import (
+            TracePublishError,
+            publish_trace,
+            record_trace_failure,
+        )
+        from finance_analysis.domain.trace_limit import TraceLimitError
+
+        retention = self.service.settings.fas_trace_retention
+        retainer = getattr(self.service, "trace_retainer", None)
+        failed = False
+        for index, evidence in enumerate(evidences):
+            if evidence is None:
+                continue
+            execution_id = f"{evidence.metric}-{index}"
+            try:
+                await publish_trace(
+                    self.store,
+                    pointer,
+                    analysis_id=analysis_id,
+                    execution_id=execution_id,
+                    evidence=evidence,
+                    retention=retention,
+                    retainer=retainer,
+                )
+            except TracePublishError as exc:
+                failed = True
+                record_trace_failure(analysis_id, execution_id, exc.stage, exc.__cause__ or exc)
+            except TraceLimitError as exc:
+                failed = True
+                record_trace_failure(analysis_id, execution_id, "limit", exc)
+        if failed and metrics:
+            for item in metrics:
+                if isinstance(item, dict):
+                    item["evidence_complete"] = False
+
     async def result(self, job_id: str, analysis_id: str) -> dict:
         check_ulid(analysis_id)
         try:
@@ -1758,6 +1846,35 @@ class Analyses:
             return None
         await svc.support.cache_set(key, _dumps(found), svc.settings.etag_ttl)
         return found
+
+
+def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
+    """Каждая реализация каталожной метрики: evidence_available или evidence_not_supported."""
+
+    import finance_analysis.domain.covenant
+    import finance_analysis.domain.cover_metrics
+    import finance_analysis.domain.debt_incl_off_balance
+    import finance_analysis.domain.housing_cover
+    import finance_analysis.domain.metrics
+    import finance_analysis.domain.total_debt  # noqa: F401
+    from finance_analysis.domain.metric_contract import REGISTRY
+
+    rows = []
+    for (metric, formula), item in sorted(REGISTRY.items()):
+        if metric not in RATIO_METRICS:
+            continue
+        version = item.implementation_version or formula
+        status = "evidence_available" if (metric, version) in EVIDENCE_AVAILABLE else "evidence_not_supported"
+        rows.append((metric, version, status))
+    return tuple(rows)
+
+
+def _unsupported(metric: str, sign_convention: str):
+    from finance_analysis.domain.trace_limit import not_supported_evidence
+
+    versions = [version for name, version, status in evidence_matrix() if name == metric and status == "evidence_not_supported"]
+    implementation = versions[0] if versions else f"{metric}@1"
+    return not_supported_evidence(metric, implementation, sign_convention)
 
 
 _NULL_ABSENT = ("metrics", "rules", "render", "build_key", "scope")
