@@ -134,6 +134,7 @@ class EvidenceBook:
     periods: list[PeriodResult] | None = None
     fallback: dict | None = None
     basis_sides: list[BasisSide] | None = None
+    sums_additions: int = 0
 
     def __post_init__(self) -> None:
         self.observations = [] if self.observations is None else self.observations
