@@ -926,6 +926,46 @@ def test_plan_uses_row_key_when_binding_key_is_absent():
     assert got["rows"][0]["components"]["cfads"] == ["S!cfads"]
 
 
+def test_missing_confirmed_binding_is_not_replaced_by_the_same_row_key():
+    """План подтвердил A/R. Привязки A нет, B с тем же row_key расчёт не берёт."""
+
+    from finance_analysis.domain.resolved_plan import (
+        bindings_for_plan,
+        bound_rows,
+        recover_row,
+    )
+    from finance_analysis.plugins.rules.ratios import _primary
+
+    confirmed = _bind("cfads", 1, binding_key="A", row_key="R")
+    debt = _bind("debt_service", 2, binding_key="D", row_key="debt")
+    plan = resolve_metric_plan("dscr", [confirmed, debt], EXPRESSIONS)
+    assert plan is not None and plan.status == "resolved"
+    chosen = next(item for item in plan.inputs if item.concept == "cfads")
+    assert chosen.binding_key == "A" and chosen.row_key == "R"
+
+    other = _bind("cfads", 3, binding_key="B", row_key="R")
+    later = [other, debt]
+    assert recover_row(later, chosen) is None
+    assert "cfads" not in bound_rows(plan, later)
+    assert all(row.get("binding_key") != "B" for row in bindings_for_plan(later, plan))
+
+    got = coverage_ratio(
+        metric="dscr",
+        facts=[
+            _fact("R", "cfads") | {"normalized_value": "40"},
+            _fact("debt", "debt_service") | {"normalized_value": "10"},
+        ],
+        bindings=later,
+        periods=[_period()],
+        period_phase={},
+        explicit_phases=False,
+        plan=plan,
+    )
+    assert got["rows"] == []
+    assert got["status"] in {"needs_input", "missing_input"}
+    assert _primary(AuditInput(bindings=later, plans={"dscr": plan}), "cfads", "dscr") is None
+
+
 def _rule_counts(monkeypatch) -> dict[str, int]:
     counts: dict[str, int] = {}
 

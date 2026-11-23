@@ -212,21 +212,27 @@ class ResolvedMetricPlan:
 def recover_row(
     bindings: Sequence[Mapping[str, Any]], item: Any
 ) -> Mapping[str, Any] | None:
-    """Строка входа плана: сначала ``binding_key``, иначе ``row_key``.
+    """Строка, которую подтвердил план. Её же читает ``bindings_for_plan``.
 
-    Один поиск для расчёта и для подстановки уплаченных процентов.
+    Есть ``binding_key`` — только он: пропавшая привязка не заменяется другой
+    строкой с тем же ``row_key``. ``row_key`` читается, когда ``binding_key``
+    нет, и только у строки без своего ключа.
     """
 
-    binding_key = getattr(item, "binding_key", None) or None
+    binding_key = str(getattr(item, "binding_key", None) or "")
     if binding_key:
         for row in bindings:
-            if str(row.get("binding_key") or "") == str(binding_key):
+            if str(row.get("binding_key") or "") == binding_key:
                 return row
+        return None
     row_key = getattr(item, "row_key", None) or None
-    if row_key:
-        for row in bindings:
-            if row.get("row_key") == row_key:
-                return row
+    if not row_key:
+        return None
+    for row in bindings:
+        if str(row.get("binding_key") or ""):
+            continue
+        if row.get("row_key") == row_key:
+            return row
     return None
 
 
@@ -246,23 +252,12 @@ def bindings_for_plan(
     from finance_analysis.domain.binding_resolution import declared_concept
 
     owned = {item.concept for item in (*plan.inputs, *plan.diagnostic, *plan.rejected)}
-    confirmed: set[tuple[str, str]] = set()
-    for item in plan.inputs:
-        if item.binding_key:
-            confirmed.add(("binding", str(item.binding_key)))
-        elif item.row_key:
-            confirmed.add(("row", str(item.row_key)))
     kept: list[Mapping[str, Any]] = []
     for row in bindings:
-        concept = declared_concept(row)
-        if concept not in owned:
+        if declared_concept(row) not in owned:
             kept.append(row)
             continue
-        binding_key = str(row.get("binding_key") or "")
-        row_key = str(row.get("row_key") or "")
-        by_binding = bool(binding_key) and ("binding", binding_key) in confirmed
-        by_row = not binding_key and bool(row_key) and ("row", row_key) in confirmed
-        if by_binding or by_row:
+        if any(recover_row((row,), item) is not None for item in plan.inputs):
             kept.append(row)
     return kept
 

@@ -81,12 +81,10 @@ def _primary(data: AuditInput, concept: str, metric: str | None = None) -> dict 
     item = next((row for row in plan.inputs if row.concept == concept), None)
     if item is None:
         return None
-    for row in data.bindings:
-        if item.binding_key and str(row.get("binding_key") or "") == item.binding_key:
-            return row
-        if not item.binding_key and item.row_key and row.get("row_key") == item.row_key:
-            return row
-    return None
+    from finance_analysis.domain.resolved_plan import recover_row
+
+    found = recover_row(data.bindings, item)
+    return found if isinstance(found, dict) else None
 
 
 def _cached_model_row(data: AuditInput, concept: str) -> dict | None:
