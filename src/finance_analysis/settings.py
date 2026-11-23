@@ -169,7 +169,11 @@ class Settings(BaseSettings):
 
     @property
     def service_subjects(self) -> frozenset[str]:
-        """Учётные `user_id`, которые журнал не считает человеком."""
+        """Учётные `user_id`, которые журнал считает службой.
+
+        Идентификатор, которого в `FAS_SERVICE_SUBJECTS` нет, классифицируется
+        как человек. Служебную учётку нужно назвать в списке явно.
+        """
 
         return frozenset(part.strip() for part in self.fas_service_subjects.split(",") if part.strip())
 

@@ -95,7 +95,7 @@ async def publish_trace(
     view = view_from_evidence(evidence) if evidence is not None else limit_trace(periods or [], fact_uses=fact_uses)
     if execution_source is not None:
         view["execution_source"] = execution_source
-    for key in ("actor_type", "actor_id", "confirmation_kind", "binding_key", "state_seq"):
+    for key in ("actor_type", "actor_id", "confirmation_kind", "binding_key", "state_seq", "inputs"):
         if actor_fields is not None and key in actor_fields:
             view[key] = actor_fields[key]
     policy = retention_policy(retention, now=moment)
