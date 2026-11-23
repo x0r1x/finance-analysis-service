@@ -64,6 +64,7 @@ EXCLUDED = frozenset(
         "_adopt_side",
         "_denominator_names",
         "_part_terminal",
+        "_skipped_restatement",
         "_period_steps",
         "_origin_refs",
         "_finish",
@@ -852,6 +853,32 @@ def test_public_ratio_calculates_once(monkeypatch):
     assert calls["n"] == 2
 
 
+def _raw_fact(row_key: str, period_id: str, raw: str, scale: str, cell_id: str) -> dict:
+    return {
+        "row_key": row_key,
+        "axis_id": AXIS,
+        "period_id": period_id,
+        "value_dec": Decimal(raw),
+        "scale_factor": Decimal(scale),
+        "cell_id": cell_id,
+    }
+
+
+def _assert_transformed_cell_is_cited_once(steps) -> None:
+    """Ячейка с узлом масштаба в этом же графе больше нигде ячейкой не цитируется."""
+
+    owner: dict[str, int] = {}
+    for step in steps:
+        if step.operation != "scale_normalization":
+            continue
+        for ref in step.input_refs:
+            assert ref not in owner
+            owner[ref] = step.step_id
+    for step in steps:
+        for ref in step.input_refs:
+            assert owner.get(ref) in (None, step.step_id)
+
+
 def _reachable(steps, refs) -> set[str]:
     by_id = {step.step_id: step for step in steps}
     seen: set[str] = set()
@@ -1137,6 +1164,164 @@ def test_ltm_gap_names_the_missing_concept():
     assert any(item.cell_id == "I!2025-06" for item in outcome.evidence.fact_observations)
     assert all(item.cell_id != "I!2025-06" for item in outcome.evidence.fact_uses)
     assert outcome.evidence.fact_uses == ()
+
+
+def test_ytd_restatement_cites_the_scale_of_both_periods():
+    quarters = [
+        _period("2026Q1", 0, calendar_year=2026, grain="quarter"),
+        _period("2026Q2", 1, calendar_year=2026, grain="quarter"),
+    ]
+    ytd = {"period_basis": "ytd", "period_basis_source": "header"}
+    outcome = _call(
+        facts=[
+            _raw_fact("c", "2026Q1", "10", "1", "CFS!Q1"),
+            _raw_fact("c", "2026Q2", "10", "1", "CFS!Q2"),
+            _raw_fact("d", "2026Q1", "10000", "1000", "Debt!Q1"),
+            _raw_fact("d", "2026Q2", "15000", "1000", "Debt!Q2"),
+        ],
+        bindings=[
+            _binding("cfads", "c", evidence=ytd),
+            _binding("debt_service", "d", evidence=ytd),
+        ],
+        periods=quarters,
+    )
+    second = next(item for item in outcome.evidence.period_results if item.period_id == "2026Q2")
+    restated = [
+        item
+        for item in second.steps
+        if item.operation == "period_restatement" and item.parameters.get("current_cells") == ("Debt!Q2",)
+    ]
+    assert len(restated) == 1
+    step = restated[0]
+    assert step.output_value == Decimal(5_000_000)
+    scales = {
+        item.input_refs[0]: item
+        for item in second.steps
+        if item.operation == "scale_normalization" and item.input_refs[0] in {"cell:Debt!Q1", "cell:Debt!Q2"}
+    }
+    assert scales["cell:Debt!Q1"].output_value == Decimal(10_000_000)
+    assert scales["cell:Debt!Q2"].output_value == Decimal(15_000_000)
+    assert set(step.input_refs) == {f"step:{scales['cell:Debt!Q1'].step_id}", f"step:{scales['cell:Debt!Q2'].step_id}"}
+    assert "cell:Debt!Q1" not in step.input_refs
+    assert "cell:Debt!Q2" not in step.input_refs
+    for period in outcome.evidence.period_results:
+        _assert_transformed_cell_is_cited_once(period.steps)
+
+    months = _months()
+    last = months[-1]["period_id"]
+    ltm_facts = [_raw_fact("c", last, "120", "1", "CFS!LTM")]
+    for index, period in enumerate(months):
+        ltm_facts.append(_raw_fact("d", period["period_id"], str(1000 * (index + 1)), "1000", f"Debt!{period['period_id']}"))
+    ltm = _call(
+        facts=ltm_facts,
+        bindings=[
+            _binding("cfads", "c", evidence={"period_basis": "ltm", "period_basis_source": "header"}),
+            _binding("debt_service", "d", evidence=ytd),
+        ],
+        periods=months,
+    )
+    computed = next(item for item in ltm.evidence.period_results if item.status == "computed")
+    window_restated = [
+        item
+        for item in computed.steps
+        if item.operation == "period_restatement" and item.parameters.get("current_cells") == (f"Debt!{last}",)
+    ]
+    assert len(window_restated) == 1
+    window_scales = {
+        item.input_refs[0]: item
+        for item in computed.steps
+        if item.operation == "scale_normalization"
+        and item.input_refs[0] in {"cell:Debt!2025-11", "cell:Debt!2025-12"}
+    }
+    assert window_restated[0].output_value == Decimal(1_000_000)
+    assert set(window_restated[0].input_refs) == {
+        f"step:{window_scales['cell:Debt!2025-11'].step_id}",
+        f"step:{window_scales['cell:Debt!2025-12'].step_id}",
+    }
+    _assert_transformed_cell_is_cited_once(computed.steps)
+
+    missing = _call(
+        facts=[
+            _raw_fact("c", "2026Q2", "10", "1", "CFS!Q2"),
+            _raw_fact("d", "2026Q2", "15000", "1000", "Debt!Q2"),
+        ],
+        bindings=[
+            _binding("cfads", "c"),
+            _binding("debt_service", "d", evidence=ytd),
+        ],
+        periods=quarters,
+    )
+    excluded = next(item for item in missing.evidence.period_results if item.period_id == "2026Q2")
+    assert excluded.reason == "previous_ytd_missing"
+    excluded_scale = next(item for item in excluded.steps if item.operation == "scale_normalization")
+    excluded_note = next(item for item in excluded.steps if item.operation == "period_restatement")
+    assert excluded_scale.input_refs == ("cell:Debt!Q2",)
+    assert excluded_note.input_refs == (f"step:{excluded_scale.step_id}",)
+    _assert_transformed_cell_is_cited_once(excluded.steps)
+
+
+def test_phase_exclusion_uses_the_denominator_for_eligibility():
+    built = _call(
+        facts=[
+            _fact("c", "2025", "10", cell_id="CFS!N"),
+            _fact("d", "2025", "-4", cell_id="Debt!D"),
+        ],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        periods=[_period("2025", 0)],
+        explicit_phases=True,
+        period_phase={(AXIS, "2025"): "construction"},
+    )
+    assert built.result["rows"] == []
+    assert built.evidence.period_results[0].reason == "not_coverage_test_period"
+    assert {item.cell_id for item in built.evidence.fact_uses} == {"Debt!D"}
+    assert {item.operand for item in built.evidence.fact_uses} == {"eligibility"}
+
+    zero = _call(
+        facts=[
+            _fact("c", "2025", "10", cell_id="CFS!Z"),
+            _fact("d", "2025", "0", cell_id="Debt!Z"),
+        ],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        periods=[_period("2025", 0)],
+        explicit_phases=True,
+        period_phase={(AXIS, "2025"): "construction"},
+    )
+    assert zero.evidence.period_results[0].reason == "not_coverage_test_period"
+    assert {item.cell_id for item in zero.evidence.fact_uses} == {"Debt!Z"}
+    assert {item.operand for item in zero.evidence.fact_uses} == {"denominator"}
+
+    months = _months()
+    last = months[-1]["period_id"]
+    ltm = _call(
+        facts=[_fact("c", last, "120", cell_id="CFS!LTM")]
+        + [_fact("d", item["period_id"], "1", cell_id=f"Debt!{item['period_id']}") for item in months],
+        bindings=[
+            _binding("cfads", "c", evidence={"period_basis": "ltm", "period_basis_source": "header"}),
+            _binding("debt_service", "d"),
+        ],
+        periods=months,
+        explicit_phases=True,
+        period_phase={(AXIS, last): "construction"},
+    )
+    assert ltm.result["status"] == "partial_window"
+    assert [row["period_id"] for row in ltm.result["rows"] if row.get("status") == "computed"] == []
+    skipped = next(item for item in ltm.evidence.period_results if item.period_id == last)
+    assert skipped.reason == "not_coverage_test_period"
+    uses = [item for item in ltm.evidence.fact_uses if item.result_period_id == last]
+    assert {item.operand for item in uses} == {"eligibility"}
+    assert {item.cell_id for item in uses} == {f"Debt!{item['period_id']}" for item in months}
+    assert all(item.concept != "cfads" for item in ltm.evidence.fact_uses)
+
+    icr = _call(
+        metric="icr",
+        facts=[_fact("e", "2025", "10", cell_id="PL!N"), _fact("i", "2025", "-2", cell_id="PL!D")],
+        bindings=[_binding("ebitda", "e"), _binding("interest", "i")],
+        periods=[_period("2025", 0)],
+        explicit_phases=True,
+        period_phase={(AXIS, "2025"): "construction"},
+    )
+    assert icr.result["rows"][0]["status"] == "computed"
+    assert {item.operand for item in icr.evidence.fact_uses} == {"numerator", "denominator"}
 
 
 def test_stamp_rejects_an_unlisted_call_and_does_not_hash_metrics():

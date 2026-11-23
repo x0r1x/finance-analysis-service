@@ -510,23 +510,62 @@ def _direct_inputs(steps, start: int, uses, source: tuple[str, ...]) -> tuple[st
     return produced + tuple(ref for ref in source if ref not in changed_set)
 
 
-def _part_terminal(steps, book, concept, key, aligned, *, before=None, after=None, rule=None) -> tuple[str, ...]:
-    """Узел части: последний шаг, если значение изменилось, иначе исходные ссылки."""
+def _scale_index(steps) -> dict[str, str]:
+    found = {}
+    for item in steps:
+        if item.operation != "scale_normalization" or not item.input_refs:
+            continue
+        found.setdefault(item.input_refs[0], f"step:{item.step_id}")
+    return found
 
-    start = len(steps)
+
+def _rewrite(refs, scale_of: dict[str, str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(scale_of.get(ref, ref) for ref in refs))
+
+
+def _scale_missing(steps, observations) -> None:
+    known = _scale_index(steps)
+    pending = tuple(
+        item for item in observations if item.effective_value != item.raw_value and _fact_ref(item) not in known
+    )
+    _scale_steps(steps, pending)
+
+
+def _cell_observations(book, concept, cells) -> tuple:
+    if book is None or concept is None or not cells:
+        return ()
+    wanted = {str(cell) for cell in cells}
+    found = []
+    seen = set()
+    for item in book.observations or []:
+        if item.concept != concept or item.cell_id not in wanted or item.considered is not None:
+            continue
+        ref = _fact_ref(item)
+        if ref in seen:
+            continue
+        seen.add(ref)
+        found.append(item)
+    return tuple(found)
+
+
+def _part_terminal(steps, book, concept, key, aligned, *, before=None, after=None, rule=None) -> tuple[str, ...]:
+    """Узел части: последний шаг, если значение изменилось, иначе исходные ссылки.
+
+    Масштаб прошлого периода — свой узел в этом же графе. Чужой ``step_id`` не цитируется.
+    """
+
     uses = _uses(book, concept, key, aligned)
     source = _origin_refs(book, concept, key)
-    _scale_steps(steps, uses)
-    direct = _direct_inputs(steps, start, uses, source)
+    known = _scale_index(steps)
+    pending = tuple(item for item in uses if item.effective_value != item.raw_value and _fact_ref(item) not in known)
+    start = len(steps)
+    _scale_steps(steps, pending)
+    direct = _rewrite(_direct_inputs(steps, start, pending, source), _scale_index(steps))
     note = _note(book, concept, key)
     if note is not None and note.get("reason") is None:
-        current = tuple(f"cell:{cell}" for cell in note.get("current_cells") or ())
+        _scale_missing(steps, _cell_observations(book, concept, note.get("previous_cells")))
         previous = tuple(f"cell:{cell}" for cell in note.get("previous_cells") or ())
-        if any(ref.startswith("step:") for ref in direct):
-            current_set = set(current)
-            cited = tuple(dict.fromkeys((*tuple(ref for ref in direct if ref not in current_set), *previous)))
-        else:
-            cited = tuple(dict.fromkeys((*current, *previous)))
+        cited = _rewrite((*direct, *previous), _scale_index(steps))
         _restate_step(steps, note, cited or direct)
         direct = (f"step:{steps[-1].step_id}",)
     if before is not None and after is not None and before != after:
@@ -591,6 +630,18 @@ def _adopt_side(book, period, aligned, names, keys, operand: str) -> None:
     roles = {name: operand for name in names}
     slots = tuple((operand, name, chosen) for name in names)
     _adopt(book, period, aligned, slots, _cell_roles(book, roles, chosen))
+
+
+def _skipped_restatement(steps, book, note, aligned) -> None:
+    """Пересчёт пропущенного периода цитирует масштаб, если значение уже умножено."""
+
+    concept = note.get("concept")
+    _scale_missing(steps, _uses(book, concept, note.get("key"), aligned))
+    _scale_missing(steps, _cell_observations(book, concept, note.get("previous_cells")))
+    current = tuple(f"cell:{cell}" for cell in note.get("current_cells") or ())
+    previous = tuple(f"cell:{cell}" for cell in note.get("previous_cells") or ())
+    cited = _rewrite((*current, *previous), _scale_index(steps))
+    _restate_step(steps, note, cited or None)
 
 
 def _denominator_names(denominator_name, fallback_parts) -> tuple[str, ...]:
@@ -915,7 +966,7 @@ def calculate_coverage(
         if key not in denominator or key not in numerator:
             if excluded is not None:
                 steps = []
-                _restate_step(steps, excluded)
+                _skipped_restatement(steps, book, excluded, aligned)
                 concept = excluded.get("concept")
                 operand = "numerator" if concept == numerator_name else "denominator"
                 cells = tuple(excluded.get("current_cells") or ()) + tuple(excluded.get("previous_cells") or ())
@@ -938,8 +989,15 @@ def calculate_coverage(
             phase=phase,
             explicit_phases=explicit_phases,
         ):
-            if payment == 0:
-                _adopt_side(book, period, aligned, _denominator_names(denominator_name, fallback_parts), {key}, "denominator")
+            # Ноль — использование знаменателя. Ненулевой платёж, который фаза исключила, — роль eligibility.
+            _adopt_side(
+                book,
+                period,
+                aligned,
+                _denominator_names(denominator_name, fallback_parts),
+                {key},
+                "denominator" if payment == 0 else "eligibility",
+            )
             _remember(book, period, "skipped", "not_coverage_test_period", ())
             continue
         steps = []
@@ -1816,8 +1874,14 @@ def _ltm_numerator(
             phase=phase,
             explicit_phases=explicit_phases,
         ):
-            if total == 0:
-                _adopt_side(book, period, aligned, denominator_names, den_keys, "denominator")
+            _adopt_side(
+                book,
+                period,
+                aligned,
+                denominator_names,
+                den_keys,
+                "denominator" if total == 0 else "eligibility",
+            )
             _remember(book, period, "skipped", "not_coverage_test_period", ())
             continue
         if total == 0:
