@@ -136,6 +136,7 @@ def dispatch_cover(
     basis: str,
     direction: str,
     common: dict,
+    plan=None,
 ):
     if not use_housing_cover(metric, metric_variant, dscr_variant, profile):
         return None
@@ -150,6 +151,7 @@ def dispatch_cover(
         variant=metric_variant,
         direction=direction,
         basis=basis,
+        plan=plan,
     )
 
 
@@ -165,7 +167,12 @@ def housing_cover(
     variant: str | None = None,
     direction: str = "lookback",
     basis: str = "period_end",
+    plan=None,
 ) -> dict:
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     if metric == "escrow_blended_rate":
         return _rate(facts, bindings, periods, sign_convention, absent, profile)
     if metric == "llcr":

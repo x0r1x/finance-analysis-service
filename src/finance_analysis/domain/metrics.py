@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
+from typing import Any
 
 from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.mapping import marked_line_code
@@ -295,6 +296,40 @@ ICR_EBIT_INPUTS = ("ebit", "interest", "interest_paid")
 _COVERAGE_INPUTS = {"dscr": DSCR_INPUTS, "icr": ICR_INPUTS, "icr_ebit": ICR_EBIT_INPUTS}
 
 
+def _plan_rows(plan: Any, bindings: list[dict]) -> dict:
+    from finance_analysis.domain.resolved_plan import bound_rows
+
+    return bound_rows(plan, bindings)
+
+
+def _plan_roles(metric: str, plan: Any) -> tuple[tuple[str, str] | None, tuple[str, ...], str, str]:
+    pf = next((item for item in plan.fallbacks if item.replaced == "debt_service"), None)
+    if metric == "dscr":
+        if pf is not None:
+            return (pf.chosen, "principal"), ("cfads", pf.chosen, "principal"), pf.chosen, "cfads"
+        return None, ("cfads", "debt_service"), "debt_service", "cfads"
+    one = [item.concept for item in plan.inputs if item.role == "one_of"]
+    numerator = one[0] if one else ("ebit" if metric == "icr_ebit" else "ebitda")
+    denominator = next((item.concept for item in plan.inputs if item.concept != numerator), "interest")
+    return None, (denominator,), denominator, numerator
+
+
+def _coverage_from_plan(metric: str, plan: Any, bindings: list[dict]) -> dict | None:
+    if plan.status == "resolved":
+        return None
+    del bindings
+    warnings = [item.as_dict() for item in plan.warnings]
+    needs = [item.as_dict() for item in plan.needs_input]
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": needs,
+        "missing_inputs": [item.subject for item in plan.needs_input],
+        "warnings": warnings,
+        "status": "needs_input" if plan.status == "needs_input" else "missing_input",
+    }
+
+
 @implements("dscr", "dscr", implementation_version="dscr@1", inputs=DSCR_INPUTS)
 @implements("icr", "icr", implementation_version="icr@1", inputs=ICR_INPUTS)
 @implements("icr_ebit", "icr_ebit", implementation_version="icr_ebit@1", inputs=ICR_EBIT_INPUTS)
@@ -313,6 +348,7 @@ def coverage_ratio(
     row_fallbacks: dict | None = None,
     profile: dict | None = None,
     declared: tuple[str, ...] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -326,53 +362,63 @@ def coverage_ratio(
         blocked = methodology_block(profile, bindings, metric=metric)
         if blocked:
             return blocked
-    primaries = _primaries(bindings, absent)
-    confirm_paid_interest(primaries, bindings, absent)
-    guarded = declared if declared is not None else _COVERAGE_INPUTS.get(metric)
-    if guarded:
-        primaries = BoundInputs(guarded, primaries)
-    order = interest_order or {}
-    warnings: list[dict] = []
-    fallback_parts: tuple[str, str] | None = None
-    if metric == "dscr":
-        needed, denominator_name, fallback_parts, plan_warnings = dscr_denominator_plan(
-            primaries, order, row_fallbacks
-        )
-        warnings.extend(plan_warnings)
-    elif metric in {"icr", "icr_ebit"}:
-        slot = "icr_ebit" if metric == "icr_ebit" else "icr"
-        chosen, warning = interest_choice(
-            primaries, order.get(slot, ("interest",)), row_fallbacks=row_fallbacks
-        )
-        needed = (chosen or "interest",)
-        denominator_name = chosen or "interest"
-        if warning:
-            warnings.append(warning)
+    if plan is not None:
+        early = _coverage_from_plan(metric, plan, bindings)
+        if early is not None:
+            return early
+        primaries = _plan_rows(plan, bindings)
+        warnings = [item.as_dict() for item in plan.warnings]
+        fallback_parts, needed, denominator_name, numerator_name = _plan_roles(metric, plan)
+        missing = [name for name in (*needed, numerator_name) if name not in primaries]
+        ambiguous = []
     else:
-        return {"metric": metric, "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"}
-    missing = [name for name in needed if name not in primaries]
-    numerator_name = None
-    if metric == "icr_ebit":
-        numerator_name = choose_one_of(("ebit",), {name for name in ("ebit",) if name in primaries})
-        if numerator_name not in primaries:
-            missing.append(numerator_name)
-    elif metric == "icr":
-        present = {name for name in ("ebitda", "ebit") if name in primaries}
-        numerator_name = choose_one_of(("ebitda", "ebit"), present)
-        if numerator_name == "ebitda" and "ebit" in present:
-            warnings.append({"code": "icr_numerator", "params": {"concept": "ebitda"}})
-        elif numerator_name not in present:
-            missing.append(numerator_name)
-    else:
-        numerator_name = "cfads"
-    watched = set(needed) | {"ebitda", "ebit"}
-    ambiguous = [name for name, rows in _groups(bindings).items() if len(rows) > 1 and name in watched]
-    if not ambiguous:
-        ambiguous = [
-            declared_concept(row)
-            for row in bindings
-            if row.get("status") == "ambiguous" and declared_concept(row) in watched
-        ]
+        primaries = _primaries(bindings, absent)
+        confirm_paid_interest(primaries, bindings, absent)
+        guarded = declared if declared is not None else _COVERAGE_INPUTS.get(metric)
+        if guarded:
+            primaries = BoundInputs(guarded, primaries)
+        order = interest_order or {}
+        warnings = []
+        fallback_parts = None
+        if metric == "dscr":
+            needed, denominator_name, fallback_parts, plan_warnings = dscr_denominator_plan(
+                primaries, order, row_fallbacks
+            )
+            warnings.extend(plan_warnings)
+        elif metric in {"icr", "icr_ebit"}:
+            slot = "icr_ebit" if metric == "icr_ebit" else "icr"
+            chosen, warning = interest_choice(
+                primaries, order.get(slot, ("interest",)), row_fallbacks=row_fallbacks
+            )
+            needed = (chosen or "interest",)
+            denominator_name = chosen or "interest"
+            if warning:
+                warnings.append(warning)
+        else:
+            return {"metric": metric, "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"}
+        missing = [name for name in needed if name not in primaries]
+        numerator_name = None
+        if metric == "icr_ebit":
+            numerator_name = choose_one_of(("ebit",), {name for name in ("ebit",) if name in primaries})
+            if numerator_name not in primaries:
+                missing.append(numerator_name)
+        elif metric == "icr":
+            present = {name for name in ("ebitda", "ebit") if name in primaries}
+            numerator_name = choose_one_of(("ebitda", "ebit"), present)
+            if numerator_name == "ebitda" and "ebit" in present:
+                warnings.append({"code": "icr_numerator", "params": {"concept": "ebitda"}})
+            elif numerator_name not in present:
+                missing.append(numerator_name)
+        else:
+            numerator_name = "cfads"
+        watched = set(needed) | {"ebitda", "ebit"}
+        ambiguous = [name for name, rows in _groups(bindings).items() if len(rows) > 1 and name in watched]
+        if not ambiguous:
+            ambiguous = [
+                declared_concept(row)
+                for row in bindings
+                if row.get("status") == "ambiguous" and declared_concept(row) in watched
+            ]
     if ambiguous:
         return {
             "metric": metric,
@@ -517,9 +563,14 @@ def dscr_pf(
     interest_order: dict | None = None,
     row_fallbacks: dict | None = None,
     profile: dict | None = None,
+    plan: Any | None = None,
 ) -> dict:
     """Проектный DSCR. Те же числа, что coverage_ratio для metric=dscr."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     return coverage_ratio(
         metric="dscr",
         facts=facts,
@@ -534,6 +585,7 @@ def dscr_pf(
         row_fallbacks=row_fallbacks,
         profile=profile,
         declared=DSCR_INPUTS,
+        plan=plan,
     )
 
 
@@ -550,6 +602,7 @@ def lease_interest_coverage(
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
     annual: bool = False,
+    plan: Any | None = None,
 ) -> dict:
     """EBITDA / (|проценты| + проценты в составе лизингового платежа).
 
@@ -558,6 +611,10 @@ def lease_interest_coverage(
     Прямая строка `lease_interest` и пара «платёж − долг» вместе не считаются.
     """
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     metric = "icr_lease"
     primaries = BoundInputs(ICR_LEASE_INPUTS, _primaries(bindings, absent))
     warnings: list[dict] = []

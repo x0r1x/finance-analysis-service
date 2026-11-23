@@ -12,7 +12,9 @@ from collections.abc import Mapping
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
+from typing import Any
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.cash_flow import net_cash_flow as period_net_cash_flow
 from finance_analysis.domain.cover_metrics import (
     _missing,
@@ -51,7 +53,7 @@ from finance_analysis.domain.metrics import (
     methodology_block,
     unconfirmed_scale,
 )
-from finance_analysis.domain.model_type import Composed, Side
+from finance_analysis.domain.model_type import Composed, MetricExpression, Side
 from finance_analysis.domain.net_cash_flow import net_cash_flow
 from finance_analysis.domain.period_basis import _as_date, basis_of
 from finance_analysis.domain.returns import fcf_identity, project_return
@@ -165,6 +167,22 @@ def _parse(value: dict) -> Composed:
     return Composed(_as_side(value["numerator"]), _as_side(value["denominator"]), str(value["window"]))
 
 
+def profile_dscr_expression(profile: dict | None) -> MetricExpression | None:
+    """Неименованный состав профиля. Именованный вариант остаётся формулой каталога."""
+
+    raw = (profile or {}).get("dscr_definition")
+    if not isinstance(raw, dict) or "numerator" not in raw or "denominator" not in raw:
+        return None
+    numerator = raw["numerator"] if isinstance(raw["numerator"], dict) else {}
+    denominator = raw["denominator"] if isinstance(raw["denominator"], dict) else {}
+    return MetricExpression(
+        numerator_plus=tuple(numerator.get("plus") or ()),
+        numerator_minus=tuple(numerator.get("minus") or ()),
+        denominator_plus=tuple(denominator.get("plus") or ()),
+        denominator_minus=tuple(denominator.get("minus") or ()),
+    )
+
+
 def _as_side(raw: dict) -> Side:
     return Side(tuple(raw.get("plus") or ()), tuple(raw.get("minus") or ()))
 
@@ -236,6 +254,7 @@ def covenant_dscr(
     row_fallbacks: dict | None = None,
     composed: dict[str, Composed] | None = None,
     aggregations: Mapping[str, str] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
         profile, profile_ref, default, concepts=concepts, money=money, composed=composed
@@ -245,18 +264,21 @@ def covenant_dscr(
     order = orders.get(order_name or "corporate_covenant", ())
     if not order:
         order = orders.get("corporate_covenant", ())
-    primaries = _primaries(bindings, absent)
-    injected = confirm_paid_interest(primaries, bindings, absent)
-    definition, fallback = _swap_interest(
-        definition,
-        primaries,
-        order,
-        row_fallbacks=row_fallbacks,
-    )
-    if injected is not None:
-        bindings = [*bindings, injected]
-    if fallback:
-        notes = [*notes, fallback]
+    if plan is not None:
+        definition, notes, bindings = _apply_plan(definition, notes, plan, bindings)
+    else:
+        primaries = _primaries(bindings, absent)
+        injected = confirm_paid_interest(primaries, bindings, absent)
+        definition, fallback = _swap_interest(
+            definition,
+            primaries,
+            order,
+            row_fallbacks=row_fallbacks,
+        )
+        if injected is not None:
+            bindings = [*bindings, injected]
+        if fallback:
+            notes = [*notes, fallback]
     result = composed_ratio(
         "dscr",
         definition,
@@ -268,6 +290,7 @@ def covenant_dscr(
         absent=absent,
         profile=profile,
         aggregations=aggregations,
+        plan=plan,
     )
     if source == "default" and result["status"] == "succeeded":
         notes = [*notes, *_mismatch(result["rows"], facts, bindings, periods, absent)]
@@ -308,9 +331,14 @@ def dscr_ocf_covenant(
     row_fallbacks: dict | None = None,
     composed: dict[str, Composed] | None = None,
     aggregations: Mapping[str, str] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     """OCF-ковенант по составу каталога. Нет входов состава — метрика не считается, CFADS не подставляется."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     return covenant_dscr(
         facts=facts,
         bindings=bindings,
@@ -327,7 +355,21 @@ def dscr_ocf_covenant(
         row_fallbacks=row_fallbacks,
         composed=composed,
         aggregations=aggregations,
+        plan=plan,
     )
+
+
+def _unplanned(metric: str, names: list[str]) -> dict:
+    """Понятие формулы нет среди подтверждённых входов плана. Привязки не сканируются."""
+
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [{"kind": "concept", "reason": "concept_unknown", "subject": names[0]}],
+        "missing_inputs": names,
+        "warnings": [],
+        "status": "missing_input",
+    }
 
 
 def composed_ratio(
@@ -342,6 +384,7 @@ def composed_ratio(
     absent: frozenset[str] = frozenset(),
     profile: dict | None = None,
     aggregations: Mapping[str, str] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     blocked = methodology_block(
         profile,
@@ -356,8 +399,25 @@ def composed_ratio(
     )
     if blocked:
         return blocked
+    if plan is not None and plan.status in {"needs_input", "missing_input"}:
+        needs = [item.as_dict() for item in plan.needs_input]
+        return {
+            "metric": metric,
+            "rows": [],
+            "needs_input": needs,
+            "missing_inputs": [item.subject for item in plan.needs_input],
+            "warnings": [item.as_dict() for item in plan.warnings],
+            "status": plan.status,
+        }
+    confirmed: frozenset[str] | None = None
+    primaries: dict | None = None
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bound_rows
+
+        primaries = bound_rows(plan, bindings)
+        confirmed = frozenset(item.concept for item in plan.inputs)
     unbound: frozenset[str] = frozenset()
-    if metric == "debt_off_balance_ebitda":
+    if metric == "debt_off_balance_ebitda" and plan is None:
         bound = _primaries(bindings, absent)
         if "total_debt" in bound and "off_balance_obligations" not in bound:
             unbound = frozenset({"off_balance_obligations"})
@@ -368,10 +428,19 @@ def composed_ratio(
         *formula.denominator.minus,
     )
     needed = tuple(name for name in needed if name not in unbound)
-    missing = _missing(metric, bindings, needed, absent)
-    if missing:
-        return missing
-    primaries = _primaries(bindings, absent)
+    if plan is not None:
+        outside = [name for name in needed if name not in (confirmed or frozenset())]
+        if outside:
+            return _unplanned(metric, outside)
+        lost = [name for name in needed if name not in (primaries or {})]
+        if lost:
+            return _unplanned(metric, lost)
+    else:
+        missing = _missing(metric, bindings, needed, absent)
+        if missing:
+            return missing
+        primaries = _primaries(bindings, absent)
+    assert primaries is not None
     inputs = list(dict.fromkeys(needed))
     if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
         return _refused(metric, periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)
@@ -1240,9 +1309,14 @@ def bank_icr(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
     """Внутренний профиль icr.bank. Поле regulatory_6960u всегда ложь."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     result = _bank_icr(
         facts=facts,
         bindings=bindings,
@@ -1552,6 +1626,7 @@ def cash_covenant_dscr(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
     """Кассовый DSCR года i. OCF со знаком, остальные входы — модули платежей.
 
@@ -1560,6 +1635,10 @@ def cash_covenant_dscr(
     вместо ненайденной строки. Неполный календарный год не считается.
     """
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     include_other = _CASH_OTHER not in absent
     needed = (*_CASH_CORE, *((_CASH_OTHER,) if include_other else ()))
     missing = _missing("dscr", bindings, needed, absent)
@@ -1716,6 +1795,7 @@ def select_ratio(
     links: list[dict] | None = None,
     statement_sheets: frozenset[str] | None = None,
     aggregations: Mapping[str, str] | None = None,
+    plan: Any | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -1731,6 +1811,7 @@ def select_ratio(
             periods=common["periods"],
             profile=profile,
             marker_class=common["marker_class"],
+            plan=plan,
         )
     if metric == "debt_incl_off_balance":
         from finance_analysis.domain.debt_incl_off_balance import debt_incl_off_balance
@@ -1743,6 +1824,7 @@ def select_ratio(
             bindings=common["bindings"],
             periods=common["periods"],
             absent=common["absent"],
+            plan=plan,
         )
     if metric in {"npv", "irr"}:
         return project_return(
@@ -1751,6 +1833,7 @@ def select_ratio(
             bindings=common["bindings"],
             periods=common["periods"],
             absent=common["absent"],
+            plan=plan,
         )
     if metric == "fcff":
         return free_cash_flow(
@@ -1766,6 +1849,7 @@ def select_ratio(
                 if statement_sheets is not None
                 else common.get("statement_sheets") or frozenset()
             ),
+            plan=plan,
         )
     if metric == "ncf":
         return net_cash_flow(
@@ -1779,6 +1863,7 @@ def select_ratio(
                 if statement_sheets is not None
                 else common.get("statement_sheets") or frozenset()
             ),
+            plan=plan,
         )
     if metric == "ncf_period":
         return period_net_cash_flow(
@@ -1787,6 +1872,7 @@ def select_ratio(
             periods=common["periods"],
             sign_convention=common.get("sign_convention") or "outflow_negative",
             absent=common.get("absent") or frozenset(),
+            plan=plan,
         )
     if metric == "fcf_identity":
         return fcf_identity(
@@ -1796,6 +1882,7 @@ def select_ratio(
             periods=common["periods"],
             absent=common.get("absent") or frozenset(),
             sign_convention=common.get("sign_convention") or "outflow_negative",
+            plan=plan,
         )
     if metric == "icr_lease":
         return lease_interest_coverage(
@@ -1805,6 +1892,7 @@ def select_ratio(
             sign_convention=common["sign_convention"],
             marker_class=common["marker_class"],
             absent=common["absent"],
+            plan=plan,
         )
     if metric == "dscr" and variant == "cash_covenant":
         return cash_covenant_dscr(
@@ -1814,6 +1902,7 @@ def select_ratio(
             sign_convention=common["sign_convention"],
             marker_class=common["marker_class"],
             absent=common["absent"],
+            plan=plan,
         )
     named = _named_variant(profile)
     if metric == "dscr" and (named or variant) == "housing":
@@ -1826,6 +1915,7 @@ def select_ratio(
             sign_convention=common.get("sign_convention") or "outflow_negative",
             absent=common.get("absent") or frozenset(),
             profile=profile,
+            plan=plan,
         )
     if metric == "dscr" and (variant == "ocf_covenant" or named == "ocf_covenant"):
         return dscr_ocf_covenant(
@@ -1844,6 +1934,7 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             composed=composed,
             aggregations=aggregations,
+            plan=plan,
         )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         return covenant_dscr(
@@ -1862,12 +1953,14 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             composed=composed,
             aggregations=aggregations,
+            plan=plan,
         )
     if metric == "dscr" and variant == "pf":
         return dscr_pf(
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
             profile=profile,
+            plan=plan,
             **common,
         )
     if metric == "icr" and bank_requested(variant, profile):
@@ -1879,6 +1972,7 @@ def select_ratio(
             sign_convention=common["sign_convention"],
             marker_class=common["marker_class"],
             absent=common["absent"],
+            plan=plan,
         )
     formula = composed.get(metric)
     if formula is not None:
@@ -1893,14 +1987,52 @@ def select_ratio(
             absent=common["absent"],
             profile=profile,
             aggregations=aggregations,
+            plan=plan,
         )
     return coverage_ratio(
         metric=metric,
         interest_order=interest_order,
         row_fallbacks=row_fallbacks,
         profile=profile,
+        plan=plan,
         **common,
     )
+
+
+def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dict]):
+    """Подмена процентов и строка 4123 уже записаны в плане."""
+
+    fallback = next((item for item in plan.fallbacks if item.replaced == "interest"), None)
+    if fallback is not None and fallback.chosen != "interest":
+        definition = _rename(definition, fallback.chosen)
+        warning = next((item.as_dict() for item in plan.warnings if item.code == (fallback.warning_code or "")), None)
+        if warning:
+            notes = [*notes, warning]
+    paid = next((item for item in plan.inputs if item.concept == "interest_paid"), None)
+    if paid is not None and not any(
+        declared_concept(row) == "interest_paid" and row.get("is_primary") for row in bindings
+    ):
+        source = _row_for(bindings, paid)
+        if source is not None and declared_concept(source) != "interest_paid":
+            bindings = [*bindings, {**source, "effective_concept": "interest_paid", "is_primary": True}]
+    return definition, notes, bindings
+
+
+def _rename(formula: Composed, chosen: str) -> Composed:
+    def replace(side: Side) -> Side:
+        return Side(
+            tuple(chosen if name == "interest" else name for name in side.plus),
+            tuple(chosen if name == "interest" else name for name in side.minus),
+        )
+
+    return Composed(replace(formula.numerator), replace(formula.denominator), formula.window)
+
+
+def _row_for(bindings: list[dict], item: Any) -> dict | None:
+    from finance_analysis.domain.resolved_plan import recover_row
+
+    found = recover_row(bindings, item)
+    return found if isinstance(found, dict) else None
 
 
 def _swap_interest(

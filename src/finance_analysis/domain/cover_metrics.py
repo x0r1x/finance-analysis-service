@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal, localcontext
 from itertools import pairwise
+from typing import Any
 
 from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.coverage import is_coverage_test_period
@@ -153,6 +154,14 @@ def _missing(metric: str, bindings: list[dict], needed: tuple[str, ...], absent:
 _DSCR_CORE = ("cfads", "debt_service")
 
 
+def _core_rows(bindings: list[dict], absent: frozenset[str], plan: Any | None) -> dict:
+    if plan is None:
+        return BoundInputs(_DSCR_CORE, _primaries(bindings, absent))
+    from finance_analysis.domain.resolved_plan import bound_rows
+
+    return BoundInputs(_DSCR_CORE, bound_rows(plan, bindings))
+
+
 @implements("adscr", "adscr", implementation_version="adscr@1", inputs=_DSCR_CORE)
 def adscr(
     *,
@@ -165,6 +174,7 @@ def adscr(
     marker_class: str | None = None,
     direction: str = "lookback",
     absent: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
     """Сумма CFADS ÷ сумма обслуживания долга за 12 месяцев на каждом тестовом периоде.
 
@@ -184,10 +194,11 @@ def adscr(
         sign_convention=sign_convention,
         marker_class=marker_class,
         absent=absent,
+        plan=plan,
     )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": "adscr"}
-    primaries = BoundInputs(_DSCR_CORE, _primaries(bindings, absent))
+    primaries = _core_rows(bindings, absent, plan)
     aligned = aligned_keys(periods)
     sheet = _scale_policy(facts, [primaries["cfads"], primaries["debt_service"]]) == "sheet"
     cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
@@ -267,6 +278,7 @@ def dscr_reductions(
     sign_convention: str = "outflow_negative",
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
     """`dscr_min` — минимум по тестовым периодам; `dscr_avg` — двумя способами.
 
@@ -285,10 +297,11 @@ def dscr_reductions(
         sign_convention=sign_convention,
         marker_class=marker_class,
         absent=absent,
+        plan=plan,
     )
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": metric}
-    primaries = BoundInputs(_DSCR_CORE, _primaries(bindings, absent))
+    primaries = _core_rows(bindings, absent, plan)
     aligned = aligned_keys(periods)
     sheet = _scale_policy(facts, [primaries["cfads"], primaries["debt_service"]]) == "sheet"
     cfads = _sums(facts, primaries["cfads"], aligned, periods, sheet=sheet)
@@ -340,6 +353,7 @@ def loan_life_ratio(
     marker_class: str | None = None,
     basis: str = "period_end",
     absent: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
     """LLCR и PLCR: NPV CFADS ÷ остаток долга на каждом тестовом периоде.
 
@@ -353,6 +367,10 @@ def loan_life_ratio(
     меняется по периодам; без дат — по длине `grain` с предупреждением.
     """
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     missing = _missing(metric, bindings, LOAN_LIFE_INPUTS, absent)
     if missing is not None:
         return missing

@@ -182,6 +182,7 @@ def trace_metric(
     interest_order: Mapping[str, Sequence[str]] | None = None,
     row_fallbacks: Mapping[str, Any] | None = None,
     dscr_variant: str | None = None,
+    plan: Any | None = None,
 ) -> MetricTrace:
     """Собрать read-only трассировку входа метрики → concept → binding → cell.
 
@@ -223,21 +224,24 @@ def trace_metric(
     scoped_bindings = _same_build(bindings, resolved_build)
     scoped_rows = _same_build(rows, resolved_build)
     row_by_binding = _row_keys(scoped_rows, scoped_bindings)
-    resolved_inputs = resolve_semantic_inputs(
-        metric_id,
-        scoped_bindings,
-        expressions,
-        variant=variant,
-        dscr_variant=dscr_variant,
-        interest_order=interest_order,
-        row_fallbacks=row_fallbacks,
-        absent=absent,
-        inputs=inputs,
-        row_keys=row_by_binding,
-        facts=facts,
-        links=graph_links,
-        statement_sheets=statement_sheets,
-    )
+    if plan is not None:
+        resolved_inputs = plan.lineage
+    else:
+        resolved_inputs = resolve_semantic_inputs(
+            metric_id,
+            scoped_bindings,
+            expressions,
+            variant=variant,
+            dscr_variant=dscr_variant,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            absent=absent,
+            inputs=inputs,
+            row_keys=row_by_binding,
+            facts=facts,
+            links=graph_links,
+            statement_sheets=statement_sheets,
+        )
     if resolved_inputs is None:
         return MetricTrace(**base, steps=(), missing_trace=MISSING_METRIC_UNKNOWN, integrity=())
 
@@ -279,6 +283,7 @@ def trace_metric(
             list(scoped_facts),
             statement_sheets,
             absent,
+            plan=plan,
         ):
             steps.append(
                 _dash_step(
@@ -360,6 +365,7 @@ def check_metric_physical_trace(
     interest_order: Mapping[str, Sequence[str]] | None = None,
     row_fallbacks: Mapping[str, Any] | None = None,
     dscr_variant: str | None = None,
+    plan: Any | None = None,
 ) -> tuple[MetricTrace, list[TraceIntegrityFinding]]:
     """Трассировка + findings (исходные данные и инвариант DTO)."""
 
@@ -383,6 +389,7 @@ def check_metric_physical_trace(
         interest_order=interest_order,
         row_fallbacks=row_fallbacks,
         dscr_variant=dscr_variant,
+        plan=plan,
     )
     return trace, list(trace.integrity)
 

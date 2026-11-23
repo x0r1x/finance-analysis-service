@@ -41,6 +41,7 @@ def debt_incl_off_balance(
     bindings: list[dict],
     periods: list[dict],
     absent: frozenset[str] = frozenset(),
+    plan=None,
 ) -> dict:
     """Сумма signed `normalized_value` по каждой привязанной строке слагаемого.
 
@@ -48,6 +49,10 @@ def debt_incl_off_balance(
     в другие метрики. Ключ строки результата — `(axis_id, period_id)` факта.
     """
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     _ = periods
     bound_rows = _bound_rows(components, bindings, absent)
     if not bound_rows:

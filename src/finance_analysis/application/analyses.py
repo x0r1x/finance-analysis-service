@@ -79,6 +79,7 @@ from finance_analysis.domain.model_type import (
     confirmed_variants,
     decision_labels,
 )
+from finance_analysis.domain.semantic_input import plans_for
 from finance_analysis.plugins.rules.coverage import (
     MISSING_TOTAL_ROW,
     PERIOD_GRAIN_MISMATCH,
@@ -125,6 +126,12 @@ def _dscr_variant(catalog, verdict, profile: dict | None = None) -> str | None:
     if isinstance(named, str) and named:
         return named
     return confirmed_variants(catalog, verdict).get("dscr")
+
+
+def _profile_dscr(profile: dict | None):
+    from finance_analysis.domain.covenant import profile_dscr_expression
+
+    return profile_dscr_expression(profile)
 
 
 def _attach_book_rows(envelope: dict, got: dict) -> None:
@@ -885,6 +892,24 @@ class Analyses:
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
+        plans = plans_for(
+            metrics,
+            bindings,
+            svc.model_types.metric_expressions,
+            variant_of=variant_of,
+            dscr_variant=dscr_variant,
+            interest_order=svc.model_types.interest_order,
+            row_fallbacks=svc.model_types.row_fallbacks,
+            absent=common["absent"],
+            facts=facts,
+            links=links,
+            statement_sheets=statement_sheets,
+            catalog_version=getattr(getattr(svc, "financial_catalog", None), "version", None),
+            semantic_model_version=target.semantic_model,
+            build_key=target.build,
+            model_id=job_id,
+            dscr_expression=_profile_dscr(body),
+        )
         for metric in metrics:
             use = applicability(svc.model_types, labels, metric)
             if use == "not_applicable":
@@ -905,15 +930,16 @@ class Analyses:
                 basis=basis,
                 direction=direction,
                 common=common,
+                plan=plans.get(metric),
             )
             if routed is not None:
                 result = routed
             elif metric in LOAN_LIFE:
-                result = loan_life_ratio(metric, basis=basis, **common)
+                result = loan_life_ratio(metric, basis=basis, plan=plans.get(metric), **common)
             elif metric in REDUCED:
-                result = dscr_reductions(metric, **common)
+                result = dscr_reductions(metric, plan=plans.get("dscr"), **common)
             elif metric == "adscr":
-                result = adscr(direction=direction, **common)
+                result = adscr(direction=direction, plan=plans.get("dscr"), **common)
             else:
                 result = select_ratio(
                     metric,
@@ -929,6 +955,7 @@ class Analyses:
                     row_fallbacks=svc.model_types.row_fallbacks,
                     links=links,
                     statement_sheets=statement_sheets,
+                    plan=plans.get(metric),
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
@@ -970,6 +997,7 @@ class Analyses:
             "applicability": uses,
             "model_type": verdict.as_dict(),
             "dscr_variant": dscr_variant,
+            "plans": plans,
             "book_rows": cite_lbo_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,
@@ -996,7 +1024,16 @@ class Analyses:
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
-            job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
+            job_id,
+            target,
+            metrics,
+            got["bindings"],
+            got["facts"],
+            got["periods"],
+            got["phase_of"],
+            got["profile"],
+            got["absent"],
+            got.get("plans"),
         )
         candidates = list(attached) + promote_needs_findings(needs)
         bound: set[str] = set()
@@ -1007,6 +1044,7 @@ class Analyses:
             facts=got["facts"],
             bindings=got["bindings"],
             dscr_variant=got.get("dscr_variant"),
+            plans=got.get("plans"),
         )
         attached = [item for item in candidates if _in_scope(item, scope, data, bound)]
         envelope = {
@@ -1112,6 +1150,8 @@ class Analyses:
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
         got = await self.compute_metrics(job_id, target, metrics)
+        data.plans = got.get("plans") or {}
+        self._trace_plans(data, metrics)
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
         bound: set[str] = set()
         if "concepts" in scope:
@@ -1180,8 +1220,33 @@ class Analyses:
         await self.service.finish_op(op_id, "cancelled")
         return True
 
+    def _trace_plans(self, data, metrics: list[str]) -> None:
+        """След читает тот же объект плана, что расчёт и аудит. metricTrace не публикуется."""
+
+        from finance_analysis.domain.graphs import trace_metric
+
+        catalog = self.service.model_types
+        plans = data.plans or {}
+        for metric in metrics:
+            plan = plans.get(metric)
+            if plan is None:
+                continue
+            trace_metric(
+                metric,
+                inputs=None,
+                bindings=data.bindings,
+                facts=data.facts,
+                graph_links=data.links,
+                expressions=catalog.metric_expressions,
+                interest_order=catalog.interest_order,
+                row_fallbacks=catalog.row_fallbacks,
+                absent=data.absent,
+                statement_sheets=data.statement_sheets,
+                plan=plan,
+            )
+
     async def _metric_findings(
-        self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent
+        self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent, plans=None
     ) -> list[Finding]:
         """Находки, которые прикрепляются к результату метрики (§6.2): статус метрики они не меняют.
 
@@ -1213,6 +1278,7 @@ class Analyses:
             applicable_metrics=live,
             dscr_variant=_dscr_variant(self.service.model_types, verdict, profile),
             statement_sheets=frozenset(load_sheet_roles().statement),
+            plans=plans,
         )
         found = run_rules(rules, data)
         return [item for item in found if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]
@@ -1319,6 +1385,29 @@ class Analyses:
         started = _now()
         needed = requirements(rules)
         data = await self._input(job_id, target, needed)
+        catalog = self.service.model_types
+        names = (
+            sorted(data.applicable_metrics)
+            if data.applicable_metrics is not None
+            else sorted(name for name in catalog.metric_expressions if "." not in name)
+        )
+        data.plans = plans_for(
+            names,
+            data.bindings,
+            catalog.metric_expressions,
+            dscr_variant=data.dscr_variant,
+            interest_order=catalog.interest_order,
+            row_fallbacks=catalog.row_fallbacks,
+            absent=data.absent,
+            facts=data.facts,
+            links=data.links,
+            statement_sheets=data.statement_sheets,
+            catalog_version=self.service.financial_catalog.version,
+            semantic_model_version=target.semantic_model,
+            build_key=target.build,
+            model_id=job_id,
+            dscr_expression=_profile_dscr(data.profile),
+        )
         found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
         bound: set[str] = set()
         if "concepts" in scope:

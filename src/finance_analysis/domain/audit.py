@@ -194,6 +194,8 @@ class AuditInput:
     # Как graph_links_available у trace_metric: False — датасет не загружен.
     # Пустой links при True — книга без формул, не отсутствующий граф.
     graph_links_available: bool = True
+    # Один план на метрику. Правила читают его и не выбирают строку заново.
+    plans: dict | None = None
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:

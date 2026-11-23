@@ -11,6 +11,7 @@ fcff = operating_cash_flow + shield − capex.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, localcontext
+from typing import Any
 
 from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import implements
@@ -64,18 +65,39 @@ def free_cash_flow(
     links: list[dict] | None = None,
     book: list[dict] | None = None,
     statement_sheets: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
-    primaries = _primaries(bindings, absent)
-    clash = _ambiguous_primary(bindings, absent)
-    if clash:
-        return _finish(_ambiguous(clash), [], periods, book)
-    ocf = primaries.get("operating_cash_flow")
-    capex = primaries.get("capex")
-    if ocf is None:
-        return _finish(_missing("operating_cash_flow"), [], periods, book)
-    if capex is None:
-        return _finish(_missing("capex"), [], periods, book)
-    confirm_paid_interest(primaries, bindings, absent)
+    if plan is not None:
+        if plan.status == "needs_input":
+            subject = plan.needs_input[0].subject if plan.needs_input else "operating_cash_flow"
+            return _finish(_ambiguous(subject), [], periods, book)
+        if plan.status != "resolved":
+            subject = plan.needs_input[0].subject if plan.needs_input else "operating_cash_flow"
+            return _finish(_missing(subject), [], periods, book)
+        from finance_analysis.domain.resolved_plan import bound_rows
+
+        primaries = bound_rows(plan, bindings)
+        ocf = primaries.get("operating_cash_flow")
+        capex = primaries.get("capex")
+        if ocf is None:
+            return _finish(_missing("operating_cash_flow"), [], periods, book)
+        if capex is None:
+            return _finish(_missing("capex"), [], periods, book)
+        basis = plan.shield.basis if plan.shield is not None else "unknown"
+    else:
+        primaries = _primaries(bindings, absent)
+        clash = _ambiguous_primary(bindings, absent)
+        if clash:
+            return _finish(_ambiguous(clash), [], periods, book)
+        ocf = primaries.get("operating_cash_flow")
+        capex = primaries.get("capex")
+        if ocf is None:
+            return _finish(_missing("operating_cash_flow"), [], periods, book)
+        if capex is None:
+            return _finish(_missing("capex"), [], periods, book)
+        confirm_paid_interest(primaries, bindings, absent)
+        statement = frozenset(sheet_name_key(name) for name in statement_sheets)
+        basis = _basis(ocf, bindings, absent, facts, links or [], statement)
     paid = primaries.get("interest_paid")
     accrued = primaries.get("interest")
     if (
@@ -104,8 +126,6 @@ def free_cash_flow(
             periods,
             book,
         )
-    statement = frozenset(sheet_name_key(name) for name in statement_sheets)
-    basis = _basis(ocf, bindings, absent, facts, links or [], statement)
     rate_row = primaries.get("income_tax_rate")
     aligned = aligned_keys(periods)
     ocf_flow = _flow(facts, ocf, aligned, periods)
