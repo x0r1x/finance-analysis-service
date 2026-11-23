@@ -1,6 +1,7 @@
 """Вход формулы читается из плана. Кэш самой метрики — отдельная сверка."""
 
 import ast
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -356,6 +357,37 @@ def _under_missing_plan(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
         ):
             return True
     return False
+
+
+def test_passed_plan_reads_lineage_and_diagnostic_stays_narrow():
+    """Докстрока и спека не шире типов: у диагноза нет role и source."""
+
+    from finance_analysis.domain import formula_origin, graphs
+    from finance_analysis.domain.resolved_plan import DiagnosticCandidate, LineageRow
+
+    assert [item.name for item in fields(DiagnosticCandidate)] == [
+        "concept",
+        "binding_key",
+        "row_key",
+        "reason",
+    ]
+    assert [item.name for item in fields(LineageRow)] == [
+        "concept",
+        "source",
+        "role",
+        "row_key",
+        "binding_key",
+        "missing",
+        "ambiguous",
+    ]
+    assert "plan.lineage" in (graphs.trace_metric.__doc__ or "")
+    assert "plan.lineage" in (formula_origin.__doc__ or "")
+    design = Path(__file__).resolve().parents[2].joinpath("docs/design-v0.23.md").read_text(encoding="utf-8")
+    diagnostic = design.split("`DiagnosticCandidate`:", 1)[1].split(".", 1)[0]
+    assert "role" not in diagnostic
+    assert "source" not in diagnostic
+    assert "`LineageRow`" in design
+    assert "plan.lineage" in design
 
 
 def test_a_rule_cannot_read_a_formula_input_without_a_metric():
