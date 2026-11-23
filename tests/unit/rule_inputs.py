@@ -12,7 +12,11 @@ from finance_analysis.adapters.builder.acl import (
     parse_summary,
 )
 from finance_analysis.application.project import project
-from finance_analysis.application.rule_engine import load_rules, run_rules, select_rules
+from finance_analysis.application.rule_engine import (
+    execute_rules,
+    load_rules,
+    select_rules,
+)
 from finance_analysis.domain.audit import AuditInput, Finding
 from finance_analysis.domain.book import with_links
 from tests.books import BUILDER_ROOT, job_id
@@ -93,4 +97,4 @@ def golden(alias: str) -> AuditInput:
 
 
 def golden_count(alias: str, code: str) -> int:
-    return len(run_rules(select_rules(load_rules(), [code]), golden(alias)))
+    return len(execute_rules(select_rules(load_rules(), [code]), golden(alias)).findings)

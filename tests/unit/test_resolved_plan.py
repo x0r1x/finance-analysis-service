@@ -838,7 +838,7 @@ def test_stale_cfads_fails_ratio_precheck_when_the_plan_does_not_confirm_it(monk
     def _forbidden(**_kwargs):
         raise AssertionError("формула не считается, пока план не подтвердил CFADS")
 
-    monkeypatch.setattr("finance_analysis.plugins.rules.ratios.coverage_ratio", _forbidden)
+    monkeypatch.setattr("finance_analysis.plugins.rules.ratios.calculate_coverage", _forbidden)
     data = AuditInput(bindings=[stale, debt, model], plans={"dscr": plan})
     assert RATIO_MISMATCH.check(data) == []
 
@@ -1187,7 +1187,7 @@ async def test_analyses_passes_one_plan_object(monkeypatch):
         held["origin"] = (plans or {}).get("icr")
         return real_origin(data, findings, expressions, **kwargs)
 
-    real_rules = analyses_mod.run_rules
+    real_rules = analyses_mod.execute_rules
 
     def spy_rules(rules, data):
         held["audit"] = (data.plans or {}).get("icr")
@@ -1203,7 +1203,7 @@ async def test_analyses_passes_one_plan_object(monkeypatch):
 
     monkeypatch.setattr(analyses_mod, "select_ratio", spy_select_ratio)
     monkeypatch.setattr(analyses_mod, "origin_view", spy_origin)
-    monkeypatch.setattr(analyses_mod, "run_rules", spy_rules)
+    monkeypatch.setattr(analyses_mod, "execute_rules", spy_rules)
     monkeypatch.setattr(graphs, "trace_metric", spy_trace)
 
     analyses = Analyses(_Service())

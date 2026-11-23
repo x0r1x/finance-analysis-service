@@ -80,6 +80,8 @@ async def publish_trace(
     sums_additions: int = 0,
     now: datetime | None = None,
     retainer=None,
+    execution_source: str | None = None,
+    actor_fields: dict | None = None,
 ) -> dict:
     """Резервирует слот, пишет объект, держит замок, затем подтверждает указатель.
 
@@ -91,6 +93,11 @@ async def publish_trace(
 
     moment = now or datetime.now(UTC)
     view = view_from_evidence(evidence) if evidence is not None else limit_trace(periods or [], fact_uses=fact_uses)
+    if execution_source is not None:
+        view["execution_source"] = execution_source
+    for key in ("actor_type", "actor_id", "confirmation_kind", "binding_key", "state_seq"):
+        if actor_fields is not None and key in actor_fields:
+            view[key] = actor_fields[key]
     policy = retention_policy(retention, now=moment)
     dropped = list(view.pop("dropped_cells", []))
     key = _object_key(analysis_id, execution_id)

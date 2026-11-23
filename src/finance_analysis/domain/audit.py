@@ -14,6 +14,7 @@ from datetime import date
 from functools import cached_property
 
 from finance_analysis.domain.book import SEP
+from finance_analysis.domain.calculation_evidence import CalculationEvidence
 from finance_analysis.domain.periods import split_period_key
 
 SEVERITIES = ("info", "low", "medium", "high", "critical")
@@ -319,6 +320,15 @@ def _iso_date(text: str) -> date | None:
         return None
 
 
+@dataclass(frozen=True)
+class RuleRunResult:
+    """Прогон правил. Находки только в поле `findings`: сам объект списком не обходится."""
+
+    findings: tuple[Finding, ...]
+    calculation_evidence: tuple[CalculationEvidence, ...] = ()
+    sources: tuple[str, ...] = ()
+
+
 def project_finance_dscr(data: AuditInput) -> bool:
     """Правила CFADS ÷ debt service. Ковенантный вариант их не запускает."""
 
@@ -363,6 +373,9 @@ class Rule:
             "requires": sorted(self.requires),
             "phase": self.phase,
         }
+
+    def run(self, data: AuditInput) -> RuleRunResult:
+        return RuleRunResult(tuple(self.check(data)))
 
     def check(self, data: AuditInput) -> list[Finding]:
         raise NotImplementedError

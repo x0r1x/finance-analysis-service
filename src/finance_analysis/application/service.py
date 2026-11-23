@@ -348,6 +348,7 @@ class FasService:
             catalog=self.catalog.ids,
             model_types=self.model_types.ids,
             max_labels=settings.model_type_max_labels,
+            service_subjects=settings.service_subjects,
         )
         self.glossary = GlossaryStore(store, support, lock_ttl_ms=settings.lock_ttl_ms)
         self.fold_runs = 0
@@ -1607,6 +1608,8 @@ class FasService:
                 if problem:
                     results.append(_rejected(index, "schema_invalid", problem))
                     continue
+            claimed = item.get("actor_type")
+            claimed_type = claimed.strip() if isinstance(claimed, str) and claimed.strip() else None
             written = await self.guard.write_decision(
                 job_id,
                 event_type=event_type,
@@ -1623,6 +1626,7 @@ class FasService:
                 supersedes=supersedes,
                 question_id=given_id if isinstance(given_id, str) else None,
                 evidence=evidence if isinstance(evidence, dict) else None,
+                claimed_type=claimed_type,
             )
             if not written.accepted:
                 results.append(_rejected(index, written.code or "schema_invalid", written.detail))

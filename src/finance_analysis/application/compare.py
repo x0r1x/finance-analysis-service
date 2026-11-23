@@ -14,8 +14,8 @@ import anyio
 
 from finance_analysis.application.analyses import RATIO_METRICS, Target, _decimal_text
 from finance_analysis.application.rule_engine import (
+    execute_rules,
     requirements,
-    run_rules,
     select_rules,
 )
 from finance_analysis.domain.audit import axis_ordinals
@@ -407,8 +407,10 @@ class Comparisons:
         jobs = {"base": left_job, "other": right_job}
         for name, target in (("base", base), ("other", other)):
             data = await self.analyses._input(jobs[name], target, needed)
-            items = await anyio.to_thread.run_sync(lambda data=data: run_rules(rules, data), limiter=self.service._cpu)
-            found[name] = {item.fingerprint: item for item in items}
+            ruled = await anyio.to_thread.run_sync(
+                lambda data=data: execute_rules(rules, data), limiter=self.service._cpu
+            )
+            found[name] = {item.fingerprint: item for item in ruled.findings}
 
         def brief(item) -> dict:
             return {"code": item.code, "fingerprint": item.fingerprint, "severity": item.severity, "binding_key": item.binding_key}

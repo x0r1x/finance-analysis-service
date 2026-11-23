@@ -22,9 +22,9 @@ from finance_analysis.application.explain import narrate, template_text
 from finance_analysis.application.impact import impact_view
 from finance_analysis.application.report import render_json, render_markdown
 from finance_analysis.application.rule_engine import (
+    execute_rules,
     load_rules,
     requirements,
-    run_rules,
     select_rules,
 )
 from finance_analysis.application.sheet_roles import load_sheet_roles
@@ -1040,7 +1040,15 @@ class Analyses:
         head = target.head
         scope = _scope(body)
         got = await self.compute_metrics(job_id, target, metrics)
-        await self._publish_traces(analysis_id, got.get("evidences") or [], got.get("applicability"))
+        await self._publish_traces(
+            analysis_id,
+            got.get("evidences") or [],
+            got.get("applicability"),
+            execution_source="ratios",
+            actor=actor,
+            state_seq=head.state_seq,
+            bindings=got.get("bindings"),
+        )
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
@@ -1054,6 +1062,8 @@ class Analyses:
             got["profile"],
             got["absent"],
             got.get("plans"),
+            analysis_id=analysis_id,
+            actor=actor,
         )
         candidates = list(attached) + promote_needs_findings(needs)
         bound: set[str] = set()
@@ -1170,10 +1180,26 @@ class Analyses:
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
         got = await self.compute_metrics(job_id, target, metrics)
-        await self._publish_traces(analysis_id, got.get("evidences") or [], got.get("applicability"))
+        await self._publish_traces(
+            analysis_id,
+            got.get("evidences") or [],
+            got.get("applicability"),
+            execution_source="full",
+            actor=actor,
+            state_seq=target.head.state_seq,
+            bindings=got.get("bindings"),
+        )
         data.plans = got.get("plans") or {}
         self._trace_plans(data, metrics)
-        found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
+        ruled = await anyio.to_thread.run_sync(lambda: execute_rules(rules, data), limiter=self.service._cpu)
+        await self._publish_ruled(
+            analysis_id,
+            ruled,
+            actor=actor,
+            state_seq=target.head.state_seq,
+            bindings=data.bindings,
+        )
+        found = ruled.findings
         bound: set[str] = set()
         if "concepts" in scope:
             bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
@@ -1267,7 +1293,20 @@ class Analyses:
             )
 
     async def _metric_findings(
-        self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent, plans=None
+        self,
+        job_id,
+        target: Target,
+        metrics,
+        bindings,
+        facts,
+        periods,
+        phase_of,
+        profile,
+        absent,
+        plans=None,
+        *,
+        analysis_id: str | None = None,
+        actor: Actor | None = None,
     ) -> list[Finding]:
         """Находки, которые прикрепляются к результату метрики (§6.2): статус метрики они не меняют.
 
@@ -1301,8 +1340,16 @@ class Analyses:
             statement_sheets=frozenset(load_sheet_roles().statement),
             plans=plans,
         )
-        found = run_rules(rules, data)
-        return [item for item in found if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]
+        found = execute_rules(rules, data)
+        if analysis_id is not None:
+            await self._publish_ruled(
+                analysis_id,
+                found,
+                actor=actor,
+                state_seq=target.head.state_seq,
+                bindings=bindings,
+            )
+        return [item for item in found.findings if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]
 
     async def _save_tables(self, job_id, target: Target, analysis_id, kind, tables, envelope, actor, started) -> None:
         svc = self.service
@@ -1429,7 +1476,15 @@ class Analyses:
             model_id=job_id,
             dscr_expression=_profile_dscr(data.profile),
         )
-        found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
+        ruled = await anyio.to_thread.run_sync(lambda: execute_rules(rules, data), limiter=self.service._cpu)
+        await self._publish_ruled(
+            analysis_id,
+            ruled,
+            actor=actor,
+            state_seq=target.head.state_seq,
+            bindings=data.bindings,
+        )
+        found = ruled.findings
         bound: set[str] = set()
         if "concepts" in scope:
             bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
@@ -1638,7 +1693,30 @@ class Analyses:
             await self.store.delete_prefix(f"{keys.book(job_id)}/{build}/results/{analysis_id}/")
         return {"job_id": job_id, "analysis_id": analysis_id, "traces_removed": removed}
 
-    async def _publish_traces(self, analysis_id: str, evidences: list, metrics: list | None = None) -> None:
+    async def _publish_ruled(self, analysis_id: str, ruled, *, actor: Actor | None, state_seq: int | None, bindings) -> None:
+        """След правила пишется, только если правило само посчитало. План уликой не становится."""
+
+        for evidence, source in zip(ruled.calculation_evidence, ruled.sources, strict=True):
+            await self._publish_traces(
+                analysis_id,
+                [evidence],
+                execution_source=source,
+                actor=actor,
+                state_seq=state_seq,
+                bindings=bindings,
+            )
+
+    async def _publish_traces(
+        self,
+        analysis_id: str,
+        evidences: list,
+        metrics: list | None = None,
+        *,
+        execution_source: str = "ratios",
+        actor: Actor | None = None,
+        state_seq: int | None = None,
+        bindings=None,
+    ) -> None:
         """Пишет следы. Сбой записи не меняет статус анализа и помечает метрики неполными."""
 
         pointer = getattr(self.service, "trace_pointer", None)
@@ -1653,11 +1731,19 @@ class Analyses:
 
         retention = self.service.settings.fas_trace_retention
         retainer = getattr(self.service, "trace_retainer", None)
+        from finance_analysis.domain.actor import trace_actor_fields
+
+        subjects = getattr(self.service.settings, "service_subjects", None)
+        fields = trace_actor_fields(actor, bindings, state_seq, subjects)
         failed = False
         for index, evidence in enumerate(evidences):
             if evidence is None:
                 continue
-            execution_id = f"{evidence.metric}-{index}"
+            execution_id = (
+                f"{execution_source}:{evidence.metric}-{index}"
+                if execution_source.startswith("rule:")
+                else f"{evidence.metric}-{index}"
+            )
             try:
                 await publish_trace(
                     self.store,
@@ -1667,6 +1753,8 @@ class Analyses:
                     evidence=evidence,
                     retention=retention,
                     retainer=retainer,
+                    execution_source=execution_source,
+                    actor_fields=fields,
                 )
             except TracePublishError as exc:
                 failed = True
