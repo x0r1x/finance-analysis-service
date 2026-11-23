@@ -62,6 +62,13 @@ EXCLUDED = frozenset(
         "_side_refs",
         "_period_steps",
         "_origin_refs",
+        "_finish",
+        "_numerator_steps",
+        "_adopt",
+        "_cell_roles",
+        "_scale_mark",
+        "_window_gap",
+        "FactObservation",
     }
 )
 
@@ -478,6 +485,322 @@ def test_icr_plan_inputs_are_the_facts_and_choice_is_not_repeated(monkeypatch):
     assert {item.concept for item in single.evidence.fact_uses} == {item.concept for item in only.inputs if item.row_key}
     assert "ebit" not in {item.concept for item in full.evidence.fact_uses}
     assert {item.concept for item in single.evidence.fact_uses} == {"ebit", "interest"}
+
+
+def _months(year: int = 2025, count: int = 12, *, skip: set[int] | None = None) -> list[dict]:
+    found = []
+    skipped = skip or set()
+    for index in range(count):
+        if index in skipped:
+            continue
+        start = add_months(date(year, 1, 1), index)
+        end = add_months(start, 1) - timedelta(days=1)
+        found.append(
+            _period(
+                f"{year}-{index + 1:02d}",
+                index,
+                grain="month",
+                period_start=start,
+                period_end=end,
+            )
+        )
+    return found
+
+
+def test_ytd_numerator_restates_and_several_facts_assemble():
+    periods = [
+        _period("2026Q1", 0, calendar_year=2026, grain="quarter"),
+        _period("2026Q2", 1, calendar_year=2026, grain="quarter"),
+    ]
+    ytd = {"period_basis": "ytd", "period_basis_source": "header"}
+    outcome = _call(
+        facts=[
+            _fact("c", "2026Q1", "50", cell_id="CFS!Q1"),
+            _fact("c", "2026Q2", "80", cell_id="CFS!Q2"),
+            _fact("d", "2026Q1", "10", cell_id="Debt!Q1"),
+            _fact("d", "2026Q2", "10", cell_id="Debt!Q2"),
+        ],
+        bindings=[
+            _binding("cfads", "c", evidence=ytd),
+            _binding("debt_service", "d"),
+        ],
+        periods=periods,
+    )
+    second = next(item for item in outcome.evidence.period_results if item.period_id == "2026Q2")
+    step = next(item for item in second.steps if item.operation == "period_restatement" and item.output_value == Decimal(30))
+    assert step.parameters["current_cells"] == ("CFS!Q2",)
+    assert step.parameters["previous_cells"] == ("CFS!Q1",)
+    assert step.parameters["current_raw"] == Decimal(80)
+    assert step.parameters["previous_raw"] == Decimal(50)
+    assert step.parameters["current_effective"] == Decimal(80)
+    assert step.parameters["previous_effective"] == Decimal(50)
+    assert step.parameters["difference"] == Decimal(30)
+    assert step.parameters["year"] == 2026
+    assert step.parameters["reset_rule"] == "subtract_only_within_year"
+    division = next(item for item in second.steps if item.operation == "division")
+    assert division.parameters["numerator"] == Decimal(30)
+    assert outcome.result["rows"][1]["value"] == quantize_ratio(Decimal(30) / Decimal(10))
+    icr = _call(
+        metric="icr",
+        facts=[
+            _fact("e", "2026Q1", "50", cell_id="PL!Q1"),
+            _fact("e", "2026Q2", "80", cell_id="PL!Q2"),
+            _fact("i", "2026Q1", "10", cell_id="PL!I1"),
+            _fact("i", "2026Q2", "10", cell_id="PL!I2"),
+        ],
+        bindings=[
+            _binding("ebitda", "e", evidence=ytd),
+            _binding("interest", "i"),
+        ],
+        periods=periods,
+    )
+    icr_step = next(
+        item
+        for item in next(row for row in icr.evidence.period_results if row.period_id == "2026Q2").steps
+        if item.operation == "period_restatement"
+    )
+    assert icr_step.output_value == Decimal(30)
+    assert icr_step.parameters["current_cells"] == ("PL!Q2",)
+    assembled = _call(
+        facts=[
+            _fact("c", "2025", "6", cell_id="CFS!A"),
+            _fact("c", "2025", "4", cell_id="CFS!B"),
+            _fact("d", "2025", "-5", cell_id="Debt!A"),
+        ],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        periods=[_period("2025", 0)],
+    )
+    built = next(item for item in assembled.evidence.period_results[0].steps if item.operation == "numerator_assembly")
+    assert built.output_value == Decimal(10)
+    assert set(built.input_refs) == {"cell:CFS!A", "cell:CFS!B"}
+    assert assembled.result["rows"][0]["value"] == quantize_ratio(Decimal(10) / Decimal(5))
+
+
+def test_ltm_keeps_numerator_scale_ytd_and_the_window():
+    periods = _months()
+    last = periods[-1]["period_id"]
+    facts = [
+        _fact("c", last, "120", value_dec=Decimal(120), scale_factor=Decimal(1), cell_id="CFS!LTM"),
+    ]
+    for period in periods:
+        if period["period_id"] == "2025-01":
+            facts.append(
+                _fact(
+                    "d",
+                    period["period_id"],
+                    "1",
+                    value_dec=Decimal(1),
+                    scale_factor=Decimal(1000),
+                    cell_id="Debt!2025-01",
+                )
+            )
+        else:
+            facts.append(
+                _fact(
+                    "d",
+                    period["period_id"],
+                    "10",
+                    value_dec=Decimal(10),
+                    scale_factor=Decimal(1),
+                    cell_id=f"Debt!{period['period_id']}",
+                )
+            )
+    bindings = [
+        _binding("cfads", "c", evidence={"period_basis": "ltm", "period_basis_source": "header"}),
+        _binding("debt_service", "d"),
+    ]
+    outcome = _call(facts=facts, bindings=bindings, periods=periods)
+    computed = next(item for item in outcome.evidence.period_results if item.status == "computed")
+    division = next(item for item in computed.steps if item.operation == "division")
+    assert "cell:CFS!LTM" in division.input_refs
+    assert "cell:Debt!2025-12" in division.input_refs
+    scaled = next(item for item in computed.steps if item.operation == "scale_normalization")
+    assert scaled.output_value == Decimal(1000)
+    assert scaled.parameters["raw"] == Decimal(1)
+    assert computed.window_periods == tuple(item["period_id"] for item in periods)
+    assert computed.window_missing == ()
+    ytd_facts = [_fact("c", last, "120", cell_id="CFS!LTM")]
+    for index, period in enumerate(periods):
+        ytd_facts.append(_fact("d", period["period_id"], str(10 * (index + 1)), cell_id=f"Debt!{period['period_id']}"))
+    ytd = _call(
+        facts=ytd_facts,
+        bindings=[
+            _binding("cfads", "c", evidence={"period_basis": "ltm", "period_basis_source": "header"}),
+            _binding("debt_service", "d", evidence={"period_basis": "ytd", "period_basis_source": "header"}),
+        ],
+        periods=periods,
+    )
+    ytd_period = next(item for item in ytd.evidence.period_results if item.status == "computed")
+    restated = [item for item in ytd_period.steps if item.operation == "period_restatement"]
+    assert restated
+    assert restated[-1].output_value == Decimal(10)
+    assert restated[-1].parameters["difference"] == Decimal(10)
+    assert "cell:CFS!LTM" in next(item for item in ytd_period.steps if item.operation == "division").input_refs
+    partial_periods = _months(skip={5})
+    partial = _call(
+        facts=[_fact("c", "2025-12", "120", cell_id="CFS!LTM")]
+        + [_fact("d", item["period_id"], "10", cell_id=f"Debt!{item['period_id']}") for item in partial_periods],
+        bindings=bindings,
+        periods=partial_periods,
+    )
+    gap = next(item for item in partial.evidence.period_results if item.status == "partial_window")
+    assert gap.steps == ()
+    assert "2025-06" not in gap.window_periods
+    assert "2025-06-01" in gap.window_missing
+    assert "2025-01" in gap.window_periods and "2025-12" in gap.window_periods
+    hole_periods = _months()
+    hole = _call(
+        facts=[_fact("c", last, "120", cell_id="CFS!LTM")]
+        + [
+            _fact("d", item["period_id"], "10", cell_id=f"Debt!{item['period_id']}")
+            for item in hole_periods
+            if item["period_id"] != "2025-06"
+        ],
+        bindings=bindings,
+        periods=hole_periods,
+    )
+    missing_value = next(item for item in hole.evidence.period_results if item.status == "partial_window")
+    assert "2025-06" in missing_value.window_periods
+    assert "2025-06" in missing_value.window_missing
+
+
+def test_scale_decision_is_stored_when_no_step_is_written():
+    periods = [_period("2025", 0)]
+    bindings = [_binding("cfads", "c"), _binding("debt_service", "d")]
+    already = _call(
+        facts=[
+            _fact("c", "2025", "2000", value_dec=Decimal(2), scale_factor=Decimal(1000), cell_id="CFS!N"),
+            _fact("d", "2025", "1000", value_dec=Decimal(1000), scale_factor=Decimal(1), cell_id="Debt!D"),
+        ],
+        bindings=bindings,
+        periods=periods,
+    )
+    used = next(item for item in already.evidence.fact_uses if item.concept == "cfads")
+    assert used.scale_factor == Decimal(1000)
+    assert used.scale_policy == "apply"
+    assert used.scale_applied is True
+    assert used.normalization_source == "normalized_value"
+    assert all(step.operation != "scale_normalization" for step in already.evidence.period_results[0].steps)
+    plain = _call(
+        facts=[_fact("c", "2025", "10", cell_id="CFS!P"), _fact("d", "2025", "5", cell_id="Debt!P")],
+        bindings=bindings,
+        periods=periods,
+    )
+    bare = next(item for item in plain.evidence.fact_uses if item.concept == "cfads")
+    assert bare.scale_factor is None
+    assert bare.scale_policy == "plain"
+    assert bare.scale_applied is False
+    assert bare.normalization_source == "unset"
+    multiplied = _call(
+        facts=[
+            _fact("c", "2025", "2", value_dec=Decimal(2), scale_factor=Decimal(1000), cell_id="CFS!R"),
+            _fact("d", "2025", "500", value_dec=Decimal(500), scale_factor=Decimal(1), cell_id="Debt!R"),
+        ],
+        bindings=bindings,
+        periods=periods,
+    )
+    grown = next(item for item in multiplied.evidence.fact_uses if item.concept == "cfads")
+    assert grown.scale_factor == Decimal(1000)
+    assert grown.scale_policy == "apply"
+    assert grown.scale_applied is True
+    assert grown.normalization_source == "multiplied"
+    assert any(
+        step.operation == "scale_normalization" and step.output_value == Decimal(2000)
+        for step in multiplied.evidence.period_results[0].steps
+    )
+    sheet = _call(
+        facts=[
+            _fact("c", "2025", "2000", value_dec=Decimal(2), scale_factor=Decimal(1000), cell_id="CFS!S"),
+            _fact("d", "2025", "1", cell_id="Debt!S"),
+        ],
+        bindings=bindings,
+        periods=periods,
+    )
+    assumed = next(item for item in sheet.evidence.fact_uses if item.concept == "cfads")
+    assert assumed.scale_factor == Decimal(1000)
+    assert assumed.scale_policy == "sheet"
+    assert assumed.scale_applied is False
+    assert assumed.normalization_source == "sheet"
+    assert all(step.operation != "scale_normalization" for step in sheet.evidence.period_results[0].steps)
+
+
+def test_fact_read_is_not_a_use_until_it_enters_a_period():
+    periods = [
+        _period("2025", 0),
+        _period("2026", 1, marker_class="forecast"),
+    ]
+    outcome = _call(
+        facts=[
+            _fact("c", "2025", "10", cell_id="CFS!2025"),
+            _fact("d", "2025", "-5", cell_id="Debt!2025"),
+            _fact("c", "2026", "99", cell_id="CFS!2026"),
+            _fact("d", "2026", "-7", cell_id="Debt!2026"),
+        ],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        periods=periods,
+        marker_class="actual",
+    )
+    assert {item.cell_id for item in outcome.evidence.fact_observations} == {
+        "CFS!2025",
+        "Debt!2025",
+        "CFS!2026",
+        "Debt!2026",
+    }
+    assert {item.cell_id for item in outcome.evidence.fact_uses} == {"CFS!2025", "Debt!2025"}
+    assert {item.result_period_id for item in outcome.evidence.fact_uses} == {"2025"}
+    operands = {item.cell_id: item.operand for item in outcome.evidence.fact_uses}
+    assert operands == {"CFS!2025": "numerator", "Debt!2025": "denominator"}
+
+
+def test_dscr_pf_outcome_has_its_own_identity():
+    from finance_analysis.domain.metrics import calculate_dscr_pf
+
+    periods = [_period("2025", 0)]
+    facts = [_fact("c", "2025", "10"), _fact("d", "2025", "-5")]
+    bindings = [_binding("cfads", "c"), _binding("debt_service", "d")]
+    kwargs = {
+        "facts": facts,
+        "bindings": bindings,
+        "periods": periods,
+        "period_phase": {},
+        "explicit_phases": False,
+    }
+    outcome = calculate_dscr_pf(**kwargs)
+    plain = _call(**kwargs)
+    assert outcome.result == dscr_pf(**kwargs)
+    assert outcome.result == plain.result
+    assert outcome.result["metric"] == "dscr"
+    assert outcome.evidence is not None
+    assert outcome.evidence.metric == "dscr.pf"
+    assert outcome.evidence.implementation == "dscr.pf@1"
+    assert plain.evidence.implementation == "dscr@1"
+    assert plain.evidence.metric == "dscr"
+
+
+def test_facade_does_not_build_the_evidence_book(monkeypatch):
+    from finance_analysis.domain import metrics
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("EvidenceBook")
+
+    periods = [_period("2025", 0)]
+    facts = [_fact("c", "2025", "10"), _fact("d", "2025", "-5")]
+    bindings = [_binding("cfads", "c"), _binding("debt_service", "d")]
+    kwargs = {
+        "facts": facts,
+        "bindings": bindings,
+        "periods": periods,
+        "period_phase": {},
+        "explicit_phases": False,
+    }
+    monkeypatch.setattr(metrics, "EvidenceBook", boom)
+    facade = coverage_ratio(metric="dscr", **kwargs)
+    project = dscr_pf(**kwargs)
+    monkeypatch.undo()
+    outcome = _call(**kwargs)
+    assert facade == outcome.result
+    assert project == outcome.result
+    assert outcome.evidence is not None
 
 
 def test_public_ratio_calculates_once(monkeypatch):

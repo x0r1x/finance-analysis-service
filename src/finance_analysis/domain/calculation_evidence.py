@@ -36,10 +36,14 @@ class PeriodResult:
     numerator: Decimal | None
     denominator: Decimal | None
     steps: tuple[TransformationStep, ...]
+    window_periods: tuple[str, ...] = ()
+    window_missing: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
-class FactUse:
+class FactObservation:
+    """Факт, прочитанный при сборке ряда. В операнд периода он ещё не входил."""
+
     concept: str
     cell_id: str | None
     axis_id: str
@@ -50,6 +54,33 @@ class FactUse:
     sheet: bool
     raw_value: Decimal
     effective_value: Decimal
+    scale_factor: Decimal | None
+    scale_policy: str
+    scale_applied: bool
+    normalization_source: str
+
+
+@dataclass(frozen=True)
+class FactUse:
+    """Факт, который вошёл в операнд конкретного периода. Решение о масштабе лежит здесь, не в пустом шаге."""
+
+    concept: str
+    cell_id: str | None
+    axis_id: str
+    period_id: str
+    timeline_id: str | None
+    period_index: int | None
+    field: str
+    sheet: bool
+    raw_value: Decimal
+    effective_value: Decimal
+    scale_factor: Decimal | None
+    scale_policy: str
+    scale_applied: bool
+    normalization_source: str
+    result_axis_id: str | None
+    result_period_id: str | None
+    operand: str
 
 
 @dataclass(frozen=True)
@@ -63,6 +94,7 @@ class CalculationEvidence:
     marker_class: str | None
     explicit_phases: bool
     sheet: bool
+    fact_observations: tuple[FactObservation, ...]
     fact_uses: tuple[FactUse, ...]
     period_results: tuple[PeriodResult, ...]
 
@@ -83,6 +115,7 @@ class EvidenceBook:
     explicit_phases: bool
     plan_content_sha256: str | None
     sheet: bool = False
+    observations: list[FactObservation] | None = None
     fact_uses: list[FactUse] | None = None
     notes: list[dict] | None = None
     origins: dict | None = None
@@ -90,6 +123,7 @@ class EvidenceBook:
     fallback: dict | None = None
 
     def __post_init__(self) -> None:
+        self.observations = [] if self.observations is None else self.observations
         self.fact_uses = [] if self.fact_uses is None else self.fact_uses
         self.notes = [] if self.notes is None else self.notes
         self.origins = {} if self.origins is None else self.origins
@@ -107,6 +141,7 @@ class EvidenceBook:
             marker_class=self.marker_class,
             explicit_phases=self.explicit_phases,
             sheet=self.sheet,
+            fact_observations=tuple(self.observations or ()),
             fact_uses=tuple(self.fact_uses or ()),
             period_results=tuple(self.periods or ()),
         )
