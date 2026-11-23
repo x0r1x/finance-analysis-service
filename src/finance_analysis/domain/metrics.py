@@ -11,9 +11,17 @@ from __future__ import annotations
 import json
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
+from types import MappingProxyType
 from typing import Any
 
 from finance_analysis.domain.binding_resolution import declared_concept
+from finance_analysis.domain.calculation_evidence import (
+    CalculationOutcome,
+    EvidenceBook,
+    FactUse,
+    PeriodResult,
+    TransformationStep,
+)
 from finance_analysis.domain.mapping import marked_line_code
 from finance_analysis.domain.metric_contract import BoundInputs, implements
 from finance_analysis.domain.model_type import sheet_name_key
@@ -330,6 +338,132 @@ def _coverage_from_plan(metric: str, plan: Any, bindings: list[dict]) -> dict | 
     }
 
 
+_TRACE_METRICS = {"dscr", "icr", "icr_ebit"}
+_IMPLEMENTATION = {"dscr": "dscr@1", "icr": "icr@1", "icr_ebit": "icr_ebit@1"}
+
+
+def _step(steps: list, operation: str, refs, output, **parameters) -> None:
+    steps.append(
+        TransformationStep(
+            step_id=len(steps) + 1,
+            operation=operation,
+            input_refs=tuple(refs),
+            output_value=output,
+            parameters=MappingProxyType(parameters),
+        )
+    )
+
+
+def _remember(book: EvidenceBook | None, period: dict, status: str, reason: str | None, steps, value=None, numerator=None, denominator=None) -> None:
+    if book is None:
+        return
+    book.periods.append(
+        PeriodResult(
+            axis_id=period.get("axis_id"),
+            period_id=period.get("period_id"),
+            status=status,
+            reason=reason,
+            value=value,
+            numerator=numerator,
+            denominator=denominator,
+            steps=tuple(steps),
+        )
+    )
+
+
+def _seal(book: EvidenceBook, result: dict) -> CalculationOutcome:
+    if book.metric not in _TRACE_METRICS:
+        return CalculationOutcome(result, None)
+    status = result.get("status")
+    if status in {"scale_unconfirmed", "basis_mismatch", "input_absent"}:
+        execution = "refused"
+    elif status in {"needs_input", "missing_input", "not_computed"}:
+        execution = "not_run"
+    else:
+        execution = "succeeded"
+    if not book.periods:
+        for row in result.get("rows") or []:
+            book.periods.append(
+                PeriodResult(
+                    axis_id=row.get("axis_id"),
+                    period_id=row.get("period_id"),
+                    status=str(row.get("status")),
+                    reason=row.get("reason"),
+                    value=row.get("value"),
+                    numerator=None,
+                    denominator=None,
+                    steps=(),
+                )
+            )
+    return CalculationOutcome(result, book.freeze(execution, _IMPLEMENTATION[book.metric]))
+
+
+def _note(book: EvidenceBook | None, concept: str | None, key) -> dict | None:
+    if book is None or concept is None:
+        return None
+    for item in book.notes or []:
+        if item.get("concept") == concept and item.get("key") == key:
+            return item
+    return None
+
+
+def _exclusion(book: EvidenceBook | None, key) -> dict | None:
+    if book is None:
+        return None
+    for item in book.notes or []:
+        if item.get("key") == key and item.get("reason") == "previous_ytd_missing":
+            return item
+    return None
+
+
+def _uses(book: EvidenceBook | None, concept: str | None, key, aligned: dict) -> tuple:
+    if book is None or concept is None:
+        return ()
+    found = []
+    for item in book.fact_uses or []:
+        if item.concept != concept:
+            continue
+        own = (item.axis_id, item.period_id)
+        if aligned.get(own, own) == key:
+            found.append(item)
+    return tuple(found)
+
+
+def _restate_step(steps: list, note: dict) -> None:
+    cells = tuple(note["current_cells"]) + tuple(note["previous_cells"])
+    _step(
+        steps,
+        "period_restatement",
+        tuple(f"cell:{cell}" for cell in cells),
+        note["difference"],
+        current_cells=note["current_cells"],
+        previous_cells=note["previous_cells"],
+        current_raw=note["current_raw"],
+        previous_raw=note["previous_raw"],
+        current_effective=note["current_effective"],
+        previous_effective=note["previous_effective"],
+        difference=note["difference"],
+        year=note["year"],
+        reset_rule=note["reset_rule"],
+        reason=note["reason"],
+    )
+
+
+def _scale_steps(steps: list, uses) -> None:
+    for item in uses:
+        if item.effective_value == item.raw_value:
+            continue
+        ref = f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}"
+        _step(
+            steps,
+            "scale_normalization",
+            (ref,),
+            item.effective_value,
+            field=item.field,
+            raw=item.raw_value,
+        )
+
+
 @implements("dscr", "dscr", implementation_version="dscr@1", inputs=DSCR_INPUTS)
 @implements("icr", "icr", implementation_version="icr@1", inputs=ICR_INPUTS)
 @implements("icr_ebit", "icr_ebit", implementation_version="icr_ebit@1", inputs=ICR_EBIT_INPUTS)
@@ -353,19 +487,65 @@ def coverage_ratio(
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
     Такое понятие не берётся из автоматической привязки, только из явного
-    `concept.set` человека, который отменяет отметку.
+    `concept.set` человека, который отменяет отметку. Словарь — это ``result``
+    одного прохода. План этого прохода читают ``_plan_rows`` и
+    ``_coverage_from_plan``.
     """
+
+    return calculate_coverage(
+        metric=metric,
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase=period_phase,
+        explicit_phases=explicit_phases,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        absent=absent,
+        interest_order=interest_order,
+        row_fallbacks=row_fallbacks,
+        profile=profile,
+        declared=declared,
+        plan=plan,
+    ).result
+
+
+def calculate_coverage(
+    *,
+    metric: str,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    period_phase: dict[tuple[str, str], str | None],
+    explicit_phases: bool,
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    absent: frozenset[str] = frozenset(),
+    interest_order: dict | None = None,
+    row_fallbacks: dict | None = None,
+    profile: dict | None = None,
+    declared: tuple[str, ...] | None = None,
+    plan: Any | None = None,
+) -> CalculationOutcome:
+    """Единственный проход. ``result`` — прежнее тело ``coverage_ratio``."""
 
     from finance_analysis.domain.coverage import is_coverage_test_period
 
+    book = EvidenceBook(
+        metric=metric,
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        explicit_phases=explicit_phases,
+        plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
+    )
     if metric in {"icr", "icr_ebit"}:
         blocked = methodology_block(profile, bindings, metric=metric)
         if blocked:
-            return blocked
+            return _seal(book, blocked)
     if plan is not None:
         early = _coverage_from_plan(metric, plan, bindings)
         if early is not None:
-            return early
+            return _seal(book, early)
         primaries = _plan_rows(plan, bindings)
         warnings = [item.as_dict() for item in plan.warnings]
         fallback_parts, needed, denominator_name, numerator_name = _plan_roles(metric, plan)
@@ -395,7 +575,10 @@ def coverage_ratio(
             if warning:
                 warnings.append(warning)
         else:
-            return {"metric": metric, "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"}
+            return _seal(
+                book,
+                {"metric": metric, "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"},
+            )
         missing = [name for name in needed if name not in primaries]
         numerator_name = None
         if metric == "icr_ebit":
@@ -420,25 +603,31 @@ def coverage_ratio(
                 if row.get("status") == "ambiguous" and declared_concept(row) in watched
             ]
     if ambiguous:
-        return {
-            "metric": metric,
-            "rows": [],
-            "needs_input": [{"kind": "concept", "reason": "ambiguous", "subject": ambiguous[0]}],
-            "missing_inputs": missing or [ambiguous[0]],
-            "warnings": warnings,
-            "status": "needs_input",
-        }
+        return _seal(
+            book,
+            {
+                "metric": metric,
+                "rows": [],
+                "needs_input": [{"kind": "concept", "reason": "ambiguous", "subject": ambiguous[0]}],
+                "missing_inputs": missing or [ambiguous[0]],
+                "warnings": warnings,
+                "status": "needs_input",
+            },
+        )
     if missing:
         subject = missing[0]
         reason = "absent_in_book" if subject in absent_concepts(bindings, absent) else "concept_unknown"
-        return {
-            "metric": metric,
-            "rows": [],
-            "needs_input": [{"kind": "concept", "reason": reason, "subject": subject}],
-            "missing_inputs": list(missing),
-            "warnings": warnings,
-            "status": "missing_input",
-        }
+        return _seal(
+            book,
+            {
+                "metric": metric,
+                "rows": [],
+                "needs_input": [{"kind": "concept", "reason": reason, "subject": subject}],
+                "missing_inputs": list(missing),
+                "warnings": warnings,
+                "status": "missing_input",
+            },
+        )
     numerator_basis = _flow_basis(primaries[numerator_name])
     denominator_basis = _flow_basis(primaries[denominator_name])
     named = {numerator_name: primaries[numerator_name], denominator_name: primaries[denominator_name]}
@@ -446,56 +635,84 @@ def coverage_ratio(
         named["principal"] = primaries["principal"]
     if unconfirmed_scale(facts, list(named.values())):
         components, scales = _scale_bundle(facts, named)
-        return _explained(
-            metric,
-            periods,
-            "scale_unconfirmed",
-            SCALE_UNCONFIRMED,
-            warnings,
-            home=_home_period(facts, primaries[numerator_name], periods),
-            components=components,
-            scales=scales,
+        return _seal(
+            book,
+            _explained(
+                metric,
+                periods,
+                "scale_unconfirmed",
+                SCALE_UNCONFIRMED,
+                warnings,
+                home=_home_period(facts, primaries[numerator_name], periods),
+                components=components,
+                scales=scales,
+            ),
         )
     if fallback_parts is not None and _flow_basis(primaries["principal"]) != denominator_basis:
-        return _explained(metric, periods, "basis_mismatch", MIXED_BASIS, warnings)
+        return _seal(book, _explained(metric, periods, "basis_mismatch", MIXED_BASIS, warnings))
     if numerator_basis != denominator_basis and not (numerator_basis == "ltm" and denominator_basis == "period"):
         message = MIXED_BASIS
         if metric in {"icr", "icr_ebit"}:
             message = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name]) or MIXED_BASIS
-        return _explained(metric, periods, "basis_mismatch", message, warnings)
+        return _seal(book, _explained(metric, periods, "basis_mismatch", message, warnings))
     sheet = _assume_sheet_units(facts, list(named.values()), warnings)
+    book.sheet = sheet
     if numerator_basis == "ltm" and denominator_basis == "period":
         extra = []
         if fallback_parts is not None:
             extra.append(primaries["principal"])
-        return _ltm_numerator(
-            metric,
-            facts,
-            primaries[numerator_name],
-            primaries[denominator_name],
-            periods,
-            warnings,
-            sign_convention,
-            period_phase=period_phase,
-            explicit_phases=explicit_phases,
-            marker_class=marker_class,
-            sheet=sheet,
-            extra_denominators=extra,
+        return _seal(
+            book,
+            _ltm_numerator(
+                metric,
+                facts,
+                primaries[numerator_name],
+                primaries[denominator_name],
+                periods,
+                warnings,
+                sign_convention,
+                period_phase=period_phase,
+                explicit_phases=explicit_phases,
+                marker_class=marker_class,
+                sheet=sheet,
+                extra_denominators=extra,
+                book=book,
+                numerator_name=numerator_name,
+                denominator_name=denominator_name,
+            ),
         )
     aligned = aligned_keys(periods)
-    numerator = _sums(facts, primaries[numerator_name], aligned, periods, sheet=sheet)
+    numerator = _sums(facts, primaries[numerator_name], aligned, periods, sheet=sheet, book=book, concept=numerator_name)
     if fallback_parts is None:
-        denominator = _sums(facts, primaries[denominator_name], aligned, periods, sheet=sheet)
+        denominator = _sums(
+            facts, primaries[denominator_name], aligned, periods, sheet=sheet, book=book, concept=denominator_name
+        )
         home = _axes_of(facts, primaries[denominator_name])
     else:
-        paid = _sums(facts, primaries[fallback_parts[0]], aligned, periods, sheet=sheet)
-        repaid = _sums(facts, primaries["principal"], aligned, periods, sheet=sheet)
+        paid = _sums(
+            facts,
+            primaries[fallback_parts[0]],
+            aligned,
+            periods,
+            sheet=sheet,
+            book=book,
+            concept=fallback_parts[0],
+        )
+        repaid = _sums(facts, primaries["principal"], aligned, periods, sheet=sheet, book=book, concept="principal")
         # Платёж считается по каждой части отдельно и только потом складывается.
         # Сумма до знака уменьшает знаменатель, если у частей разные знаки.
-        denominator = {
-            key: _payment(paid[key], sign_convention) + _payment(repaid[key], sign_convention)
-            for key in paid.keys() & repaid.keys()
-        }
+        denominator = {}
+        for key in paid.keys() & repaid.keys():
+            left = _payment(paid[key], sign_convention)
+            right = _payment(repaid[key], sign_convention)
+            denominator[key] = left + right
+            book.fallback[key] = {
+                "parts": (
+                    {"concept": fallback_parts[0], "before": paid[key], "after": left},
+                    {"concept": "principal", "before": repaid[key], "after": right},
+                ),
+                "assembled": left + right,
+            }
         home = _axes_of(facts, primaries[fallback_parts[0]]) | _axes_of(facts, primaries["principal"])
     if metric in {"icr", "icr_ebit"} and _numerator_misses_axis(numerator, denominator, periods, aligned, home):
         raw = _sums(facts, primaries[numerator_name], aligned, None, sheet=sheet)
@@ -506,15 +723,23 @@ def coverage_ratio(
             )
         else:
             message = "Числитель ICR не содержит значений на оси процентов. Коэффициент не рассчитан."
-        return _explained(metric, periods, "input_absent", message, warnings)
+        return _seal(book, _explained(metric, periods, "input_absent", message, warnings))
     rows = []
     for period in periods:
         axis, period_id = period["axis_id"], period["period_id"]
         if axis not in home:
+            _remember(book, period, "skipped", "axis_not_home", ())
             continue
         key = aligned.get((axis, period_id), (axis, period_id))
+        excluded = _exclusion(book, key)
         # shortcut: период без числителя или знаменателя пропускается, ноль вместо факта не подставляется
         if key not in denominator or key not in numerator:
+            if excluded is not None:
+                steps = []
+                _restate_step(steps, excluded)
+                _remember(book, period, "skipped", "previous_ytd_missing", steps)
+            else:
+                _remember(book, period, "skipped", "missing_side", ())
             continue
         den = denominator[key]
         payment = _payment(den, sign_convention)
@@ -523,21 +748,46 @@ def coverage_ratio(
             phase = period_phase.get((axis, period.get("period_key_base") or period_id))
         marker = period.get("marker_class")
         if marker_class and marker and marker != marker_class:
+            _remember(book, period, "skipped", "marker_mismatch", ())
             continue
         if metric == "dscr" and not is_coverage_test_period(
             debt_service_nonzero=payment != 0,
             phase=phase,
             explicit_phases=explicit_phases,
         ):
+            _remember(book, period, "skipped", "not_coverage_test_period", ())
             continue
+        steps = _period_steps(
+            book,
+            key=key,
+            aligned=aligned,
+            denominator_name=denominator_name,
+            den=den,
+            payment=payment,
+            sign_convention=sign_convention,
+        )
         if payment == 0:
             rows.append(_row(metric, period, None, "no_debt_service" if metric == "dscr" else "missing_input", "zero_denominator"))
+            _remember(book, period, "no_debt_service" if metric == "dscr" else "missing_input", "zero_denominator", steps, denominator=payment)
             continue
         num = numerator[key]
         with localcontext() as ctx:
             ctx.prec = 38
             ctx.rounding = "ROUND_HALF_EVEN"
-            value = quantize_ratio(num / payment)
+            raw_ratio = num / payment
+            value = quantize_ratio(raw_ratio)
+        _scale_steps(steps, _uses(book, numerator_name, key, aligned))
+        _step(steps, "division", _side_refs(book, numerator_name, denominator_name, key, aligned), raw_ratio, numerator=num, denominator=payment)
+        if value != raw_ratio:
+            _step(
+                steps,
+                "quantization",
+                (f"step:{steps[-1].step_id}",),
+                value,
+                precision=38,
+                quantum=RATIO,
+                rounding="ROUND_HALF_EVEN",
+            )
         built = _row(metric, period, value, "computed", None)
         built["components"] = {
             numerator_name: _component_cells(facts, primaries[numerator_name], [period]),
@@ -546,7 +796,75 @@ def coverage_ratio(
         if fallback_parts is not None:
             built["components"]["principal"] = _component_cells(facts, primaries["principal"], [period])
         rows.append(built)
-    return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
+        _remember(book, period, "computed", None, steps, value=value, numerator=num, denominator=payment)
+    return _seal(book, {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"})
+
+
+def _side_refs(book, numerator_name, denominator_name, key, aligned) -> tuple[str, ...]:
+    refs = []
+    for concept in (numerator_name, denominator_name):
+        for item in _uses(book, concept, key, aligned):
+            refs.append(f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}")
+    return tuple(refs)
+
+
+def _period_steps(book, *, key, aligned, denominator_name, den, payment, sign_convention):
+    steps: list = []
+    info = None if book is None else (book.fallback or {}).get(key)
+    if info is not None:
+        for part in info["parts"]:
+            note = _note(book, part["concept"], key)
+            _scale_steps(steps, _uses(book, part["concept"], key, aligned))
+            if note is not None and note.get("reason") is None:
+                _restate_step(steps, note)
+            if part["after"] != part["before"]:
+                _step(
+                    steps,
+                    "sign_conversion",
+                    _origin_refs(book, part["concept"], key),
+                    part["after"],
+                    before=part["before"],
+                    after=part["after"],
+                    rule=sign_convention,
+                )
+        _step(steps, "denominator_assembly", tuple(f"step:{item.step_id}" for item in steps), info["assembled"])
+        if payment != info["assembled"]:
+            _step(
+                steps,
+                "sign_conversion",
+                (f"step:{steps[-1].step_id}",),
+                payment,
+                before=info["assembled"],
+                after=payment,
+                rule=sign_convention,
+            )
+        return steps
+    note = _note(book, denominator_name, key)
+    _scale_steps(steps, _uses(book, denominator_name, key, aligned))
+    if note is not None and note.get("reason") is None:
+        _restate_step(steps, note)
+    else:
+        refs = _origin_refs(book, denominator_name, key)
+        if len(refs) != 1:
+            _step(steps, "aggregation", refs, den, side="denominator")
+    if payment != den:
+        _step(
+            steps,
+            "sign_conversion",
+            (f"step:{steps[-1].step_id}",) if steps else _origin_refs(book, denominator_name, key),
+            payment,
+            before=den,
+            after=payment,
+            rule=sign_convention,
+        )
+    return steps
+
+
+def _origin_refs(book, concept, key) -> tuple[str, ...]:
+    if book is None or concept is None:
+        return ()
+    origin = (book.origins or {}).get(concept, {}).get(key) or {}
+    return tuple(origin.get("refs") or ())
 
 
 @implements("dscr", "dscr.pf", implementation_version="dscr.pf@1", inputs=DSCR_INPUTS)
@@ -1026,6 +1344,9 @@ def _ltm_numerator(
     marker_class: str | None,
     sheet: bool = False,
     extra_denominators: list[dict] | None = None,
+    book: EvidenceBook | None = None,
+    numerator_name: str | None = None,
+    denominator_name: str | None = None,
 ) -> dict:
     """Числитель `ltm` делится на сумму знаменателя за двенадцать месяцев до его конца.
 
@@ -1039,11 +1360,18 @@ def _ltm_numerator(
     from finance_analysis.domain.coverage import is_coverage_test_period
 
     aligned = aligned_keys(periods)
-    numerator = _sums(facts, numerator_binding, aligned, periods, sheet=sheet)
+    numerator_concept = _bound_name(numerator_binding, numerator_name or ("cfads" if metric == "dscr" else "ebitda"))
+    numerator = _sums(facts, numerator_binding, aligned, periods, sheet=sheet, book=book, concept=numerator_concept)
     denominator_bindings = [denominator_binding, *(extra_denominators or [])]
-    denominators = [
-        (binding, _sums(facts, binding, aligned, periods, sheet=sheet)) for binding in denominator_bindings
-    ]
+    denominators = []
+    concepts: dict[int, str] = {}
+    for binding in denominator_bindings:
+        default = denominator_name if binding is denominator_binding and denominator_name else (
+            "debt_service" if metric == "dscr" else "interest"
+        )
+        name = _bound_name(binding, default)
+        concepts[id(binding)] = name
+        denominators.append((binding, _sums(facts, binding, aligned, periods, sheet=sheet, book=book, concept=name)))
     numerator_axes = _axes_of(facts, numerator_binding)
     denominator_axes = _axes_of(facts, denominator_binding)
     ordered = _dated_periods([period for period in periods if period["axis_id"] in denominator_axes])
@@ -1052,27 +1380,35 @@ def _ltm_numerator(
     for period in _dated_periods([period for period in periods if period["axis_id"] in numerator_axes]):
         marker = period.get("marker_class")
         if marker_class and marker and marker != marker_class:
+            _remember(book, period, "skipped", "marker_mismatch", ())
             continue
         key = aligned.get((period["axis_id"], period["period_id"]), (period["axis_id"], period["period_id"]))
         if key not in numerator:
+            _remember(book, period, "skipped", "missing_side", ())
             continue
         window = _window(ordered, period, "lookback")
         if window is None:
             rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
+            _remember(book, period, "partial_window", "partial_window", ())
             continue
         total = Decimal(0)
         complete = True
+        signed_parts = []
         for item in window:
             dkey = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
-            for _binding, series in denominators:
+            for binding, series in denominators:
                 if dkey not in series:
                     complete = False
                     break
-                total += _payment(series[dkey], sign_convention)
+                raw = series[dkey]
+                signed = _payment(raw, sign_convention)
+                total += signed
+                signed_parts.append((binding, dkey, raw, signed))
             if not complete:
                 break
         if not complete:
             rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
+            _remember(book, period, "partial_window", "partial_window", ())
             continue
         phase = period_phase.get((period["axis_id"], period["period_id"]))
         if metric == "dscr" and not is_coverage_test_period(
@@ -1080,15 +1416,40 @@ def _ltm_numerator(
             phase=phase,
             explicit_phases=explicit_phases,
         ):
+            _remember(book, period, "skipped", "not_coverage_test_period", ())
             continue
         if total == 0:
             status = "no_debt_service" if metric == "dscr" else "missing_input"
             rows.append(_row(metric, period, None, status, "zero_denominator"))
+            _remember(book, period, status, "zero_denominator", (), denominator=total)
             continue
         with localcontext() as ctx:
             ctx.prec = 38
             ctx.rounding = "ROUND_HALF_EVEN"
-            value = quantize_ratio(numerator[key] / total)
+            raw_ratio = numerator[key] / total
+            value = quantize_ratio(raw_ratio)
+        steps = []
+        refs: list[str] = []
+        for binding, dkey, raw, signed in signed_parts:
+            part_refs = _origin_refs(book, concepts[id(binding)], dkey)
+            refs.extend(part_refs)
+            if signed != raw:
+                _step(steps, "sign_conversion", part_refs, signed, before=raw, after=signed, rule=sign_convention)
+        unique = tuple(dict.fromkeys(refs))
+        if len(unique) != 1:
+            _step(steps, "aggregation", unique, total, side="denominator")
+        _step(steps, "division", unique, raw_ratio, numerator=numerator[key], denominator=total)
+        if value != raw_ratio:
+            _step(
+                steps,
+                "quantization",
+                (f"step:{steps[-1].step_id}",),
+                value,
+                precision=38,
+                quantum=RATIO,
+                rounding="ROUND_HALF_EVEN",
+            )
+        _remember(book, period, "computed", None, steps, value=value, numerator=numerator[key], denominator=total)
         row = _row(metric, period, value, "computed", None)
         row["window"] = [item["period_id"] for item in window]
         numerator_name = _bound_name(numerator_binding, "cfads" if metric == "dscr" else "ebitda")
@@ -1277,6 +1638,8 @@ def _sums(
     periods: list[dict] | None = None,
     *,
     sheet: bool = False,
+    book: EvidenceBook | None = None,
+    concept: str | None = None,
 ) -> dict[tuple, Decimal]:
     """Сумма строки по ключу шкалы. Нарастающий итог переводится в значение за период.
 
@@ -1286,20 +1649,59 @@ def _sums(
     """
 
     totals: dict[tuple, Decimal] = {}
+    grouped: dict[tuple, list[dict]] = {}
     row_key = binding["row_key"]
     aligned = aligned or {}
+    located = {(period.get("axis_id"), period.get("period_id")): period for period in periods or []}
     for fact in facts:
         if fact.get("row_key") != row_key:
             continue
-        number = _figure(fact, sheet=sheet)
-        if number is None:
+        number, field, raw = _figure_taken(fact, sheet=sheet)
+        if number is None or field is None or raw is None:
             continue
         own = (fact["axis_id"], fact["period_id"])
         key = aligned.get(own, own)
         totals[key] = totals.get(key, Decimal(0)) + Decimal(number)
+        cell = fact.get("cell_id")
+        ref = f"cell:{cell}" if cell else f"fact:{fact['axis_id']}:{fact['period_id']}"
+        grouped.setdefault(key, []).append({"cell": str(cell) if cell else None, "ref": ref, "raw": raw, "effective": number})
+        if book is not None and concept is not None:
+            period = located.get(own) or {}
+            index = period.get("period_index")
+            book.fact_uses.append(
+                FactUse(
+                    concept=concept,
+                    cell_id=str(cell) if cell else None,
+                    axis_id=str(fact["axis_id"]),
+                    period_id=str(fact["period_id"]),
+                    timeline_id=None if period.get("timeline_id") is None else str(period.get("timeline_id")),
+                    period_index=None if index is None else int(index),
+                    field=field,
+                    sheet=sheet,
+                    raw_value=raw,
+                    effective_value=number,
+                )
+            )
+    origins = {
+        key: {
+            "cells": tuple(item["cell"] for item in items if item["cell"]),
+            "refs": tuple(item["ref"] for item in items),
+            "raw": sum((item["raw"] for item in items), Decimal(0)),
+            "effective": totals[key],
+        }
+        for key, items in grouped.items()
+    }
+    if book is not None and concept is not None:
+        book.origins.setdefault(concept, {}).update(origins)
     if periods is None:
         return totals
-    return restate_series(totals, binding, periods, aligned)
+    journal: list | None = [] if book is not None else None
+    restated = restate_series(totals, binding, periods, aligned, journal=journal, origins=origins)
+    if book is not None and journal:
+        for note in journal:
+            note["concept"] = concept
+        book.notes.extend(journal)
+    return restated
 
 
 def _component_cells(facts: list[dict], binding: dict, periods: list[dict]) -> list[str]:
@@ -1417,20 +1819,38 @@ def _figure(fact: dict, *, sheet: bool = False) -> Decimal | None:
     если нормализованное значение его ещё не учитывает.
     """
 
-    raw = _decimal(fact.get("value_dec"))
-    if raw is None:
-        raw = _decimal(fact.get("value"))
+    value, _field, _raw = _figure_taken(fact, sheet=sheet)
+    return value
+
+
+def _figure_taken(fact: dict, *, sheet: bool = False) -> tuple[Decimal | None, str | None, Decimal | None]:
+    """Эффективное значение, поле, из которого оно взято, и сырое значение этого поля."""
+
+    raw_dec = _decimal(fact.get("value_dec"))
+    raw_val = _decimal(fact.get("value"))
     norm = _decimal(fact.get("normalized_value"))
+    sheet_field = "value_dec" if raw_dec is not None else ("value" if raw_val is not None else None)
+    sheet_raw = raw_dec if raw_dec is not None else raw_val
     if sheet:
-        return raw if raw is not None else norm
+        if sheet_raw is not None:
+            return sheet_raw, sheet_field, sheet_raw
+        if norm is not None:
+            return norm, "normalized_value", norm
+        return None, None, None
     scale = _scale(fact.get("scale_factor"))
     if scale is None or scale == 1:
-        return norm if norm is not None else raw
-    if raw is not None and norm is not None and _close(norm, raw * scale):
-        return norm
-    if raw is not None and (norm is None or norm == raw):
-        return raw * scale
-    return norm
+        if norm is not None:
+            return norm, "normalized_value", norm
+        if sheet_raw is not None:
+            return sheet_raw, sheet_field, sheet_raw
+        return None, None, None
+    if sheet_raw is not None and norm is not None and _close(norm, sheet_raw * scale):
+        return norm, "normalized_value", norm
+    if sheet_raw is not None and (norm is None or norm == sheet_raw):
+        return sheet_raw * scale, sheet_field, sheet_raw
+    if norm is not None:
+        return norm, "normalized_value", norm
+    return None, None, None
 
 
 def _decimal(value) -> Decimal | None:
