@@ -191,18 +191,36 @@ def adscr(
     не считается.
     """
 
-    dscr = _dscr_result(
-        facts=facts,
-        bindings=bindings,
-        periods=periods,
-        period_phase=period_phase,
-        explicit_phases=explicit_phases,
-        sign_convention=sign_convention,
-        marker_class=marker_class,
-        absent=absent,
-        plan=plan,
-        with_evidence=collect is not None,
-    )
+    source = None
+    if collect is None:
+        dscr = _dscr_result(
+            facts=facts,
+            bindings=bindings,
+            periods=periods,
+            period_phase=period_phase,
+            explicit_phases=explicit_phases,
+            sign_convention=sign_convention,
+            marker_class=marker_class,
+            absent=absent,
+            plan=plan,
+            with_evidence=False,
+        )
+    else:
+        outcome = calculate_coverage(
+            metric="dscr",
+            facts=facts,
+            bindings=bindings,
+            periods=periods,
+            period_phase=period_phase,
+            explicit_phases=explicit_phases,
+            sign_convention=sign_convention,
+            marker_class=marker_class,
+            absent=absent,
+            plan=plan,
+            evidence=True,
+        )
+        dscr = outcome.result
+        source = outcome.evidence
     if dscr["status"] != "succeeded":
         return {**dscr, "metric": "adscr"}
     primaries = _core_rows(bindings, absent, plan)
@@ -260,6 +278,7 @@ def adscr(
             collect,
             rows,
             sums,
+            source,
             sign_convention=sign_convention,
             marker_class=marker_class,
             explicit_phases=explicit_phases,
@@ -391,7 +410,17 @@ def _dscr_result(**kwargs) -> dict:
     return calculate_coverage(metric="dscr", evidence=True, **kwargs).result
 
 
-def _keep_adscr(collect, rows, sums, *, sign_convention, marker_class, explicit_phases, direction) -> None:
+def _carry_source(book: EvidenceBook, source) -> None:
+    """Переносит факты, использования и масштаб исходного расчёта в новую улику."""
+
+    book.observations = list(source.fact_observations)
+    book.fact_uses = list(source.fact_uses)
+    book.basis_sides = list(source.basis_sides)
+    book.sums_additions = source.sums_additions
+    book.plan_content_sha256 = source.plan_content_sha256
+
+
+def _keep_adscr(collect, rows, sums, source, *, sign_convention, marker_class, explicit_phases, direction) -> None:
     periods = []
     for row in rows:
         if row["status"] != "computed":
@@ -434,38 +463,55 @@ def _keep_adscr(collect, rows, sums, *, sign_convention, marker_class, explicit_
         explicit_phases=explicit_phases,
         plan_content_sha256=None,
     )
-    book.periods = periods
+    if source is not None:
+        _carry_source(book, source)
+    book.periods = [*periods, *(source.period_results if source is not None else ())]
     collect.append(book.freeze("succeeded", REGISTRY[("adscr", "adscr")].implementation_version))
 
 
 def _keep_reduction(collect, metric, rows, source, *, sign_convention, marker_class, explicit_phases) -> None:
-    cited = [period for period in source.period_results if period.status == "computed"]
-    refs = tuple(f"period:{period.axis_id}:{period.period_id}" for period in cited)
-    steps = []
+    axes = []
     for row in rows:
-        if row.get("status") != "computed":
+        if row.get("status") == "computed" and row.get("axis_id") not in axes:
+            axes.append(row.get("axis_id"))
+    summaries = []
+    for axis in axes:
+        cited = [
+            period
+            for period in source.period_results
+            if period.status == "computed" and period.axis_id == axis
+        ]
+        refs = tuple(f"period:{period.axis_id}:{period.period_id}" for period in cited)
+        steps = []
+        for row in rows:
+            if row.get("status") != "computed" or row.get("axis_id") != axis:
+                continue
+            steps.append(
+                TransformationStep(
+                    len(steps) + 1,
+                    metric,
+                    refs,
+                    row["value"],
+                    {"variant": row.get("variant"), "over": list(row.get("over") or [])},
+                )
+            )
+        if not steps:
             continue
-        steps.append(
-            TransformationStep(
-                len(steps) + 1,
-                metric,
-                refs,
-                row["value"],
-                {"variant": row.get("variant"), "over": list(row.get("over") or [])},
+        first = next(row for row in rows if row.get("status") == "computed" and row.get("axis_id") == axis)
+        summaries.append(
+            PeriodResult(
+                axis_id=axis,
+                period_id=None,
+                status="computed",
+                reason=None,
+                value=first["value"],
+                numerator=None,
+                denominator=None,
+                steps=tuple(steps),
             )
         )
-    if not steps:
+    if not summaries:
         return
-    summary = PeriodResult(
-        axis_id=rows[0].get("axis_id"),
-        period_id=None,
-        status="computed",
-        reason=None,
-        value=rows[0]["value"],
-        numerator=None,
-        denominator=None,
-        steps=tuple(steps),
-    )
     book = EvidenceBook(
         metric=metric,
         sign_convention=sign_convention,
@@ -473,7 +519,8 @@ def _keep_reduction(collect, metric, rows, source, *, sign_convention, marker_cl
         explicit_phases=explicit_phases,
         plan_content_sha256=source.plan_content_sha256,
     )
-    book.periods = [*cited, summary]
+    _carry_source(book, source)
+    book.periods = [*source.period_results, *summaries]
     collect.append(book.freeze("succeeded", REGISTRY[(metric, metric)].implementation_version))
 
 

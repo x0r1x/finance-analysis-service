@@ -68,6 +68,30 @@ def test_adscr_evidence_names_the_window_and_the_sums():
     assert period.denominator == step.parameters["debt_service_sum"]
     assert period.numerator == Decimal(100)
     assert period.denominator == Decimal(80)
+    assert collected[0].fact_observations
+    assert collected[0].fact_uses
+    window_step = step
+    source_periods = [
+        item
+        for item in collected[0].period_results
+        if not any(one.operation == "adscr_window" for one in item.steps)
+    ]
+    source_refs = {f"period:{item.axis_id}:{item.period_id}" for item in source_periods}
+    assert set(window_step.input_refs) <= source_refs
+    assert source_refs
+    cited = {
+        ref
+        for item in source_periods
+        for one in item.steps
+        for ref in one.input_refs
+        if ref.startswith(("cell:", "fact:"))
+    }
+    observed = {
+        f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}"
+        for item in collected[0].fact_observations
+    }
+    assert cited & observed
+    assert any(item.normalization_source for item in collected[0].fact_observations)
 
 
 def test_dscr_min_and_avg_link_the_published_value_to_source_periods():
@@ -101,3 +125,40 @@ def test_dscr_min_and_avg_link_the_published_value_to_source_periods():
             assert step.input_refs
             assert set(step.input_refs) <= set(linked)
             assert step.output_value in set(linked.values()) or metric == "dscr_avg"
+        assert evidence.fact_observations
+        assert evidence.fact_uses
+        assert evidence.sums_additions > 0
+
+
+def test_reduction_is_separate_per_axis_and_keeps_scale():
+    periods = [
+        _period(period_id="Y1", index=1, axis="Sheet!a"),
+        _period(period_id="Y2", index=2, axis="Sheet!a"),
+        _period(period_id="Y1", index=1, axis="Sheet!b"),
+        _period(period_id="Y2", index=2, axis="Sheet!b"),
+    ]
+    facts = []
+    for axis, cell in (("Sheet!a", "A"), ("Sheet!b", "B")):
+        for period_id, earned, paid in (("Y1", "100", "50"), ("Y2", "90", "30")):
+            for concept, value in (("cfads", earned), ("debt_service", paid)):
+                fact = _fact(concept, value, period_id=period_id, axis=axis)
+                fact["cell_id"] = f"{cell}!{period_id}:{concept}"
+                fact["scale_factor"] = "1000"
+                fact["value"] = value
+                facts.append(fact)
+    common = _common(periods, facts)
+    collected: list = []
+    traced = dscr_reductions("dscr_min", collect=collected, **common)
+    plain = dscr_reductions("dscr_min", **common)
+    assert traced["rows"] == plain["rows"]
+    assert {row["axis_id"] for row in traced["rows"]} == {"Sheet!a", "Sheet!b"}
+    evidence = collected[0]
+    assert {item.cell_id for item in evidence.fact_observations} >= {"A!Y1:cfads", "B!Y1:debt_service"}
+    assert any(item.scale_factor is not None for item in evidence.fact_observations)
+    summaries = [item for item in evidence.period_results if item.period_id is None]
+    assert {item.axis_id for item in summaries} == {"Sheet!a", "Sheet!b"}
+    for summary in summaries:
+        assert summary.steps
+        for step in summary.steps:
+            assert step.input_refs
+            assert all(ref.startswith(f"period:{summary.axis_id}:") for ref in step.input_refs)

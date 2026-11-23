@@ -139,6 +139,8 @@ async def publish_trace(
             pointer.set_state(analysis_id, execution_id, slot)
         except Exception as exc:
             raise TracePublishError("pointer", execution_id) from exc
+    if slot in {"pending_retention", "pending_commit"}:
+        await _reject_different_body(store, key, body, execution_id)
     if slot == "pending_retention":
         if policy is None or retainer is None:
             raise TracePublishError("retention", execution_id) from InvalidArgument("для удержания нужен замок объекта")
@@ -237,14 +239,34 @@ async def delete_analysis_traces(store, pointer, analysis_id: str, *, now: datet
         pointer.delete(analysis_id, row["execution_id"])
 
 
-async def sweep_expired_traces(store, pointer, *, now: datetime) -> None:
+async def sweep_expired_traces(store, pointer, *, now: datetime) -> int:
     """Отдельный проход: срок вышел, анализ ещё не удаляли."""
 
+    from finance_analysis.application.metrics import TRACE_SWEPT
+
+    removed = 0
     for row in pointer.list_all():
         if _still_held(row, now) or not row.get("retained_until"):
             continue
         await store.delete_prefix(row["object_key"])
         pointer.delete(row["analysis_id"], row["execution_id"])
+        removed += 1
+    if removed:
+        TRACE_SWEPT.inc(removed)
+    return removed
+
+
+async def _reject_different_body(store, key: str, body: bytes, execution_id: str) -> None:
+    """Повтор незавершённой записи не подтверждает указатель на чужое тело."""
+
+    try:
+        found = await store.get(key)
+    except NotFound:
+        return
+    if found != body:
+        raise TracePublishError("put", execution_id) from InvalidArgument(
+            "след с этим execution_id уже записан другим телом"
+        )
 
 
 async def _payload(store, pointer, *, analysis_id: str, execution_id: str) -> dict:

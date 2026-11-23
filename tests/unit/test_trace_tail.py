@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -957,22 +958,17 @@ async def test_object_byte_limit_strips_observation_values(tmp_path, monkeypatch
     monkeypatch.setattr("finance_analysis.application.trace_tail.OBJECT_BYTE_LIMIT", 1)
     store = LocalStore(tmp_path / "objects")
     pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
-    await publish_trace(
-        store,
-        pointer,
-        analysis_id="analysis-bytes",
-        execution_id="exec-bytes",
-        evidence=_rich_evidence(),
-        retention="analysis",
-        now=NOW,
-    )
-    stored = await read_trace(store, pointer, analysis_id="analysis-bytes", execution_id="exec-bytes")
-    assert stored["observation_status"] == "truncated"
-    assert stored["fact_observations"] == []
-    assert stored["observation_dropped_count"] >= 1
-    assert "raw_value" not in stored["dropped_observations"][0]
-    body = await store.get("traces/analysis-bytes/exec-bytes.json")
-    assert stored["payload_bytes"] == len(body)
+    with pytest.raises(TraceLimitError):
+        await publish_trace(
+            store,
+            pointer,
+            analysis_id="analysis-bytes",
+            execution_id="exec-bytes",
+            evidence=_rich_evidence(),
+            retention="analysis",
+            now=NOW,
+        )
+    assert pointer.get("analysis-bytes", "exec-bytes") is None
 
 
 def test_every_catalog_metric_names_its_evidence():
@@ -1221,3 +1217,218 @@ async def test_metric_calculation_failure_still_fails_the_analysis(tmp_path, cap
     assert after == before
     assert not [record for record in caplog.records if record.levelname == "ERROR"]
     assert pointer.list_analysis("01ARZ3NDEKTSV4RRFFQ69G5FAV") == []
+
+
+@pytest.mark.asyncio
+async def test_byte_limit_keeps_the_analysis(tmp_path, monkeypatch, caplog):
+    from prometheus_client import REGISTRY
+
+    from finance_analysis.domain.book import Actor
+
+    monkeypatch.setattr("finance_analysis.application.trace_tail.OBJECT_BYTE_LIMIT", 1)
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    analyses, _payload = _ratio_analyses(store, pointer, retention="analysis")
+    before = REGISTRY.get_sample_value("fas_trace_write_failures_total") or 0
+    with caplog.at_level(logging.ERROR, logger="fas.trace"):
+        envelope = await analyses._execute_ratios(
+            "job", _ratio_target(), "01ARZ3NDEKTSV4RRFFQ69G5FAV", ["dscr"], {}, Actor()
+        )
+    assert envelope["status"] == "succeeded"
+    assert envelope["result_data"]["ratios"][0]["value"] == "2.718281828"
+    assert all(item["evidence_complete"] is False for item in envelope["result_data"]["metrics"])
+    assert "stage=limit" in caplog.text
+    assert "2.718281828" not in caplog.text
+    after = REGISTRY.get_sample_value("fas_trace_write_failures_total") or 0
+    assert after == before + 1
+
+
+def test_fit_object_shrinks_an_empty_observation_list_to_the_limit():
+    from finance_analysis.domain.trace_limit import fit_object
+
+    view = {
+        "fact_observations": [],
+        "dropped_observations": [],
+        "periods": [
+            {
+                "period_id": "Y",
+                "steps": [
+                    {
+                        "operation": "sum",
+                        "parameters": {"blob": "x" * 4000},
+                        "input_refs": [f"cell:{index}" for index in range(40)],
+                    }
+                ],
+            }
+        ],
+        "fact_uses": [{"raw_value": "9" * 500, "effective_value": "9" * 500, "scale_factor": "1000"}],
+        "cited_cells": [],
+    }
+    envelope = {"analysis_id": "a", "execution_id": "e", "dropped_cells": ["cell:z"] * 80}
+    body = fit_object(view, envelope, byte_limit=900)
+    assert len(body) <= 900
+
+
+def test_fit_object_raises_when_nothing_smaller_fits():
+    from finance_analysis.domain.trace_limit import fit_object
+
+    with pytest.raises(TraceLimitError):
+        fit_object(
+            {"fact_observations": [], "periods": [{"note": "x" * 50}]},
+            {"id": "a"},
+            byte_limit=1,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["pending_commit", "pending_retention"])
+async def test_repeat_unfinished_publish_rejects_a_different_body(tmp_path, stage):
+    from finance_analysis.domain.errors import InvalidArgument
+
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    periods = [{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}]
+    other = [{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:other"]}]}]
+    kwargs = {
+        "analysis_id": "analysis-replay",
+        "execution_id": "exec-replay",
+        "periods": periods,
+        "now": NOW,
+    }
+    if stage == "pending_commit":
+
+        def _fail(row: dict) -> None:
+            raise RuntimeError("commit failed")
+
+        pointer.commit = _fail  # type: ignore[method-assign]
+        with pytest.raises(TracePublishError):
+            await publish_trace(store, pointer, retention="analysis", **kwargs)
+    else:
+        with pytest.raises(TracePublishError):
+            await publish_trace(store, pointer, retention="sec_17a4", retainer=_Boom(), **kwargs)
+    before = pointer.get("analysis-replay", "exec-replay")
+    assert before is not None
+    assert before["state"] == stage
+    second = dict(kwargs)
+    second["periods"] = other
+    with pytest.raises(TracePublishError) as raised:
+        await publish_trace(
+            store,
+            pointer,
+            retention="sec_17a4" if stage == "pending_retention" else "analysis",
+            retainer=_Boom() if stage == "pending_retention" else None,
+            **second,
+        )
+    assert raised.value.stage == "put"
+    assert isinstance(raised.value.__cause__, InvalidArgument)
+    again = pointer.get("analysis-replay", "exec-replay")
+    assert again["state"] == stage
+    assert again["state"] != "committed"
+
+
+@pytest.mark.asyncio
+async def test_governance_hold_is_readable(minio_endpoint):
+    """moto GetObjectRetention отвечает 500. Читаем замок у MinIO, если он свободен."""
+
+    import boto3
+
+    from finance_analysis.adapters.storage.trace_retention import S3GovernanceRetainer
+
+    until = datetime(2030, 1, 2, tzinfo=UTC)
+    client = boto3.client(
+        "s3",
+        endpoint_url=minio_endpoint,
+        aws_access_key_id="minioadmin",
+        aws_secret_access_key="minioadmin",
+        region_name="ap-northeast-1",
+    )
+    bucket = f"trace-lock-{os.getpid()}"
+    client.create_bucket(
+        Bucket=bucket,
+        CreateBucketConfiguration={"LocationConstraint": "ap-northeast-1"},
+        ObjectLockEnabledForBucket=True,
+    )
+    client.put_object(Bucket=bucket, Key="kept", Body=b"{}")
+    retainer = S3GovernanceRetainer(
+        bucket=bucket,
+        endpoint=minio_endpoint,
+        region="ap-northeast-1",
+        access_key="minioadmin",
+        secret_key="minioadmin",
+    )
+    await retainer.hold("kept", mode="GOVERNANCE", until=until)
+    found = client.get_object_retention(Bucket=bucket, Key="kept")
+    assert found["Retention"]["Mode"] == "GOVERNANCE"
+    assert found["Retention"]["RetainUntilDate"].replace(tzinfo=UTC) == until
+
+
+def test_sweep_task_is_on_the_scheduler():
+    from finance_analysis.adapters.queue.tasks import SWEEP_TRACES_TASK, register_tasks
+
+    class _Broker:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def register_task(self, fn, task_name=None, schedule=None, **kwargs):
+            self.tasks.append((task_name, schedule))
+
+    broker = _Broker()
+    register_tasks(broker, schedules=True, cron="0 3 * * *", settings=None)
+    scheduled = {name: schedule for name, schedule in broker.tasks}
+    assert scheduled[SWEEP_TRACES_TASK] == [{"cron": "15 3 * * *"}]
+
+
+@pytest.mark.asyncio
+async def test_sweep_task_removes_an_expired_trace(tmp_path):
+    from prometheus_client import REGISTRY
+
+    from finance_analysis.adapters.queue import runtime as runtime_mod
+    from finance_analysis.adapters.queue.runtime import WorkerRuntime
+    from finance_analysis.adapters.queue.tasks import sweep_traces
+
+    class _Locks:
+        def try_lock(self, name: str, ttl_ms: int):
+            class _Guard:
+                async def __aenter__(self):
+                    return 1
+
+                async def __aexit__(self, *args):
+                    return None
+
+            return _Guard()
+
+    store = LocalStore(tmp_path / "objects")
+    settings = Settings(_env_file=None, fas_data_dir=str(tmp_path / "data"))
+    from finance_analysis.adapters.storage.trace_wiring import open_trace_tail
+
+    pointer, _retainer = open_trace_tail(settings)
+    await publish_trace(
+        store,
+        pointer,
+        analysis_id="analysis-sweep-runtime",
+        execution_id="exec-old",
+        periods=[{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}],
+        retention="days:10",
+        now=NOW,
+        retainer=_Retainer(),
+    )
+    assert pointer.get("analysis-sweep-runtime", "exec-old") is not None
+    before = REGISTRY.get_sample_value("fas_trace_swept_total") or 0
+    previous = runtime_mod.RUNTIME
+    runtime_mod.RUNTIME = WorkerRuntime(
+        settings=settings,
+        redis=None,
+        store=store,
+        schedule=None,
+        broker=None,
+        locks=_Locks(),
+    )
+    try:
+        removed = await sweep_traces(now=NOW + timedelta(days=11))
+    finally:
+        runtime_mod.RUNTIME = previous
+    assert removed["removed"] == 1
+    assert pointer.get("analysis-sweep-runtime", "exec-old") is None
+    assert await store.stat("traces/analysis-sweep-runtime/exec-old.json") is None
+    after = REGISTRY.get_sample_value("fas_trace_swept_total") or 0
+    assert after == before + 1

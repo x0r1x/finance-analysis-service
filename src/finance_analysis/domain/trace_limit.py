@@ -226,33 +226,80 @@ def _cap_observations(observations: list[dict], limit: int) -> tuple[list[dict],
 
 
 def fit_object(view: dict, envelope: dict, *, byte_limit: int = OBJECT_BYTE_LIMIT) -> bytes:
-    """Держит объект не больше предела. Сверх предела наблюдение теряет значения."""
+    """Держит объект не больше предела. Сверх предела сначала теряет значения наблюдений.
+
+    Если после этого тело всё ещё больше предела, сжимает использования, отброшенные
+    ссылки и параметры шагов. Несжимаемый остаток — `TraceLimitError`, объект не пишется.
+    """
 
     view.setdefault("fact_observations", [])
     view.setdefault("dropped_observations", [])
     view.setdefault("observation_count", len(view["fact_observations"]) + len(view["dropped_observations"]))
     view.setdefault("observation_dropped_count", len(view["dropped_observations"]))
     view.setdefault("observation_status", "complete" if not view["dropped_observations"] else "truncated")
+    for _ in range(10_000):
+        body = _stable_dump(view, envelope)
+        if len(body) <= byte_limit:
+            return body
+        if not _shrink(view, envelope):
+            raise TraceLimitError("объект следа больше предела")
+    raise TraceLimitError("объект следа больше предела")
+
+
+def _stable_dump(view: dict, envelope: dict) -> bytes:
     body = _dump(view, envelope)
-    for _ in range(int(view["observation_count"]) + 4):
+    for _ in range(6):
         view["payload_bytes"] = len(body)
         nxt = _dump(view, envelope)
-        if nxt == body and len(body) <= byte_limit:
+        if nxt == body:
             return body
         body = nxt
-        if len(body) <= byte_limit:
-            continue
-        if not view["fact_observations"]:
-            view["payload_bytes"] = len(body)
-            return _dump(view, envelope)
-        moved = view["fact_observations"].pop()
+    return body
+
+
+_USE_VALUES = ("raw_value", "effective_value", "scale_factor")
+
+
+def _shrink(view: dict, envelope: dict) -> bool:
+    observations = view.get("fact_observations") or []
+    if observations:
+        moved = observations.pop()
         view["dropped_observations"].append(_strip_observation(moved))
         view["observation_dropped_count"] = len(view["dropped_observations"])
         view["observation_status"] = "truncated"
-        view["payload_bytes"] = 0
-        body = _dump(view, envelope)
-    view["payload_bytes"] = len(body)
-    return _dump(view, envelope)
+        return True
+    for item in reversed(view.get("fact_uses") or []):
+        if isinstance(item, dict) and any(key in item for key in _USE_VALUES):
+            for key in _USE_VALUES:
+                item.pop(key, None)
+            return True
+    if envelope.get("dropped_cells"):
+        envelope["dropped_cells"] = []
+        return True
+    if view.get("dropped_cells"):
+        view["dropped_cells"] = []
+        return True
+    if view.get("dropped_observations"):
+        view["observation_dropped_count"] = len(view["dropped_observations"])
+        view["dropped_observations"] = []
+        view["observation_status"] = "truncated"
+        return True
+    for period in view.get("periods") or []:
+        if not isinstance(period, dict):
+            continue
+        for step in period.get("steps") or []:
+            if isinstance(step, dict) and step.get("parameters"):
+                step["parameters"] = {}
+                return True
+        for step in period.get("steps") or []:
+            if isinstance(step, dict) and step.get("input_refs"):
+                step["input_refs"] = []
+                return True
+        for key, value in list(period.items()):
+            if key not in {"axis_id", "period_id", "status", "steps"} and value:
+                period[key] = None
+                return True
+    return False
 
 
 def _dump(view: dict, envelope: dict) -> bytes:

@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     fas_require_admin_token: bool = Field(default=False, alias="FAS_REQUIRE_ADMIN_TOKEN")
     # COMPLIANCE ставит только оператор бакета (mc mb --with-lock, mc retention set).
     fas_trace_retention: str = Field(default="analysis", alias="FAS_TRACE_RETENTION")
+    trace_sweep_cron: str = Field(default="15 3 * * *", alias="TRACE_SWEEP_CRON")
 
     @model_validator(mode="after")
     def _storage_complete(self) -> Settings:
