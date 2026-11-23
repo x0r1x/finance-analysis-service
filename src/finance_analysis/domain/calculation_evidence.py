@@ -39,6 +39,7 @@ class PeriodResult:
     window_periods: tuple[str, ...] = ()
     window_missing: tuple[str, ...] = ()
     missing_concepts: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    node_id: str | None = None
 
 
 @dataclass(frozen=True)

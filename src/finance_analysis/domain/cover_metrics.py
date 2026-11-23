@@ -452,6 +452,7 @@ def _keep_adscr(collect, rows, sums, source, *, sign_convention, marker_class, e
                     ),
                 ),
                 window_periods=window,
+                node_id=f"period:adscr:{row['axis_id']}:{row['period_id']}",
             )
         )
     if not periods:

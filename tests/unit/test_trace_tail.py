@@ -1327,6 +1327,70 @@ async def test_repeat_unfinished_publish_rejects_a_different_body(tmp_path, stag
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["pending_commit", "pending_retention"])
+async def test_missing_object_is_rewritten_before_commit(tmp_path, stage):
+    """Потерянный объект на незавершённой стадии не подтверждает пустой указатель.
+
+    Повтор пишет тело через put_if_absent, сверяет его и ставит замок, если он нужен.
+    Указатель не становится committed, пока объекта нет.
+    """
+
+    class _Remember(LocalStore):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.bodies: list[tuple[str, bytes]] = []
+
+        async def put_if_absent(self, key: str, data: bytes):
+            self.bodies.append((key, data))
+            return await super().put_if_absent(key, data)
+
+    store = _Remember(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    periods = [{"steps": [{"step_id": 1, "operation": "sum", "input_refs": ["cell:keep"]}]}]
+    kwargs = {
+        "analysis_id": "analysis-missing",
+        "execution_id": "exec-missing",
+        "periods": periods,
+        "retention": "days:10",
+        "now": NOW,
+    }
+    if stage == "pending_commit":
+        retainer = _Retainer()
+
+        def _fail(row: dict) -> None:
+            raise RuntimeError("commit failed")
+
+        pointer.commit = _fail  # type: ignore[method-assign]
+        with pytest.raises(TracePublishError):
+            await publish_trace(store, pointer, retainer=retainer, **kwargs)
+    else:
+        with pytest.raises(TracePublishError):
+            await publish_trace(store, pointer, retainer=_Boom(), **kwargs)
+        retainer = _Retainer()
+    pending = pointer.get("analysis-missing", "exec-missing")
+    assert pending is not None
+    assert pending["state"] == stage
+    key = pending["object_key"]
+    await store.delete_prefix(key)
+    assert await store.stat(key) is None
+    original = DuckDBTracePointer.commit
+
+    def _guarded(row: dict) -> None:
+        assert Path(store.physical(row["object_key"])).is_file()
+        original(pointer, row)
+
+    pointer.commit = _guarded  # type: ignore[method-assign]
+    holds_before = len(retainer.calls)
+    await publish_trace(store, pointer, retainer=retainer, **kwargs)
+    assert pointer.get("analysis-missing", "exec-missing")["state"] == "committed"
+    written = [data for item, data in store.bodies if item == key]
+    assert written
+    assert await store.get(key) == written[-1]
+    assert len(retainer.calls) > holds_before
+    assert retainer.calls[-1][0] == key
+
+
+@pytest.mark.asyncio
 async def test_governance_hold_is_readable(minio_endpoint):
     """moto GetObjectRetention отвечает 500. Читаем замок у MinIO, если он свободен."""
 

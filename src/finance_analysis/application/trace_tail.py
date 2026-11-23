@@ -140,7 +140,14 @@ async def publish_trace(
         except Exception as exc:
             raise TracePublishError("pointer", execution_id) from exc
     if slot in {"pending_retention", "pending_commit"}:
-        await _reject_different_body(store, key, body, execution_id)
+        await _require_same_body(
+            store,
+            key,
+            body,
+            execution_id,
+            policy=policy,
+            retainer=retainer,
+        )
     if slot == "pending_retention":
         if policy is None or retainer is None:
             raise TracePublishError("retention", execution_id) from InvalidArgument("для удержания нужен замок объекта")
@@ -256,17 +263,49 @@ async def sweep_expired_traces(store, pointer, *, now: datetime) -> int:
     return removed
 
 
-async def _reject_different_body(store, key: str, body: bytes, execution_id: str) -> None:
-    """Повтор незавершённой записи не подтверждает указатель на чужое тело."""
+async def _require_same_body(store, key: str, body: bytes, execution_id: str, *, policy, retainer) -> None:
+    """Чужое тело — конфликт. Пропавший объект на этой стадии восстанавливается, а не подтверждается."""
 
     try:
         found = await store.get(key)
     except NotFound:
+        await _recover_missing_object(store, key, body, execution_id, policy=policy, retainer=retainer)
         return
     if found != body:
         raise TracePublishError("put", execution_id) from InvalidArgument(
             "след с этим execution_id уже записан другим телом"
         )
+
+
+async def _recover_missing_object(store, key: str, body: bytes, execution_id: str, *, policy, retainer) -> None:
+    """Пишет тело заново через put_if_absent, сверяет его и ставит замок, если он нужен.
+
+    Возврат из этой функции значит, что объект уже лежит и совпадает с телом.
+    Указатель подтверждается только после этого.
+    """
+
+    try:
+        await store.put_if_absent(key, body)
+    except AlreadyExists:
+        pass
+    except Exception as exc:
+        raise TracePublishError("put", execution_id) from exc
+    try:
+        found = await store.get(key)
+    except NotFound as exc:
+        raise TracePublishError("put", execution_id) from exc
+    if found != body:
+        raise TracePublishError("put", execution_id) from InvalidArgument(
+            "след с этим execution_id уже записан другим телом"
+        )
+    if policy is None:
+        return
+    if retainer is None:
+        raise TracePublishError("retention", execution_id) from InvalidArgument("для удержания нужен замок объекта")
+    try:
+        await retainer.hold(key, mode=policy.mode, until=policy.until)
+    except Exception as exc:
+        raise TracePublishError("retention", execution_id) from exc
 
 
 async def _payload(store, pointer, *, analysis_id: str, execution_id: str) -> dict:

@@ -3,12 +3,14 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
+from finance_analysis.application.analyses import EVIDENCE_AVAILABLE
 from finance_analysis.domain.cover_metrics import (
     WINDOW_MONTHS,
     add_months,
     adscr,
     dscr_reductions,
 )
+from finance_analysis.domain.metrics import calculate_coverage, calculate_dscr_pf
 from tests.unit.test_metric_golden import _bind, _fact, _period
 
 
@@ -162,3 +164,79 @@ def test_reduction_is_separate_per_axis_and_keeps_scale():
         for step in summary.steps:
             assert step.input_refs
             assert all(ref.startswith(f"period:{summary.axis_id}:") for ref in step.input_refs)
+
+
+def _node_id(period) -> str:
+    explicit = getattr(period, "node_id", None)
+    if explicit:
+        return explicit
+    return f"period:{period.axis_id}:{period.period_id}"
+
+
+def _available_evidence(metric: str, version: str):
+    if metric == "adscr":
+        periods, facts = _quarters()
+        collected: list = []
+        adscr(direction="lookback", collect=collected, **_common(periods, facts))
+        return collected[0]
+    if metric in {"dscr_min", "dscr_avg"}:
+        periods = [_period(period_id="Y1", index=1), _period(period_id="Y2", index=2)]
+        facts = [
+            _fact("cfads", "100", period_id="Y1"),
+            _fact("cfads", "100", period_id="Y2"),
+            _fact("debt_service", "50", period_id="Y1"),
+            _fact("debt_service", "25", period_id="Y2"),
+        ]
+        collected = []
+        dscr_reductions(metric, collect=collected, **_common(periods, facts))
+        return collected[0]
+    periods = [_period(period_id="2025", index=0)]
+    shared = {
+        "periods": periods,
+        "period_phase": {},
+        "explicit_phases": False,
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    if version == "dscr.pf@1":
+        return calculate_dscr_pf(
+            facts=[_fact("cfads", "10", period_id="2025"), _fact("debt_service", "5", period_id="2025")],
+            bindings=[_bind("cfads"), _bind("debt_service")],
+            evidence=True,
+            **shared,
+        ).evidence
+    if metric == "icr":
+        facts = [_fact("ebitda", "10", period_id="2025"), _fact("interest", "2", period_id="2025")]
+        bindings = [_bind("ebitda"), _bind("interest")]
+    elif metric == "icr_ebit":
+        facts = [_fact("ebit", "10", period_id="2025"), _fact("interest", "2", period_id="2025")]
+        bindings = [_bind("ebit"), _bind("interest")]
+    else:
+        facts = [_fact("cfads", "10", period_id="2025"), _fact("debt_service", "5", period_id="2025")]
+        bindings = [_bind("cfads"), _bind("debt_service")]
+    return calculate_coverage(
+        metric=metric,
+        facts=facts,
+        bindings=bindings,
+        evidence=True,
+        **shared,
+    ).evidence
+
+
+def test_every_available_metric_has_unique_period_nodes():
+    seen = set()
+    for metric, version in sorted(EVIDENCE_AVAILABLE):
+        evidence = _available_evidence(metric, version)
+        assert evidence is not None
+        assert evidence.evidence_status == "evidence_available"
+        assert evidence.implementation == version
+        ids = [_node_id(item) for item in evidence.period_results]
+        assert len(ids) == len(set(ids))
+        for period in evidence.period_results:
+            for step in period.steps:
+                for ref in step.input_refs:
+                    if ref.startswith("period:"):
+                        assert ids.count(ref) == 1
+        seen.add((metric, version))
+    assert seen == set(EVIDENCE_AVAILABLE)
