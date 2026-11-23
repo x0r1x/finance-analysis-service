@@ -38,6 +38,7 @@ class PeriodResult:
     steps: tuple[TransformationStep, ...]
     window_periods: tuple[str, ...] = ()
     window_missing: tuple[str, ...] = ()
+    missing_concepts: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,16 @@ class FactObservation:
     scale_policy: str
     scale_applied: bool
     normalization_source: str
+    considered: str | None = None
+
+
+@dataclass(frozen=True)
+class BasisSide:
+    """Сторона проверки способа показа. Источник — header, formula или label."""
+
+    concept: str
+    period_basis: str
+    source: str
 
 
 @dataclass(frozen=True)
@@ -97,6 +108,7 @@ class CalculationEvidence:
     fact_observations: tuple[FactObservation, ...]
     fact_uses: tuple[FactUse, ...]
     period_results: tuple[PeriodResult, ...]
+    basis_sides: tuple[BasisSide, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -121,6 +133,7 @@ class EvidenceBook:
     origins: dict | None = None
     periods: list[PeriodResult] | None = None
     fallback: dict | None = None
+    basis_sides: list[BasisSide] | None = None
 
     def __post_init__(self) -> None:
         self.observations = [] if self.observations is None else self.observations
@@ -129,6 +142,7 @@ class EvidenceBook:
         self.origins = {} if self.origins is None else self.origins
         self.periods = [] if self.periods is None else self.periods
         self.fallback = {} if self.fallback is None else self.fallback
+        self.basis_sides = [] if self.basis_sides is None else self.basis_sides
 
     def freeze(self, execution: str, implementation: str) -> CalculationEvidence:
         return CalculationEvidence(
@@ -144,6 +158,7 @@ class EvidenceBook:
             fact_observations=tuple(self.observations or ()),
             fact_uses=tuple(self.fact_uses or ()),
             period_results=tuple(self.periods or ()),
+            basis_sides=tuple(self.basis_sides or ()),
         )
 
 

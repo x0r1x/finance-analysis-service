@@ -59,7 +59,11 @@ EXCLUDED = frozenset(
         "_exclusion",
         "_ytd_note",
         "_scale_steps",
-        "_side_refs",
+        "_bound_rows",
+        "_consider",
+        "_adopt_side",
+        "_denominator_names",
+        "_part_terminal",
         "_period_steps",
         "_origin_refs",
         "_finish",
@@ -612,9 +616,13 @@ def test_ltm_keeps_numerator_scale_ytd_and_the_window():
     outcome = _call(facts=facts, bindings=bindings, periods=periods)
     computed = next(item for item in outcome.evidence.period_results if item.status == "computed")
     division = next(item for item in computed.steps if item.operation == "division")
+    aggregation = next(item for item in computed.steps if item.operation == "aggregation")
     assert "cell:CFS!LTM" in division.input_refs
-    assert "cell:Debt!2025-12" in division.input_refs
+    assert f"step:{aggregation.step_id}" in division.input_refs
+    assert "cell:Debt!2025-12" not in division.input_refs
+    assert "cell:Debt!2025-12" in aggregation.input_refs
     scaled = next(item for item in computed.steps if item.operation == "scale_normalization")
+    assert f"step:{scaled.step_id}" in aggregation.input_refs
     assert scaled.output_value == Decimal(1000)
     assert scaled.parameters["raw"] == Decimal(1)
     assert computed.window_periods == tuple(item["period_id"] for item in periods)
@@ -635,7 +643,11 @@ def test_ltm_keeps_numerator_scale_ytd_and_the_window():
     assert restated
     assert restated[-1].output_value == Decimal(10)
     assert restated[-1].parameters["difference"] == Decimal(10)
-    assert "cell:CFS!LTM" in next(item for item in ytd_period.steps if item.operation == "division").input_refs
+    ytd_division = next(item for item in ytd_period.steps if item.operation == "division")
+    ytd_total = next(item for item in ytd_period.steps if item.operation == "aggregation")
+    assert "cell:CFS!LTM" in ytd_division.input_refs
+    assert f"step:{ytd_total.step_id}" in ytd_division.input_refs
+    assert f"step:{restated[-1].step_id}" in ytd_total.input_refs
     partial_periods = _months(skip={5})
     partial = _call(
         facts=[_fact("c", "2025-12", "120", cell_id="CFS!LTM")]
@@ -647,6 +659,7 @@ def test_ltm_keeps_numerator_scale_ytd_and_the_window():
     assert gap.steps == ()
     assert "2025-06" not in gap.window_periods
     assert "2025-06-01" in gap.window_missing
+    assert ("2025-06-01", ("debt_service",)) in gap.missing_concepts
     assert "2025-01" in gap.window_periods and "2025-12" in gap.window_periods
     hole_periods = _months()
     hole = _call(
@@ -662,6 +675,8 @@ def test_ltm_keeps_numerator_scale_ytd_and_the_window():
     missing_value = next(item for item in hole.evidence.period_results if item.status == "partial_window")
     assert "2025-06" in missing_value.window_periods
     assert "2025-06" in missing_value.window_missing
+    assert ("2025-06", ("debt_service",)) in missing_value.missing_concepts
+    assert hole.evidence.fact_uses == ()
 
 
 def test_scale_decision_is_stored_when_no_step_is_written():
@@ -835,6 +850,293 @@ def test_public_ratio_calculates_once(monkeypatch):
         explicit_phases=False,
     )
     assert calls["n"] == 2
+
+
+def _reachable(steps, refs) -> set[str]:
+    by_id = {step.step_id: step for step in steps}
+    seen: set[str] = set()
+    pending = list(refs)
+    while pending:
+        ref = pending.pop()
+        if ref in seen:
+            continue
+        seen.add(ref)
+        if ref.startswith("step:"):
+            pending.extend(by_id[int(ref.removeprefix("step:"))].input_refs)
+    return seen
+
+
+def test_division_cites_the_terminal_of_each_side():
+    periods = [_period("2025", 0)]
+    ordinary = _call(
+        facts=[
+            _fact("c", "2025", "10", cell_id="CFS!N"),
+            _fact("d", "2025", "-1", cell_id="Debt!A"),
+            _fact("d", "2025", "-2", cell_id="Debt!B"),
+        ],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        periods=periods,
+    )
+    steps = ordinary.evidence.period_results[0].steps
+    aggregation = next(item for item in steps if item.operation == "aggregation")
+    sign = next(item for item in steps if item.operation == "sign_conversion")
+    division = next(item for item in steps if item.operation == "division")
+    quantum = next(item for item in steps if item.operation == "quantization")
+    assert set(aggregation.input_refs) == {"cell:Debt!A", "cell:Debt!B"}
+    assert sign.input_refs == (f"step:{aggregation.step_id}",)
+    assert set(division.input_refs) == {"cell:CFS!N", f"step:{sign.step_id}"}
+    assert quantum.input_refs == (f"step:{division.step_id}",)
+    assert "cell:Debt!A" in _reachable(steps, division.input_refs)
+
+    quarters = [
+        _period("2026Q1", 0, calendar_year=2026, grain="quarter"),
+        _period("2026Q2", 1, calendar_year=2026, grain="quarter"),
+    ]
+    ytd = _call(
+        facts=[
+            _fact("c", "2026Q1", "50", cell_id="CFS!Q1"),
+            _fact("c", "2026Q2", "80", cell_id="CFS!Q2"),
+            _fact("d", "2026Q1", "10", cell_id="Debt!Q1"),
+            _fact("d", "2026Q2", "10", cell_id="Debt!Q2"),
+        ],
+        bindings=[
+            _binding("cfads", "c", evidence={"period_basis": "ytd", "period_basis_source": "header"}),
+            _binding("debt_service", "d"),
+        ],
+        periods=quarters,
+    )
+    second = next(item for item in ytd.evidence.period_results if item.period_id == "2026Q2")
+    restated = next(item for item in second.steps if item.operation == "period_restatement")
+    ytd_division = next(item for item in second.steps if item.operation == "division")
+    assert set(restated.input_refs) == {"cell:CFS!Q1", "cell:CFS!Q2"}
+    assert set(ytd_division.input_refs) == {f"step:{restated.step_id}", "cell:Debt!Q2"}
+    assert "cell:CFS!Q2" not in ytd_division.input_refs
+    assert "cell:CFS!Q1" in _reachable(second.steps, ytd_division.input_refs)
+
+    from finance_analysis.domain.metrics import calculate_dscr_pf
+
+    project = calculate_dscr_pf(
+        facts=[
+            _fact("c", "2025", "10", cell_id="CFS!N"),
+            _fact("i", "2025", "-2", cell_id="Debt!I"),
+            _fact("p", "2025", "-4", cell_id="Debt!P"),
+        ],
+        bindings=[_binding("cfads", "c"), _binding("interest", "i"), _binding("principal", "p")],
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+        interest_order={"pf": ("interest",)},
+    )
+    pf = project.evidence.period_results[0].steps
+    signs = [item for item in pf if item.operation == "sign_conversion"]
+    assembly = next(item for item in pf if item.operation == "denominator_assembly")
+    pf_division = next(item for item in pf if item.operation == "division")
+    assert {ref for step in signs for ref in step.input_refs} == {"cell:Debt!I", "cell:Debt!P"}
+    assert set(assembly.input_refs) == {f"step:{item.step_id}" for item in signs}
+    assert set(pf_division.input_refs) == {"cell:CFS!N", f"step:{assembly.step_id}"}
+    assert "cell:Debt!P" not in pf_division.input_refs
+    assert "cell:Debt!P" in _reachable(pf, pf_division.input_refs)
+
+
+def test_preflight_refusal_observes_the_facts_it_read():
+    periods = [_period("2025", 0)]
+    refused = _call(
+        facts=[
+            _fact("c", "2025", "5", value_dec=Decimal(2), scale_factor=Decimal(1000), cell_id="CFS!A"),
+            _fact("d", "2025", "1", value_dec=Decimal(1), scale_factor=Decimal(1), cell_id="Debt!A"),
+        ],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        periods=periods,
+    )
+    assert refused.result["status"] == "scale_unconfirmed"
+    assert refused.evidence.fact_uses == ()
+    assert {item.cell_id for item in refused.evidence.fact_observations} == {"CFS!A", "Debt!A"}
+    assert {item.considered for item in refused.evidence.fact_observations} == {"scale"}
+
+    mismatched = _call(
+        facts=[_fact("c", "2025", "10", cell_id="CFS!B"), _fact("d", "2025", "5", cell_id="Debt!B")],
+        bindings=[
+            _binding("cfads", "c", evidence={"period_basis": "period", "period_basis_source": "header"}),
+            _binding("debt_service", "d", evidence={"period_basis": "ytd", "period_basis_source": "label"}),
+        ],
+        periods=periods,
+    )
+    assert mismatched.result["status"] == "basis_mismatch"
+    assert mismatched.evidence.fact_uses == ()
+    assert {item.considered for item in mismatched.evidence.fact_observations} == {"basis"}
+    sides = {item.concept: item for item in mismatched.evidence.basis_sides}
+    assert (sides["cfads"].period_basis, sides["cfads"].source) == ("period", "header")
+    assert (sides["debt_service"].period_basis, sides["debt_service"].source) == ("ytd", "label")
+
+    formula = _call(
+        metric="icr",
+        facts=[_fact("e", "2025", "10", cell_id="PL!E"), _fact("i", "2025", "4", cell_id="PL!I")],
+        bindings=[
+            _binding("ebitda", "e", evidence={"period_basis": "period", "period_basis_source": "formula"}),
+            _binding("interest", "i", evidence={"period_basis": "ltm", "period_basis_source": "header"}),
+        ],
+        periods=periods,
+    )
+    assert formula.result["status"] == "basis_mismatch"
+    formula_sides = {item.concept: item for item in formula.evidence.basis_sides}
+    assert (formula_sides["ebitda"].period_basis, formula_sides["ebitda"].source) == ("period", "formula")
+    assert (formula_sides["interest"].period_basis, formula_sides["interest"].source) == ("ltm", "header")
+
+    principal = _call(
+        facts=[
+            _fact("c", "2025", "10", cell_id="CFS!C"),
+            _fact("i", "2025", "2", cell_id="Debt!I"),
+            _fact("p", "2025", "4", cell_id="Debt!P"),
+        ],
+        bindings=[
+            _binding("cfads", "c", evidence={"period_basis": "period", "period_basis_source": "header"}),
+            _binding("interest", "i", evidence={"period_basis": "period", "period_basis_source": "header"}),
+            _binding("principal", "p", evidence={"period_basis": "ytd", "period_basis_source": "label"}),
+        ],
+        periods=periods,
+        interest_order={"pf": ("interest",)},
+    )
+    assert principal.result["status"] == "basis_mismatch"
+    project_sides = {item.concept: item for item in principal.evidence.basis_sides}
+    assert project_sides["principal"].period_basis == "ytd"
+    assert project_sides["principal"].source == "label"
+    assert project_sides["interest"].period_basis == "period"
+    assert {item.concept for item in principal.evidence.fact_observations} >= {"interest", "principal"}
+    assert principal.evidence.fact_uses == ()
+
+    missing = _call(
+        facts=[_fact("c", "2025", "10", cell_id="CFS!M")],
+        bindings=[_binding("cfads", "c")],
+        periods=periods,
+    )
+    assert missing.result["status"] == "missing_input"
+    assert [item.cell_id for item in missing.evidence.fact_observations] == ["CFS!M"]
+    assert missing.evidence.fact_observations[0].considered == "input"
+    assert missing.evidence.fact_uses == ()
+
+
+def test_zero_denominator_uses_only_the_denominator():
+    periods = [_period("2025", 0), _period("2026", 1)]
+    ordinary = _call(
+        facts=[
+            _fact("c", "2025", "10", cell_id="CFS!2025"),
+            _fact("d", "2025", "-5", cell_id="Debt!2025"),
+            _fact("c", "2026", "8", cell_id="CFS!2026"),
+            _fact("d", "2026", "0", cell_id="Debt!2026"),
+        ],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        periods=periods,
+    )
+    assert ordinary.result["rows"][0]["period_id"] == "2025"
+    assert [row["period_id"] for row in ordinary.result["rows"]] == ["2025"]
+    zero = next(item for item in ordinary.evidence.period_results if item.period_id == "2026")
+    assert zero.reason == "not_coverage_test_period"
+    assert {item.cell_id for item in ordinary.evidence.fact_uses if item.result_period_id == "2026"} == {"Debt!2026"}
+    assert {item.operand for item in ordinary.evidence.fact_uses if item.result_period_id == "2026"} == {"denominator"}
+    assert {item.cell_id for item in ordinary.evidence.fact_uses if item.result_period_id == "2025"} == {
+        "CFS!2025",
+        "Debt!2025",
+    }
+
+    icr = _call(
+        metric="icr",
+        facts=[_fact("e", "2025", "10", cell_id="PL!N"), _fact("i", "2025", "0", cell_id="PL!D")],
+        bindings=[_binding("ebitda", "e"), _binding("interest", "i")],
+        periods=[_period("2025", 0)],
+    )
+    assert icr.result["rows"][0]["reason"] == "zero_denominator"
+    assert {item.cell_id for item in icr.evidence.fact_uses} == {"PL!D"}
+    assert {item.operand for item in icr.evidence.fact_uses} == {"denominator"}
+    assert "PL!N" in {item.cell_id for item in icr.evidence.fact_observations}
+
+    months = _months()
+    last = months[-1]["period_id"]
+    ltm = _call(
+        metric="icr",
+        facts=[_fact("e", last, "120", cell_id="PL!LTM"), _fact("e", "2025-01", "4", cell_id="PL!JAN")]
+        + [_fact("i", item["period_id"], "0", cell_id=f"PL!{item['period_id']}") for item in months],
+        bindings=[
+            _binding("ebitda", "e", evidence={"period_basis": "ltm", "period_basis_source": "header"}),
+            _binding("interest", "i"),
+        ],
+        periods=months,
+    )
+    ltm_zero = next(item for item in ltm.evidence.period_results if item.reason == "zero_denominator")
+    used = {item.cell_id for item in ltm.evidence.fact_uses if item.result_period_id == ltm_zero.period_id}
+    assert used == {f"PL!{item['period_id']}" for item in months}
+    assert "PL!LTM" not in used and "PL!JAN" not in used
+    assert {item.operand for item in ltm.evidence.fact_uses} == {"denominator"}
+    assert {"PL!LTM", "PL!JAN"} <= {item.cell_id for item in ltm.evidence.fact_observations}
+
+
+def test_evidence_names_the_registered_implementation():
+    from finance_analysis.domain import metrics
+    from finance_analysis.domain.metric_contract import REGISTRY, load_implementations
+    from finance_analysis.domain.metrics import calculate_dscr_pf
+
+    load_implementations()
+    before = tuple(
+        (key, item.implementation_version, item.function.__name__) for key, item in sorted(REGISTRY.items())
+    )
+    periods = [_period("2025", 0)]
+    shared = {"periods": periods, "period_phase": {}, "explicit_phases": False}
+    dscr = _call(
+        facts=[_fact("c", "2025", "10"), _fact("d", "2025", "-5")],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        **shared,
+    )
+    project = calculate_dscr_pf(
+        facts=[_fact("c", "2025", "10"), _fact("d", "2025", "-5")],
+        bindings=[_binding("cfads", "c"), _binding("debt_service", "d")],
+        **shared,
+    )
+    icr = _call(
+        metric="icr",
+        facts=[_fact("e", "2025", "10"), _fact("i", "2025", "-2")],
+        bindings=[_binding("ebitda", "e"), _binding("interest", "i")],
+        **shared,
+    )
+    ebit = _call(
+        metric="icr_ebit",
+        facts=[_fact("b", "2025", "10"), _fact("i", "2025", "-2")],
+        bindings=[_binding("ebit", "b"), _binding("interest", "i")],
+        **shared,
+    )
+    assert dscr.evidence.implementation == REGISTRY[("dscr", "dscr")].implementation_version
+    assert project.evidence.implementation == REGISTRY[("dscr", "dscr.pf")].implementation_version
+    assert icr.evidence.implementation == REGISTRY[("icr", "icr")].implementation_version
+    assert ebit.evidence.implementation == REGISTRY[("icr_ebit", "icr_ebit")].implementation_version
+    after = tuple((key, item.implementation_version, item.function.__name__) for key, item in sorted(REGISTRY.items()))
+    assert before == after
+    assert "_IMPLEMENTATION" not in inspect.getsource(metrics)
+    source = inspect.getsource(metrics.calculate_dscr_pf)
+    assert 'implementation="dscr.pf@1"' not in source
+    assert "implementation='dscr.pf@1'" not in source
+
+
+def test_ltm_gap_names_the_missing_concept():
+    periods = _months()
+    facts = [_fact("c", "2025-12", "120", cell_id="CFS!LTM")]
+    for period in periods:
+        facts.append(_fact("i", period["period_id"], "1", cell_id=f"I!{period['period_id']}"))
+        if period["period_id"] != "2025-06":
+            facts.append(_fact("p", period["period_id"], "1", cell_id=f"P!{period['period_id']}"))
+    outcome = _call(
+        facts=facts,
+        bindings=[
+            _binding("cfads", "c", evidence={"period_basis": "ltm", "period_basis_source": "header"}),
+            _binding("interest", "i"),
+            _binding("principal", "p"),
+        ],
+        periods=periods,
+        interest_order={"pf": ("interest",)},
+    )
+    gap = next(item for item in outcome.evidence.period_results if item.status == "partial_window")
+    assert ("2025-06", ("principal",)) in gap.missing_concepts
+    assert "interest" not in dict(gap.missing_concepts)["2025-06"]
+    assert any(item.cell_id == "I!2025-06" for item in outcome.evidence.fact_observations)
+    assert all(item.cell_id != "I!2025-06" for item in outcome.evidence.fact_uses)
+    assert outcome.evidence.fact_uses == ()
 
 
 def test_stamp_rejects_an_unlisted_call_and_does_not_hash_metrics():

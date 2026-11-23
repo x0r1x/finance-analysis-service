@@ -16,6 +16,7 @@ from typing import Any
 
 from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.calculation_evidence import (
+    BasisSide,
     CalculationOutcome,
     EvidenceBook,
     FactObservation,
@@ -340,7 +341,14 @@ def _coverage_from_plan(metric: str, plan: Any, bindings: list[dict]) -> dict | 
 
 
 _TRACE_METRICS = {"dscr", "icr", "icr_ebit"}
-_IMPLEMENTATION = {"dscr": "dscr@1", "icr": "icr@1", "icr_ebit": "icr_ebit@1"}
+
+
+def _registered_version(metric: str, formula: str) -> str:
+    """Версия берётся из ``@implements``. Второй карты здесь нет."""
+
+    from finance_analysis.domain.metric_contract import REGISTRY
+
+    return REGISTRY[(metric, formula)].implementation_version
 
 
 def _step(steps: list, operation: str, refs, output, **parameters) -> None:
@@ -372,6 +380,7 @@ def _remember(
     denominator=None,
     window_periods=(),
     window_missing=(),
+    missing_concepts=(),
 ) -> None:
     if book is None:
         return
@@ -387,6 +396,7 @@ def _remember(
             steps=tuple(steps),
             window_periods=tuple(window_periods),
             window_missing=tuple(window_missing),
+            missing_concepts=tuple(missing_concepts),
         )
     )
 
@@ -415,7 +425,7 @@ def _seal(book: EvidenceBook, result: dict) -> CalculationOutcome:
                     steps=(),
                 )
             )
-    return CalculationOutcome(result, book.freeze(execution, _IMPLEMENTATION[book.metric]))
+    return CalculationOutcome(result, book.freeze(execution, _registered_version(book.metric, book.metric)))
 
 
 def _note(book: EvidenceBook | None, concept: str | None, key) -> dict | None:
@@ -449,12 +459,13 @@ def _uses(book: EvidenceBook | None, concept: str | None, key, aligned: dict) ->
     return tuple(found)
 
 
-def _restate_step(steps: list, note: dict) -> None:
+def _restate_step(steps: list, note: dict, refs=None) -> None:
     cells = tuple(note["current_cells"]) + tuple(note["previous_cells"])
+    cited = tuple(refs) if refs else tuple(f"cell:{cell}" for cell in cells)
     _step(
         steps,
         "period_restatement",
-        tuple(f"cell:{cell}" for cell in cells),
+        cited,
         note["difference"],
         current_cells=note["current_cells"],
         previous_cells=note["previous_cells"],
@@ -482,6 +493,110 @@ def _scale_steps(steps: list, uses) -> None:
             field=item.field,
             raw=item.raw_value,
         )
+
+
+def _fact_ref(item) -> str:
+    return f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}"
+
+
+def _direct_inputs(steps, start: int, uses, source: tuple[str, ...]) -> tuple[str, ...]:
+    """Шаг масштаба заменяет свою ячейку. Ячейка без шага остаётся входом."""
+
+    changed = [_fact_ref(item) for item in uses if item.effective_value != item.raw_value]
+    produced = tuple(f"step:{item.step_id}" for item in steps[start:])
+    if len(produced) != len(changed):
+        return produced or source
+    changed_set = set(changed)
+    return produced + tuple(ref for ref in source if ref not in changed_set)
+
+
+def _part_terminal(steps, book, concept, key, aligned, *, before=None, after=None, rule=None) -> tuple[str, ...]:
+    """Узел части: последний шаг, если значение изменилось, иначе исходные ссылки."""
+
+    start = len(steps)
+    uses = _uses(book, concept, key, aligned)
+    source = _origin_refs(book, concept, key)
+    _scale_steps(steps, uses)
+    direct = _direct_inputs(steps, start, uses, source)
+    note = _note(book, concept, key)
+    if note is not None and note.get("reason") is None:
+        current = tuple(f"cell:{cell}" for cell in note.get("current_cells") or ())
+        previous = tuple(f"cell:{cell}" for cell in note.get("previous_cells") or ())
+        if any(ref.startswith("step:") for ref in direct):
+            current_set = set(current)
+            cited = tuple(dict.fromkeys((*tuple(ref for ref in direct if ref not in current_set), *previous)))
+        else:
+            cited = tuple(dict.fromkeys((*current, *previous)))
+        _restate_step(steps, note, cited or direct)
+        direct = (f"step:{steps[-1].step_id}",)
+    if before is not None and after is not None and before != after:
+        _step(
+            steps,
+            "sign_conversion",
+            direct,
+            after,
+            before=before,
+            after=after,
+            rule=rule,
+        )
+        direct = (f"step:{steps[-1].step_id}",)
+    return direct
+
+
+def _bound_rows(primaries, names) -> dict:
+    """Строки, которые формула имеет право прочитать. Чужое имя пропускается."""
+
+    from finance_analysis.domain.metric_contract import UndeclaredInput
+
+    found = {}
+    for name in names:
+        if not isinstance(name, str):
+            continue
+        try:
+            if name in primaries:
+                found[name] = primaries[name]
+        except UndeclaredInput:
+            continue
+    return found
+
+
+def _consider(book, facts, named: dict, periods, check: str) -> None:
+    """Факты, которые отказ прочитал до ряда. Использованием это не становится."""
+
+    if book is None or not named:
+        return
+    if check == "basis":
+        for concept, binding in named.items():
+            basis, source = basis_of(binding)
+            book.basis_sides.append(BasisSide(concept, basis, source))
+    policy = _scale_policy(facts, list(named.values()))
+    aligned = aligned_keys(periods) if periods else {}
+    for concept, binding in named.items():
+        _sums(
+            facts,
+            binding,
+            aligned,
+            None,
+            book=book,
+            concept=concept,
+            scale_policy=policy,
+            considered=check,
+        )
+
+
+def _adopt_side(book, period, aligned, names, keys, operand: str) -> None:
+    if book is None or not names:
+        return
+    chosen = set(keys)
+    roles = {name: operand for name in names}
+    slots = tuple((operand, name, chosen) for name in names)
+    _adopt(book, period, aligned, slots, _cell_roles(book, roles, chosen))
+
+
+def _denominator_names(denominator_name, fallback_parts) -> tuple[str, ...]:
+    if fallback_parts is None:
+        return (denominator_name,)
+    return (fallback_parts[0], "principal")
 
 
 @implements("dscr", "dscr", implementation_version="dscr@1", inputs=DSCR_INPUTS)
@@ -630,6 +745,8 @@ def calculate_coverage(
                 if row.get("status") == "ambiguous" and declared_concept(row) in watched
             ]
     if ambiguous:
+        if book is not None:
+            _consider(book, facts, _bound_rows(primaries, watched), periods, "input")
         return _finish(
             book,
             {
@@ -644,6 +761,8 @@ def calculate_coverage(
     if missing:
         subject = missing[0]
         reason = "absent_in_book" if subject in absent_concepts(bindings, absent) else "concept_unknown"
+        if book is not None:
+            _consider(book, facts, _bound_rows(primaries, (*needed, numerator_name)), periods, "input")
         return _finish(
             book,
             {
@@ -662,6 +781,7 @@ def calculate_coverage(
         named["principal"] = primaries["principal"]
     if unconfirmed_scale(facts, list(named.values())):
         components, scales = _scale_bundle(facts, named)
+        _consider(book, facts, named, periods, "scale")
         return _finish(
             book,
             _explained(
@@ -676,11 +796,13 @@ def calculate_coverage(
             ),
         )
     if fallback_parts is not None and _flow_basis(primaries["principal"]) != denominator_basis:
+        _consider(book, facts, named, periods, "basis")
         return _finish(book, _explained(metric, periods, "basis_mismatch", MIXED_BASIS, warnings))
     if numerator_basis != denominator_basis and not (numerator_basis == "ltm" and denominator_basis == "period"):
         message = MIXED_BASIS
         if metric in {"icr", "icr_ebit"}:
             message = _basis_message(numerator_name, primaries[numerator_name], primaries[denominator_name]) or MIXED_BASIS
+        _consider(book, facts, named, periods, "basis")
         return _finish(book, _explained(metric, periods, "basis_mismatch", message, warnings))
     sheet = _assume_sheet_units(facts, list(named.values()), warnings)
     scale_policy = "sheet" if sheet else _scale_policy(facts, list(named.values()))
@@ -816,6 +938,8 @@ def calculate_coverage(
             phase=phase,
             explicit_phases=explicit_phases,
         ):
+            if payment == 0:
+                _adopt_side(book, period, aligned, _denominator_names(denominator_name, fallback_parts), {key}, "denominator")
             _remember(book, period, "skipped", "not_coverage_test_period", ())
             continue
         steps = []
@@ -830,6 +954,7 @@ def calculate_coverage(
                 sign_convention=sign_convention,
             )
         if payment == 0:
+            _adopt_side(book, period, aligned, _denominator_names(denominator_name, fallback_parts), {key}, "denominator")
             rows.append(_row(metric, period, None, "no_debt_service" if metric == "dscr" else "missing_input", "zero_denominator"))
             _remember(book, period, "no_debt_service" if metric == "dscr" else "missing_input", "zero_denominator", steps, denominator=payment)
             continue
@@ -840,11 +965,14 @@ def calculate_coverage(
             raw_ratio = num / payment
             value = quantize_ratio(raw_ratio)
         if book is not None:
+            den_terminal = (f"step:{steps[-1].step_id}",) if steps else _origin_refs(book, denominator_name, key)
+            start = len(steps)
             _numerator_steps(steps, book, numerator_name, key, aligned, num)
+            num_terminal = (f"step:{steps[-1].step_id}",) if len(steps) > start else _origin_refs(book, numerator_name, key)
             _step(
                 steps,
                 "division",
-                _side_refs(book, numerator_name, denominator_name, key, aligned),
+                tuple(dict.fromkeys((*num_terminal, *den_terminal))),
                 raw_ratio,
                 numerator=num,
                 denominator=payment,
@@ -882,34 +1010,25 @@ def calculate_coverage(
     return _finish(book, {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"})
 
 
-def _side_refs(book, numerator_name, denominator_name, key, aligned) -> tuple[str, ...]:
-    refs = []
-    for concept in (numerator_name, denominator_name):
-        for item in _uses(book, concept, key, aligned):
-            refs.append(f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}")
-    return tuple(refs)
-
-
 def _period_steps(book, *, key, aligned, denominator_name, den, payment, sign_convention):
     steps: list = []
     info = None if book is None else (book.fallback or {}).get(key)
     if info is not None:
+        terminals: list[str] = []
         for part in info["parts"]:
-            note = _note(book, part["concept"], key)
-            _scale_steps(steps, _uses(book, part["concept"], key, aligned))
-            if note is not None and note.get("reason") is None:
-                _restate_step(steps, note)
-            if part["after"] != part["before"]:
-                _step(
+            terminals.extend(
+                _part_terminal(
                     steps,
-                    "sign_conversion",
-                    _origin_refs(book, part["concept"], key),
-                    part["after"],
+                    book,
+                    part["concept"],
+                    key,
+                    aligned,
                     before=part["before"],
                     after=part["after"],
                     rule=sign_convention,
                 )
-        _step(steps, "denominator_assembly", tuple(f"step:{item.step_id}" for item in steps), info["assembled"])
+            )
+        _step(steps, "denominator_assembly", tuple(terminals), info["assembled"])
         if payment != info["assembled"]:
             _step(
                 steps,
@@ -921,19 +1040,15 @@ def _period_steps(book, *, key, aligned, denominator_name, den, payment, sign_co
                 rule=sign_convention,
             )
         return steps
-    note = _note(book, denominator_name, key)
-    _scale_steps(steps, _uses(book, denominator_name, key, aligned))
-    if note is not None and note.get("reason") is None:
-        _restate_step(steps, note)
-    else:
-        refs = _origin_refs(book, denominator_name, key)
-        if len(refs) != 1:
-            _step(steps, "aggregation", refs, den, side="denominator")
+    direct = _part_terminal(steps, book, denominator_name, key, aligned)
+    if len(direct) != 1:
+        _step(steps, "aggregation", direct, den, side="denominator")
+        direct = (f"step:{steps[-1].step_id}",)
     if payment != den:
         _step(
             steps,
             "sign_conversion",
-            (f"step:{steps[-1].step_id}",) if steps else _origin_refs(book, denominator_name, key),
+            direct,
             payment,
             before=den,
             after=payment,
@@ -950,14 +1065,9 @@ def _origin_refs(book, concept, key) -> tuple[str, ...]:
 
 
 def _numerator_steps(steps, book, concept, key, aligned, value) -> None:
-    _scale_steps(steps, _uses(book, concept, key, aligned))
-    note = _note(book, concept, key)
-    if note is not None and note.get("reason") is None:
-        _restate_step(steps, note)
-        return
-    refs = _origin_refs(book, concept, key)
-    if len(refs) > 1:
-        _step(steps, "numerator_assembly", refs, value, side="numerator")
+    direct = _part_terminal(steps, book, concept, key, aligned)
+    if len(direct) > 1:
+        _step(steps, "numerator_assembly", direct, value, side="numerator")
 
 
 def _cell_roles(book, roles: dict[str, str], keys) -> dict[tuple[str, str], str]:
@@ -1147,7 +1257,11 @@ def calculate_dscr_pf(
         return outcome
     return CalculationOutcome(
         outcome.result,
-        replace(outcome.evidence, metric="dscr.pf", implementation="dscr.pf@1"),
+        replace(
+            outcome.evidence,
+            metric="dscr.pf",
+            implementation=_registered_version("dscr", "dscr.pf"),
+        ),
     )
 
 
@@ -1643,10 +1757,20 @@ def _ltm_numerator(
             _remember(book, period, "skipped", "missing_side", ())
             continue
         window = _window(ordered, period, "lookback")
+        denominator_names = tuple(concepts[id(binding)] for binding, _series in denominators)
         if window is None:
             rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
             found, missing = _window_gap(ordered, period)
-            _remember(book, period, "partial_window", "partial_window", (), window_periods=found, window_missing=missing)
+            _remember(
+                book,
+                period,
+                "partial_window",
+                "partial_window",
+                (),
+                window_periods=found,
+                window_missing=missing,
+                missing_concepts=tuple((item, denominator_names) for item in missing),
+            )
             continue
         total = Decimal(0)
         complete = True
@@ -1667,10 +1791,13 @@ def _ltm_numerator(
             rows.append(_noted(metric, period, "partial_window", PARTIAL_DENOMINATOR))
             found_ids = tuple(item["period_id"] for item in window)
             missing_ids = []
+            named_gaps = []
             for item in window:
                 dkey = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
-                if any(dkey not in series for _binding, series in denominators):
+                absent = tuple(concepts[id(binding)] for binding, series in denominators if dkey not in series)
+                if absent:
                     missing_ids.append(item["period_id"])
+                    named_gaps.append((item["period_id"], absent))
             _remember(
                 book,
                 period,
@@ -1679,17 +1806,22 @@ def _ltm_numerator(
                 (),
                 window_periods=found_ids,
                 window_missing=tuple(missing_ids),
+                missing_concepts=tuple(named_gaps),
             )
             continue
         phase = period_phase.get((period["axis_id"], period["period_id"]))
+        den_keys = {aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"])) for item in window}
         if metric == "dscr" and not is_coverage_test_period(
             debt_service_nonzero=total != 0,
             phase=phase,
             explicit_phases=explicit_phases,
         ):
+            if total == 0:
+                _adopt_side(book, period, aligned, denominator_names, den_keys, "denominator")
             _remember(book, period, "skipped", "not_coverage_test_period", ())
             continue
         if total == 0:
+            _adopt_side(book, period, aligned, denominator_names, den_keys, "denominator")
             status = "no_debt_service" if metric == "dscr" else "missing_input"
             rows.append(_row(metric, period, None, status, "zero_denominator"))
             _remember(book, period, status, "zero_denominator", (), denominator=total)
@@ -1701,26 +1833,37 @@ def _ltm_numerator(
             value = quantize_ratio(raw_ratio)
         steps = []
         if book is not None:
-            refs: list[str] = []
+            terminals: list[str] = []
             for binding, dkey, raw, signed in signed_parts:
-                concept = concepts[id(binding)]
-                part_refs = _origin_refs(book, concept, dkey)
-                refs.extend(part_refs)
-                _scale_steps(steps, _uses(book, concept, dkey, aligned))
-                note = _note(book, concept, dkey)
-                if note is not None and note.get("reason") is None:
-                    _restate_step(steps, note)
-                if signed != raw:
-                    _step(steps, "sign_conversion", part_refs, signed, before=raw, after=signed, rule=sign_convention)
-            unique = tuple(dict.fromkeys(refs))
+                terminals.extend(
+                    _part_terminal(
+                        steps,
+                        book,
+                        concepts[id(binding)],
+                        dkey,
+                        aligned,
+                        before=raw,
+                        after=signed,
+                        rule=sign_convention,
+                    )
+                )
+            unique = tuple(dict.fromkeys(terminals))
             if len(unique) != 1:
                 _step(steps, "aggregation", unique, total, side="denominator")
+                den_terminal = (f"step:{steps[-1].step_id}",)
+            else:
+                den_terminal = unique
+            start = len(steps)
             _numerator_steps(steps, book, numerator_concept, key, aligned, numerator[key])
-            num_refs = _origin_refs(book, numerator_concept, key)
+            num_terminal = (
+                (f"step:{steps[-1].step_id}",)
+                if len(steps) > start
+                else _origin_refs(book, numerator_concept, key)
+            )
             _step(
                 steps,
                 "division",
-                tuple(dict.fromkeys((*num_refs, *unique))),
+                tuple(dict.fromkeys((*num_terminal, *den_terminal))),
                 raw_ratio,
                 numerator=numerator[key],
                 denominator=total,
@@ -1735,9 +1878,6 @@ def _ltm_numerator(
                     quantum=RATIO,
                     rounding="ROUND_HALF_EVEN",
                 )
-            den_keys = {
-                aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"])) for item in window
-            }
             slots = [("numerator", numerator_concept, {key})]
             roles = {numerator_concept: "numerator"}
             for binding, _series in denominators:
@@ -1947,6 +2087,7 @@ def _sums(
     book: EvidenceBook | None = None,
     concept: str | None = None,
     scale_policy: str = "plain",
+    considered: str | None = None,
 ) -> dict[tuple, Decimal]:
     """Сумма строки по ключу шкалы. Нарастающий итог переводится в значение за период.
 
@@ -1992,6 +2133,7 @@ def _sums(
                     scale_policy=marked_policy,
                     scale_applied=applied,
                     normalization_source=source,
+                    considered=considered,
                 )
             )
     origins = {
