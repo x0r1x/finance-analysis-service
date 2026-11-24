@@ -9,12 +9,19 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
+from types import MappingProxyType
 from typing import Any
 
 from finance_analysis.domain.binding_resolution import declared_concept
+from finance_analysis.domain.calculation_evidence import (
+    EvidenceBook,
+    PeriodResult,
+    TransformationStep,
+)
 from finance_analysis.domain.cash_flow import net_cash_flow as period_net_cash_flow
 from finance_analysis.domain.cover_metrics import (
     _missing,
@@ -67,6 +74,7 @@ _FIELDS = frozenset({"numerator", "denominator", "window", "basis_ref", "variant
 _VARIANT_FIELDS = frozenset({"variant", "basis_ref"})
 _SIDE_FIELDS = frozenset({"plus", "minus"})
 _CYCLE = frozenset({"dscr", "dscr_covenant"})
+_REPORTED_READ = "dscr.reported"
 _MISMATCH = Decimal("0.005")
 _CASH_OTHER = "other_financial_debt_service"
 _CASH_CORE = ("operating_cash_flow", "interest_paid", "capex", "principal")
@@ -1783,6 +1791,222 @@ def _cash_paid(keys, series: dict, name: str, convention: str) -> Decimal | None
     return total
 
 
+
+def _book_dscr_rows(facts, book, periods, reader: EvidenceBook | None = None) -> list[dict]:
+    aligned = aligned_keys(periods)
+    cached = _sums(
+        facts,
+        book,
+        aligned,
+        periods,
+        book=reader,
+        concept="dscr" if reader is not None else None,
+    )
+    rows = []
+    for period in periods:
+        own = (period.get("axis_id"), period.get("period_id"))
+        number = cached.get(aligned.get(own, own))
+        if number is None:
+            continue
+        rows.append(
+            _line("dscr", period, number, "computed", "reported", ["dscr"], None, variant="reported")
+        )
+    return rows
+
+
+def _scale_key(axis, period, aligned: dict) -> tuple:
+    own = (axis, period)
+    return aligned.get(own, own)
+
+
+def _publication_periods(rows: list[dict], reader: EvidenceBook, aligned: dict, row_key) -> tuple[PeriodResult, ...]:
+    """Чтение ячейки и публикация её числа. Деления здесь нет."""
+
+    built = []
+    observations = reader.observations or []
+    for row in rows:
+        key = _scale_key(row.get("axis_id"), row.get("period_id"), aligned)
+        matched = [
+            item
+            for item in observations
+            if item.considered in {None, "value"} and _scale_key(item.axis_id, item.period_id, aligned) == key
+        ]
+        refs = tuple(
+            f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}" for item in matched
+        )
+        value = row.get("value")
+        built.append(
+            PeriodResult(
+                axis_id=None if row.get("axis_id") is None else str(row.get("axis_id")),
+                period_id=None if row.get("period_id") is None else str(row.get("period_id")),
+                status="published",
+                reason="reported",
+                value=value if isinstance(value, Decimal) else None,
+                numerator=None,
+                denominator=None,
+                steps=(
+                    TransformationStep(
+                        step_id=1,
+                        operation="publication",
+                        input_refs=refs,
+                        output_value=value if isinstance(value, Decimal) else None,
+                        parameters=MappingProxyType({"row_key": row_key}),
+                    ),
+                ),
+            )
+        )
+    return tuple(built)
+
+
+def _publish_reported_read(
+    collect: list,
+    attempt_evidence,
+    reader: EvidenceBook,
+    rows: list[dict],
+    periods: list[dict],
+    row_key,
+) -> None:
+    """Отдельная улика опубликованного числа. След попытки не переписывается."""
+
+    publication = replace(
+        reader.freeze("published", _REPORTED_READ),
+        sums_additions=0,
+        fact_uses=(),
+        period_results=_publication_periods(rows, reader, aligned_keys(periods), row_key),
+    )
+    if attempt_evidence is not None:
+        for index, item in enumerate(collect):
+            if item is attempt_evidence:
+                collect[index] = replace(attempt_evidence, published_read=publication.implementation)
+                break
+    collect.append(publication)
+
+
+def _reported_book_dscr(
+    attempt: dict,
+    *,
+    variant: str,
+    facts: list[dict],
+    bindings: list[dict],
+    periods: list[dict],
+    absent: frozenset[str],
+    plan: Any | None = None,
+    collect: list | None = None,
+    attempt_evidence=None,
+    sign_convention: str = "outflow_negative",
+    marker_class: str | None = None,
+    explicit_phases: bool = False,
+) -> dict:
+    """Строка книги только у пустого результата со статусом missing_input или needs_input.
+
+    Число формулы и любой другой статус, включая scale_unconfirmed и basis_mismatch,
+    возвращаются как есть. Отказ не закрывается другим определением
+    (https://arxiv.org/abs/1705.08500). Кэш строки читается через план:
+    понятие, которое план уже разобрал, не сканируется второй раз.
+    Опубликованное число — чтение ячейки, не частное. Его улика отдельно от попытки,
+    а попытка хранит ссылку на это чтение.
+    """
+
+    if any(row.get("value") is not None for row in attempt.get("rows") or []):
+        return attempt
+    if attempt.get("status") not in {"missing_input", "needs_input"}:
+        return attempt
+    from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+    book = _primaries(list(bindings_for_plan(bindings, plan)), absent).get("dscr")
+    if book is None:
+        return attempt
+    reader = None
+    if collect is not None:
+        reader = EvidenceBook(
+            metric="dscr",
+            sign_convention=sign_convention,
+            marker_class=marker_class,
+            explicit_phases=explicit_phases,
+            plan_content_sha256=(getattr(plan, "content_sha256", None) if plan is not None else None),
+        )
+    reported = _book_dscr_rows(facts, book, periods, reader)
+    if not reported:
+        return attempt
+    if collect is not None and reader is not None:
+        _publish_reported_read(collect, attempt_evidence, reader, reported, periods, book.get("row_key"))
+    missing = [str(name) for name in attempt.get("missing_inputs") or [] if name]
+    names = ", ".join(missing) if missing else "входы"
+    return {
+        "metric": "dscr",
+        "rows": reported,
+        "needs_input": attempt.get("needs_input") or [],
+        "warnings": [
+            {
+                "code": "dscr_reported",
+                "params": {
+                    "variant": variant,
+                    "inputs": missing,
+                    "message": (
+                        f"Вариант {variant} не посчитан: не хватает {names}. "
+                        "Показан DSCR строки книги с пометкой reported."
+                    ),
+                },
+            },
+            *(attempt.get("warnings") or []),
+        ],
+        "status": "succeeded",
+        "definition_source": "reported",
+        "definition_ref": book.get("row_key"),
+        "missing_inputs": missing,
+    }
+
+
+def _refused_covenant(
+    plan: Any,
+    periods: list[dict],
+    *,
+    sign_convention: str,
+    marker_class: str | None,
+    explicit_phases: bool,
+):
+    """Отказ плана без прохода формулы. Основание — статус и недостающие понятия.
+
+    Число не считается: в следе нет шага. Происхождение отказа — план, который
+    уже решил, что вход отсутствует (https://www.w3.org/TR/prov-dm/).
+    """
+
+    from finance_analysis.domain.metric_contract import REGISTRY
+
+    needs = tuple(getattr(plan, "needs_input", ()) or ())
+    subjects = tuple(str(item.subject) for item in needs if getattr(item, "subject", None))
+    reasons = tuple(dict.fromkeys(str(item.reason) for item in needs if getattr(item, "reason", None)))
+    reason = reasons[0] if len(reasons) == 1 else None
+    status = str(plan.status)
+    recorded = []
+    for period in list(periods) or [None]:
+        period_id = None if period is None else period.get("period_id")
+        axis_id = None if period is None else period.get("axis_id")
+        label = "" if period_id is None else str(period_id)
+        recorded.append(
+            PeriodResult(
+                axis_id=None if axis_id is None else str(axis_id),
+                period_id=None if period_id is None else str(period_id),
+                status=status,
+                reason=reason,
+                value=None,
+                numerator=None,
+                denominator=None,
+                steps=(),
+                missing_concepts=((label, subjects),) if subjects else (),
+            )
+        )
+    book = EvidenceBook(
+        metric="dscr",
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        explicit_phases=explicit_phases,
+        plan_content_sha256=getattr(plan, "content_sha256", None),
+        periods=recorded,
+    )
+    return book.freeze("not_run", REGISTRY[("dscr", "dscr.corporate_covenant")].implementation_version)
+
+
 def select_ratio(
     metric: str,
     variant: str | None,
@@ -1941,7 +2165,7 @@ def select_ratio(
             plan=plan,
         )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
-        return covenant_dscr(
+        attempt = covenant_dscr(
             facts=common["facts"],
             bindings=common["bindings"],
             periods=common["periods"],
@@ -1958,6 +2182,35 @@ def select_ratio(
             composed=composed,
             aggregations=aggregations,
             plan=plan,
+        )
+        attempt_evidence = None
+        if (
+            collect is not None
+            and plan is not None
+            and getattr(plan, "status", None) in {"missing_input", "needs_input"}
+            and attempt.get("status") in {"missing_input", "needs_input"}
+        ):
+            attempt_evidence = _refused_covenant(
+                plan,
+                common["periods"],
+                sign_convention=common["sign_convention"],
+                marker_class=common["marker_class"],
+                explicit_phases=bool(common.get("explicit_phases")),
+            )
+            collect.append(attempt_evidence)
+        return _reported_book_dscr(
+            attempt,
+            variant=named or variant or "corporate_covenant",
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            absent=common.get("absent") or frozenset(),
+            plan=plan,
+            collect=collect,
+            attempt_evidence=attempt_evidence,
+            sign_convention=common["sign_convention"],
+            marker_class=common["marker_class"],
+            explicit_phases=bool(common.get("explicit_phases")),
         )
     if metric == "dscr" and variant == "pf":
         if collect is None:
@@ -2005,8 +2258,9 @@ def select_ratio(
             aggregations=aggregations,
             plan=plan,
         )
+    attempt_evidence = None
     if collect is None:
-        return coverage_ratio(
+        result = coverage_ratio(
             metric=metric,
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
@@ -2014,8 +2268,8 @@ def select_ratio(
             plan=plan,
             **common,
         )
-    return remembered(
-        calculate_coverage(
+    else:
+        outcome = calculate_coverage(
             metric=metric,
             interest_order=interest_order,
             row_fallbacks=row_fallbacks,
@@ -2023,8 +2277,24 @@ def select_ratio(
             plan=plan,
             evidence=True,
             **common,
-        ),
-        collect,
+        )
+        result = remembered(outcome, collect)
+        attempt_evidence = outcome.evidence
+    if metric != "dscr":
+        return result
+    return _reported_book_dscr(
+        result,
+        variant=variant or "catalog",
+        facts=common["facts"],
+        bindings=common["bindings"],
+        periods=common["periods"],
+        absent=common.get("absent") or frozenset(),
+        plan=plan,
+        collect=collect,
+        attempt_evidence=attempt_evidence,
+        sign_convention=common["sign_convention"],
+        marker_class=common["marker_class"],
+        explicit_phases=bool(common.get("explicit_phases")),
     )
 
 

@@ -114,6 +114,7 @@ class CalculationEvidence:
     basis_sides: tuple[BasisSide, ...] = ()
     sums_additions: int = 0
     evidence_status: str = "evidence_available"
+    published_read: str | None = None
 
 
 @dataclass(frozen=True)
