@@ -154,9 +154,18 @@ def _coverage_definitions(
     variant_of,
     profile,
     profile_ref,
+    concepts: frozenset[str] = frozenset(),
+    money: frozenset[str] = frozenset(),
+    warnings: list | None = None,
+    catalog: dict | None = None,
 ):
-    """Определения только для базовых DSCR, DSCR pf, ICR и ICR EBIT."""
+    """Определения только для базовых DSCR, DSCR pf, ICR и ICR EBIT.
 
+    Профиль проходит тот же ``profile_formula``, что и ``resolve_covenant``.
+    Ошибка оставляет каталог. Пустая версия профиля не заменяется именем ``profile``.
+    """
+
+    from finance_analysis.domain.covenant import profile_formula
     from finance_analysis.domain.execution_contract import (
         CatalogMetricRecord,
         ProfileDscrRecord,
@@ -164,6 +173,19 @@ def _coverage_definitions(
     )
 
     found = {}
+    profile_for_dscr = None
+    raw = profile.get("dscr_definition") if isinstance(profile, dict) else None
+    if isinstance(raw, dict):
+        expression, window, basis, problem = profile_formula(raw, concepts=concepts, money=money)
+        if problem and warnings is not None and "dscr" in metrics and dscr_variant in {None, "pf"}:
+            warnings.append({"code": "dscr_definition_invalid", "params": {"reason": problem}})
+        elif expression is not None and dscr_variant in {None, "pf"}:
+            profile_for_dscr = ProfileDscrRecord(
+                expression=expression,
+                profile_ref=profile_ref if isinstance(profile_ref, str) and profile_ref else None,
+                window=window,
+                basis_ref=basis,
+            )
     for metric in metrics:
         variant = dscr_variant if metric == "dscr" else (variant_of or {}).get(metric)
         if metric == "dscr":
@@ -176,31 +198,64 @@ def _coverage_definitions(
             continue
         key = f"{metric}.{variant}" if variant else metric
         expression = (expressions or {}).get(key)
-        if expression is None:
-            continue
-        profile_record = None
-        if metric == "dscr":
-            override = _profile_dscr(profile)
-            raw = profile.get("dscr_definition") if isinstance(profile, dict) else None
-            if override is not None and isinstance(raw, dict):
-                window = raw.get("window")
-                basis = raw.get("basis_ref")
-                profile_record = ProfileDscrRecord(
-                    expression=override,
-                    profile_ref=profile_ref or "profile",
-                    window=window if window in {"LTM", "period"} else None,
-                    basis_ref=basis if isinstance(basis, str) and basis else None,
-                )
-        found[metric] = compile_definition(
-            CatalogMetricRecord(
+        record = None if catalog is None else catalog.get(key)
+        if record is None:
+            if expression is None:
+                continue
+            record = CatalogMetricRecord(
                 metric_id=metric,
                 expression=expression,
                 executor_key="coverage",
                 executor_id="calculate_coverage",
                 executor_version="calculate_coverage@1",
                 variant=variant,
-            ),
-            profile=profile_record,
+            )
+        elif expression is None:
+            continue
+        found[metric] = compile_definition(
+            record,
+            catalog,
+            profile=profile_for_dscr if metric == "dscr" else None,
+        )
+    return found, None if profile_for_dscr is None else profile_for_dscr.expression
+
+
+def _coverage_catalog(model_types, financial) -> dict:
+    """Записи каталога целиком: формула, версия, окно и база. Исполнитель покрытия свой."""
+
+    from finance_analysis.application.model_types import load_coverage_document
+    from finance_analysis.domain.execution_contract import CatalogMetricRecord
+
+    document = load_coverage_document().get("metrics") or {}
+    indicators = getattr(financial, "indicators", None) or {}
+    found = {}
+    for key, expression in (model_types.metric_expressions or {}).items():
+        metric_id, _, variant_name = key.partition(".")
+        variant = variant_name or None
+        body = document.get(metric_id) or {}
+        if variant:
+            variants = body.get("variants") if isinstance(body, dict) else None
+            body = variants.get(variant) if isinstance(variants, dict) else None
+            body = body or {}
+        formula_id = body.get("formula_id") if isinstance(body.get("formula_id"), str) else None
+        version = body.get("definition_version") if isinstance(body.get("definition_version"), str) else None
+        indicator = indicators.get(metric_id)
+        window = None
+        if indicator is not None:
+            if variant and variant in indicator.variants:
+                window = indicator.variants[variant].window
+            elif variant is None:
+                window = indicator.window
+        found[key] = CatalogMetricRecord(
+            metric_id=metric_id,
+            expression=expression,
+            executor_key="coverage",
+            executor_id="calculate_coverage",
+            executor_version="calculate_coverage@1",
+            variant=variant,
+            formula_id=formula_id,
+            definition_version=version,
+            window=window,
         )
     return found
 
@@ -1015,13 +1070,17 @@ class Analyses:
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
-        definitions = _coverage_definitions(
+        definitions, profile_expression = _coverage_definitions(
             metrics,
             svc.model_types.metric_expressions,
             dscr_variant=dscr_variant,
             variant_of=variant_of,
             profile=body,
             profile_ref=profile_ref if isinstance(profile_ref, str) else None,
+            concepts=svc.catalog.ids,
+            money=money,
+            warnings=warnings,
+            catalog=_coverage_catalog(svc.model_types, getattr(svc, "financial_catalog", None)),
         )
         plans = plans_for(
             metrics,
@@ -1039,7 +1098,7 @@ class Analyses:
             semantic_model_version=target.semantic_model,
             build_key=target.build,
             model_id=job_id,
-            dscr_expression=_profile_dscr(body),
+            dscr_expression=profile_expression if dscr_variant in {None, "pf"} else _profile_dscr(body),
             definitions=definitions,
         )
         for metric in metrics:

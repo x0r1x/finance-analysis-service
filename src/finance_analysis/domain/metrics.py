@@ -968,6 +968,9 @@ def calculate_coverage(
         )
     numerator_basis = _flow_basis(primaries[numerator_name])
     denominator_basis = _flow_basis(primaries[denominator_name])
+    formula_window = None
+    if definition is not None:
+        formula_window = definition.normalized_expression.window
     named = {numerator_name: primaries[numerator_name], denominator_name: primaries[denominator_name]}
     if fallback_parts is not None:
         named["principal"] = primaries["principal"]
@@ -1000,7 +1003,12 @@ def calculate_coverage(
     scale_policy = "sheet" if sheet else _scale_policy(facts, list(named.values()))
     if book is not None:
         book.sheet = sheet
-    if numerator_basis == "ltm" and denominator_basis == "period":
+    # Пустое окно оставляет выбор базе привязки. period считает один период.
+    # LTM ниже суммирует обе стороны за двенадцать месяцев и не подменяет частное.
+    binding_ltm = numerator_basis == "ltm" and denominator_basis == "period"
+    if formula_window in {"period", "LTM"}:
+        binding_ltm = False
+    if binding_ltm:
         extra = []
         if fallback_parts is not None:
             extra.append(primaries["principal"])
@@ -1095,6 +1103,24 @@ def calculate_coverage(
         else:
             message = "Числитель ICR не содержит значений на оси процентов. Коэффициент не рассчитан."
         return _finish(book, _explained(metric, periods, "input_absent", message, warnings))
+    if formula_window == "LTM":
+        return _finish(
+            book,
+            _definition_ltm(
+                metric,
+                numerator,
+                denominator,
+                periods,
+                aligned,
+                home,
+                sign_convention,
+                warnings,
+                book,
+                period_phase,
+                explicit_phases,
+                marker_class,
+            ),
+        )
     rows = []
     for period in periods:
         axis, period_id = period["axis_id"], period["period_id"]
@@ -1890,6 +1916,93 @@ def _lease_ltm_rows(
     if not rows:
         return [_noted(metric, periods[0], "partial_window", PARTIAL_DENOMINATOR)] if periods else [], False
     return rows, computed
+
+
+def _definition_ltm(
+    metric: str,
+    numerator: dict,
+    denominator: dict,
+    periods: list[dict],
+    aligned: dict,
+    home: set[str],
+    sign_convention: str,
+    warnings: list[dict],
+    book: EvidenceBook | None,
+    period_phase: dict,
+    explicit_phases: bool,
+    marker_class: str | None,
+) -> dict:
+    """Окно ``LTM`` определения: сумма за двенадцать месяцев, не частное одного периода.
+
+    Неполное окно не подменяется значением одного периода. ``period`` и пустое окно
+    остаются на прежнем проходе по периодам. Фаза и маркер те же, что у частного за период.
+    """
+
+    from finance_analysis.domain.cover_metrics import _window
+    from finance_analysis.domain.coverage import is_coverage_test_period
+
+    ordered = _dated_periods([item for item in periods if item.get("axis_id") in home])
+    rows = []
+    for period in periods:
+        if period.get("axis_id") not in home:
+            _remember(book, period, "skipped", "axis_not_home", ())
+            continue
+        marker = period.get("marker_class")
+        if marker_class and marker and marker != marker_class:
+            _remember(book, period, "skipped", "marker_mismatch", ())
+            continue
+        window = None
+        if period.get("period_start") is not None and period.get("period_end") is not None:
+            window = _window(ordered, period, "lookback")
+        if window is None:
+            rows.append(_row(metric, period, None, "not_computed", "partial_window"))
+            _remember(book, period, "partial_window", "partial_window", ())
+            continue
+        total_num = Decimal(0)
+        total_den = Decimal(0)
+        complete = True
+        for item in window:
+            key = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
+            if key not in numerator or key not in denominator:
+                complete = False
+                break
+            total_num += numerator[key]
+            total_den += _payment(denominator[key], sign_convention)
+        phase = period_phase.get((period.get("axis_id"), period.get("period_id")))
+        if phase is None:
+            phase = period_phase.get((period.get("axis_id"), period.get("period_key_base") or period.get("period_id")))
+        if complete and metric == "dscr" and not is_coverage_test_period(
+            debt_service_nonzero=total_den != 0,
+            phase=phase,
+            explicit_phases=explicit_phases,
+        ):
+            _remember(book, period, "skipped", "not_coverage_test_period", ())
+            continue
+        if not complete or total_den == 0:
+            reason = "zero_denominator" if complete else "partial_window"
+            status = "no_debt_service" if metric == "dscr" and complete else "not_computed"
+            rows.append(_row(metric, period, None, status, reason))
+            _remember(book, period, status, reason, ())
+            continue
+        with localcontext() as ctx:
+            ctx.prec = 38
+            ctx.rounding = "ROUND_HALF_EVEN"
+            value = quantize_ratio(total_num / total_den)
+        row = _row(metric, period, value, "computed", None)
+        row["window"] = [item["period_id"] for item in window]
+        rows.append(row)
+        _remember(
+            book,
+            period,
+            "computed",
+            None,
+            (),
+            value=value,
+            numerator=total_num,
+            denominator=total_den,
+            window_periods=tuple(item["period_id"] for item in window),
+        )
+    return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
 def _ltm_numerator(

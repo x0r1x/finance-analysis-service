@@ -1,5 +1,6 @@
 """DSCR и ICR считают стороны из определения, не из литералов _plan_roles."""
 
+from datetime import date
 from decimal import Decimal
 
 from finance_analysis.domain.execution_contract import (
@@ -394,3 +395,163 @@ def _calc_plan(definition, bindings):
         variant=definition.variant,
         definition=definition,
     )
+
+
+def _profile_body(numerator: str, denominator: str, window: str) -> dict:
+    return {
+        "dscr_definition": {
+            "numerator": {"plus": [numerator]},
+            "denominator": {"plus": [denominator]},
+            "window": window,
+        }
+    }
+
+
+def _definitions(profile: dict, *, profile_ref: str | None = "desk@1", concepts=None, money=None, warnings=None, catalog=None):
+    from finance_analysis.application.analyses import _coverage_definitions
+
+    found, _accepted = _coverage_definitions(
+        ["dscr"],
+        {"dscr": _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))},
+        dscr_variant=None,
+        variant_of={},
+        profile=profile,
+        profile_ref=profile_ref,
+        concepts=concepts if concepts is not None else frozenset({"cfads", "debt_service", "interest", "ebitda"}),
+        money=money if money is not None else frozenset({"cfads", "debt_service", "interest", "ebitda"}),
+        warnings=warnings if warnings is not None else [],
+        catalog=catalog,
+    )
+    return found
+
+
+def test_unknown_concept_is_not_compiled_into_the_profile():
+    warnings: list[dict] = []
+    found = _definitions(_profile_body("not_a_concept", "interest", "period"), warnings=warnings)
+    assert found["dscr"].definition_source == "catalog"
+    assert found["dscr"].normalized_expression.numerator_plus == ("cfads",)
+    assert any(item["code"] == "dscr_definition_invalid" for item in warnings)
+
+
+def test_non_monetary_concept_is_not_compiled_into_the_profile():
+    warnings: list[dict] = []
+    found = _definitions(
+        _profile_body("headcount", "interest", "period"),
+        concepts=frozenset({"cfads", "debt_service", "interest", "ebitda", "headcount"}),
+        money=frozenset({"cfads", "debt_service", "interest", "ebitda"}),
+        warnings=warnings,
+    )
+    assert found["dscr"].definition_source == "catalog"
+    assert found["dscr"].normalized_expression.numerator_plus == ("cfads",)
+    assert any(item["code"] == "dscr_definition_invalid" for item in warnings)
+
+
+def test_invalid_window_is_not_compiled_into_the_profile():
+    warnings: list[dict] = []
+    found = _definitions(_profile_body("ebitda", "interest", "quarter"), warnings=warnings)
+    assert found["dscr"].definition_source == "catalog"
+    assert found["dscr"].normalized_expression.numerator_plus == ("cfads",)
+    assert any(item["code"] == "dscr_definition_invalid" for item in warnings)
+
+
+def test_same_sides_and_different_windows_change_the_hash_and_the_result():
+    expression = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
+    period = _definition("dscr", expression, window="period")
+    ltm = _definition("dscr", expression, window="LTM")
+    assert period.definition_hash != ltm.definition_hash
+    periods = [
+        {
+            "axis_id": "a",
+            "period_id": "M1",
+            "period_index": 1,
+            "grain": "month",
+            "timeline_id": "t",
+            "period_start": date(2024, 1, 1),
+            "period_end": date(2024, 1, 31),
+        },
+        {
+            "axis_id": "a",
+            "period_id": "M2",
+            "period_index": 2,
+            "grain": "month",
+            "timeline_id": "t",
+            "period_start": date(2024, 2, 1),
+            "period_end": date(2024, 2, 29),
+        },
+    ]
+    facts = [_fact("c", "10"), _fact("c", "40"), _fact("d", "-1"), _fact("d", "-1")]
+    facts[0]["period_id"] = "M1"
+    facts[1]["period_id"] = "M2"
+    facts[2]["period_id"] = "M1"
+    facts[3]["period_id"] = "M2"
+    bindings = [_bind("cfads", "c"), _bind("debt_service", "d")]
+
+    def run(definition):
+        plan = resolve_metric_plan(
+            "dscr",
+            bindings,
+            {"dscr": expression},
+            definition=definition,
+        )
+        return coverage_from_definition(
+            definition,
+            plan,
+            facts=facts,
+            bindings=bindings,
+            periods=periods,
+            period_phase={},
+            explicit_phases=False,
+        )
+
+    period_values = {row["value"] for row in run(period)["rows"] if row.get("value") is not None}
+    ltm_values = {row["value"] for row in run(ltm)["rows"] if row.get("value") is not None}
+    assert Decimal("40.0000000000") in period_values
+    assert Decimal("40.0000000000") not in ltm_values
+
+
+def test_missing_profile_ref_is_not_replaced_with_a_placeholder():
+    found = _definitions(_profile_body("ebitda", "interest", "period"), profile_ref=None)
+    ref = found["dscr"].definition_ref
+    assert found["dscr"].definition_source == "profile"
+    assert ref["profile_version"] is None
+    assert ref["profile_id"] is None
+    assert "profile" not in ref.values()
+
+
+def test_base_metric_is_compiled_from_the_catalog_record():
+    parent = CatalogMetricRecord(
+        metric_id="dscr",
+        expression=_expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+        formula_id="dscr",
+        definition_version="dscr@1",
+        window="LTM",
+    )
+    child = CatalogMetricRecord(
+        metric_id="icr",
+        expression=_expr(base="dscr"),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+        formula_id="icr",
+        definition_version="icr@1",
+    )
+    from finance_analysis.application.analyses import _coverage_definitions
+
+    found, _accepted = _coverage_definitions(
+        ["icr"],
+        {"dscr": parent.expression, "icr": child.expression},
+        dscr_variant=None,
+        variant_of={},
+        profile=None,
+        profile_ref=None,
+        catalog={"dscr": parent, "icr": child},
+    )
+    assert found["icr"].normalized_expression.numerator_plus == ("cfads",)
+    assert found["icr"].normalized_expression.base is None
+    assert found["icr"].normalized_expression.window == "LTM"
+    assert found["icr"].formula_id == "icr"
+    assert found["icr"].definition_version == "icr@1"
+    assert found["icr"].variant_source == "base:dscr"

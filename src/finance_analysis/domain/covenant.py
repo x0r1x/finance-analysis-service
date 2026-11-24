@@ -178,6 +178,42 @@ def _parse(value: dict) -> Composed:
     return Composed(_as_side(value["numerator"]), _as_side(value["denominator"]), str(value["window"]))
 
 
+def profile_formula(
+    raw,
+    *,
+    concepts: frozenset[str],
+    money: frozenset[str],
+    variants: frozenset[str] | None = None,
+) -> tuple[MetricExpression | None, str | None, str | None, str | None]:
+    """Один разбор профиля для ``resolve_covenant`` и сборки определения.
+
+    Возвращает выражение, окно, пункт и текст ошибки. Ошибка значит, что состав
+    не подменяет каталог. Именованный вариант ошибки не имеет и сторон не возвращает.
+    """
+
+    problem = dscr_definition_error(raw, concepts=concepts, money=money, variants=variants)
+    if problem:
+        return None, None, None, problem
+    if isinstance(raw, dict) and "variant" in raw:
+        basis = raw.get("basis_ref")
+        return None, None, basis if isinstance(basis, str) else None, None
+    parsed = _parse(raw)
+    numerator = raw["numerator"] if isinstance(raw.get("numerator"), dict) else {}
+    denominator = raw["denominator"] if isinstance(raw.get("denominator"), dict) else {}
+    basis = raw.get("basis_ref")
+    return (
+        MetricExpression(
+            numerator_plus=tuple(numerator.get("plus") or ()),
+            numerator_minus=tuple(numerator.get("minus") or ()),
+            denominator_plus=tuple(denominator.get("plus") or ()),
+            denominator_minus=tuple(denominator.get("minus") or ()),
+        ),
+        parsed.window,
+        basis if isinstance(basis, str) else None,
+        None,
+    )
+
+
 def profile_dscr_expression(profile: dict | None) -> MetricExpression | None:
     """Неименованный состав профиля. Именованный вариант остаётся формулой каталога."""
 
@@ -212,7 +248,7 @@ def resolve_covenant(
     if not raw:
         return default, "default", None, [note]
     known = _variant_ids(composed)
-    problem = dscr_definition_error(raw, concepts=concepts, money=money, variants=known)
+    expression, window, _basis, problem = profile_formula(raw, concepts=concepts, money=money, variants=known)
     if problem:
         return default, "default", None, [note, {"code": "dscr_definition_invalid", "params": {"reason": problem}}]
     ref = {
@@ -223,7 +259,16 @@ def resolve_covenant(
     named = _named_variant(profile)
     if named:
         return composed[f"dscr.{named}"], "profile", ref, []
-    return _parse(raw), "profile", ref, []
+    return (
+        Composed(
+            Side(expression.numerator_plus, expression.numerator_minus),
+            Side(expression.denominator_plus, expression.denominator_minus),
+            window or "period",
+        ),
+        "profile",
+        ref,
+        [],
+    )
 
 
 # Договорный состав без имени варианта. interest_paid — отдельное понятие, не синоним interest.
