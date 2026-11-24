@@ -146,6 +146,65 @@ def _profile_dscr(profile: dict | None):
     return profile_dscr_expression(profile)
 
 
+def _coverage_definitions(
+    metrics,
+    expressions,
+    *,
+    dscr_variant,
+    variant_of,
+    profile,
+    profile_ref,
+):
+    """Определения только для базовых DSCR, DSCR pf, ICR и ICR EBIT."""
+
+    from finance_analysis.domain.execution_contract import (
+        CatalogMetricRecord,
+        ProfileDscrRecord,
+        compile_definition,
+    )
+
+    found = {}
+    for metric in metrics:
+        variant = dscr_variant if metric == "dscr" else (variant_of or {}).get(metric)
+        if metric == "dscr":
+            if variant not in {None, "pf"}:
+                continue
+        elif metric == "icr":
+            if variant is not None:
+                continue
+        elif metric != "icr_ebit" or variant is not None:
+            continue
+        key = f"{metric}.{variant}" if variant else metric
+        expression = (expressions or {}).get(key)
+        if expression is None:
+            continue
+        profile_record = None
+        if metric == "dscr":
+            override = _profile_dscr(profile)
+            raw = profile.get("dscr_definition") if isinstance(profile, dict) else None
+            if override is not None and isinstance(raw, dict):
+                window = raw.get("window")
+                basis = raw.get("basis_ref")
+                profile_record = ProfileDscrRecord(
+                    expression=override,
+                    profile_ref=profile_ref or "profile",
+                    window=window if window in {"LTM", "period"} else None,
+                    basis_ref=basis if isinstance(basis, str) and basis else None,
+                )
+        found[metric] = compile_definition(
+            CatalogMetricRecord(
+                metric_id=metric,
+                expression=expression,
+                executor_key="coverage",
+                executor_id="calculate_coverage",
+                executor_version="calculate_coverage@1",
+                variant=variant,
+            ),
+            profile=profile_record,
+        )
+    return found
+
+
 def _attach_book_rows(envelope: dict, got: dict) -> None:
     """Кладёт цитаты строк книги в результат, только когда список не пуст.
 
@@ -956,6 +1015,14 @@ class Analyses:
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
+        definitions = _coverage_definitions(
+            metrics,
+            svc.model_types.metric_expressions,
+            dscr_variant=dscr_variant,
+            variant_of=variant_of,
+            profile=body,
+            profile_ref=profile_ref if isinstance(profile_ref, str) else None,
+        )
         plans = plans_for(
             metrics,
             bindings,
@@ -973,6 +1040,7 @@ class Analyses:
             build_key=target.build,
             model_id=job_id,
             dscr_expression=_profile_dscr(body),
+            definitions=definitions,
         )
         for metric in metrics:
             before = len(evidences)
@@ -1022,6 +1090,7 @@ class Analyses:
                     statement_sheets=statement_sheets,
                     plan=plans.get(metric),
                     collect=evidences,
+                    definition=definitions.get(metric),
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})

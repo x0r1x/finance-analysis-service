@@ -650,6 +650,130 @@ def _denominator_names(denominator_name, fallback_parts) -> tuple[str, ...]:
     return (fallback_parts[0], "principal")
 
 
+def _not_computed(metric: str, reason: str) -> dict:
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [],
+        "missing_inputs": [],
+        "warnings": [],
+        "status": "not_computed",
+        "reason": reason,
+        "message": reason,
+    }
+
+
+def _declared_terms(definition, slots) -> set[str]:
+    expr = definition.normalized_expression
+    names = (
+        set(expr.numerator_plus)
+        | set(expr.numerator_minus)
+        | set(expr.denominator_plus)
+        | set(expr.denominator_minus)
+        | set(expr.one_of)
+    )
+    if expr.rate:
+        names.add(expr.rate)
+    names.update(expr.rates)
+    if expr.terminal:
+        names.add(expr.terminal)
+    if expr.compare_with:
+        names.add(expr.compare_with)
+    if expr.add_back:
+        names.update(expr.add_back)
+    for slot in slots:
+        names.update(slot.original_terms)
+        names.update(slot.resolved_terms)
+    return names
+
+
+def _roles_from_definition(definition, plan):
+    """Стороны частного: выражение и уже выбранный слот. Выбор не повторяется."""
+
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        slots_for,
+    )
+    from finance_analysis.domain.metric_contract import UndeclaredInput
+
+    if (
+        plan.metric_id != definition.metric_id
+        or plan.variant != definition.variant
+        or plan.variant_source != definition.variant_source
+        or plan.definition_hash != definition.definition_hash
+    ):
+        return "definition_mismatch"
+    expr = definition.normalized_expression
+    if (
+        expr.numerator_minus
+        or expr.denominator_minus
+        or len(expr.denominator_plus) > 1
+        or (expr.numerator_plus and expr.one_of)
+        or expr.rate
+        or expr.rates
+        or expr.aggregate
+        or expr.terminal
+        or expr.compare_with
+        or expr.add_back
+        or expr.base
+    ):
+        return "unsupported_formula"
+    try:
+        slots = slots_for(definition, plan)
+    except ExecutionContractError as exc:
+        return exc.reason
+    declared = _declared_terms(definition, slots)
+    for item in plan.inputs:
+        if item.confirmed and not item.ambiguous and item.concept not in declared:
+            raise UndeclaredInput(item.concept)
+    by_id = {slot.slot_id: slot for slot in slots}
+    if expr.one_of:
+        chosen = by_id.get("numerator")
+        if chosen is None or len(chosen.resolved_terms) != 1:
+            return "unsupported_formula"
+        numerator = chosen.resolved_terms[0]
+    elif len(expr.numerator_plus) == 1:
+        numerator = expr.numerator_plus[0]
+    else:
+        return "unsupported_formula"
+    debt = by_id.get("debt_service")
+    interest = by_id.get("interest")
+    if debt is not None:
+        if len(debt.resolved_terms) != 2:
+            return "unsupported_formula"
+        denominator = debt.resolved_terms[0]
+        fallback = debt.resolved_terms
+        needed = (numerator, *debt.resolved_terms)
+    elif interest is not None:
+        if len(interest.resolved_terms) != 1:
+            return "unsupported_formula"
+        denominator = interest.resolved_terms[0]
+        fallback = None
+        needed = (numerator, denominator)
+    elif len(expr.denominator_plus) == 1:
+        denominator = expr.denominator_plus[0]
+        fallback = None
+        needed = (numerator, denominator)
+    else:
+        return "unsupported_formula"
+    for name in needed:
+        if name not in declared:
+            raise UndeclaredInput(name)
+    return fallback, needed, denominator, numerator
+
+
+def coverage_from_definition(definition, plan, **kwargs):
+    """Частное по определению. Нерешённый план оставляет прежний статус, не исключение."""
+
+    return calculate_coverage(
+        metric=definition.metric_id,
+        plan=plan,
+        definition=definition,
+        evidence=False,
+        **kwargs,
+    ).result
+
+
 @implements("dscr", "dscr", implementation_version="dscr@1", inputs=DSCR_INPUTS)
 @implements("icr", "icr", implementation_version="icr@1", inputs=ICR_INPUTS)
 @implements("icr_ebit", "icr_ebit", implementation_version="icr_ebit@1", inputs=ICR_EBIT_INPUTS)
@@ -669,6 +793,7 @@ def coverage_ratio(
     profile: dict | None = None,
     declared: tuple[str, ...] | None = None,
     plan: Any | None = None,
+    definition: Any | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -694,6 +819,7 @@ def coverage_ratio(
         profile=profile,
         declared=declared,
         plan=plan,
+        definition=definition,
     ).result
 
 
@@ -722,6 +848,7 @@ def calculate_coverage(
     declared: tuple[str, ...] | None = None,
     plan: Any | None = None,
     evidence: bool = True,
+    definition: Any | None = None,
 ) -> CalculationOutcome:
     """Единственный проход. ``result`` — прежнее тело ``coverage_ratio``.
 
@@ -749,7 +876,13 @@ def calculate_coverage(
             return _finish(book, early)
         primaries = _plan_rows(plan, bindings)
         warnings = [item.as_dict() for item in plan.warnings]
-        fallback_parts, needed, denominator_name, numerator_name = _plan_roles(metric, plan)
+        if definition is not None:
+            derived = _roles_from_definition(definition, plan)
+            if isinstance(derived, str):
+                return _finish(book, _not_computed(metric, derived))
+            fallback_parts, needed, denominator_name, numerator_name = derived
+        else:
+            fallback_parts, needed, denominator_name, numerator_name = _plan_roles(metric, plan)
         missing = [name for name in (*needed, numerator_name) if name not in primaries]
         ambiguous = []
     else:
@@ -1255,6 +1388,7 @@ def dscr_pf(
     row_fallbacks: dict | None = None,
     profile: dict | None = None,
     plan: Any | None = None,
+    definition: Any | None = None,
 ) -> dict:
     """Проектный DSCR. Те же числа, что coverage_ratio для metric=dscr. Книгу улики не собирает."""
 
@@ -1275,6 +1409,7 @@ def dscr_pf(
         row_fallbacks=row_fallbacks,
         profile=profile,
         plan=plan,
+        definition=definition,
         evidence=False,
     ).result
 
@@ -1294,6 +1429,7 @@ def calculate_dscr_pf(
     profile: dict | None = None,
     plan: Any | None = None,
     evidence: bool = True,
+    definition: Any | None = None,
 ) -> CalculationOutcome:
     """Тот же проход, что у DSCR, с идентичностью ``dscr.pf@1`` на улике."""
 
@@ -1319,6 +1455,7 @@ def calculate_dscr_pf(
         declared=DSCR_INPUTS,
         plan=plan,
         evidence=evidence,
+        definition=definition,
     )
     if outcome.evidence is None:
         return outcome

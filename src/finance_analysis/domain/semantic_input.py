@@ -578,6 +578,7 @@ def plans_for(
     build_key: str | None = None,
     model_id: str | None = None,
     dscr_expression: MetricExpression | None = None,
+    definitions: Mapping[str, object] | None = None,
 ) -> dict[str, ResolvedMetricPlan]:
     """Один план на метрику. Вызывающий передаёт этот словарь дальше как есть.
 
@@ -605,6 +606,7 @@ def plans_for(
             semantic_model_version=semantic_model_version,
             build_key=build_key,
             model_id=model_id,
+            definition=None if definitions is None else definitions.get(metric),
         )
         if plan is not None:
             found[metric] = plan
@@ -867,9 +869,14 @@ def _dscr_plan(
             code = warnings[0]["code"] if warnings else None
             selection.fallbacks.append(AppliedFallback("pf", "debt_service", parts[0], code))
     previous = {name: (src, role) for name, src, role in specs}
+    names = list(concepts)
+    if "cfads" not in previous:
+        numerator = next((name for name, _src, _role in specs if name != "debt_service"), None)
+        if numerator is not None:
+            names = [numerator if name == "cfads" else name for name in names]
     return [
         (name, *previous[name]) if name in previous else (name, "fallback", "all_of")
-        for name in concepts
+        for name in names
     ]
 
 

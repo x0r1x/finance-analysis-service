@@ -2024,6 +2024,7 @@ def select_ratio(
     aggregations: Mapping[str, str] | None = None,
     plan: Any | None = None,
     collect: list | None = None,
+    definition: Any | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -2219,6 +2220,7 @@ def select_ratio(
                 row_fallbacks=row_fallbacks,
                 profile=profile,
                 plan=plan,
+                definition=definition,
                 **common,
             )
         return remembered(
@@ -2227,6 +2229,7 @@ def select_ratio(
                 row_fallbacks=row_fallbacks,
                 profile=profile,
                 plan=plan,
+                definition=definition,
                 evidence=True,
                 **common,
             ),
@@ -2266,6 +2269,7 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             profile=profile,
             plan=plan,
+            definition=definition,
             **common,
         )
     else:
@@ -2275,6 +2279,7 @@ def select_ratio(
             row_fallbacks=row_fallbacks,
             profile=profile,
             plan=plan,
+            definition=definition,
             evidence=True,
             **common,
         )
