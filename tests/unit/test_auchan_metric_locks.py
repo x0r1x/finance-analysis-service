@@ -154,6 +154,89 @@ def test_book_dscr_is_reported_when_the_covenant_cannot_run():
     assert "cash_taxes" in warning["params"]["inputs"]
 
 
+def test_corporate_covenant_refusal_is_collected_with_the_published_read():
+    """A plan that cannot run stays as its own event. The book cell is a second one.
+
+    The refusal names the missing input. Nothing is divided to produce the trace
+    (https://www.w3.org/TR/prov-dm/).
+    """
+
+    class _Need:
+        subject = "cash_taxes"
+        reason = "concept_unknown"
+
+        def as_dict(self):
+            return {"kind": "concept", "reason": self.reason, "subject": self.subject}
+
+    class _Plan:
+        status = "missing_input"
+        content_sha256 = "plan-digest-corporate"
+        needs_input = (_Need(),)
+        warnings = ()
+        inputs = ()
+        diagnostic = ()
+        rejected = ()
+        fallbacks = ()
+
+    types = load_model_types()
+    collect: list = []
+    got = select_ratio(
+        "dscr",
+        "corporate_covenant",
+        {
+            "facts": [
+                {
+                    "row_key": "book-dscr",
+                    "axis_id": "Outputs!r1",
+                    "period_id": "2016",
+                    "cell_id": "Outputs!D20",
+                    "normalized_value": "1.476",
+                    "value_status": "cached",
+                }
+            ],
+            "bindings": [
+                {
+                    "row_key": "book-dscr",
+                    "binding_key": "book-dscr",
+                    "is_primary": True,
+                    "status": "bound",
+                    "effective_concept": "dscr",
+                    "source": "inferred",
+                }
+            ],
+            "periods": [{"axis_id": "Outputs!r1", "period_id": "2016", "period_key_base": "2016"}],
+            "period_phase": {},
+            "explicit_phases": False,
+            "sign_convention": "outflow_negative",
+            "marker_class": None,
+            "absent": frozenset(),
+        },
+        profile=None,
+        profile_ref=None,
+        composed=types.composed,
+        concepts=frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal", "dscr"}),
+        money=frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal"}),
+        interest_order=types.interest_order,
+        row_fallbacks=types.row_fallbacks,
+        plan=_Plan(),
+        collect=collect,
+    )
+    assert got["definition_source"] == "reported"
+    assert [item.execution_status for item in collect] == ["not_run", "published"]
+    attempt, published = collect
+    assert attempt.published_read == published.implementation == "dscr.reported"
+    assert attempt.plan_content_sha256 == published.plan_content_sha256 == "plan-digest-corporate"
+    assert attempt.implementation == "dscr.corporate_covenant@1"
+    assert attempt.fact_observations == ()
+    refused = attempt.period_results[0]
+    assert (refused.axis_id, refused.period_id, refused.status) == ("Outputs!r1", "2016", "missing_input")
+    assert refused.reason == "concept_unknown"
+    assert refused.steps == ()
+    assert refused.numerator is None and refused.denominator is None and refused.value is None
+    assert refused.missing_concepts == (("2016", ("cash_taxes",)),)
+    assert [step.operation for step in published.period_results[0].steps] == ["publication"]
+
+
 def test_computed_catalog_dscr_does_not_take_the_book_row():
     """A formula that produced a number stays that number. The book cell is not a second row."""
     from decimal import Decimal

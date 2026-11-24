@@ -1957,6 +1957,56 @@ def _reported_book_dscr(
     }
 
 
+def _refused_covenant(
+    plan: Any,
+    periods: list[dict],
+    *,
+    sign_convention: str,
+    marker_class: str | None,
+    explicit_phases: bool,
+):
+    """Отказ плана без прохода формулы. Основание — статус и недостающие понятия.
+
+    Число не считается: в следе нет шага. Происхождение отказа — план, который
+    уже решил, что вход отсутствует (https://www.w3.org/TR/prov-dm/).
+    """
+
+    from finance_analysis.domain.metric_contract import REGISTRY
+
+    needs = tuple(getattr(plan, "needs_input", ()) or ())
+    subjects = tuple(str(item.subject) for item in needs if getattr(item, "subject", None))
+    reasons = tuple(dict.fromkeys(str(item.reason) for item in needs if getattr(item, "reason", None)))
+    reason = reasons[0] if len(reasons) == 1 else None
+    status = str(plan.status)
+    recorded = []
+    for period in list(periods) or [None]:
+        period_id = None if period is None else period.get("period_id")
+        axis_id = None if period is None else period.get("axis_id")
+        label = "" if period_id is None else str(period_id)
+        recorded.append(
+            PeriodResult(
+                axis_id=None if axis_id is None else str(axis_id),
+                period_id=None if period_id is None else str(period_id),
+                status=status,
+                reason=reason,
+                value=None,
+                numerator=None,
+                denominator=None,
+                steps=(),
+                missing_concepts=((label, subjects),) if subjects else (),
+            )
+        )
+    book = EvidenceBook(
+        metric="dscr",
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        explicit_phases=explicit_phases,
+        plan_content_sha256=getattr(plan, "content_sha256", None),
+        periods=recorded,
+    )
+    return book.freeze("not_run", REGISTRY[("dscr", "dscr.corporate_covenant")].implementation_version)
+
+
 def select_ratio(
     metric: str,
     variant: str | None,
@@ -2115,25 +2165,41 @@ def select_ratio(
             plan=plan,
         )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
-        return _reported_book_dscr(
-            covenant_dscr(
-                facts=common["facts"],
-                bindings=common["bindings"],
-                periods=common["periods"],
+        attempt = covenant_dscr(
+            facts=common["facts"],
+            bindings=common["bindings"],
+            periods=common["periods"],
+            sign_convention=common["sign_convention"],
+            marker_class=common["marker_class"],
+            absent=common["absent"],
+            profile=profile,
+            profile_ref=profile_ref,
+            default=composed["dscr.corporate_covenant"],
+            concepts=concepts,
+            money=money,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            composed=composed,
+            aggregations=aggregations,
+            plan=plan,
+        )
+        attempt_evidence = None
+        if (
+            collect is not None
+            and plan is not None
+            and getattr(plan, "status", None) in {"missing_input", "needs_input"}
+            and attempt.get("status") in {"missing_input", "needs_input"}
+        ):
+            attempt_evidence = _refused_covenant(
+                plan,
+                common["periods"],
                 sign_convention=common["sign_convention"],
                 marker_class=common["marker_class"],
-                absent=common["absent"],
-                profile=profile,
-                profile_ref=profile_ref,
-                default=composed["dscr.corporate_covenant"],
-                concepts=concepts,
-                money=money,
-                interest_order=interest_order,
-                row_fallbacks=row_fallbacks,
-                composed=composed,
-                aggregations=aggregations,
-                plan=plan,
-            ),
+                explicit_phases=bool(common.get("explicit_phases")),
+            )
+            collect.append(attempt_evidence)
+        return _reported_book_dscr(
+            attempt,
             variant=named or variant or "corporate_covenant",
             facts=common["facts"],
             bindings=common["bindings"],
@@ -2141,6 +2207,7 @@ def select_ratio(
             absent=common.get("absent") or frozenset(),
             plan=plan,
             collect=collect,
+            attempt_evidence=attempt_evidence,
             sign_convention=common["sign_convention"],
             marker_class=common["marker_class"],
             explicit_phases=bool(common.get("explicit_phases")),
