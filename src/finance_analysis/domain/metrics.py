@@ -687,6 +687,29 @@ def _declared_terms(definition, slots) -> set[str]:
     return names
 
 
+def coverage_expression_supported(expression) -> bool:
+    """Исполнитель покрытия считает одно слагаемое на сторону и не считает вычитание.
+
+    Состав профиля может быть шире. Такое выражение не становится определением,
+    которое заведомо кончится ``not_computed``.
+    """
+
+    return bool(
+        len(expression.numerator_plus) == 1
+        and not expression.numerator_minus
+        and len(expression.denominator_plus) == 1
+        and not expression.denominator_minus
+        and not expression.one_of
+        and not expression.rate
+        and not expression.rates
+        and not expression.aggregate
+        and not expression.terminal
+        and not expression.compare_with
+        and not expression.add_back
+        and not expression.base
+    )
+
+
 def _roles_from_definition(definition, plan):
     """Стороны частного: выражение и уже выбранный слот. Выбор не повторяется."""
 
@@ -1119,6 +1142,9 @@ def calculate_coverage(
                 period_phase,
                 explicit_phases,
                 marker_class,
+                numerator_name,
+                denominator_name,
+                fallback_parts,
             ),
         )
     rows = []
@@ -1931,6 +1957,9 @@ def _definition_ltm(
     period_phase: dict,
     explicit_phases: bool,
     marker_class: str | None,
+    numerator_name: str,
+    denominator_name: str,
+    fallback_parts,
 ) -> dict:
     """Окно ``LTM`` определения: сумма за двенадцать месяцев, не частное одного периода.
 
@@ -1987,7 +2016,79 @@ def _definition_ltm(
         with localcontext() as ctx:
             ctx.prec = 38
             ctx.rounding = "ROUND_HALF_EVEN"
-            value = quantize_ratio(total_num / total_den)
+            raw_ratio = total_num / total_den
+            value = quantize_ratio(raw_ratio)
+        steps: list = []
+        if book is not None:
+            num_refs: list[str] = []
+            den_refs: list[str] = []
+            keys = set()
+            for item in window:
+                key = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
+                keys.add(key)
+                num_refs.extend(_part_terminal(steps, book, numerator_name, key, aligned))
+                parts = (book.fallback or {}).get(key)
+                if parts is None:
+                    raw_den = denominator[key]
+                    den_refs.extend(
+                        _part_terminal(
+                            steps,
+                            book,
+                            denominator_name,
+                            key,
+                            aligned,
+                            before=raw_den,
+                            after=_payment(raw_den, sign_convention),
+                            rule=sign_convention,
+                        )
+                    )
+                else:
+                    for part in parts["parts"]:
+                        den_refs.extend(
+                            _part_terminal(
+                                steps,
+                                book,
+                                part["concept"],
+                                key,
+                                aligned,
+                                before=part["before"],
+                                after=part["after"],
+                                rule=sign_convention,
+                            )
+                        )
+            num_terminal = tuple(dict.fromkeys(num_refs))
+            if len(num_terminal) != 1:
+                _step(steps, "aggregation", num_terminal, total_num, side="numerator")
+                num_terminal = (f"step:{steps[-1].step_id}",)
+            den_terminal = tuple(dict.fromkeys(den_refs))
+            if len(den_terminal) != 1:
+                _step(steps, "aggregation", den_terminal, total_den, side="denominator")
+                den_terminal = (f"step:{steps[-1].step_id}",)
+            _step(
+                steps,
+                "division",
+                tuple(dict.fromkeys((*num_terminal, *den_terminal))),
+                raw_ratio,
+                numerator=total_num,
+                denominator=total_den,
+            )
+            if value != raw_ratio:
+                _step(
+                    steps,
+                    "quantization",
+                    (f"step:{steps[-1].step_id}",),
+                    value,
+                    precision=38,
+                    quantum=RATIO,
+                    rounding="ROUND_HALF_EVEN",
+                )
+            names = _denominator_names(denominator_name, fallback_parts)
+            slots = [("numerator", numerator_name, keys)]
+            roles = {numerator_name: "numerator"}
+            for name in names:
+                slots.append(("denominator", name, keys))
+                roles[name] = "denominator"
+            _adopt(book, period, aligned, tuple(slots), _cell_roles(book, roles, keys))
         row = _row(metric, period, value, "computed", None)
         row["window"] = [item["period_id"] for item in window]
         rows.append(row)
@@ -1996,7 +2097,7 @@ def _definition_ltm(
             period,
             "computed",
             None,
-            (),
+            steps,
             value=value,
             numerator=total_num,
             denominator=total_den,

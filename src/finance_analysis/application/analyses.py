@@ -158,11 +158,14 @@ def _coverage_definitions(
     money: frozenset[str] = frozenset(),
     warnings: list | None = None,
     catalog: dict | None = None,
+    variants: frozenset[str] | None = None,
 ):
     """Определения только для базовых DSCR, DSCR pf, ICR и ICR EBIT.
 
     Профиль проходит тот же ``profile_formula``, что и ``resolve_covenant``.
     Ошибка оставляет каталог. Пустая версия профиля не заменяется именем ``profile``.
+    Имя варианта сверяется со списком каталога. Состав, который этот исполнитель
+    не считает, не становится определением.
     """
 
     from finance_analysis.domain.covenant import profile_formula
@@ -171,15 +174,33 @@ def _coverage_definitions(
         ProfileDscrRecord,
         compile_definition,
     )
+    from finance_analysis.domain.metrics import coverage_expression_supported
 
     found = {}
     profile_for_dscr = None
     raw = profile.get("dscr_definition") if isinstance(profile, dict) else None
     if isinstance(raw, dict):
-        expression, window, basis, problem = profile_formula(raw, concepts=concepts, money=money)
+        expression, window, basis, problem = profile_formula(
+            raw, concepts=concepts, money=money, variants=variants
+        )
         if problem and warnings is not None and "dscr" in metrics and dscr_variant in {None, "pf"}:
             warnings.append({"code": "dscr_definition_invalid", "params": {"reason": problem}})
-        elif expression is not None and dscr_variant in {None, "pf"}:
+        elif (
+            expression is not None
+            and dscr_variant in {None, "pf"}
+            and not coverage_expression_supported(expression)
+            and warnings is not None
+            and "dscr" in metrics
+        ):
+            warnings.append(
+                {
+                    "code": "dscr_definition_invalid",
+                    "params": {
+                        "reason": "dscr_definition: исполнитель считает одно слагаемое на сторону, без вычитания"
+                    },
+                }
+            )
+        elif expression is not None and dscr_variant in {None, "pf"} and coverage_expression_supported(expression):
             profile_for_dscr = ProfileDscrRecord(
                 expression=expression,
                 profile_ref=profile_ref if isinstance(profile_ref, str) and profile_ref else None,
@@ -1070,6 +1091,8 @@ class Analyses:
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
+        from finance_analysis.domain.covenant import _variant_ids
+
         definitions, profile_expression = _coverage_definitions(
             metrics,
             svc.model_types.metric_expressions,
@@ -1081,6 +1104,7 @@ class Analyses:
             money=money,
             warnings=warnings,
             catalog=_coverage_catalog(svc.model_types, getattr(svc, "financial_catalog", None)),
+            variants=_variant_ids(svc.model_types.composed),
         )
         plans = plans_for(
             metrics,

@@ -1,15 +1,16 @@
 """DSCR и ICR считают стороны из определения, не из литералов _plan_roles."""
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
+from finance_analysis.domain.cover_metrics import add_months
 from finance_analysis.domain.execution_contract import (
     CatalogMetricRecord,
     ProfileDscrRecord,
     compile_definition,
 )
 from finance_analysis.domain.metric_contract import UndeclaredInput
-from finance_analysis.domain.metrics import coverage_from_definition
+from finance_analysis.domain.metrics import calculate_coverage, coverage_from_definition
 from finance_analysis.domain.model_type import MetricExpression
 from finance_analysis.domain.resolved_plan import AppliedFallback, ResolvedInput, seal
 from finance_analysis.domain.semantic_input import resolve_metric_plan
@@ -407,9 +408,21 @@ def _profile_body(numerator: str, denominator: str, window: str) -> dict:
     }
 
 
-def _definitions(profile: dict, *, profile_ref: str | None = "desk@1", concepts=None, money=None, warnings=None, catalog=None):
+def _definitions(
+    profile: dict,
+    *,
+    profile_ref: str | None = "desk@1",
+    concepts=None,
+    money=None,
+    warnings=None,
+    catalog=None,
+    variants=None,
+):
     from finance_analysis.application.analyses import _coverage_definitions
 
+    kwargs = {}
+    if variants is not None:
+        kwargs["variants"] = variants
     found, _accepted = _coverage_definitions(
         ["dscr"],
         {"dscr": _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))},
@@ -421,6 +434,7 @@ def _definitions(profile: dict, *, profile_ref: str | None = "desk@1", concepts=
         money=money if money is not None else frozenset({"cfads", "debt_service", "interest", "ebitda"}),
         warnings=warnings if warnings is not None else [],
         catalog=catalog,
+        **kwargs,
     )
     return found
 
@@ -555,3 +569,91 @@ def test_base_metric_is_compiled_from_the_catalog_record():
     assert found["icr"].formula_id == "icr"
     assert found["icr"].definition_version == "icr@1"
     assert found["icr"].variant_source == "base:dscr"
+
+
+def test_ltm_evidence_names_every_window_fact_and_the_steps():
+    expression = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
+    definition = _definition("dscr", expression, window="LTM")
+    periods = []
+    facts = []
+    for index in range(12):
+        start = add_months(date(2024, 1, 1), index)
+        end = add_months(start, 1) - timedelta(days=1)
+        period_id = f"M{index + 1}"
+        periods.append(
+            {
+                "axis_id": "a",
+                "period_id": period_id,
+                "period_index": index,
+                "grain": "month",
+                "timeline_id": "t",
+                "period_start": start,
+                "period_end": end,
+            }
+        )
+        facts.append({**_fact("c", "10"), "period_id": period_id, "cell_id": f"CFS!{period_id}"})
+        facts.append({**_fact("d", "-1"), "period_id": period_id, "cell_id": f"Debt!{period_id}"})
+    bindings = [_bind("cfads", "c"), _bind("debt_service", "d")]
+    plan = resolve_metric_plan("dscr", bindings, {"dscr": expression}, definition=definition)
+    outcome = calculate_coverage(
+        metric="dscr",
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+        plan=plan,
+        definition=definition,
+        evidence=True,
+    )
+    row = next(item for item in outcome.result["rows"] if item["value"] is not None)
+    assert row["value"] == Decimal("10.0000000000")
+    assert row["period_id"] == "M12"
+    evidence = outcome.evidence
+    assert evidence is not None
+    computed = next(item for item in evidence.period_results if item.status == "computed")
+    assert computed.window_periods == tuple(f"M{index + 1}" for index in range(12))
+    uses = [item for item in evidence.fact_uses if item.result_period_id == "M12"]
+    assert {item.cell_id for item in uses if item.operand == "numerator"} == {f"CFS!M{index + 1}" for index in range(12)}
+    assert {item.cell_id for item in uses if item.operand == "denominator"} == {f"Debt!M{index + 1}" for index in range(12)}
+    operations = [step.operation for step in computed.steps]
+    assert "sign_conversion" in operations
+    assert "division" in operations
+    sides = [step.parameters.get("side") for step in computed.steps if step.operation == "aggregation"]
+    assert "numerator" in sides
+    assert "denominator" in sides
+
+
+def test_a_known_variant_is_accepted_and_an_unknown_one_is_not():
+    known: list[dict] = []
+    found = _definitions({"dscr_definition": {"variant": "pf"}}, warnings=known, variants=frozenset({"pf"}))
+    assert found["dscr"].definition_source == "catalog"
+    assert found["dscr"].normalized_expression.numerator_plus == ("cfads",)
+    assert not any(item["code"] == "dscr_definition_invalid" for item in known)
+    unknown: list[dict] = []
+    found = _definitions({"dscr_definition": {"variant": "no_such"}}, warnings=unknown, variants=frozenset({"pf"}))
+    assert found["dscr"].definition_source == "catalog"
+    assert any(
+        item["code"] == "dscr_definition_invalid" and item["params"]["reason"] == "dscr_definition: неизвестный вариант"
+        for item in unknown
+    )
+
+
+def test_a_subtraction_profile_is_not_compiled_into_an_executable_definition():
+    warnings: list[dict] = []
+    found = _definitions(
+        {
+            "dscr_definition": {
+                "numerator": {"plus": ["ebitda"], "minus": ["cash_taxes"]},
+                "denominator": {"plus": ["interest"]},
+                "window": "period",
+            }
+        },
+        concepts=frozenset({"cfads", "debt_service", "interest", "ebitda", "cash_taxes"}),
+        money=frozenset({"cfads", "debt_service", "interest", "ebitda", "cash_taxes"}),
+        warnings=warnings,
+    )
+    assert found["dscr"].definition_source == "catalog"
+    assert found["dscr"].normalized_expression.numerator_plus == ("cfads",)
+    assert found["dscr"].normalized_expression.numerator_minus == ()
+    assert any(item["code"] == "dscr_definition_invalid" for item in warnings)
