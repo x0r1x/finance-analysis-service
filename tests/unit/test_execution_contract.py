@@ -5,6 +5,7 @@ from finance_analysis.domain.execution_contract import (
     CatalogMetricRecord,
     ExecutionBranchDefinition,
     ExecutionContractError,
+    ProfileDscrRecord,
     compile_definition,
     execute_bound,
     read_input,
@@ -133,7 +134,11 @@ def test_profile_override_and_base_use_the_same_resolution_as_the_plan():
     adscr = _record("adscr", _expr(base="dscr"))
     catalog = {dscr.metric_id: dscr, adscr.metric_id: adscr}
     override = _expr(numerator_plus=("ebitda",), denominator_plus=("interest",))
-    replaced = compile_definition(dscr, catalog, dscr_expression=override, profile_ref="profile@1")
+    replaced = compile_definition(
+        dscr,
+        catalog,
+        profile=ProfileDscrRecord(expression=override, profile_ref="profile@1"),
+    )
     inherited = compile_definition(adscr, catalog)
     assert replaced.definition_source == "profile"
     assert replaced.normalized_expression.numerator_plus == ("ebitda",)
@@ -341,8 +346,14 @@ def test_profile_versions_change_definition_hash():
     catalog_expression = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
     record = _record("dscr", catalog_expression)
     override = _expr(numerator_plus=("ebitda",), denominator_plus=("interest",))
-    first = compile_definition(record, dscr_expression=override, profile_ref="profile@1")
-    second = compile_definition(record, dscr_expression=override, profile_ref="profile@2")
+    first = compile_definition(
+        record,
+        profile=ProfileDscrRecord(expression=override, profile_ref="profile@1"),
+    )
+    second = compile_definition(
+        record,
+        profile=ProfileDscrRecord(expression=override, profile_ref="profile@2"),
+    )
     assert first.definition_hash != second.definition_hash
     assert first.normalized_expression.numerator_plus == second.normalized_expression.numerator_plus
     assert first.definition_ref["profile_version"] == "profile@1"
@@ -420,3 +431,125 @@ def test_executor_identity_is_separate_from_formula_id():
     assert coverage.executor_id != coverage.formula_id
     assert coverage.executor_version != coverage.formula_id
     assert coverage.definition_hash != composed.definition_hash
+
+
+def test_resolver_takes_the_expression_from_the_definition():
+    catalog = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
+    definition = _compile("dscr", catalog)
+    other = {"dscr": _expr(numerator_plus=("ebitda",), denominator_plus=("interest",))}
+    try:
+        resolve_metric_plan(
+            "dscr",
+            [
+                _bind("ebitda", 1),
+                _bind("interest", 2),
+                _bind("cfads", 3),
+                _bind("debt_service", 4),
+            ],
+            other,
+            definition=definition,
+        )
+    except ExecutionContractError as exc:
+        assert exc.reason == "definition_mismatch"
+    else:
+        raise AssertionError("a map that disagrees with the definition must not build a plan")
+    plan = resolve_metric_plan(
+        "dscr",
+        [_bind("cfads", 3), _bind("debt_service", 4)],
+        None,
+        definition=definition,
+    )
+    assert plan is not None
+    assert plan.definition_hash == definition.definition_hash
+    assert {item.concept for item in plan.inputs} == {"cfads", "debt_service"}
+
+
+def test_profile_record_keeps_window_and_basis_ref():
+    sides = _expr(numerator_plus=("ebitda",), denominator_plus=("interest",))
+    record = _record(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        window="LTM",
+    )
+    clause = ProfileDscrRecord(
+        expression=sides,
+        profile_ref="profile@1",
+        window="period",
+        basis_ref="clause-4",
+    )
+    other_clause = ProfileDscrRecord(
+        expression=sides,
+        profile_ref="profile@1",
+        window="period",
+        basis_ref="clause-9",
+    )
+    other_window = ProfileDscrRecord(
+        expression=sides,
+        profile_ref="profile@1",
+        window="LTM",
+        basis_ref="clause-4",
+    )
+    first = compile_definition(record, profile=clause)
+    second = compile_definition(record, profile=other_clause)
+    third = compile_definition(record, profile=other_window)
+    assert first.definition_source == "profile"
+    assert first.normalized_expression.window == "period"
+    assert first.normalized_expression.numerator_plus == ("ebitda",)
+    assert first.definition_ref["profile_version"] == "profile@1"
+    assert first.definition_ref["basis_ref"] == "clause-4"
+    assert first.definition_hash != second.definition_hash
+    assert first.definition_hash != third.definition_hash
+
+
+def test_base_inherits_the_source_window():
+    base = _record(
+        "metric_a",
+        _expr(
+            numerator_plus=("cfads",),
+            denominator_plus=("debt_service",),
+            rate="discount_rate",
+        ),
+        window="LTM",
+    )
+    child = _record("metric_b", _expr(base="metric_a"), window="period")
+    compiled = compile_definition(child, {"metric_a": base, "metric_b": child})
+    assert compiled.variant_source == "base:metric_a"
+    assert compiled.normalized_expression.numerator_plus == ("cfads",)
+    assert compiled.normalized_expression.rate == "discount_rate"
+    assert compiled.normalized_expression.window == "LTM"
+    assert compiled.formula_id == "metric_b"
+
+
+def test_fallback_slot_must_be_the_metric_slot():
+    dscr = _compile("dscr", _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)))
+    foreign = _plan(
+        "dscr",
+        variant=None,
+        source="formula",
+        inputs=(_input("cfads"), _input("interest_paid"), _input("principal")),
+        fallbacks=(AppliedFallback("other", "debt_service", "interest_paid", None),),
+    )
+    try:
+        slots_for(dscr, foreign)
+    except ExecutionContractError as exc:
+        assert exc.reason == "inconsistent_fallback"
+    else:
+        raise AssertionError("a slot outside the metric's fallback ids must refuse")
+    covenant = _compile(
+        "dscr",
+        _expr(numerator_plus=("ebitda",), denominator_plus=("interest",)),
+        variant="corporate_covenant",
+    )
+    wrong = _plan(
+        "dscr",
+        variant="corporate_covenant",
+        source="variant:corporate_covenant",
+        inputs=(_input("ebitda"), _input("interest_paid")),
+        fallbacks=(AppliedFallback("pf", "interest", "interest_paid", None),),
+    )
+    try:
+        slots_for(covenant, wrong)
+    except ExecutionContractError as exc:
+        assert exc.reason == "inconsistent_fallback"
+    else:
+        raise AssertionError("DSCR PF slot does not apply to corporate_covenant")

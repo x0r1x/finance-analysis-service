@@ -16,7 +16,11 @@ from finance_analysis.domain.covenant import resolve_covenant
 from finance_analysis.domain.metric_contract import formula_id_of
 from finance_analysis.domain.model_type import Composed, MetricExpression
 from finance_analysis.domain.resolved_plan import ResolvedMetricPlan, content_digest
-from finance_analysis.domain.semantic_input import _active, with_profile_dscr
+from finance_analysis.domain.semantic_input import (
+    _active,
+    _interest_slot,
+    with_profile_dscr,
+)
 
 _WINDOWS = frozenset({"LTM", "period"})
 
@@ -25,6 +29,16 @@ class ExecutionContractError(Exception):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class ProfileDscrRecord:
+    """Состав профиля целиком: стороны, окно, версия и ссылка на пункт."""
+
+    expression: MetricExpression
+    profile_ref: str
+    window: str | None = None
+    basis_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,21 +133,31 @@ def compile_definition(
     record: CatalogMetricRecord,
     catalog: Mapping[str, CatalogMetricRecord] | None = None,
     *,
-    dscr_expression: MetricExpression | None = None,
-    profile_ref: str | None = None,
+    profile: ProfileDscrRecord | None = None,
     covenant: Mapping[str, object] | None = None,
 ) -> EffectiveMetricDefinition:
-    """Сборка из одной записи, ``_active``, замены ``plans_for`` и ``resolve_covenant``."""
+    """Сборка из одной записи, ``_active``, замены ``plans_for`` и ``resolve_covenant``.
+
+    Профиль передаётся одной записью. Окно и пункт не достраиваются из второго объекта.
+    База наследует выражение и окно своей записи, не окна потомка.
+    """
 
     expressions = _expression_map(record, catalog)
-    active_map = with_profile_dscr(record.metric_id, expressions, record.variant, dscr_expression)
+    override = profile.expression if profile is not None else None
+    active_map = with_profile_dscr(record.metric_id, expressions, record.variant, override)
     chosen = _active(record.metric_id, record.variant, active_map or {})
     if chosen is None:
         raise ExecutionContractError("unknown_metric")
-    expression, variant_source = chosen
-    normalized = _from_expression(expression, record.window)
-    source = "profile" if record.metric_id == "dscr" and dscr_expression is not None else "catalog"
-    ref = _profile_ref(profile_ref) if source == "profile" else None
+    expression, variant_source, source_key = chosen
+    source_record = _record_map(record, catalog).get(source_key, record)
+    window = profile.window if profile is not None and expression is profile.expression else source_record.window
+    normalized = _from_expression(expression, window)
+    source = (
+        "profile"
+        if profile is not None and record.metric_id == "dscr" and expression is profile.expression
+        else "catalog"
+    )
+    ref = _profile_ref(profile.profile_ref, profile.basis_ref) if source == "profile" else None
     if covenant is not None:
         composed, covenant_source, covenant_ref, _notes = resolve_covenant(
             covenant.get("profile") if isinstance(covenant.get("profile"), dict) else None,
@@ -205,7 +229,8 @@ def slots_for(
     confirmed = _confirmed_names(plan)
     seen: set[str] = set()
     for item in plan.fallbacks:
-        if item.replaced in seen or not item.slot or item.replaced not in denominator:
+        allowed = _interest_slot(definition.metric_id, definition.variant)
+        if item.replaced in seen or item.slot != allowed or item.replaced not in denominator:
             raise ExecutionContractError("inconsistent_fallback")
         if item.chosen not in confirmed:
             raise ExecutionContractError("inconsistent_fallback")
@@ -283,6 +308,15 @@ def _expression_map(
     return found
 
 
+def _record_map(
+    record: CatalogMetricRecord,
+    catalog: Mapping[str, CatalogMetricRecord] | None,
+) -> dict[str, CatalogMetricRecord]:
+    found = {_record_key(item): item for item in (catalog or {}).values()}
+    found[_record_key(record)] = record
+    return found
+
+
 def _record_key(record: CatalogMetricRecord) -> str:
     if record.variant:
         return f"{record.metric_id}.{record.variant}"
@@ -319,12 +353,13 @@ def _overlay(expression: NormalizedExpression, composed: Composed) -> Normalized
     )
 
 
-def _profile_ref(profile_ref: str | None) -> Mapping[str, str | None] | None:
+def _profile_ref(profile_ref: str | None, basis_ref: str | None = None) -> Mapping[str, str | None] | None:
     if not isinstance(profile_ref, str) or not profile_ref:
         return None
     profile_id = profile_ref.split("@", 1)[0] if "@" in profile_ref else profile_ref
+    basis = basis_ref if isinstance(basis_ref, str) and basis_ref else None
     return MappingProxyType(
-        {"profile_id": profile_id, "profile_version": profile_ref, "basis_ref": None}
+        {"profile_id": profile_id, "profile_version": profile_ref, "basis_ref": basis}
     )
 
 
