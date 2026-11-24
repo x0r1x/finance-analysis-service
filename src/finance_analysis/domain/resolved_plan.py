@@ -207,6 +207,8 @@ class ResolvedMetricPlan:
     needs_input: tuple[NeedsInput, ...]
     shield: ShieldDecision | None
     lineage: tuple[LineageRow, ...] = ()
+    # Ссылка на EffectiveMetricDefinition. В хеш плана не входит: стороны формулы здесь не живут.
+    definition_hash: str | None = None
 
 
 def recover_row(

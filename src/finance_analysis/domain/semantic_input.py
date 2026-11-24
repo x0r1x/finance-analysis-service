@@ -583,10 +583,7 @@ def plans_for(
     found: dict[str, ResolvedMetricPlan] = {}
     for metric in metrics:
         variant = dscr_variant if metric == "dscr" else (variant_of or {}).get(metric)
-        active = expressions
-        if metric == "dscr" and dscr_expression is not None:
-            active = dict(expressions or {})
-            active[f"dscr.{variant}" if variant else "dscr"] = dscr_expression
+        active = with_profile_dscr(metric, expressions, variant, dscr_expression)
         plan = resolve_metric_plan(
             metric,
             bindings,
@@ -607,6 +604,21 @@ def plans_for(
         if plan is not None:
             found[metric] = plan
     return found
+
+
+def with_profile_dscr(
+    metric: str,
+    expressions: Mapping[str, MetricExpression] | None,
+    variant: str | None,
+    dscr_expression: MetricExpression | None,
+) -> Mapping[str, MetricExpression] | None:
+    """Та же замена, что у ``plans_for``: неименованный состав профиля вместо каталога."""
+
+    if metric == "dscr" and dscr_expression is not None:
+        active = dict(expressions or {})
+        active[f"dscr.{variant}" if variant else "dscr"] = dscr_expression
+        return active
+    return expressions
 
 
 def _implied_variant(metric: str, dscr_variant: str | None) -> str | None:
