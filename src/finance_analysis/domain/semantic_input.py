@@ -220,7 +220,7 @@ def resolve_semantic_inputs(
             row_keys,
             selection,
         )
-    expr, source = active
+    expr, source, _origin = active
     specs = _specs(
         expr, source, metric, chosen, visible, interest_order, row_fallbacks, selection
     )
@@ -270,12 +270,16 @@ def resolve_metric_plan(
     semantic_model_version: str | None = None,
     build_key: str | None = None,
     model_id: str | None = None,
+    definition: object | None = None,
 ) -> ResolvedMetricPlan | None:
     """Один проход выбора. Потребители читают план и эти функции больше не вызывают."""
 
     chosen_variant = variant if variant else _implied_variant(metric, dscr_variant)
+    if definition is not None:
+        expressions = _definition_expressions(definition, metric, chosen_variant, expressions)
     active = _active(metric, chosen_variant, expressions) if expressions else None
     variant_source = active[1] if active else "formula"
+    bound_hash = _bound_definition(definition, metric, chosen_variant, variant_source)
     selection = _Selection()
     items = resolve_semantic_inputs(
         metric,
@@ -328,6 +332,7 @@ def resolve_metric_plan(
             for item in items
         ),
         resolution_engine_version=RESOLUTION_ENGINE_VERSION,
+        definition_hash=bound_hash,
     )
 
 
@@ -583,10 +588,7 @@ def plans_for(
     found: dict[str, ResolvedMetricPlan] = {}
     for metric in metrics:
         variant = dscr_variant if metric == "dscr" else (variant_of or {}).get(metric)
-        active = expressions
-        if metric == "dscr" and dscr_expression is not None:
-            active = dict(expressions or {})
-            active[f"dscr.{variant}" if variant else "dscr"] = dscr_expression
+        active = with_profile_dscr(metric, expressions, variant, dscr_expression)
         plan = resolve_metric_plan(
             metric,
             bindings,
@@ -609,6 +611,111 @@ def plans_for(
     return found
 
 
+def _definition_expressions(
+    definition: object,
+    metric: str,
+    variant: str | None,
+    expressions: Mapping[str, MetricExpression] | None,
+) -> Mapping[str, MetricExpression] | None:
+    """Стороны плана берутся из определения. Чужая карта не может их подменить."""
+
+    if getattr(definition, "metric_id", None) != metric or getattr(definition, "variant", None) != variant:
+        return expressions
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+    )
+
+    normalized = getattr(definition, "normalized_expression", None)
+    source = getattr(definition, "variant_source", None)
+    if normalized is None or not isinstance(source, str):
+        raise ExecutionContractError("definition_mismatch")
+    defined = _as_metric_expression(normalized)
+    if expressions is not None:
+        probed = _active(metric, variant, expressions)
+        if probed is None or probed[1] != source or not _same_formula(probed[0], defined):
+            raise ExecutionContractError("definition_mismatch")
+    if source.startswith("variant:") and variant:
+        return {f"{metric}.{variant}": defined}
+    if source.startswith("base:"):
+        base_name = source.split(":", 1)[1]
+        return {metric: MetricExpression(base=base_name), base_name: defined}
+    return {metric: defined}
+
+
+def _as_metric_expression(expr: object) -> MetricExpression:
+    one_of = tuple(getattr(expr, "one_of", ()))
+    return MetricExpression(
+        numerator_plus=tuple(getattr(expr, "numerator_plus", ())),
+        numerator_minus=tuple(getattr(expr, "numerator_minus", ())),
+        denominator_plus=tuple(getattr(expr, "denominator_plus", ())),
+        denominator_minus=tuple(getattr(expr, "denominator_minus", ())),
+        one_of=frozenset(one_of),
+        one_of_order=one_of,
+        rate=getattr(expr, "rate", None),
+        base=getattr(expr, "base", None),
+        aggregate=getattr(expr, "aggregate", None),
+        rates=tuple(getattr(expr, "rates", ())),
+        terminal=getattr(expr, "terminal", None),
+        compare_with=getattr(expr, "compare_with", None),
+        add_back=getattr(expr, "add_back", None),
+    )
+
+
+def _same_formula(left: MetricExpression, right: MetricExpression) -> bool:
+    def order(expr: MetricExpression) -> tuple[str, ...]:
+        return expr.one_of_order or tuple(sorted(expr.one_of))
+
+    return (
+        left.numerator_plus == right.numerator_plus
+        and left.numerator_minus == right.numerator_minus
+        and left.denominator_plus == right.denominator_plus
+        and left.denominator_minus == right.denominator_minus
+        and frozenset(left.one_of) == frozenset(right.one_of)
+        and order(left) == order(right)
+        and left.rate == right.rate
+        and left.base == right.base
+        and left.aggregate == right.aggregate
+        and left.rates == right.rates
+        and left.terminal == right.terminal
+        and left.compare_with == right.compare_with
+        and left.add_back == right.add_back
+    )
+
+
+def _bound_definition(definition: object | None, metric: str, variant: str | None, variant_source: str) -> str | None:
+    """Хеш определения записывается при сборке плана, не заменой готового плана."""
+
+    if definition is None:
+        return None
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+    )
+
+    if getattr(definition, "metric_id", None) != metric:
+        raise ExecutionContractError("metric_mismatch")
+    if getattr(definition, "variant", None) != variant or getattr(definition, "variant_source", None) != variant_source:
+        raise ExecutionContractError("variant_mismatch")
+    digest = getattr(definition, "definition_hash", None)
+    if not isinstance(digest, str) or not digest:
+        raise ExecutionContractError("definition_mismatch")
+    return digest
+
+
+def with_profile_dscr(
+    metric: str,
+    expressions: Mapping[str, MetricExpression] | None,
+    variant: str | None,
+    dscr_expression: MetricExpression | None,
+) -> Mapping[str, MetricExpression] | None:
+    """Та же замена, что у ``plans_for``: неименованный состав профиля вместо каталога."""
+
+    if metric == "dscr" and dscr_expression is not None:
+        active = dict(expressions or {})
+        active[f"dscr.{variant}" if variant else "dscr"] = dscr_expression
+        return active
+    return expressions
+
+
 def _implied_variant(metric: str, dscr_variant: str | None) -> str | None:
     if not dscr_variant:
         return None
@@ -623,19 +730,22 @@ def _active(
     metric: str,
     variant: str | None,
     expressions: Mapping[str, MetricExpression],
-) -> tuple[MetricExpression, str] | None:
+) -> tuple[MetricExpression, str, str] | None:
+    """Выражение, источник варианта и ключ записи, из которой выражение взято."""
+
     if variant:
-        chosen = expressions.get(f"{metric}.{variant}")
+        key = f"{metric}.{variant}"
+        chosen = expressions.get(key)
         if chosen is not None and not chosen.base:
-            return chosen, f"variant:{variant}"
+            return chosen, f"variant:{variant}", key
     expr = expressions.get(metric)
     if expr is None:
         return None
     if expr.base:
         base = expressions.get(expr.base)
         if base is not None:
-            return base, f"base:{expr.base}"
-    return expr, "formula"
+            return base, f"base:{expr.base}", expr.base
+    return expr, "formula", metric
 
 
 def _listed(

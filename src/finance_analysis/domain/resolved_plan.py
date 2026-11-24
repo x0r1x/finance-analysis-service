@@ -32,6 +32,7 @@ def declared_resolution_dependencies() -> tuple[tuple[str, Any], ...]:
     from finance_analysis.domain.binding_resolution import (
         select_primary as _select_primary,
     )
+    from finance_analysis.domain.execution_contract import ExecutionContractError
     from finance_analysis.domain.free_cash_flow import _ambiguous_primary, _basis
     from finance_analysis.domain.metrics import (
         HUMAN_SOURCES,
@@ -46,6 +47,7 @@ def declared_resolution_dependencies() -> tuple[tuple[str, Any], ...]:
     named = (
         ("AppliedFallback", AppliedFallback),
         ("DiagnosticCandidate", DiagnosticCandidate),
+        ("ExecutionContractError", ExecutionContractError),
         ("HUMAN_SOURCES", HUMAN_SOURCES),
         ("LineageRow", LineageRow),
         ("MetricExpression", MetricExpression),
@@ -207,6 +209,8 @@ class ResolvedMetricPlan:
     needs_input: tuple[NeedsInput, ...]
     shield: ShieldDecision | None
     lineage: tuple[LineageRow, ...] = ()
+    # Ссылка на EffectiveMetricDefinition. В хеш плана не входит: стороны формулы здесь не живут.
+    definition_hash: str | None = None
 
 
 def recover_row(
@@ -457,6 +461,7 @@ def seal(
     shield: ShieldDecision | None,
     lineage: tuple[LineageRow, ...] = (),
     resolution_engine_version: str = RESOLUTION_ENGINE_VERSION,
+    definition_hash: str | None = None,
 ) -> ResolvedMetricPlan:
     digest = content_digest(
         hashed_body(
@@ -499,4 +504,5 @@ def seal(
         needs_input=needs_input,
         shield=shield,
         lineage=lineage,
+        definition_hash=definition_hash,
     )
