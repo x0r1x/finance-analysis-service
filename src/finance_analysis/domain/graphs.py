@@ -18,16 +18,13 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from finance_analysis.domain.metrics import paid_interest_row
+from finance_analysis.domain.binding_resolution import MISSING_NO_PRIMARY, MISSING_STALE
 from finance_analysis.domain.net_cash_flow import DASH_NOTE, dashed_lines
 
 _SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "meta_layer_graphs.json"
 
-_BOUND = frozenset({"bound", "bound_with_warning"})
 MISSING_METRIC_UNKNOWN = "metric_unknown"
-MISSING_NO_PRIMARY = "no_primary_binding"
 MISSING_NO_CELL = "no_cell"
-MISSING_STALE = "stale_binding"
 MISSING_FACT_UNAVAILABLE = "fact_dataset_unavailable"
 MISSING_DIM_UNAVAILABLE = "dim_row_unavailable"
 MISSING_CODES = frozenset(
@@ -101,6 +98,8 @@ class MetricTrace:
     missing_trace: str | None = None
     catalog_version: str | None = None
     integrity: tuple[TraceIntegrityFinding, ...] = ()
+    graph_available: bool = True
+    graph_truncation_free: bool = True
     physical_lineage_complete: bool = True
 
     def as_dict(self) -> dict[str, Any]:
@@ -113,6 +112,8 @@ class MetricTrace:
             "missing_trace": self.missing_trace,
             "steps": [step.as_dict() for step in self.steps],
             "integrity": [item.as_dict() for item in self.integrity],
+            "graph_available": self.graph_available,
+            "graph_truncation_free": self.graph_truncation_free,
             "physical_lineage_complete": self.physical_lineage_complete,
         }
 
@@ -177,24 +178,44 @@ def trace_metric(
     graph_links_available: bool = True,
     absent: frozenset[str] = frozenset(),
     statement_sheets: frozenset[str] = frozenset(),
+    expressions: Mapping[str, Any] | None = None,
+    interest_order: Mapping[str, Sequence[str]] | None = None,
+    row_fallbacks: Mapping[str, Any] | None = None,
+    dscr_variant: str | None = None,
+    plan: Any | None = None,
 ) -> MetricTrace:
     """Собрать read-only трассировку входа метрики → concept → binding → cell.
 
     ``facts_available=False`` / ``rows_available=False`` — датасет отсутствует в
     манифесте (не пустой список). Пустой ``facts`` при ``facts_available=True``
     значит датасет есть, но ячеек по строке нет → ``no_cell``.
+    Переданный план читает ``plan.lineage``. Без плана понятия берёт
+    ``resolve_semantic_inputs``. Полнота цепи — ``lineage_completeness``.
     """
 
+    from finance_analysis.domain.semantic_input import (
+        lineage_completeness,
+        resolve_semantic_inputs,
+    )
+
     resolved_model, resolved_build = _book_keys(bindings, rows, facts, model_id, build_key)
+    status = lineage_completeness(
+        graph_links_available=graph_links_available,
+        truncated_links=sum(
+            1 for link in _same_build(graph_links, resolved_build) if link.get("truncated")
+        ),
+    )
     base = {
         "metric_id": metric_id,
         "variant": variant,
         "build_key": resolved_build,
         "model_id": resolved_model,
         "catalog_version": catalog_version,
-        "physical_lineage_complete": bool(graph_links_available),
+        "graph_available": status.graph_available,
+        "graph_truncation_free": status.graph_truncation_free,
+        "physical_lineage_complete": status.physical_lineage_complete,
     }
-    if inputs is None:
+    if inputs is None and expressions is None:
         return MetricTrace(**base, steps=(), missing_trace=MISSING_METRIC_UNKNOWN, integrity=())
     if not rows_available:
         return MetricTrace(**base, steps=(), missing_trace=MISSING_DIM_UNAVAILABLE, integrity=())
@@ -204,24 +225,29 @@ def trace_metric(
     scoped_bindings = _same_build(bindings, resolved_build)
     scoped_rows = _same_build(rows, resolved_build)
     row_by_binding = _row_keys(scoped_rows, scoped_bindings)
-    paid_interest = _fcff_paid_row(metric_id, scoped_bindings, absent)
+    if plan is not None:
+        resolved_inputs = plan.lineage
+    else:
+        resolved_inputs = resolve_semantic_inputs(
+            metric_id,
+            scoped_bindings,
+            expressions,
+            variant=variant,
+            dscr_variant=dscr_variant,
+            interest_order=interest_order,
+            row_fallbacks=row_fallbacks,
+            absent=absent,
+            inputs=inputs,
+            row_keys=row_by_binding,
+            facts=facts,
+            links=graph_links,
+            statement_sheets=statement_sheets,
+        )
+    if resolved_inputs is None:
+        return MetricTrace(**base, steps=(), missing_trace=MISSING_METRIC_UNKNOWN, integrity=())
 
     # Сначала привязки → row_key, затем факты/ссылки только по нужным строкам.
-    needed_rows: set[str] = set()
-    planned: list[tuple[str, str]] = []
-    for role in ("all_of", "one_of"):
-        for concept in inputs.get(role) or ():
-            planned.append((role, str(concept)))
-            primary, _, _ = _select_primary(scoped_bindings, str(concept))
-            if primary is None:
-                continue
-            row_key = str(primary.get("row_key") or row_by_binding.get(str(primary["binding_key"])) or "")
-            if row_key:
-                needed_rows.add(row_key)
-    if paid_interest is not None:
-        paid_key = str(paid_interest.get("row_key") or "")
-        if paid_key:
-            needed_rows.add(paid_key)
+    needed_rows = {item.row_key for item in resolved_inputs if item.row_key}
 
     scoped_facts = [
         row
@@ -240,14 +266,11 @@ def trace_metric(
 
     steps: list[TraceStep] = []
     source_findings: list[TraceIntegrityFinding] = []
-    for role, concept in planned:
-        step, findings = _step_for_concept(
+    for item in resolved_inputs:
+        step, findings = _step_for_resolved(
             metric_id=metric_id,
             variant=variant,
-            concept=concept,
-            role=role,
-            bindings=scoped_bindings,
-            row_by_binding=row_by_binding,
+            item=item,
             cells_by_row=cells_by_row,
             graph_links=scoped_links,
             model_id=resolved_model or "",
@@ -255,22 +278,13 @@ def trace_metric(
         )
         steps.append(step)
         source_findings.extend(findings)
-    if paid_interest is not None:
-        steps.append(
-            _paid_interest_step(
-                paid_interest,
-                cells_by_row=cells_by_row,
-                graph_links=scoped_links,
-                model_id=resolved_model or "",
-                build_key=resolved_build or "",
-            )
-        )
     if metric_id == "ncf":
         for dashed in dashed_lines(
             list(scoped_bindings),
             list(scoped_facts),
             statement_sheets,
             absent,
+            plan=plan,
         ):
             steps.append(
                 _dash_step(
@@ -348,6 +362,11 @@ def check_metric_physical_trace(
     graph_links_available: bool = True,
     absent: frozenset[str] = frozenset(),
     statement_sheets: frozenset[str] = frozenset(),
+    expressions: Mapping[str, Any] | None = None,
+    interest_order: Mapping[str, Sequence[str]] | None = None,
+    row_fallbacks: Mapping[str, Any] | None = None,
+    dscr_variant: str | None = None,
+    plan: Any | None = None,
 ) -> tuple[MetricTrace, list[TraceIntegrityFinding]]:
     """Трассировка + findings (исходные данные и инвариант DTO)."""
 
@@ -367,6 +386,11 @@ def check_metric_physical_trace(
         graph_links_available=graph_links_available,
         absent=absent,
         statement_sheets=statement_sheets,
+        expressions=expressions,
+        interest_order=interest_order,
+        row_fallbacks=row_fallbacks,
+        dscr_variant=dscr_variant,
+        plan=plan,
     )
     return trace, list(trace.integrity)
 
@@ -409,49 +433,6 @@ def validate_metric_trace_document(body: Mapping[str, Any]) -> None:
         raise GraphTraceError(errors[0].message)
 
 
-def _fcff_paid_row(
-    metric_id: str,
-    bindings: Sequence[Mapping[str, Any]],
-    absent: frozenset[str],
-) -> Mapping[str, Any] | None:
-    """Единственная строка interest с кодом 4123. Это не понятие каталога."""
-
-    if metric_id != "fcff":
-        return None
-    paid = [row for row in bindings if paid_interest_row(row, absent)]
-    if len(paid) != 1:
-        return None
-    return paid[0]
-
-
-def _paid_interest_step(
-    row: Mapping[str, Any],
-    *,
-    cells_by_row: Mapping[str, tuple[str, ...]],
-    graph_links: Sequence[Mapping[str, Any]],
-    model_id: str,
-    build_key: str,
-) -> TraceStep:
-    binding_key = str(row.get("binding_key") or "")
-    row_key = str(row.get("row_key") or "") or None
-    cell_ids = cells_by_row.get(row_key or "", ())
-    return TraceStep(
-        concept="interest",
-        role="all_of",
-        metric_edge_id=metric_input_edge_id("fcff", "all_of", "interest"),
-        binding_key=binding_key or None,
-        binding_edge_id=(
-            semantic_binding_edge_id(model_id, build_key, binding_key) if binding_key else None
-        ),
-        row_key=row_key,
-        cell_ids=cell_ids,
-        missing_trace=None if cell_ids else MISSING_NO_CELL,
-        excel_links=_excel_links_for_cells(
-            graph_links, cell_ids, model_id=model_id, build_key=build_key
-        ),
-    )
-
-
 def _dash_step(row: Mapping[str, Any], *, model_id: str, build_key: str) -> TraceStep:
     binding_key = str(row.get("binding_key") or "")
     concept = str(row.get("concept") or "")
@@ -470,99 +451,66 @@ def _dash_step(row: Mapping[str, Any], *, model_id: str, build_key: str) -> Trac
     )
 
 
-def _step_for_concept(
+def _step_for_resolved(
     *,
     metric_id: str,
     variant: str | None,
-    concept: str,
-    role: str,
-    bindings: Sequence[Mapping[str, Any]],
-    row_by_binding: Mapping[str, str],
+    item: Any,
     cells_by_row: Mapping[str, tuple[str, ...]],
     graph_links: Sequence[Mapping[str, Any]],
     model_id: str,
     build_key: str,
 ) -> tuple[TraceStep, list[TraceIntegrityFinding]]:
-    metric_edge = metric_input_edge_id(metric_id, role, concept, variant=variant)
+    """Шаг следа из уже выбранного входа. Привязку заново не выбирает."""
+
+    role = item.role if item.role in {"all_of", "one_of"} else "all_of"
+    metric_edge = metric_input_edge_id(metric_id, role, item.concept, variant=variant)
     findings: list[TraceIntegrityFinding] = []
-    primary, missing, ambiguous = _select_primary(bindings, concept)
-    if primary is None:
+    if item.binding_key is None and item.row_key is None:
         return (
             TraceStep(
-                concept=concept,
+                concept=item.concept,
                 role=role,
                 metric_edge_id=metric_edge,
                 binding_key=None,
                 binding_edge_id=None,
                 row_key=None,
                 cell_ids=(),
-                missing_trace=missing or MISSING_NO_PRIMARY,
+                missing_trace=item.missing or MISSING_NO_PRIMARY,
                 excel_links=(),
             ),
             findings,
         )
-    binding_key = str(primary["binding_key"])
-    if ambiguous:
+    if item.ambiguous and item.binding_key:
         findings.append(
             TraceIntegrityFinding(
                 metric_id=metric_id,
-                concept=concept,
-                binding_key=binding_key,
+                concept=item.concept,
+                binding_key=item.binding_key,
                 reason="ambiguous_primary_binding",
             )
         )
-    row_key = str(primary.get("row_key") or row_by_binding.get(binding_key) or "") or None
-    cell_ids = cells_by_row.get(row_key or "", ())
+    cell_ids = cells_by_row.get(item.row_key or "", ())
     missing_cell = None if cell_ids else MISSING_NO_CELL
     links = _excel_links_for_cells(graph_links, cell_ids, model_id=model_id, build_key=build_key)
     return (
         TraceStep(
-            concept=concept,
+            concept=item.concept,
             role=role,
             metric_edge_id=metric_edge,
-            binding_key=binding_key,
-            binding_edge_id=semantic_binding_edge_id(model_id, build_key, binding_key),
-            row_key=row_key,
+            binding_key=item.binding_key,
+            binding_edge_id=(
+                semantic_binding_edge_id(model_id, build_key, item.binding_key)
+                if item.binding_key
+                else None
+            ),
+            row_key=item.row_key,
             cell_ids=cell_ids,
             missing_trace=missing_cell,
             excel_links=links,
         ),
         findings,
     )
-
-
-def _select_primary(
-    bindings: Sequence[Mapping[str, Any]], concept: str
-) -> tuple[Mapping[str, Any] | None, str | None, bool]:
-    """Вернуть (primary, missing_code, ambiguous).
-
-    Учитываются только не-stale основные bound-привязки. При нескольких —
-    детерминированно выбирается минимальный ``binding_key``.
-    """
-
-    fresh = [
-        row
-        for row in bindings
-        if row.get("is_primary")
-        and row.get("status") in _BOUND
-        and not row.get("stale")
-        and str(row.get("effective_concept") or row.get("concept") or "") == concept
-    ]
-    if fresh:
-        ordered = sorted(fresh, key=lambda row: str(row.get("binding_key") or ""))
-        return ordered[0], None, len(ordered) > 1
-
-    stale = [
-        row
-        for row in bindings
-        if row.get("is_primary")
-        and row.get("status") in _BOUND
-        and row.get("stale")
-        and str(row.get("effective_concept") or row.get("concept") or "") == concept
-    ]
-    if stale:
-        return None, MISSING_STALE, False
-    return None, MISSING_NO_PRIMARY, False
 
 
 def _row_keys(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import DynamicInputs, implements
 
 _METRIC = "debt_incl_off_balance"
@@ -40,6 +41,7 @@ def debt_incl_off_balance(
     bindings: list[dict],
     periods: list[dict],
     absent: frozenset[str] = frozenset(),
+    plan=None,
 ) -> dict:
     """Сумма signed `normalized_value` по каждой привязанной строке слагаемого.
 
@@ -47,6 +49,10 @@ def debt_incl_off_balance(
     в другие метрики. Ключ строки результата — `(axis_id, period_id)` факта.
     """
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     _ = periods
     bound_rows = _bound_rows(components, bindings, absent)
     if not bound_rows:
@@ -71,7 +77,7 @@ def _bound_rows(components: tuple[str, ...], bindings: list[dict], absent: froze
     wanted = set(components)
     found: dict[str, list[str]] = {}
     for binding in bindings:
-        concept = binding.get("effective_concept")
+        concept = declared_concept(binding)
         if concept not in wanted or binding.get("status") not in _BOUND:
             continue
         if concept in absent and binding.get("source") not in _HUMAN:

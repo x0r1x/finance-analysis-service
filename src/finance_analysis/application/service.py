@@ -325,9 +325,13 @@ class FasService:
         models: Models | None = None,
         vector_index=None,
         cluster=None,
+        trace_pointer=None,
+        trace_retainer=None,
     ) -> None:
         self.settings = settings
         self.store = store
+        self.trace_pointer = trace_pointer
+        self.trace_retainer = trace_retainer
         self.parquet = parquet
         self.builder = builder
         self.query = query
@@ -344,6 +348,7 @@ class FasService:
             catalog=self.catalog.ids,
             model_types=self.model_types.ids,
             max_labels=settings.model_type_max_labels,
+            service_subjects=settings.service_subjects,
         )
         self.glossary = GlossaryStore(store, support, lock_ttl_ms=settings.lock_ttl_ms)
         self.fold_runs = 0
@@ -633,8 +638,6 @@ class FasService:
         files = {}
         for dataset, rows in tables.items():
             if dataset not in keys.PROJECTION:
-                continue
-            if dataset == "graph_links" and not rows:
                 continue
             payload, count = await self.parquet.write(dataset, rows, build_key=build)
             rel = f"a/{attempt}/projection/{dataset}.parquet"
@@ -1605,6 +1608,8 @@ class FasService:
                 if problem:
                     results.append(_rejected(index, "schema_invalid", problem))
                     continue
+            claimed = item.get("actor_type")
+            claimed_type = claimed.strip() if isinstance(claimed, str) and claimed.strip() else None
             written = await self.guard.write_decision(
                 job_id,
                 event_type=event_type,
@@ -1621,6 +1626,7 @@ class FasService:
                 supersedes=supersedes,
                 question_id=given_id if isinstance(given_id, str) else None,
                 evidence=evidence if isinstance(evidence, dict) else None,
+                claimed_type=claimed_type,
             )
             if not written.accepted:
                 results.append(_rejected(index, written.code or "schema_invalid", written.detail))
@@ -2896,7 +2902,7 @@ class FasService:
 
         Отсутствие обязательных `dim_row` / `fact_observation` — ошибка доступности
         трассировки, а не `missing_trace=no_cell`. `graph_links` опционален:
-        отсутствие помечает `physical_lineage_complete=false`.
+        отсутствие даёт `graph_available=false` и `physical_lineage_complete=false`.
         """
 
         from finance_analysis.domain.graphs import (
@@ -2945,7 +2951,9 @@ class FasService:
                 if named:
                     resolved_variant = named
         inputs = None
+        expressions = None
         if indicator is not None:
+            expressions = self.model_types.metric_expressions
             if resolved_variant:
                 spec = indicator.variants.get(resolved_variant)
                 if spec is None:
@@ -2956,6 +2964,24 @@ class FasService:
         events = await self.guard.read_all(job_id)
         absent = absent_in_journal(
             [event for event in events if int(event["seq"]) <= head.state_seq]
+        )
+        from finance_analysis.domain.semantic_input import resolve_metric_plan
+
+        plan = resolve_metric_plan(
+            metric_id,
+            bindings,
+            expressions,
+            variant=resolved_variant,
+            interest_order=self.model_types.interest_order,
+            row_fallbacks=self.model_types.row_fallbacks,
+            absent=absent,
+            inputs=inputs,
+            facts=facts,
+            links=links,
+            statement_sheets=frozenset(load_sheet_roles().statement),
+            catalog_version=self.financial_catalog.version,
+            build_key=head.build_key,
+            model_id=job_id,
         )
         trace, _findings = check_metric_physical_trace(
             metric_id,
@@ -2971,6 +2997,10 @@ class FasService:
             graph_links_available=graph_links_available,
             absent=absent,
             statement_sheets=frozenset(load_sheet_roles().statement),
+            expressions=expressions,
+            interest_order=self.model_types.interest_order,
+            row_fallbacks=self.model_types.row_fallbacks,
+            plan=plan,
         )
         # catalog_version / build_key уже в trace; ответ валидируется схемой.
         return assemble_metric_trace_response(trace)

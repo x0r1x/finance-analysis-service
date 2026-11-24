@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.calibration import brier, expected_calibration_error
 
 NIL = "NIL"
@@ -55,7 +56,7 @@ def score_book(
         if truth is None:
             continue
         status = row.get("status")
-        concept = row.get("effective_concept") or row.get("concept")
+        concept = declared_concept(row)
         is_critical = key in critical
         in_metric = truth in metric_concepts or (concept in metric_concepts if concept else False)
         if truth != NIL:

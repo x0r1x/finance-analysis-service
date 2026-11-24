@@ -195,7 +195,7 @@ def _expression(body: dict, name: str) -> MetricExpression:
     rates: tuple[str, ...] = ()
     if "rate" in body:
         rates = _rate_names(body.get("rate"), name)
-    one_of: set[str] = set()
+    one_of: tuple[str, ...] = ()
     num_plus: tuple[str, ...] = ()
     num_minus: tuple[str, ...] = ()
     den_plus: tuple[str, ...] = ()
@@ -213,6 +213,7 @@ def _expression(body: dict, name: str) -> MetricExpression:
         denominator_plus=den_plus,
         denominator_minus=den_minus,
         one_of=frozenset(one_of),
+        one_of_order=tuple(one_of),
         rate=rates[0] if rates else None,
         base=None,
         aggregate=aggregate,
@@ -256,25 +257,25 @@ def _add_back(value: object, name: str) -> tuple[str, str]:
 
 def _expression_side(
     value: object, owner: str, field: str
-) -> tuple[tuple[str, ...], tuple[str, ...], set[str]]:
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     if isinstance(value, dict):
         names = _names(value, f"{owner}.{field}")
         if not names:
             raise ModelTypeInvalid(f"{owner}: {field} пустой (нужен хотя бы один plus/minus)")
         plus = tuple(str(item) for item in (value.get("plus") or []))
         minus = tuple(str(item) for item in (value.get("minus") or []))
-        return plus, minus, set()
+        return plus, minus, ()
     if isinstance(value, str):
         if not value:
             raise ModelTypeInvalid(f"{owner}: {field} пустая строка")
-        return (value,), (), set()
+        return (value,), (), ()
     if isinstance(value, list):
         if not value or any(not isinstance(item, str) or not item for item in value):
             raise ModelTypeInvalid(f"{owner}: {field} — непустой список строк")
-        names = [str(item) for item in value]
+        names = tuple(str(item) for item in value)
         if len(names) > 1 and field == "numerator":
-            return (), (), set(names)
-        return tuple(names), (), set()
+            return (), (), names
+        return names, (), ()
     raise ModelTypeInvalid(f"{owner}: {field} — строка, список строк или объект plus/minus")
 
 

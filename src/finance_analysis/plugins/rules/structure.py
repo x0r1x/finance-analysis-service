@@ -26,6 +26,7 @@ from finance_analysis.domain.audit import (
     group_cells,
     grouped_finding,
 )
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.book import norm
 from finance_analysis.domain.formulas import analyze
 from finance_analysis.domain.measure import concrete_unit, dependency_measure
@@ -424,7 +425,7 @@ def _bound_dimension(data: AuditInput, row_key: str) -> str | None:
     for binding in data.bindings:
         if binding.get("row_key") != row_key or binding.get("status") not in {"bound", "bound_with_warning"}:
             continue
-        concept = str(binding.get("effective_concept") or binding.get("concept") or "")
+        concept = declared_concept(binding)
         dimension = data.concept_dimensions.get(concept)
         if dimension in data.dimension_exponents:
             return dimension
@@ -592,7 +593,7 @@ def _bound_concepts(data: AuditInput) -> dict[str, str]:
         if binding.get("status") not in {"bound", "bound_with_warning"}:
             continue
         key = binding.get("row_key")
-        concept = str(binding.get("effective_concept") or binding.get("concept") or "")
+        concept = declared_concept(binding)
         if key and concept:
             found.setdefault(str(key), concept)
     return found
@@ -962,8 +963,8 @@ class FormulaClassMismatch(CellRule):
     """Класс формулы ячейки (`graph.json`) отличается от основного класса серии.
 
     Первый период оси не проверяется: открытие корпуса и первая ячейка серии
-    законно отличаются. Ячейки из `formula_exceptions` — уже
-    `formula_inconsistent_in_row`.
+    законно отличаются. Ячейки из `formula_exceptions` не сравниваются: шаблон ряда
+    смотрит `formula_pattern_break`.
     """
 
     def cells(self, data: AuditInput) -> dict[str, dict]:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from finance_analysis.domain.binding_resolution import declared_concept
+
 EVENT_TYPES = frozenset(
     {
         "concept.confirmed",
@@ -70,7 +72,7 @@ def check_derived(tables: dict, *, catalog: frozenset[str], row_keys: frozenset[
                 return Verdict(False, "concept_not_in_catalog", "понятие вне каталога")
         if not row.get("is_primary"):
             continue
-        bound = _concept(row.get("effective_concept")) or _concept(row.get("concept"))
+        bound = _concept(declared_concept(row))
         if bound is None:
             continue
         primaries[bound] = primaries.get(bound, 0) + 1

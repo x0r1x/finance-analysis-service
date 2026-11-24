@@ -26,6 +26,7 @@ from finance_analysis.domain.errors import FasError
 RUN_TASK = "fas.run"
 GC_TASK = "fas.gc_builds"
 RECONCILE_TASK = "fas.reconcile_operations"
+SWEEP_TRACES_TASK = "fas.sweep_traces"
 # Повторно ставить можно только идемпотентные виды. glossary.validate сюда
 # не входит: повтор записал бы успех, не повторив запись релиза.
 _IDEMPOTENT = {"book.load", "glossary.remap"}
@@ -50,6 +51,7 @@ def register_tasks(broker, *, schedules: bool, cron: str, settings=None) -> None
     broker.register_task(run_operation, task_name=RUN_TASK)
     labels = {"queue_name": MAINTENANCE}
     register_learning(broker, schedules=schedules, settings=settings, batch=BATCH, maintenance=MAINTENANCE)
+    sweep_cron = getattr(settings, "trace_sweep_cron", None) or "15 3 * * *"
     if schedules:
         broker.register_task(gc_builds, task_name=GC_TASK, schedule=[{"cron": cron}], **labels)
         broker.register_task(
@@ -58,9 +60,11 @@ def register_tasks(broker, *, schedules: bool, cron: str, settings=None) -> None
             schedule=[{"cron": "* * * * *"}],
             **labels,
         )
+        broker.register_task(sweep_traces, task_name=SWEEP_TRACES_TASK, schedule=[{"cron": sweep_cron}], **labels)
     else:
         broker.register_task(gc_builds, task_name=GC_TASK, **labels)
         broker.register_task(reconcile_operations, task_name=RECONCILE_TASK, **labels)
+        broker.register_task(sweep_traces, task_name=SWEEP_TRACES_TASK, **labels)
 
 
 def _payload_of(message) -> dict:
@@ -420,6 +424,22 @@ async def _release_fair(rt, payload: dict) -> None:
 async def _kick(broker, payload: dict) -> None:
     task = broker.find_task(RUN_TASK)
     await task.kicker().with_labels(queue_name=payload.get("queue") or INTERACTIVE).kiq(payload)
+
+
+async def sweep_traces(now: datetime | None = None) -> dict:
+    """Снимает следы, у которых вышел retained_until. Планировщик ставит задачу по cron."""
+
+    from finance_analysis.adapters.storage.trace_wiring import open_trace_tail
+    from finance_analysis.application.trace_tail import sweep_expired_traces
+
+    rt = _rt()
+    moment = now or datetime.now(UTC)
+    async with rt.locks.try_lock("trace-sweep", rt.settings.lock_ttl_ms) as fence:
+        if fence is None:
+            return {"removed": 0, "skipped": "locked"}
+        pointer, _retainer = open_trace_tail(rt.settings)
+        removed = await sweep_expired_traces(rt.store, pointer, now=moment)
+    return {"removed": removed}
 
 
 async def gc_builds() -> dict:

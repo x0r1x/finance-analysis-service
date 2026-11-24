@@ -294,7 +294,7 @@ async def test_concept_answer_keeps_question_id_and_binds_the_row(local_service)
                 }
             ]
         },
-        Actor(),
+        Actor(user_id="alex", client_id="desk"),
         wait_sec=60,
     )
     assert accepted["results"][0]["status"] == "accepted", accepted

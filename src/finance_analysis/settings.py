@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from finance_analysis.domain.trace_limit import check_retention_name
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -135,6 +137,10 @@ class Settings(BaseSettings):
     fas_eval_dir: str = Field(default="eval", alias="FAS_EVAL_DIR")
     fas_admin_token: str | None = Field(default=None, alias="FAS_ADMIN_TOKEN")
     fas_require_admin_token: bool = Field(default=False, alias="FAS_REQUIRE_ADMIN_TOKEN")
+    # COMPLIANCE ставит только оператор бакета (mc mb --with-lock, mc retention set).
+    fas_trace_retention: str = Field(default="analysis", alias="FAS_TRACE_RETENTION")
+    fas_service_subjects: str = Field(default="system", alias="FAS_SERVICE_SUBJECTS")
+    trace_sweep_cron: str = Field(default="15 3 * * *", alias="TRACE_SWEEP_CRON")
 
     @model_validator(mode="after")
     def _storage_complete(self) -> Settings:
@@ -158,7 +164,18 @@ class Settings(BaseSettings):
                 "FAS_REQUIRE_ADMIN_TOKEN=true требует непустой FAS_ADMIN_TOKEN "
                 "(fail-closed prod perimeter)"
             )
+        self.fas_trace_retention = check_retention_name(self.fas_trace_retention)
         return self
+
+    @property
+    def service_subjects(self) -> frozenset[str]:
+        """Учётные `user_id`, которые журнал считает службой.
+
+        Идентификатор, которого в `FAS_SERVICE_SUBJECTS` нет, классифицируется
+        как человек. Служебную учётку нужно назвать в списке явно.
+        """
+
+        return frozenset(part.strip() for part in self.fas_service_subjects.split(",") if part.strip())
 
     @property
     def s3_enabled(self) -> bool:

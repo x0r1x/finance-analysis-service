@@ -34,7 +34,9 @@
 - `POST /v1/books/{job_id}/periods:resolve` — периоды по фразе.
 - `GET /v1/books/{job_id}/decisions` и `POST /v1/books/{job_id}/decisions` — чтение и запись журнала.
 - `POST /v1/books/{job_id}/mapping:infer` — пересчитать inferred-привязку. Ответ `202`.
-- `GET /v1/books/{job_id}/metrics/{metric_id}/trace` — read-only трассировка входа metric → concept → binding → cell (фаза 4). Query: `variant`. Нет `dim_row` / `fact_observation` → `412`; нет `graph_links` → `physical_lineage_complete: false`.
+- `GET /v1/books/{job_id}/metrics/{metric_id}/trace` — read-only трассировка входа metric → concept → binding → cell (фаза 4). Query: `variant`. Нет `dim_row` / `fact_observation` → `412`. `graph_available` — файл `graph_links` загружен. `graph_truncation_free` — файл загружен и у этой сборки нет обрезанной ссылки. `physical_lineage_complete` истинен только при обоих. Пустой опубликованный `graph_links` проходит эти две проверки. Это не доказательство, что разбор нашёл каждую зависимость Excel. Шаги — входы, которые взял расчёт: один член `one_of`, фактический запасной путь и уплаченные проценты FCFF как `interest_paid`.
+
+Контракт этого ответа — `meta_layer_graphs@2.0`, файл `src/finance_analysis/domain/contracts/meta_layer_graphs.json`. Это MAJOR к закрытой схеме 1.0. [SemVer](https://semver.org/) поднимает мажор, когда публичный контракт меняется несовместимо. У `metricTrace` стоит `additionalProperties: false`: [JSON Schema](https://json-schema.org/understanding-json-schema/reference/object) таким ключом отвергает имя, которого нет в `properties`. Схема 1.0 поэтому не принимает тело с `graph_available` и `graph_truncation_free`. Сервер эти поля шлёт. В `required` их нет: свойство вне `required` можно опустить, и схема 2.0 принимает тело без них. Клиент со схемой этого релиза читает и старый, и новый ответ. Клиент со своей копией схемы 1.0 новый ответ отвергнет. Отдельного журнала изменений API в репозитории нет: эта запись и есть журнал. Потребители схемы в репозитории — `validate_metric_trace_document` в том же процессе, что собирает ответ, маршрут trace и тесты. CLI эту схему не читает. `formula_origin` ею не описан.
 
 ## Анализы
 

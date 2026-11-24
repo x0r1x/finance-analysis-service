@@ -56,7 +56,7 @@ async def test_audit_history_and_findings(app, local_service):
         assert result["versions"]["rules"]["hardcoded_formula"] == "1"
         findings = result["result_data"]["findings"]
         codes = {item["code"] for item in findings}
-        assert {"missing_cached_value", "formula_inconsistent_in_row", "offset_indirect_used"} <= codes
+        assert {"missing_cached_value", "formula_pattern_break", "offset_indirect_used"} <= codes
         assert result["summary"]["params"]["findings"] == len(findings)
         assert len({item["fingerprint"] for item in findings}) == len(findings)
         first = findings[0]
@@ -115,12 +115,12 @@ async def test_audit_history_and_findings(app, local_service):
         assert len(paged.json()["items"]) == 5
         assert paged.json()["next_page_token"] == paged.json()["items"][-1]["fingerprint"]
 
-        target = next(item for item in findings if item["code"] == "formula_inconsistent_in_row")
+        target = next(item for item in findings if item["code"] == "formula_pattern_break")
         detail = await client.get(f"/v1/books/{RVI}/findings/{target['fingerprint']}", headers=HEADERS)
         assert detail.status_code == 200, detail.text
         body = detail.json()
         assert body["finding"] == target
-        assert body["rule"]["code"] == "formula_inconsistent_in_row"
+        assert body["rule"]["code"] == "formula_pattern_break"
         trace = body["trace"]
         assert trace["source"] == "builder"
         assert trace["direction"] == "precedents" and trace["depth"] == 8
@@ -305,6 +305,9 @@ def _insert_row_on_every_sheet(folder) -> None:
         link["cell"] = _cell(link["cell"])
         link["refs"] = [_cell(ref) for ref in link["refs"]]
         link["row_key"] = _row_key(link.get("row_key"))
+        # Текст формулы тоже сдвигается: zero_addend читает адреса из формулы, не из refs.
+        if link.get("formula"):
+            link["formula"] = _CELL.sub(lambda m: f"{m.group(1)}{int(m.group(2)) + 1}", link["formula"])
     (folder / "context.json").write_text(json.dumps(context, ensure_ascii=False))
     (folder / "graph.json").write_text(json.dumps(graph, ensure_ascii=False))
 
@@ -367,7 +370,7 @@ async def test_projection_upgrade_rebuilds_with_same_etag(app, local_service, mo
         assert builds.json()["items"][0]["rebuild_reason"] == "fas_projection_upgrade"
         audit = await client.post(f"/v1/books/{RVI}/analyses", headers=HEADERS, json={"type": "audit"})
         assert all(item["code"] != "builder_counters_missing" for item in audit.json()["warnings"])
-        assert any(item["code"] == "formula_inconsistent_in_row" for item in audit.json()["result_data"]["findings"])
+        assert any(item["code"] == "formula_pattern_break" for item in audit.json()["result_data"]["findings"])
 
         # Аудит прошлой сборки: concept-фильтр берёт привязки той сборки, а не головы.
         old_audit = await client.post(
@@ -381,7 +384,10 @@ async def test_projection_upgrade_rebuilds_with_same_etag(app, local_service, mo
         )
         assert filtered.status_code == 200, filtered.text
         assert filtered.json()["build_key"] == old.build_key
-        assert filtered.json()["items"] == []
+        old_bindings = await local_service._dataset_rows(RVI, old, "bindings")
+        cfads = {row["binding_key"] for row in old_bindings if row.get("effective_concept") == "cfads"}
+        got = {item["binding_key"] for item in filtered.json()["items"]}
+        assert got and got <= cfads
 
 
 async def test_scope_periods_concepts_and_trace_fallback(app, local_service):
@@ -430,7 +436,11 @@ async def test_scope_periods_concepts_and_trace_fallback(app, local_service):
         )
         assert bound.status_code == 200, bound.text
         kept = [item for item in bound.json()["result_data"]["findings"] if item["locations"]]
-        assert kept and {item["binding_key"] for item in kept} == {chosen["binding_key"]}
+        head_after = (await local_service._read_head(RVI))[0]
+        debt_rows = await local_service._dataset_rows(RVI, head_after, "bindings")
+        debt = {row["binding_key"] for row in debt_rows if row.get("effective_concept") == "debt_service"}
+        assert kept and chosen["binding_key"] in {item["binding_key"] for item in kept}
+        assert {item["binding_key"] for item in kept} <= debt
 
         # Builder пересобирает публикацию — цепочка на один уровень по graph_links.
         local_service.builder.rebuilding.add(RVI)

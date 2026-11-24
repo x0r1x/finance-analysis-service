@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal, localcontext
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.mapping import debt_seniority, marked_line_code
 from finance_analysis.domain.metric_contract import (
     ConceptDependency,
@@ -113,6 +114,7 @@ def housing_dscr(
     sign_convention: str = "outflow_negative",
     absent: frozenset[str] = frozenset(),
     profile: dict | None = None,
+    plan=None,
 ) -> dict:
     flag = interest_addback(profile)
     fees = _named_flag(profile, "include_senior_fees")
@@ -124,6 +126,10 @@ def housing_dscr(
         broken = "include_senior_fees: true или false"
     elif swaps is None:
         broken = "include_senior_swaps: true или false"
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     if broken:
         return {
             "metric": "dscr",
@@ -458,13 +464,13 @@ def _seniority(row: dict) -> str:
     found = debt_seniority(row)
     if found != "unknown":
         return found
-    if row.get("effective_concept") in _STATED:
+    if declared_concept(row) in _STATED:
         return "senior"
     return "unknown"
 
 
 def _role(row: dict) -> str | None:
-    concept = row.get("effective_concept")
+    concept = declared_concept(row)
     code = _code(row)
     if concept == "senior_principal" or code == "4323":
         return "principal"
@@ -524,7 +530,7 @@ def _amount(facts, row, key, aligned):
 def _bound(bindings, concept, absent) -> list[dict]:
     found = []
     for row in bindings:
-        if row.get("effective_concept") != concept or not row.get("is_primary"):
+        if declared_concept(row) != concept or not row.get("is_primary"):
             continue
         if row.get("status") not in _BOUND:
             continue
@@ -576,7 +582,7 @@ def _cash_interest(bindings, facts, key, aligned, convention, absent):
         identity = row.get("row_key")
         if identity in seen:
             continue
-        if row.get("effective_concept") in absent and row.get("source") not in HUMAN_SOURCES:
+        if declared_concept(row) in absent and row.get("source") not in HUMAN_SOURCES:
             continue
         seen.add(identity)
         rows.append(row)

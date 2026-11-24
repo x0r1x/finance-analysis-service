@@ -170,7 +170,10 @@ def builder() -> FixtureBuilder:
 
 @pytest.fixture
 async def local_service(settings, redis_runtime, builder):
+    from finance_analysis.adapters.storage.trace_wiring import open_trace_tail
+
     store = await open_storage(settings)
+    pointer, retainer = open_trace_tail(settings)
     service = FasService(
         settings,
         store,
@@ -178,6 +181,8 @@ async def local_service(settings, redis_runtime, builder):
         builder,
         WrenQuery(settings),
         redis_runtime,
+        trace_pointer=pointer,
+        trace_retainer=retainer,
     )
     yield service
 

@@ -1,7 +1,12 @@
-"""Auchan: тип corporate и пропуск ковенанта без cash_taxes — контракт, не дыра."""
+"""Auchan: тип corporate и пропуск ковенанта без cash_taxes — контракт, не дыра.
+
+Строка DSCR книги закрывает только пустой результат со статусом missing_input или needs_input.
+"""
+
+import pytest
 
 from finance_analysis.application.model_types import load_model_types
-from finance_analysis.domain.covenant import select_ratio
+from finance_analysis.domain.covenant import _reported_book_dscr, select_ratio
 from finance_analysis.domain.model_type import applicability
 
 _OFF = (
@@ -149,8 +154,8 @@ def test_book_dscr_is_reported_when_the_covenant_cannot_run():
     assert "cash_taxes" in warning["params"]["inputs"]
 
 
-def test_catalog_dscr_stays_beside_the_book_row():
-    """CFADS / debt service and the book row are both shown, and marked."""
+def test_computed_catalog_dscr_does_not_take_the_book_row():
+    """A formula that produced a number stays that number. The book cell is not a second row."""
     from decimal import Decimal
 
     types = load_model_types()
@@ -198,6 +203,180 @@ def test_catalog_dscr_stays_beside_the_book_row():
         interest_order=types.interest_order,
         row_fallbacks=types.row_fallbacks,
     )
-    by_variant = {row["variant"]: row["value"] for row in got["rows"]}
-    assert by_variant["reported"] == Decimal("1.476")
-    assert by_variant["catalog"] == Decimal("2.2500000000")
+    assert [row.get("variant") for row in got["rows"]] == [None]
+    assert got["rows"][0]["value"] == Decimal("2.2500000000")
+    assert all(item.get("code") != "dscr_reported" for item in got["warnings"])
+    assert got.get("definition_source") != "reported"
+
+
+def _book_attempt(status: str, *, value: str | None) -> dict:
+    return {
+        "metric": "dscr",
+        "rows": [{"value": value, "status": status, "variant": None}],
+        "needs_input": [],
+        "warnings": [],
+        "status": status,
+        "missing_inputs": [],
+    }
+
+
+def _book_call(attempt: dict) -> dict:
+    return _reported_book_dscr(
+        attempt,
+        variant="catalog",
+        facts=[
+            {
+                "row_key": "dscr",
+                "axis_id": "A",
+                "period_id": "Y1",
+                "normalized_value": "3.5",
+            }
+        ],
+        bindings=[_primary("dscr")],
+        periods=[{"axis_id": "A", "period_id": "Y1"}],
+        absent=frozenset(),
+    )
+
+
+@pytest.mark.parametrize("status", ["scale_unconfirmed", "basis_mismatch", "no_debt_service", "input_absent"])
+def test_other_recalculation_statuses_do_not_take_the_book_row(status):
+    """A refusal that is not a missing input stays that refusal, even when the book has a DSCR cell."""
+    attempt = _book_attempt(status, value="1")
+    assert _book_call(attempt) is attempt
+
+
+def test_needs_input_reports_the_book_row_and_keeps_the_question():
+    """Two primaries of one input are needs_input. The book cell is shown, the question stays."""
+    from decimal import Decimal
+
+    types = load_model_types()
+    second = _primary("debt_service")
+    second = {**second, "row_key": "debt-service-2", "binding_key": "debt-service-2"}
+    got = select_ratio(
+        "dscr",
+        None,
+        {
+            "facts": [
+                {
+                    "row_key": "dscr",
+                    "axis_id": "A",
+                    "period_id": "Y1",
+                    "normalized_value": "3.5",
+                }
+            ],
+            "bindings": [_primary("cfads"), _primary("debt_service"), second, _primary("dscr")],
+            "periods": [{"axis_id": "A", "period_id": "Y1"}],
+            "period_phase": {},
+            "explicit_phases": False,
+            "sign_convention": "outflow_negative",
+            "marker_class": None,
+            "absent": frozenset(),
+        },
+        profile=None,
+        profile_ref=None,
+        composed=types.composed,
+        concepts=frozenset({"cfads", "debt_service", "dscr"}),
+        money=frozenset({"cfads", "debt_service"}),
+        interest_order=types.interest_order,
+        row_fallbacks=types.row_fallbacks,
+    )
+    assert got["status"] == "succeeded"
+    assert got["definition_source"] == "reported"
+    assert [(row["variant"], row["value"]) for row in got["rows"]] == [("reported", Decimal("3.5"))]
+    assert got["needs_input"][0]["reason"] == "ambiguous"
+    assert "debt_service" in got["missing_inputs"]
+
+
+def test_reported_fallback_keeps_the_attempt_trace():
+    """The formula trace stays. The book row does not erase it."""
+    types = load_model_types()
+    collect: list = []
+    got = select_ratio(
+        "dscr",
+        None,
+        {
+            "facts": [
+                {
+                    "row_key": "dscr",
+                    "axis_id": "A",
+                    "period_id": "Y1",
+                    "normalized_value": "3.5",
+                }
+            ],
+            "bindings": [_primary("dscr")],
+            "periods": [{"axis_id": "A", "period_id": "Y1"}],
+            "period_phase": {},
+            "explicit_phases": False,
+            "sign_convention": "outflow_negative",
+            "marker_class": None,
+            "absent": frozenset(),
+        },
+        profile=None,
+        profile_ref=None,
+        composed=types.composed,
+        concepts=frozenset({"cfads", "debt_service", "dscr"}),
+        money=frozenset({"cfads", "debt_service"}),
+        interest_order=types.interest_order,
+        row_fallbacks=types.row_fallbacks,
+        collect=collect,
+    )
+    assert got["definition_source"] == "reported"
+    assert [item.execution_status for item in collect] == ["not_run"]
+
+
+def test_a_plan_that_rejected_the_book_row_does_not_report_it():
+    """The book cell is a cache, not a second scan. A row the plan rejected stays out."""
+
+    class _Need:
+        subject = "cfads"
+
+        def as_dict(self):
+            return {"kind": "concept", "reason": "concept_unknown", "subject": self.subject}
+
+    class _Rejected:
+        concept = "dscr"
+        binding_key = "dscr"
+        row_key = None
+
+    class _Plan:
+        status = "missing_input"
+        needs_input = (_Need(),)
+        warnings = ()
+        inputs = ()
+        diagnostic = ()
+        rejected = (_Rejected(),)
+        fallbacks = ()
+
+    types = load_model_types()
+    got = select_ratio(
+        "dscr",
+        None,
+        {
+            "facts": [
+                {
+                    "row_key": "dscr",
+                    "axis_id": "A",
+                    "period_id": "Y1",
+                    "normalized_value": "3.5",
+                }
+            ],
+            "bindings": [_primary("dscr")],
+            "periods": [{"axis_id": "A", "period_id": "Y1"}],
+            "period_phase": {},
+            "explicit_phases": False,
+            "sign_convention": "outflow_negative",
+            "marker_class": None,
+            "absent": frozenset(),
+        },
+        profile=None,
+        profile_ref=None,
+        composed=types.composed,
+        concepts=frozenset({"cfads", "debt_service", "dscr"}),
+        money=frozenset({"cfads", "debt_service"}),
+        interest_order=types.interest_order,
+        row_fallbacks=types.row_fallbacks,
+        plan=_Plan(),
+    )
+    assert got["status"] == "missing_input"
+    assert got["rows"] == []
+    assert got.get("definition_source") != "reported"

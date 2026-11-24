@@ -77,7 +77,15 @@ def basis_of(binding: dict) -> tuple[str, str]:
     return str(evidence.get("period_basis") or "period"), str(evidence.get("period_basis_source") or "")
 
 
-def restate_series(totals: dict[tuple, Decimal], binding: dict, periods: list[dict], aligned: dict) -> dict[tuple, Decimal]:
+def restate_series(
+    totals: dict[tuple, Decimal],
+    binding: dict,
+    periods: list[dict],
+    aligned: dict,
+    *,
+    journal: list | None = None,
+    origins: dict | None = None,
+) -> dict[tuple, Decimal]:
     """Переводит нарастающий итог в значение за период.
 
     Вычитание делается только если способ показа поставлен по заголовку или
@@ -95,10 +103,12 @@ def restate_series(totals: dict[tuple, Decimal], binding: dict, periods: list[di
     by_axis: dict[str, list[dict]] = {}
     for period in periods:
         by_axis.setdefault(str(period.get("axis_id") or ""), []).append(period)
+    known = origins or {}
     for items in by_axis.values():
         ordered = sorted(items, key=lambda item: item.get("period_index") or 0)
         previous_year = None
         previous_raw = None
+        previous_key = None
         previous_present = False
         for period in ordered:
             own = (period.get("axis_id"), period.get("period_id"))
@@ -108,17 +118,41 @@ def restate_series(totals: dict[tuple, Decimal], binding: dict, periods: list[di
             same_year = year is not None and year == previous_year
             if present and same_year and previous_present and previous_raw is not None:
                 result[key] = totals[key] - previous_raw
+                if journal is not None:
+                    journal.append(_ytd_note(known, key, previous_key, totals[key], previous_raw, year, None))
             elif present and same_year and not previous_present:
                 result.pop(key, None)
+                if journal is not None:
+                    journal.append(_ytd_note(known, key, previous_key, totals[key], None, year, "previous_ytd_missing"))
             if year is not None:
                 previous_year = year
             if present:
+                previous_key = key
                 previous_raw = totals[key]
                 previous_present = True
             else:
+                previous_key = None
                 previous_raw = None
                 previous_present = False
     return result
+
+
+def _ytd_note(origins, key, previous_key, current, previous, year, reason):
+    current_origin = origins.get(key) or {}
+    previous_origin = origins.get(previous_key) or {}
+    return {
+        "key": key,
+        "current_cells": tuple(current_origin.get("cells") or ()),
+        "previous_cells": tuple(previous_origin.get("cells") or ()),
+        "current_raw": current_origin.get("raw", current),
+        "previous_raw": previous_origin.get("raw", previous),
+        "current_effective": current,
+        "previous_effective": previous,
+        "difference": None if reason else current - previous,
+        "year": year,
+        "reset_rule": "subtract_only_within_year",
+        "reason": reason,
+    }
 
 
 def keys_for_basis(keys: list, binding: dict) -> list:

@@ -88,7 +88,7 @@ metric_id → concept → binding_key → cell_id
 Алгоритм:
 
 1. Взять показатель (и опционально `variant`) из Financial Model Catalog.  
-2. Для каждого concept из `inputs.all_of ∪ inputs.one_of` построить шаг:  
+2. Взять семантические входы из `resolve_semantic_inputs` (выбранный вариант, один член `one_of`, не-stale основная привязка, фактический запасной путь `interest_order`, подстановка 4123 и щит FCFF — те же, что у расчёта). Для каждого такого входа построить шаг:  
    - ребро `metric:in:…`;  
    - найти **основную** не-`stale` привязку (`is_primary`, статус `bound` / `bound_with_warning`); при нескольких — детерминированно минимальный `binding_key` + finding `ambiguous_primary_binding`;  
    - по `row_key` собрать все `cell_id` из `fact_observation` этой сборки;  
@@ -108,11 +108,11 @@ metric_id → concept → binding_key → cell_id
 | `fact_dataset_unavailable` | нет `fact_observation` в сборке (доменная метка; HTTP — см. ниже) |
 | `dim_row_unavailable` | нет `dim_row` в сборке (доменная метка; HTTP — см. ниже) |
 
-**Важно:** отсутствие обязательного датасета ≠ `no_cell`. HTTP-слой при отсутствии `dim_row` / `fact_observation` отвечает `412 precondition_failed` («трассировка недоступна…»), а не подменяет ответ пустым списком фактов. Отсутствие опционального `graph_links` → `physical_lineage_complete: false` (связи формул не проверялись).
+**Важно:** отсутствие обязательного датасета ≠ `no_cell`. HTTP-слой при отсутствии `dim_row` / `fact_observation` отвечает `412 precondition_failed` («трассировка недоступна…»), а не подменяет ответ пустым списком фактов. Полноту считает `lineage_completeness`, её же читает `formula_origin`. Три поля: `graph_available` — файл `graph_links` загружен; `graph_truncation_free` — файл загружен и у этой сборки нет обрезанной ссылки (ссылка другого `build_key` не считается; нет файла — флаг ложен); `physical_lineage_complete` истинен только когда оба флага истинны. Пустой загруженный граф проходит эти две проверки. Это не доказательство, что разбор нашёл каждую зависимость Excel: такой проверки нет. OpenLineage в фасете колонок перечисляет наблюдённые `inputField` и не предлагает достраивать недостающие зависимости. Новая публикация всегда пишет файл, в том числе пустой. В шаге следа остаётся выбранный член `one_of` и фактический запасной вход, а не каждый член каталога.
 
 ### Ответ API
 
-Полное тело (валидируется JSON Schema перед возвратом): `metric_id`, `variant`, `build_key`, `model_id`, `catalog_version`, `missing_trace`, `steps[]`, `integrity[]`, `physical_lineage_complete`.
+Схема — `meta_layer_graphs@2.0`. Полное тело (валидируется JSON Schema перед возвратом): `metric_id`, `variant`, `build_key`, `model_id`, `catalog_version`, `missing_trace`, `steps[]`, `integrity[]`, `physical_lineage_complete`. Сервер также шлёт `graph_available` и `graph_truncation_free`. В `required` их нет: схема 2.0 принимает тело без них. Закрытая схема 1.0 (`additionalProperties: false`) тело с этими полями отвергает. Подробности — [ru/api.md](ru/api.md).
 
 `integrity[]` — findings по исходным данным и инварианту DTO (`ambiguous_primary_binding`, `primary_binding_without_trace_or_reason`, …).
 

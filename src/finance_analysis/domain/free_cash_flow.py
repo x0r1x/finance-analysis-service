@@ -11,7 +11,9 @@ fcff = operating_cash_flow + shield − capex.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, localcontext
+from typing import Any
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     HUMAN_SOURCES,
@@ -36,6 +38,7 @@ _EXCLUDED = (
 _NO_ANNUAL = "Годовой FCFF не посчитан. Число книги не вход калькулятора."
 _DIFFERS = "Годовой FCFF не совпал с числом книги."
 _ADD_BACK = frozenset({"interest", "interest_paid"})
+_PAID_BASES = frozenset({"interest_included", "candidate"})
 _BOUND = frozenset({"bound", "bound_with_warning"})
 _FINANCING_SECTION = (
     "финансовая деятельность",
@@ -62,18 +65,39 @@ def free_cash_flow(
     links: list[dict] | None = None,
     book: list[dict] | None = None,
     statement_sheets: frozenset[str] = frozenset(),
+    plan: Any | None = None,
 ) -> dict:
-    primaries = _primaries(bindings, absent)
-    clash = _ambiguous_primary(bindings, absent)
-    if clash:
-        return _finish(_ambiguous(clash), [], periods, book)
-    ocf = primaries.get("operating_cash_flow")
-    capex = primaries.get("capex")
-    if ocf is None:
-        return _finish(_missing("operating_cash_flow"), [], periods, book)
-    if capex is None:
-        return _finish(_missing("capex"), [], periods, book)
-    confirm_paid_interest(primaries, bindings, absent)
+    if plan is not None:
+        if plan.status == "needs_input":
+            subject = plan.needs_input[0].subject if plan.needs_input else "operating_cash_flow"
+            return _finish(_ambiguous(subject), [], periods, book)
+        if plan.status != "resolved":
+            subject = plan.needs_input[0].subject if plan.needs_input else "operating_cash_flow"
+            return _finish(_missing(subject), [], periods, book)
+        from finance_analysis.domain.resolved_plan import bound_rows
+
+        primaries = bound_rows(plan, bindings)
+        ocf = primaries.get("operating_cash_flow")
+        capex = primaries.get("capex")
+        if ocf is None:
+            return _finish(_missing("operating_cash_flow"), [], periods, book)
+        if capex is None:
+            return _finish(_missing("capex"), [], periods, book)
+        basis = plan.shield.basis if plan.shield is not None else "unknown"
+    else:
+        primaries = _primaries(bindings, absent)
+        clash = _ambiguous_primary(bindings, absent)
+        if clash:
+            return _finish(_ambiguous(clash), [], periods, book)
+        ocf = primaries.get("operating_cash_flow")
+        capex = primaries.get("capex")
+        if ocf is None:
+            return _finish(_missing("operating_cash_flow"), [], periods, book)
+        if capex is None:
+            return _finish(_missing("capex"), [], periods, book)
+        confirm_paid_interest(primaries, bindings, absent)
+        statement = frozenset(sheet_name_key(name) for name in statement_sheets)
+        basis = _basis(ocf, bindings, absent, facts, links or [], statement)
     paid = primaries.get("interest_paid")
     accrued = primaries.get("interest")
     if (
@@ -102,8 +126,6 @@ def free_cash_flow(
             periods,
             book,
         )
-    statement = frozenset(sheet_name_key(name) for name in statement_sheets)
-    basis = _basis(ocf, bindings, absent, facts, links or [], statement)
     rate_row = primaries.get("income_tax_rate")
     aligned = aligned_keys(periods)
     ocf_flow = _flow(facts, ocf, aligned, periods)
@@ -139,7 +161,7 @@ def free_cash_flow(
         if basis == "unknown":
             rows.append(_blank(period, "ocf_basis_unknown"))
             continue
-        if basis != "interest_excluded":
+        if basis in _PAID_BASES:
             if basis == "candidate":
                 blocked = _candidate_block(
                     accrued_flow, paid_flow, accrued, paid, period, aligned
@@ -216,6 +238,33 @@ def free_cash_flow(
     )
 
 
+def shield_concepts(
+    metric: str,
+    bindings: list[dict],
+    absent: frozenset[str],
+    facts: list[dict],
+    links: list[dict],
+    statement_sheets: frozenset[str],
+) -> tuple[str, ...]:
+    """Понятия щита, которые читает расчёт. У любой метрики, кроме FCFF, пусто.
+
+    Базис тот же, что у ``free_cash_flow``: ``interest_included`` и ``candidate``
+    берут ``interest_paid``. ``interest_excluded`` и ``unknown`` не берут.
+    """
+
+    if metric != "fcff":
+        return ()
+    rows = [dict(row) for row in bindings]
+    ocf = _primaries(rows, absent).get("operating_cash_flow")
+    if ocf is None:
+        return ()
+    statement = frozenset(sheet_name_key(name) for name in statement_sheets)
+    basis = _basis(ocf, rows, absent, list(facts or []), list(links or []), statement)
+    if basis in _PAID_BASES:
+        return ("interest_paid",)
+    return ()
+
+
 def _basis(
     ocf: dict,
     bindings: list[dict],
@@ -238,10 +287,7 @@ def _basis(
 def _interest_rows(bindings: list[dict], absent: frozenset[str]) -> list[dict]:
     found = []
     for row in bindings:
-        if (
-            row.get("effective_concept") != "interest"
-            or row.get("status") not in _BOUND
-        ):
+        if declared_concept(row) != "interest" or row.get("status") not in _BOUND:
             continue
         if "interest" in absent and row.get("source") not in HUMAN_SOURCES:
             continue
@@ -315,8 +361,8 @@ def _precedent_concepts(
         if row.get("status") not in _BOUND:
             continue
         key = row.get("row_key")
-        concept = row.get("effective_concept")
-        if not isinstance(key, str) or not isinstance(concept, str) or not concept:
+        concept = declared_concept(row)
+        if not isinstance(key, str) or not concept:
             continue
         if concept in absent and row.get("source") not in HUMAN_SOURCES:
             continue
@@ -647,7 +693,7 @@ def _ambiguous_primary(bindings: list[dict], absent: frozenset[str]) -> str | No
 
     counts = {name: 0 for name in _GUARDED}
     for row in bindings:
-        concept = row.get("effective_concept")
+        concept = declared_concept(row)
         if concept not in counts:
             continue
         if not (row.get("is_primary") and row.get("status") in _BOUND):

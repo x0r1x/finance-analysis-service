@@ -22,9 +22,9 @@ from finance_analysis.application.explain import narrate, template_text
 from finance_analysis.application.impact import impact_view
 from finance_analysis.application.report import render_json, render_markdown
 from finance_analysis.application.rule_engine import (
+    execute_rules,
     load_rules,
     requirements,
-    run_rules,
     select_rules,
 )
 from finance_analysis.application.sheet_roles import load_sheet_roles
@@ -35,6 +35,7 @@ from finance_analysis.domain.audit import (
     actuals_end_from_journal,
     promote_needs_findings,
 )
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.book import (
     FAS_VERSION,
     Actor,
@@ -64,6 +65,7 @@ from finance_analysis.domain.errors import (
     NotAcceptable,
     NotFound,
 )
+from finance_analysis.domain.formula_origin import origin_view
 from finance_analysis.domain.housing_cover import dispatch_cover
 from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
@@ -77,6 +79,7 @@ from finance_analysis.domain.model_type import (
     confirmed_variants,
     decision_labels,
 )
+from finance_analysis.domain.semantic_input import plans_for
 from finance_analysis.plugins.rules.coverage import (
     MISSING_TOTAL_ROW,
     PERIOD_GRAIN_MISMATCH,
@@ -107,6 +110,18 @@ RATIO_METRICS = (
     "fcf_identity",
     "ncf_period",
 )
+# Реализации, которые собирают EvidenceBook. Остальные каталожные — evidence_not_supported.
+EVIDENCE_AVAILABLE = frozenset(
+    {
+        ("dscr", "dscr@1"),
+        ("dscr", "dscr.pf@1"),
+        ("icr", "icr@1"),
+        ("icr_ebit", "icr_ebit@1"),
+        ("adscr", "adscr@1"),
+        ("dscr_min", "dscr_min@1"),
+        ("dscr_avg", "dscr_avg@1"),
+    }
+)
 # Поля строки метрики, которые уходят в `inputs_json` результата.
 RATIO_EXTRAS = ("variant", "direction", "basis", "window", "over", "inputs", "ebitda_sign")
 # `scope` из §3.2: списки и одиночные значения.
@@ -123,6 +138,12 @@ def _dscr_variant(catalog, verdict, profile: dict | None = None) -> str | None:
     if isinstance(named, str) and named:
         return named
     return confirmed_variants(catalog, verdict).get("dscr")
+
+
+def _profile_dscr(profile: dict | None):
+    from finance_analysis.domain.covenant import profile_dscr_expression
+
+    return profile_dscr_expression(profile)
 
 
 def _attach_book_rows(envelope: dict, got: dict) -> None:
@@ -505,6 +526,57 @@ def _codes(raw: str | None) -> set[str] | None:
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
+class _AttachedFindings(list):
+    """Находки метрик и отдельная полнота публикации их доказательств."""
+
+    def __init__(self, findings, publications) -> None:
+        super().__init__(findings)
+        self.publications = list(publications)
+
+
+def _execution_id(source: str, metric: str, index: int) -> str:
+    if source.startswith("rule:"):
+        return f"{source}:{metric}-{index}"
+    return f"{metric}-{index}"
+
+
+def _publication(analysis_id: str, source: str, execution_id: str, metric: str, *, status: str, complete: bool) -> dict:
+    return {
+        "analysis_id": analysis_id,
+        "code": source.removeprefix("rule:") if source.startswith("rule:") else None,
+        "source": source,
+        "execution_id": execution_id,
+        "metric": metric,
+        "evidence_complete": complete,
+        "status": status,
+    }
+
+
+_EVIDENCE_RANK = {"published": 0, "incomplete": 1, "absent": 2}
+
+
+def _apply_rule_evidence(envelope: dict, records: list) -> None:
+    """Полнота доказательства — отдельный контракт. Расчёт в находку не копируется."""
+
+    if not records:
+        return
+    result = envelope.setdefault("result_data", {})
+    result["rule_evidence"] = records
+    grouped: dict[str, list] = {}
+    for record in records:
+        code = record.get("code")
+        if isinstance(code, str):
+            grouped.setdefault(code, []).append(record)
+    for finding in result.get("findings") or []:
+        items = grouped.get(finding.get("code"))
+        if not items:
+            continue
+        complete = all(item["status"] == "published" and item["evidence_complete"] for item in items)
+        worst = max(items, key=lambda item: _EVIDENCE_RANK[item["status"]])
+        finding["evidence_complete"] = complete
+        finding["evidence_status"] = "published" if complete else worst["status"]
+
+
 class Analyses:
     """Сценарии `…/analyses` и `…/findings`. Чтение книги — через `FasService`."""
 
@@ -640,11 +712,14 @@ class Analyses:
         catalog = load_dimensions()
         pricing, billing = await self.service.glossary.concept_price_facts(target.head.versions.get("glossary"))
         profile = await self._profile(target.head)
+        link_file = next((item for item in files if str(item).endswith("/graph_links.parquet")), None)
+        links_loaded = "links" in needed and link_file is not None
         return AuditInput(
             rows=dim_rows,
             periods=periods,
             facts=await rows("fact_observation"),
-            links=await rows("graph_links") if "links" in needed else [],
+            links=await rows("graph_links") if links_loaded else [],
+            graph_links_available=links_loaded,
             counters=dict(target.manifest.get("builder_counters") or {}),
             bindings=bindings,
             semantics=row_semantics,
@@ -873,6 +948,7 @@ class Analyses:
         needs = []
         warnings = []
         uses = []
+        evidences: list = []
         money = frozenset(name for name, item in svc.catalog.concepts.items() if item.unit == "money")
         aggregations = {
             name: item.effective_aggregation for name, item in svc.catalog.concepts.items()
@@ -880,7 +956,26 @@ class Analyses:
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
+        plans = plans_for(
+            metrics,
+            bindings,
+            svc.model_types.metric_expressions,
+            variant_of=variant_of,
+            dscr_variant=dscr_variant,
+            interest_order=svc.model_types.interest_order,
+            row_fallbacks=svc.model_types.row_fallbacks,
+            absent=common["absent"],
+            facts=facts,
+            links=links,
+            statement_sheets=statement_sheets,
+            catalog_version=getattr(getattr(svc, "financial_catalog", None), "version", None),
+            semantic_model_version=target.semantic_model,
+            build_key=target.build,
+            model_id=job_id,
+            dscr_expression=_profile_dscr(body),
+        )
         for metric in metrics:
+            before = len(evidences)
             use = applicability(svc.model_types, labels, metric)
             if use == "not_applicable":
                 uses.append(
@@ -900,15 +995,16 @@ class Analyses:
                 basis=basis,
                 direction=direction,
                 common=common,
+                plan=plans.get(metric),
             )
             if routed is not None:
                 result = routed
             elif metric in LOAN_LIFE:
-                result = loan_life_ratio(metric, basis=basis, **common)
+                result = loan_life_ratio(metric, basis=basis, plan=plans.get(metric), **common)
             elif metric in REDUCED:
-                result = dscr_reductions(metric, **common)
+                result = dscr_reductions(metric, plan=plans.get("dscr"), collect=evidences, **common)
             elif metric == "adscr":
-                result = adscr(direction=direction, **common)
+                result = adscr(direction=direction, plan=plans.get("dscr"), collect=evidences, **common)
             else:
                 result = select_ratio(
                     metric,
@@ -924,6 +1020,8 @@ class Analyses:
                     row_fallbacks=svc.model_types.row_fallbacks,
                     links=links,
                     statement_sheets=statement_sheets,
+                    plan=plans.get(metric),
+                    collect=evidences,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
@@ -935,7 +1033,10 @@ class Analyses:
                 continue
             needs.extend(result["needs_input"])
             warnings.extend(result["warnings"])
-            computed.extend({**row, "metric": metric} for row in result["rows"])
+            published = [{**row, "metric": metric} for row in result["rows"]]
+            computed.extend(published)
+            if published and not evidences[before:]:
+                evidences.append(_unsupported(metric, common["sign_convention"]))
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
                 entry["definition_source"] = result["definition_source"]
@@ -964,6 +1065,9 @@ class Analyses:
             "absent": common["absent"],
             "applicability": uses,
             "model_type": verdict.as_dict(),
+            "dscr_variant": dscr_variant,
+            "plans": plans,
+            "evidences": evidences,
             "book_rows": cite_lbo_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,
@@ -987,16 +1091,43 @@ class Analyses:
         head = target.head
         scope = _scope(body)
         got = await self.compute_metrics(job_id, target, metrics)
+        await self._publish_traces(
+            analysis_id,
+            got.get("evidences") or [],
+            got.get("applicability"),
+            execution_source="ratios",
+            actor=actor,
+            state_seq=head.state_seq,
+            bindings=got.get("bindings"),
+        )
         computed, needs, warnings = got["rows"], got["needs_input"], got["warnings"]
         text_rows, citations = _ratio_rows(got)
         attached = await self._metric_findings(
-            job_id, target, metrics, got["bindings"], got["facts"], got["periods"], got["phase_of"], got["profile"], got["absent"]
+            job_id,
+            target,
+            metrics,
+            got["bindings"],
+            got["facts"],
+            got["periods"],
+            got["phase_of"],
+            got["profile"],
+            got["absent"],
+            got.get("plans"),
+            analysis_id=analysis_id,
+            actor=actor,
         )
+        rule_evidence = list(getattr(attached, "publications", ()))
         candidates = list(attached) + promote_needs_findings(needs)
         bound: set[str] = set()
         if "concepts" in scope:
             bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
-        data = AuditInput(periods=got["periods"], facts=got["facts"], bindings=got["bindings"])
+        data = AuditInput(
+            periods=got["periods"],
+            facts=got["facts"],
+            bindings=got["bindings"],
+            dscr_variant=got.get("dscr_variant"),
+            plans=got.get("plans"),
+        )
         attached = [item for item in candidates if _in_scope(item, scope, data, bound)]
         envelope = {
             "analysis_id": analysis_id,
@@ -1025,6 +1156,7 @@ class Analyses:
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
         _attach_book_rows(envelope, got)
+        _apply_rule_evidence(envelope, rule_evidence)
         await self._annotate(envelope)
         stored = _ratio_stored(job_id, target, analysis_id, head, computed)
         await self._save_tables(job_id, target, analysis_id, "ratios", {"ratios": stored}, envelope, actor, started)
@@ -1101,7 +1233,26 @@ class Analyses:
             await self.service.progress_op(op_id, "mapping")
             await self.service.progress_op(op_id, "evaluating")
         got = await self.compute_metrics(job_id, target, metrics)
-        found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
+        await self._publish_traces(
+            analysis_id,
+            got.get("evidences") or [],
+            got.get("applicability"),
+            execution_source="full",
+            actor=actor,
+            state_seq=target.head.state_seq,
+            bindings=got.get("bindings"),
+        )
+        data.plans = got.get("plans") or {}
+        self._trace_plans(data, metrics)
+        ruled = await anyio.to_thread.run_sync(lambda: execute_rules(rules, data), limiter=self.service._cpu)
+        rule_evidence = await self._publish_ruled(
+            analysis_id,
+            ruled,
+            actor=actor,
+            state_seq=target.head.state_seq,
+            bindings=data.bindings,
+        )
+        found = ruled.findings
         bound: set[str] = set()
         if "concepts" in scope:
             bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
@@ -1145,7 +1296,9 @@ class Analyses:
         }
         envelope["versions"]["model_types"] = self.service.model_types.version
         envelope["result_data"]["metrics"] = got["applicability"]
+        envelope["result_data"]["formula_origin"] = self._formula_origin(data, findings)
         _attach_book_rows(envelope, got)
+        _apply_rule_evidence(envelope, rule_evidence)
         await self._annotate(envelope)
         if op_id and await self._cancelled(op_id):
             return {"skipped": True}
@@ -1168,8 +1321,46 @@ class Analyses:
         await self.service.finish_op(op_id, "cancelled")
         return True
 
+    def _trace_plans(self, data, metrics: list[str]) -> None:
+        """След читает тот же объект плана, что расчёт и аудит. metricTrace не публикуется."""
+
+        from finance_analysis.domain.graphs import trace_metric
+
+        catalog = self.service.model_types
+        plans = data.plans or {}
+        for metric in metrics:
+            plan = plans.get(metric)
+            if plan is None:
+                continue
+            trace_metric(
+                metric,
+                inputs=None,
+                bindings=data.bindings,
+                facts=data.facts,
+                graph_links=data.links,
+                expressions=catalog.metric_expressions,
+                interest_order=catalog.interest_order,
+                row_fallbacks=catalog.row_fallbacks,
+                absent=data.absent,
+                statement_sheets=data.statement_sheets,
+                plan=plan,
+            )
+
     async def _metric_findings(
-        self, job_id, target: Target, metrics, bindings, facts, periods, phase_of, profile, absent
+        self,
+        job_id,
+        target: Target,
+        metrics,
+        bindings,
+        facts,
+        periods,
+        phase_of,
+        profile,
+        absent,
+        plans=None,
+        *,
+        analysis_id: str | None = None,
+        actor: Actor | None = None,
     ) -> list[Finding]:
         """Находки, которые прикрепляются к результату метрики (§6.2): статус метрики они не меняют.
 
@@ -1201,9 +1392,20 @@ class Analyses:
             applicable_metrics=live,
             dscr_variant=_dscr_variant(self.service.model_types, verdict, profile),
             statement_sheets=frozenset(load_sheet_roles().statement),
+            plans=plans,
         )
-        found = run_rules(rules, data)
-        return [item for item in found if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]
+        found = execute_rules(rules, data)
+        publications: list = []
+        if analysis_id is not None:
+            publications = await self._publish_ruled(
+                analysis_id,
+                found,
+                actor=actor,
+                state_seq=target.head.state_seq,
+                bindings=bindings,
+            )
+        kept = [item for item in found.findings if item.code != "missing_total_row" or item.params.get("concept") in absent_needed]
+        return _AttachedFindings(kept, publications)
 
     async def _save_tables(self, job_id, target: Target, analysis_id, kind, tables, envelope, actor, started) -> None:
         svc = self.service
@@ -1307,7 +1509,38 @@ class Analyses:
         started = _now()
         needed = requirements(rules)
         data = await self._input(job_id, target, needed)
-        found = await anyio.to_thread.run_sync(lambda: run_rules(rules, data), limiter=self.service._cpu)
+        catalog = self.service.model_types
+        names = (
+            sorted(data.applicable_metrics)
+            if data.applicable_metrics is not None
+            else sorted(name for name in catalog.metric_expressions if "." not in name)
+        )
+        data.plans = plans_for(
+            names,
+            data.bindings,
+            catalog.metric_expressions,
+            dscr_variant=data.dscr_variant,
+            interest_order=catalog.interest_order,
+            row_fallbacks=catalog.row_fallbacks,
+            absent=data.absent,
+            facts=data.facts,
+            links=data.links,
+            statement_sheets=data.statement_sheets,
+            catalog_version=self.service.financial_catalog.version,
+            semantic_model_version=target.semantic_model,
+            build_key=target.build,
+            model_id=job_id,
+            dscr_expression=_profile_dscr(data.profile),
+        )
+        ruled = await anyio.to_thread.run_sync(lambda: execute_rules(rules, data), limiter=self.service._cpu)
+        rule_evidence = await self._publish_ruled(
+            analysis_id,
+            ruled,
+            actor=actor,
+            state_seq=target.head.state_seq,
+            bindings=data.bindings,
+        )
+        found = ruled.findings
         bound: set[str] = set()
         if "concepts" in scope:
             bound = await self._bound_keys(job_id, target, target.derive_key, scope["concepts"])
@@ -1319,6 +1552,7 @@ class Analyses:
             skipped = sorted(rule.code for rule in rules if COUNTER_RULES_INPUT in rule.requires)
             warnings.append({"code": "builder_counters_missing", "params": {"rules": skipped}})
         envelope = self._envelope(job_id, target, analysis_id, rules, data, findings, warnings)
+        _apply_rule_evidence(envelope, rule_evidence)
         await self._annotate(envelope)
         await self._save(job_id, target, analysis_id, rules, findings, envelope, actor, started)
         return envelope
@@ -1328,7 +1562,7 @@ class Analyses:
         severity = Counter(item.severity for item in findings)
         by_rule = Counter((item.code, item.severity) for item in findings)
         head = target.head
-        return {
+        envelope = {
             "analysis_id": analysis_id,
             "status": "succeeded",
             "builder_ref": ref,
@@ -1365,6 +1599,18 @@ class Analyses:
             "needs_input": [],
             "warnings": warnings,
         }
+        envelope["result_data"]["formula_origin"] = self._formula_origin(data, findings)
+        return envelope
+
+    def _formula_origin(self, data, findings) -> dict:
+        catalog = self.service.model_types
+        return origin_view(
+            data,
+            findings,
+            catalog.metric_expressions,
+            interest_order=catalog.interest_order,
+            row_fallbacks=catalog.row_fallbacks,
+        )
 
     async def _save(self, job_id, target: Target, analysis_id, rules, findings, envelope, actor, started) -> None:
         svc = self.service
@@ -1478,6 +1724,161 @@ class Analyses:
         key = keys.result_key(job_id, report["build_key"], report["analysis_id"], "result.json")
         return json.loads(await self.store.get(key))
 
+    async def delete(self, job_id: str, analysis_id: str) -> dict:
+        """Удаляет анализ целиком: карточку отчёта и его следы.
+
+        Чужой `analysis_id` — тот же `NotFound`, что у чтения. Следы до проверки
+        карточки не трогаются. Авторизация маршрута та же, что у GET.
+        """
+
+        check_ulid(analysis_id)
+        try:
+            report = json.loads(await self.store.get(keys.report_index_key(job_id, analysis_id)))
+        except NotFound:
+            raise NotFound("анализ не найден") from None
+        pointer = getattr(self.service, "trace_pointer", None)
+        removed = 0
+        if pointer is not None:
+            from finance_analysis.application.trace_tail import delete_analysis_traces
+
+            before = pointer.count(analysis_id)
+            await delete_analysis_traces(self.store, pointer, analysis_id)
+            removed = before - pointer.count(analysis_id)
+        await self.store.delete_prefix(keys.report_index_key(job_id, analysis_id))
+        build = report.get("build_key")
+        if isinstance(build, str) and build:
+            await self.store.delete_prefix(f"{keys.book(job_id)}/{build}/results/{analysis_id}/")
+        return {"job_id": job_id, "analysis_id": analysis_id, "traces_removed": removed}
+
+    async def _publish_ruled(self, analysis_id: str, ruled, *, actor: Actor | None, state_seq: int | None, bindings) -> list:
+        """След правила пишется, только если правило само посчитало. План уликой не становится.
+
+        Доказательства одного источника пишутся одним вызовом, чтобы индекс в
+        `execution_id` рос внутри правила, а не обнулялся на каждом доказательстве.
+        """
+
+        grouped: dict[str, list] = {}
+        order: list[str] = []
+        for evidence, source in zip(ruled.calculation_evidence, ruled.sources, strict=True):
+            if source not in grouped:
+                order.append(source)
+                grouped[source] = []
+            grouped[source].append(evidence)
+        records: list = []
+        for source in order:
+            records.extend(
+                await self._publish_traces(
+                    analysis_id,
+                    grouped[source],
+                    execution_source=source,
+                    actor=actor,
+                    state_seq=state_seq,
+                    bindings=bindings,
+                )
+            )
+        return records
+
+    async def _publish_traces(
+        self,
+        analysis_id: str,
+        evidences: list,
+        metrics: list | None = None,
+        *,
+        execution_source: str = "ratios",
+        actor: Actor | None = None,
+        state_seq: int | None = None,
+        bindings=None,
+    ) -> list:
+        """Пишет следы и возвращает полноту публикации. Сбой не меняет статус анализа."""
+
+        records = []
+        if not evidences:
+            return records
+        pointer = getattr(self.service, "trace_pointer", None)
+        if pointer is None:
+            if execution_source.startswith("rule:"):
+                for index, evidence in enumerate(evidences):
+                    if evidence is None:
+                        continue
+                    records.append(
+                        _publication(
+                            analysis_id,
+                            execution_source,
+                            _execution_id(execution_source, evidence.metric, index),
+                            evidence.metric,
+                            status="absent",
+                            complete=False,
+                        )
+                    )
+            return records
+        from finance_analysis.application.trace_tail import (
+            TracePublishError,
+            publish_trace,
+            record_trace_failure,
+        )
+        from finance_analysis.domain.actor import trace_actor_fields
+        from finance_analysis.domain.trace_limit import TraceLimitError
+
+        retention = self.service.settings.fas_trace_retention
+        retainer = getattr(self.service, "trace_retainer", None)
+        subjects = getattr(self.service.settings, "service_subjects", None)
+        failed = False
+        for index, evidence in enumerate(evidences):
+            if evidence is None:
+                continue
+            execution_id = _execution_id(execution_source, evidence.metric, index)
+            fields = trace_actor_fields(actor, bindings, state_seq, subjects, evidence=evidence)
+            try:
+                view = await publish_trace(
+                    self.store,
+                    pointer,
+                    analysis_id=analysis_id,
+                    execution_id=execution_id,
+                    evidence=evidence,
+                    retention=retention,
+                    retainer=retainer,
+                    execution_source=execution_source,
+                    actor_fields=fields,
+                )
+            except TracePublishError as exc:
+                failed = True
+                record_trace_failure(analysis_id, execution_id, exc.stage, exc.__cause__ or exc)
+                records.append(
+                    _publication(
+                        analysis_id, execution_source, execution_id, evidence.metric, status="absent", complete=False
+                    )
+                )
+            except TraceLimitError as exc:
+                failed = True
+                record_trace_failure(analysis_id, execution_id, "limit", exc)
+                records.append(
+                    _publication(
+                        analysis_id,
+                        execution_source,
+                        execution_id,
+                        evidence.metric,
+                        status="incomplete",
+                        complete=False,
+                    )
+                )
+            else:
+                complete = bool(view.get("evidence_complete"))
+                records.append(
+                    _publication(
+                        analysis_id,
+                        execution_source,
+                        execution_id,
+                        evidence.metric,
+                        status="published" if complete else "incomplete",
+                        complete=complete,
+                    )
+                )
+        if failed and metrics:
+            for item in metrics:
+                if isinstance(item, dict):
+                    item["evidence_complete"] = False
+        return records
+
     async def result(self, job_id: str, analysis_id: str) -> dict:
         check_ulid(analysis_id)
         try:
@@ -1556,7 +1957,7 @@ class Analyses:
             )
         pinned = Head(build_key=target.build, state_seq=target.head.state_seq, derive_key=derive, versions={})
         bindings = await self.service._dataset_rows(job_id, pinned, "bindings")
-        return {row["binding_key"] for row in bindings if row.get("effective_concept") in concepts}
+        return {row["binding_key"] for row in bindings if declared_concept(row) in concepts}
 
     async def finding(self, job_id: str, print_: str, actor: Actor, query: dict, *, wait_sec: float):
         from finance_analysis.application.service import Accepted
@@ -1645,6 +2046,35 @@ class Analyses:
             return None
         await svc.support.cache_set(key, _dumps(found), svc.settings.etag_ttl)
         return found
+
+
+def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
+    """Каждая реализация каталожной метрики: evidence_available или evidence_not_supported."""
+
+    import finance_analysis.domain.covenant
+    import finance_analysis.domain.cover_metrics
+    import finance_analysis.domain.debt_incl_off_balance
+    import finance_analysis.domain.housing_cover
+    import finance_analysis.domain.metrics
+    import finance_analysis.domain.total_debt  # noqa: F401
+    from finance_analysis.domain.metric_contract import REGISTRY
+
+    rows = []
+    for (metric, formula), item in sorted(REGISTRY.items()):
+        if metric not in RATIO_METRICS:
+            continue
+        version = item.implementation_version or formula
+        status = "evidence_available" if (metric, version) in EVIDENCE_AVAILABLE else "evidence_not_supported"
+        rows.append((metric, version, status))
+    return tuple(rows)
+
+
+def _unsupported(metric: str, sign_convention: str):
+    from finance_analysis.domain.trace_limit import not_supported_evidence
+
+    versions = [version for name, version, status in evidence_matrix() if name == metric and status == "evidence_not_supported"]
+    implementation = versions[0] if versions else f"{metric}@1"
+    return not_supported_evidence(metric, implementation, sign_convention)
 
 
 _NULL_ABSENT = ("metrics", "rules", "render", "build_key", "scope")

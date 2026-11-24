@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fas.local/contracts/meta_layer_graphs.json",
+  "$id": "https://fas.local/contracts/meta_layer_graphs@2.0.json",
   "title": "MetaLayerGraphs",
-  "description": "Фаза 4 метаслоя (G2): стабильные id рёбер трёх графов и ответ трассировки. Три графа не схлопываются в один датасет.",
+  "description": "Фаза 4 метаслоя (G2), контракт 2.0. Стабильные id рёбер трёх графов и ответ трассировки. Три графа не схлопываются в один датасет. MAJOR: у закрытого metricTrace появились graph_available и graph_truncation_free. В required их нет: тело без этих полей остаётся верным для этой схемы. Схема 1.0 с additionalProperties false такое тело отвергает.",
   "type": "object",
   "$defs": {
     "edgeId": {
@@ -138,9 +138,17 @@
           "type": "array",
           "items": { "$ref": "#/$defs/traceIntegrityFinding" }
         },
+        "graph_available": {
+          "type": "boolean",
+          "description": "Файл graph_links этой сборки загружен. Пустой файл тоже загружен."
+        },
+        "graph_truncation_free": {
+          "type": "boolean",
+          "description": "Файл загружен и в этой сборке нет обрезанной ссылки. Ссылка другого build_key не считается. Нет файла — флаг ложен."
+        },
         "physical_lineage_complete": {
           "type": "boolean",
-          "description": "false, если graph_links отсутствует в сборке (связи формул Excel не проверялись)"
+          "description": "Истина только когда graph_available и graph_truncation_free. Не значит, что разбор нашёл каждую зависимость Excel: такой проверки нет."
         }
       }
     },

@@ -71,7 +71,7 @@ async def test_remap_batch_snapshot_and_rollback_restores_inferred(local_service
     posted = await local_service.submit_decisions(
         RVI,
         {"decisions": [{"kind": "concept.set", "target": debt["binding_key"], "value": "debt_service", "expected_seq": None}]},
-        Actor(),
+        Actor(user_id="alex", client_id="desk"),
         wait_sec=60,
     )
     assert posted["results"][0]["status"] == "accepted", posted

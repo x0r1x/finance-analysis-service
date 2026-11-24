@@ -87,6 +87,9 @@ async def _mine_service() -> FasService:
     settings = rt.settings
     fixture = os.environ.get("FAS_FIXTURE_DIR")
     builder = FixtureBuilder(Path(fixture)) if fixture else HttpBuilder(settings)
+    from finance_analysis.adapters.storage.trace_wiring import open_trace_tail
+
+    pointer, retainer = open_trace_tail(settings)
     service = FasService(
         settings,
         rt.store,
@@ -97,6 +100,8 @@ async def _mine_service() -> FasService:
         models=build_models(settings),
         vector_index=NumpyIndex(),
         cluster=HdbscanCluster(),
+        trace_pointer=pointer,
+        trace_retainer=retainer,
     )
     await service.refresh_owner_lease()
     service.hold_owner()

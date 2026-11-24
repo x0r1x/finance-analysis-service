@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from importlib.metadata import entry_points
 
-from finance_analysis.domain.audit import AuditInput, Finding, Rule, severity_rank
+from finance_analysis.domain.audit import (
+    AuditInput,
+    Finding,
+    Rule,
+    RuleRunResult,
+    severity_rank,
+)
 from finance_analysis.domain.errors import InvalidArgument
 from finance_analysis.plugins.rules import RULES
 
@@ -52,12 +58,24 @@ def requirements(rules: list[Rule]) -> frozenset[str]:
     return frozenset(needed)
 
 
-def run_rules(rules: list[Rule], data: AuditInput) -> list[Finding]:
+def execute_rules(rules: list[Rule], data: AuditInput) -> RuleRunResult:
+    """Прогон. Находки читаются из поля, улика — отдельно.
+
+    Источник следа — `rule:<код>`. Правило без расчёта улику не возвращает.
+    Несколько доказательств одного правила остаются несколькими следами.
+    """
+
     by_print: dict[str, Finding] = {}
+    evidence = []
+    sources = []
     for rule in rules:
-        for finding in rule.check(data):
+        outcome = rule.run(data)
+        for finding in outcome.findings:
             by_print.setdefault(finding.fingerprint, finding)
-    return sorted(
-        by_print.values(),
-        key=lambda item: (-severity_rank(item.severity), item.code, item.fingerprint),
+        for item in outcome.calculation_evidence:
+            evidence.append(item)
+            sources.append(f"rule:{rule.code}")
+    findings = tuple(
+        sorted(by_print.values(), key=lambda item: (-severity_rank(item.severity), item.code, item.fingerprint))
     )
+    return RuleRunResult(findings, tuple(evidence), tuple(sources))

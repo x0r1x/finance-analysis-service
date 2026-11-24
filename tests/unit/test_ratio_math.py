@@ -1457,7 +1457,7 @@ def test_ytd_without_a_year_is_skipped_instead_of_the_quarter():
 def test_a_non_numeric_scale_factor_does_not_abort_the_audit():
     """«тыс.» и «1 000» не число: множитель пуст, и правило не роняет прогон."""
 
-    from finance_analysis.application.rule_engine import run_rules
+    from finance_analysis.application.rule_engine import execute_rules
     from finance_analysis.plugins.rules.ratios import _metadata_factor
 
     assert _metadata_factor({"scale_factor": "тыс."}) is None
@@ -1471,7 +1471,7 @@ def test_a_non_numeric_scale_factor_does_not_abort_the_audit():
         _binding("revenue", "model"),
         _binding("revenue", "form", is_primary=False, evidence={"role": "reference"}),
     ]
-    found = run_rules(
+    found = execute_rules(
         [STATEMENT_REFERENCE],
         AuditInput(
             rows=rows,
@@ -1483,7 +1483,7 @@ def test_a_non_numeric_scale_factor_does_not_abort_the_audit():
             bindings=bindings,
             actuals_end="q1",
         ),
-    )
+    ).findings
     assert found[0].params["model"] == "100"
     assert found[0].params["reported"] == "110"
 

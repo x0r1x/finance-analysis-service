@@ -14,6 +14,7 @@ from datetime import date
 from functools import cached_property
 
 from finance_analysis.domain.book import SEP
+from finance_analysis.domain.calculation_evidence import CalculationEvidence
 from finance_analysis.domain.periods import split_period_key
 
 SEVERITIES = ("info", "low", "medium", "high", "critical")
@@ -150,6 +151,8 @@ class LinkCell:
     row_key: str | None
     period_id: str | None
     refs: tuple[str, ...]
+    # Диапазон ссылок обрезан. Отсутствие ref_cell не доказывает, что в Excel зависимости нет.
+    truncated: bool = False
 
 
 @dataclass
@@ -189,6 +192,11 @@ class AuditInput:
     statement_sheets: frozenset[str] = frozenset()
     # Явная граница факта из решения `actuals_end.set`: период или дата конца.
     actuals_end: str | None = None
+    # Как graph_links_available у trace_metric: False — датасет не загружен.
+    # Пустой links при True — книга без формул, не отсутствующий граф.
+    graph_links_available: bool = True
+    # Один план на метрику. Правила читают его и не выбирают строку заново.
+    plans: dict | None = None
 
     @cached_property
     def rows_by_key(self) -> dict[str, dict]:
@@ -212,6 +220,7 @@ class AuditInput:
     def link_cells(self) -> dict[str, LinkCell]:
         refs: dict[str, list[str]] = {}
         first: dict[str, dict] = {}
+        cut: set[str] = set()
         for link in self.links:
             cell = link.get("cell")
             if not cell:
@@ -219,6 +228,8 @@ class AuditInput:
             first.setdefault(cell, link)
             if link.get("ref_cell"):
                 refs.setdefault(cell, []).append(link["ref_cell"])
+            if link.get("truncated"):
+                cut.add(cell)
         return {
             cell: LinkCell(
                 cell=cell,
@@ -227,6 +238,7 @@ class AuditInput:
                 row_key=link.get("row_key"),
                 period_id=link.get("period_id"),
                 refs=tuple(refs.get(cell, ())),
+                truncated=cell in cut,
             )
             for cell, link in first.items()
         }
@@ -308,6 +320,15 @@ def _iso_date(text: str) -> date | None:
         return None
 
 
+@dataclass(frozen=True)
+class RuleRunResult:
+    """Прогон правил. Находки только в поле `findings`: сам объект списком не обходится."""
+
+    findings: tuple[Finding, ...]
+    calculation_evidence: tuple[CalculationEvidence, ...] = ()
+    sources: tuple[str, ...] = ()
+
+
 def project_finance_dscr(data: AuditInput) -> bool:
     """Правила CFADS ÷ debt service. Ковенантный вариант их не запускает."""
 
@@ -352,6 +373,9 @@ class Rule:
             "requires": sorted(self.requires),
             "phase": self.phase,
         }
+
+    def run(self, data: AuditInput) -> RuleRunResult:
+        return RuleRunResult(tuple(self.check(data)))
 
     def check(self, data: AuditInput) -> list[Finding]:
         raise NotImplementedError

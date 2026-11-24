@@ -12,7 +12,11 @@ from finance_analysis.adapters.builder.acl import (
     parse_summary,
 )
 from finance_analysis.application.project import project
-from finance_analysis.application.rule_engine import load_rules, run_rules, select_rules
+from finance_analysis.application.rule_engine import (
+    execute_rules,
+    load_rules,
+    select_rules,
+)
 from finance_analysis.domain.audit import AuditInput, Finding
 from finance_analysis.domain.book import with_links
 from tests.books import BUILDER_ROOT, job_id
@@ -52,11 +56,18 @@ def fact(row_key: str, cell: str, period: str, value: str | None, status: str = 
     }
 
 
-def link(cell: str, formula: str, row_key: str | None, period: str | None, refs: tuple[str, ...] = ("S!A1",)) -> list[dict]:
+def link(
+    cell: str,
+    formula: str,
+    row_key: str | None,
+    period: str | None,
+    refs: tuple[str, ...] = ("S!A1",),
+    formula_class: str = "same_period",
+) -> list[dict]:
     return [
-        {"cell": cell, "formula": formula, "formula_class": "same_period", "ref_cell": ref, "row_key": row_key, "period_id": period}
+        {"cell": cell, "formula": formula, "formula_class": formula_class, "ref_cell": ref, "row_key": row_key, "period_id": period}
         for ref in refs
-    ] or [{"cell": cell, "formula": formula, "formula_class": None, "ref_cell": None, "row_key": row_key, "period_id": period}]
+    ] or [{"cell": cell, "formula": formula, "formula_class": formula_class, "ref_cell": None, "row_key": row_key, "period_id": period}]
 
 
 def check(code: str, data: AuditInput) -> list[Finding]:
@@ -86,4 +97,4 @@ def golden(alias: str) -> AuditInput:
 
 
 def golden_count(alias: str, code: str) -> int:
-    return len(run_rules(select_rules(load_rules(), [code]), golden(alias)))
+    return len(execute_rules(select_rules(load_rules(), [code]), golden(alias)).findings)

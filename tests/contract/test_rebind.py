@@ -32,7 +32,7 @@ async def test_header_insert_keeps_concept_set(tmp_path, settings, redis_runtime
     posted = await service.submit_decisions(
         JOB,
         {"decisions": [{"kind": "concept.set", "target": debt["binding_key"], "value": "debt_service", "expected_seq": None}]},
-        Actor(),
+        Actor(user_id="alex", client_id="desk"),
         wait_sec=60,
     )
     assert posted["results"][0]["status"] == "accepted", posted
@@ -54,7 +54,7 @@ async def test_label_removal_drops_only_inferred(local_service):
     posted = await local_service.submit_decisions(
         RVI,
         {"decisions": [{"kind": "concept.set", "target": debt["binding_key"], "value": "debt_service", "expected_seq": None}]},
-        Actor(),
+        Actor(user_id="alex", client_id="desk"),
         wait_sec=60,
     )
     assert posted["results"][0]["status"] == "accepted", posted

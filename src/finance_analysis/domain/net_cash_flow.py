@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, localcontext
 
+from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.metric_contract import implements
 from finance_analysis.domain.metrics import (
     _BOUND,
@@ -53,7 +54,12 @@ def net_cash_flow(
     absent: frozenset[str] = frozenset(),
     book: list[dict] | None = None,
     statement_sheets: frozenset[str] = frozenset(),
+    plan=None,
 ) -> dict:
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     statement = frozenset(sheet_name_key(name) for name in statement_sheets)
     clash = _ambiguous(bindings, absent)
     if clash:
@@ -143,9 +149,14 @@ def dashed_lines(
     facts: list[dict],
     statement_sheets: frozenset[str],
     absent: frozenset[str] = frozenset(),
+    plan=None,
 ) -> list[dict]:
     """Итоги разделов, у которых на форме есть прочерк. Для следа, не для суммы."""
 
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
     statement = frozenset(sheet_name_key(name) for name in statement_sheets)
     primaries = _primaries(bindings, absent)
     found = []
@@ -320,7 +331,7 @@ def _ambiguous(bindings: list[dict], absent: frozenset[str]) -> str | None:
     names = {name for name, _code in _SECTIONS}
     counts = {name: 0 for name in names}
     for row in bindings:
-        concept = row.get("effective_concept")
+        concept = declared_concept(row)
         if concept not in counts:
             continue
         if not (row.get("is_primary") and row.get("status") in _BOUND):
