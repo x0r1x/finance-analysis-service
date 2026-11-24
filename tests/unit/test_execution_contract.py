@@ -2,12 +2,12 @@
 
 from finance_analysis.domain.calculation_evidence import CalculationOutcome
 from finance_analysis.domain.execution_contract import (
+    CatalogMetricRecord,
     ExecutionBranchDefinition,
     ExecutionContractError,
     compile_definition,
     execute_bound,
     read_input,
-    reference_definition,
     slots_for,
     trace_for,
 )
@@ -17,13 +17,29 @@ from finance_analysis.domain.resolved_plan import (
     ResolvedInput,
     seal,
 )
+from finance_analysis.domain.semantic_input import resolve_metric_plan
 
 
 def _expr(**kwargs) -> MetricExpression:
     return MetricExpression(**kwargs)
 
 
-def _plan(metric: str, *, variant: str | None, source: str, inputs=(), fallbacks=()):
+def _record(metric: str, expression: MetricExpression, **kwargs) -> CatalogMetricRecord:
+    return CatalogMetricRecord(
+        metric_id=metric,
+        expression=expression,
+        executor_key=kwargs.pop("executor_key", "coverage"),
+        executor_id=kwargs.pop("executor_id", "calculate_coverage"),
+        executor_version=kwargs.pop("executor_version", "calculate_coverage@1"),
+        **kwargs,
+    )
+
+
+def _compile(metric: str, expression: MetricExpression, catalog=None, **kwargs):
+    return compile_definition(_record(metric, expression, **kwargs), catalog)
+
+
+def _plan(metric: str, *, variant: str | None, source: str, inputs=(), fallbacks=(), status="resolved", definition_hash=None):
     return seal(
         metric_id=metric,
         variant=variant,
@@ -32,7 +48,7 @@ def _plan(metric: str, *, variant: str | None, source: str, inputs=(), fallbacks
         semantic_model_version=None,
         build_key=None,
         model_id=None,
-        status="resolved",
+        status=status,
         inputs=inputs,
         diagnostic=(),
         rejected=(),
@@ -40,11 +56,30 @@ def _plan(metric: str, *, variant: str | None, source: str, inputs=(), fallbacks
         warnings=(),
         needs_input=(),
         shield=None,
+        definition_hash=definition_hash,
     )
 
 
-def _input(concept: str, role: str = "all_of") -> ResolvedInput:
-    return ResolvedInput(concept, role, "formula", binding_key=f"bk-{concept}", row_key=f"row-{concept}")
+def _input(concept: str, role: str = "all_of", *, confirmed: bool = True) -> ResolvedInput:
+    return ResolvedInput(
+        concept,
+        role,
+        "formula",
+        binding_key=f"bk-{concept}",
+        row_key=f"row-{concept}",
+        confirmed=confirmed,
+    )
+
+
+def _bind(concept: str, number: int) -> dict:
+    return {
+        "status": "bound",
+        "is_primary": True,
+        "effective_concept": concept,
+        "row_key": f"S|{number}|a",
+        "binding_key": f"bk-{concept}-{number}",
+        "source": "inferred",
+    }
 
 
 class _Recorder:
@@ -57,11 +92,7 @@ class _Recorder:
 
 
 def test_catalog_dscr_resolves_formula_id_and_leaves_version_empty():
-    definition = compile_definition(
-        "dscr",
-        {"dscr": _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))},
-        formula_body={},
-    )
+    definition = _compile("dscr", _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)))
     assert definition.formula_id == "dscr"
     assert definition.definition_version is None
     assert definition.variant is None
@@ -71,25 +102,25 @@ def test_catalog_dscr_resolves_formula_id_and_leaves_version_empty():
     assert definition.normalized_expression.numerator_plus == ("cfads",)
     assert definition.normalized_expression.denominator_plus == ("debt_service",)
     assert definition.definition_hash
+    assert definition.executor_key != definition.formula_id
     assert not hasattr(definition, "numerator_plus")
 
 
 def test_declared_identity_is_kept_and_a_blank_version_is_not_invented():
-    declared = compile_definition(
+    declared = _compile(
         "dscr",
-        {"dscr": _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))},
-        formula_body={"formula_id": "dscr", "definition_version": "dscr@1"},
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        formula_id="dscr",
+        definition_version="dscr@1",
     )
-    blank = compile_definition(
+    blank = _compile(
         "icr",
-        {
-            "icr": _expr(
-                one_of=frozenset({"ebitda", "ebit"}),
-                one_of_order=("ebitda", "ebit"),
-                denominator_plus=("interest",),
-            )
-        },
-        formula_body={"definition_version": ""},
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
+        definition_version="",
     )
     assert declared.formula_id == "dscr"
     assert declared.definition_version == "dscr@1"
@@ -98,13 +129,12 @@ def test_declared_identity_is_kept_and_a_blank_version_is_not_invented():
 
 
 def test_profile_override_and_base_use_the_same_resolution_as_the_plan():
-    catalog = {
-        "dscr": _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
-        "adscr": _expr(base="dscr"),
-    }
+    dscr = _record("dscr", _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)))
+    adscr = _record("adscr", _expr(base="dscr"))
+    catalog = {dscr.metric_id: dscr, adscr.metric_id: adscr}
     override = _expr(numerator_plus=("ebitda",), denominator_plus=("interest",))
-    replaced = compile_definition("dscr", catalog, dscr_expression=override)
-    inherited = compile_definition("adscr", catalog)
+    replaced = compile_definition(dscr, catalog, dscr_expression=override, profile_ref="profile@1")
+    inherited = compile_definition(adscr, catalog)
     assert replaced.definition_source == "profile"
     assert replaced.normalized_expression.numerator_plus == ("ebitda",)
     assert replaced.normalized_expression.denominator_plus == ("interest",)
@@ -116,11 +146,14 @@ def test_profile_override_and_base_use_the_same_resolution_as_the_plan():
 
 def test_resolve_covenant_supplies_source_ref_and_sides():
     default = Composed(Side(("cfads",), ()), Side(("debt_service",), ()), "LTM")
-    definition = compile_definition(
+    record = _record(
         "dscr",
-        {"dscr": _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))},
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
         variant="corporate_covenant",
-        formula_body={"formula_id": "dscr.corporate_covenant"},
+        formula_id="dscr.corporate_covenant",
+    )
+    definition = compile_definition(
+        record,
         covenant={
             "profile": {
                 "dscr_definition": {
@@ -150,24 +183,26 @@ def test_resolve_covenant_supplies_source_ref_and_sides():
 
 
 def test_plan_references_the_hash_and_execute_refuses_a_mismatch():
-    definition = compile_definition(
-        "dscr",
-        {"dscr": _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))},
-    )
-    plan = _plan("dscr", variant=None, source="formula")
-    assert plan.content_sha256
-    linked = reference_definition(plan, definition)
+    expression = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
+    definition = _compile("dscr", expression)
+    bindings = [_bind("cfads", 1), _bind("debt_service", 2)]
+    bare = resolve_metric_plan("dscr", bindings, {"dscr": expression})
+    linked = resolve_metric_plan("dscr", bindings, {"dscr": expression}, definition=definition)
+    assert bare is not None and linked is not None
     assert linked.definition_hash == definition.definition_hash
-    assert linked.content_sha256 == plan.content_sha256
+    assert linked.content_sha256 == bare.content_sha256
+    assert linked.status == "resolved"
     assert not hasattr(linked, "numerator_plus")
     recorder = _Recorder()
     outcome = execute_bound(recorder, definition, linked, calculation_origin="reported")
     assert recorder.calls == 1
     assert outcome.result["rows"] == []
     assert "calculation_origin" not in outcome.result
-    drifted = reference_definition(
-        _plan("dscr", variant="housing", source="variant:housing"),
-        definition,
+    drifted = _plan(
+        "dscr",
+        variant="housing",
+        source="variant:housing",
+        definition_hash=definition.definition_hash,
     )
     try:
         execute_bound(recorder, definition, drifted)
@@ -179,30 +214,21 @@ def test_plan_references_the_hash_and_execute_refuses_a_mismatch():
 
 
 def test_slots_record_one_of_and_the_dscr_and_icr_fallbacks():
-    dscr = compile_definition(
-        "dscr",
-        {"dscr": _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))},
-    )
+    dscr = _compile("dscr", _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)))
     dscr_plan = _plan(
         "dscr",
         variant=None,
         source="formula",
-        inputs=(
-            _input("cfads"),
-            _input("interest_paid"),
-            _input("principal"),
-        ),
+        inputs=(_input("cfads"), _input("interest_paid"), _input("principal")),
         fallbacks=(AppliedFallback("pf", "debt_service", "interest_paid", "interest_paid_fallback"),),
     )
-    icr = compile_definition(
+    icr = _compile(
         "icr",
-        {
-            "icr": _expr(
-                one_of=frozenset({"ebitda", "ebit"}),
-                one_of_order=("ebitda", "ebit"),
-                denominator_plus=("interest",),
-            )
-        },
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
     )
     icr_plan = _plan(
         "icr",
@@ -211,8 +237,8 @@ def test_slots_record_one_of_and_the_dscr_and_icr_fallbacks():
         inputs=(_input("ebitda", "one_of"), _input("interest_paid")),
         fallbacks=(AppliedFallback("icr", "interest", "interest_paid", None),),
     )
-    dscr_slots = {item.slot_id: item for item in slots_for(dscr, reference_definition(dscr_plan, dscr))}
-    icr_slots = {item.slot_id: item for item in slots_for(icr, reference_definition(icr_plan, icr))}
+    dscr_slots = {item.slot_id: item for item in slots_for(dscr, dscr_plan)}
+    icr_slots = {item.slot_id: item for item in slots_for(icr, icr_plan)}
     assert dscr_slots["debt_service"].original_terms == ("debt_service",)
     assert dscr_slots["debt_service"].resolved_terms == ("interest_paid", "principal")
     assert dscr_slots["debt_service"].resolution_reason == "fallback"
@@ -244,3 +270,153 @@ def test_branch_trace_stores_flag_values_and_blocks_a_forbidden_read():
     else:
         raise AssertionError("forbidden input must refuse")
     assert trace.actual_inputs == ()
+
+
+def test_semantic_fields_change_definition_hash():
+    sides = {"numerator_plus": ("cfads",), "denominator_plus": ("debt_service",)}
+    base = _compile("dscr", _expr(**sides))
+    changed = {
+        "rate": _expr(**sides, rate="discount_rate"),
+        "rates": _expr(**sides, rates=("discount_rate",)),
+        "aggregate": _expr(**sides, aggregate="stock"),
+        "terminal": _expr(**sides, terminal="terminal_value"),
+        "compare_with": _expr(**sides, compare_with="ebitda"),
+        "add_back": _expr(**sides, add_back=("interest", "income_tax_rate")),
+    }
+    for name, expression in changed.items():
+        other = _compile("dscr", expression)
+        assert other.definition_hash != base.definition_hash, name
+
+
+def test_metric_id_mismatch_refuses():
+    expression = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
+    dscr = _compile("dscr", expression)
+    icr_expression = _expr(
+        one_of=frozenset({"ebitda", "ebit"}),
+        one_of_order=("ebitda", "ebit"),
+        denominator_plus=("interest",),
+    )
+    try:
+        resolve_metric_plan(
+            "icr",
+            [_bind("ebitda", 1), _bind("interest", 2)],
+            {"icr": icr_expression},
+            definition=dscr,
+        )
+    except ExecutionContractError as exc:
+        assert exc.reason == "metric_mismatch"
+    else:
+        raise AssertionError("resolution must refuse a foreign definition")
+    icr_plan = _plan("icr", variant=None, source="formula", definition_hash=dscr.definition_hash)
+    recorder = _Recorder()
+    try:
+        execute_bound(recorder, dscr, icr_plan)
+    except ExecutionContractError as exc:
+        assert exc.reason == "metric_mismatch"
+    else:
+        raise AssertionError("metric_id mismatch must refuse")
+    assert recorder.calls == 0
+
+
+def test_unresolved_plan_refuses_before_execute():
+    definition = _compile("dscr", _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)))
+    plan = _plan(
+        "dscr",
+        variant=None,
+        source="formula",
+        status="needs_input",
+        definition_hash=definition.definition_hash,
+    )
+    recorder = _Recorder()
+    try:
+        execute_bound(recorder, definition, plan)
+    except ExecutionContractError as exc:
+        assert exc.reason == "plan_not_resolved"
+    else:
+        raise AssertionError("an unresolved plan must refuse")
+    assert recorder.calls == 0
+
+
+def test_profile_versions_change_definition_hash():
+    catalog_expression = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
+    record = _record("dscr", catalog_expression)
+    override = _expr(numerator_plus=("ebitda",), denominator_plus=("interest",))
+    first = compile_definition(record, dscr_expression=override, profile_ref="profile@1")
+    second = compile_definition(record, dscr_expression=override, profile_ref="profile@2")
+    assert first.definition_hash != second.definition_hash
+    assert first.normalized_expression.numerator_plus == second.normalized_expression.numerator_plus
+    assert first.definition_ref["profile_version"] == "profile@1"
+    assert second.definition_ref["profile_version"] == "profile@2"
+
+
+def test_inconsistent_slot_or_two_one_of_refuses():
+    icr = _compile(
+        "icr",
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
+    )
+    two = _plan(
+        "icr",
+        variant=None,
+        source="formula",
+        inputs=(_input("ebitda", "one_of"), _input("ebit", "one_of"), _input("interest")),
+    )
+    try:
+        slots_for(icr, two)
+    except ExecutionContractError as exc:
+        assert exc.reason == "ambiguous_one_of"
+    else:
+        raise AssertionError("two one_of inputs must refuse")
+    dscr = _compile("dscr", _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)))
+    foreign = _plan(
+        "dscr",
+        variant=None,
+        source="formula",
+        inputs=(_input("interest_paid"),),
+        fallbacks=(AppliedFallback("pf", "ebitda", "interest_paid", None),),
+    )
+    missing_principal = _plan(
+        "dscr",
+        variant=None,
+        source="formula",
+        inputs=(_input("interest_paid"),),
+        fallbacks=(AppliedFallback("pf", "debt_service", "interest_paid", None),),
+    )
+    try:
+        slots_for(dscr, foreign)
+    except ExecutionContractError as exc:
+        assert exc.reason == "inconsistent_fallback"
+    else:
+        raise AssertionError("a fallback off the denominator must refuse")
+    try:
+        slots_for(dscr, missing_principal)
+    except ExecutionContractError as exc:
+        assert exc.reason == "inconsistent_fallback"
+    else:
+        raise AssertionError("a debt-service fallback without confirmed principal must refuse")
+
+
+def test_executor_identity_is_separate_from_formula_id():
+    expression = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
+    coverage = _compile(
+        "dscr",
+        expression,
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+    composed = _compile(
+        "dscr",
+        expression,
+        executor_key="composed",
+        executor_id="composed_ratio",
+        executor_version="composed_ratio@1",
+    )
+    assert coverage.formula_id == composed.formula_id == "dscr"
+    assert coverage.executor_key != coverage.formula_id
+    assert coverage.executor_id != coverage.formula_id
+    assert coverage.executor_version != coverage.formula_id
+    assert coverage.definition_hash != composed.definition_hash

@@ -270,12 +270,14 @@ def resolve_metric_plan(
     semantic_model_version: str | None = None,
     build_key: str | None = None,
     model_id: str | None = None,
+    definition: object | None = None,
 ) -> ResolvedMetricPlan | None:
     """Один проход выбора. Потребители читают план и эти функции больше не вызывают."""
 
     chosen_variant = variant if variant else _implied_variant(metric, dscr_variant)
     active = _active(metric, chosen_variant, expressions) if expressions else None
     variant_source = active[1] if active else "formula"
+    bound_hash = _bound_definition(definition, metric, chosen_variant, variant_source)
     selection = _Selection()
     items = resolve_semantic_inputs(
         metric,
@@ -328,6 +330,7 @@ def resolve_metric_plan(
             for item in items
         ),
         resolution_engine_version=RESOLUTION_ENGINE_VERSION,
+        definition_hash=bound_hash,
     )
 
 
@@ -604,6 +607,23 @@ def plans_for(
         if plan is not None:
             found[metric] = plan
     return found
+
+
+def _bound_definition(definition: object | None, metric: str, variant: str | None, variant_source: str) -> str | None:
+    """Хеш определения записывается при сборке плана, не заменой готового плана."""
+
+    if definition is None:
+        return None
+    from finance_analysis.domain.execution_contract import ExecutionContractError
+
+    if getattr(definition, "metric_id", None) != metric:
+        raise ExecutionContractError("metric_mismatch")
+    if getattr(definition, "variant", None) != variant or getattr(definition, "variant_source", None) != variant_source:
+        raise ExecutionContractError("variant_mismatch")
+    digest = getattr(definition, "definition_hash", None)
+    if not isinstance(digest, str) or not digest:
+        raise ExecutionContractError("definition_mismatch")
+    return digest
 
 
 def with_profile_dscr(
