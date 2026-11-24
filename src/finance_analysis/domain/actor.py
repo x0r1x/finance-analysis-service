@@ -71,10 +71,12 @@ def trace_actor_fields(
 
 
 def confirmation_of(evidence, bindings) -> tuple[str, str | None, tuple[dict, ...]]:
-    """Источник подтверждения берётся у входов этого доказательства, не у первой строки книги.
+    """Источник подтверждения берётся у каждого входа этого доказательства.
 
-    Один вход оставляет свой `binding_key`. Несколько входов держат общий вид
-    и отдельный источник у каждого; произвольная первая привязка книги не выбирается.
+    У факта без `binding_key` ключ восстанавливается по понятию, только когда
+    привязка одна. Иначе вход остаётся в списке как `unresolved` и не пропадает.
+    Один разрешённый вход оставляет свой `binding_key`. Несколько входов держат
+    общий вид и отдельный источник у каждого.
     """
 
     from finance_analysis.domain.binding_resolution import declared_concept
@@ -86,40 +88,51 @@ def confirmation_of(evidence, bindings) -> tuple[str, str | None, tuple[dict, ..
         if not isinstance(row, dict):
             continue
         key = row.get("binding_key")
-        if not isinstance(key, str):
+        if not isinstance(key, str) or not key:
             continue
         by_key[key] = row
         concept = declared_concept(row)
         if concept and row.get("is_primary", True):
             by_concept.setdefault(concept, []).append(key)
-    keys: list[str] = []
+
+    def described(key: str) -> dict:
+        source = (by_key.get(key) or {}).get("source")
+        if source in HUMAN_SOURCES:
+            found = "human_confirmed"
+        elif source == "auto_confirmed":
+            found = "auto_confirmed"
+        else:
+            found = "inferred"
+        return {"binding_key": key, "source": source, "confirmation_kind": found}
+
+    inputs: list[dict] = []
     seen: set[str] = set()
+    unresolved: set[str | None] = set()
     facts = (
         *(getattr(evidence, "fact_uses", ()) or ()),
         *(getattr(evidence, "fact_observations", ()) or ()),
     )
     for fact in facts:
         key = getattr(fact, "binding_key", None)
-        if isinstance(key, str) and key not in seen:
-            seen.add(key)
-            keys.append(key)
-    if not keys:
-        for fact in facts:
-            matches = by_concept.get(getattr(fact, "concept", None), [])
-            if len(matches) == 1 and matches[0] not in seen:
-                seen.add(matches[0])
-                keys.append(matches[0])
-    inputs = []
-    for key in keys:
-        row = by_key.get(key) or {}
-        source = row.get("source")
-        if source in HUMAN_SOURCES:
-            kind = "human_confirmed"
-        elif source == "auto_confirmed":
-            kind = "auto_confirmed"
-        else:
-            kind = "inferred"
-        inputs.append({"binding_key": key, "source": source, "confirmation_kind": kind})
+        if not isinstance(key, str) or not key:
+            concept = getattr(fact, "concept", None)
+            matches = by_concept.get(concept, []) if isinstance(concept, str) and concept else []
+            key = matches[0] if len(matches) == 1 else None
+        if isinstance(key, str) and key:
+            if key not in seen:
+                seen.add(key)
+                inputs.append(described(key))
+            continue
+        concept = getattr(fact, "concept", None)
+        marker = concept if isinstance(concept, str) and concept else None
+        if marker in unresolved:
+            continue
+        unresolved.add(marker)
+        inputs.append(
+            {"binding_key": None, "source": None, "confirmation_kind": "unresolved", "concept": marker}
+        )
+    if any(item["confirmation_kind"] == "unresolved" for item in inputs):
+        return "unresolved", None, tuple(inputs)
     if len(inputs) == 1:
         return inputs[0]["confirmation_kind"], inputs[0]["binding_key"], tuple(inputs)
     kinds = {item["confirmation_kind"] for item in inputs}

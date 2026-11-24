@@ -562,7 +562,7 @@ async def test_journal_records_actor_type_and_does_not_let_the_body_promote(tmp_
     assert "row" not in automatic
 
 
-def _use(concept: str, binding_key: str, cell_id: str) -> object:
+def _use(concept: str, binding_key: str | None, cell_id: str) -> object:
     from decimal import Decimal
 
     from finance_analysis.domain.calculation_evidence import FactUse
@@ -635,6 +635,49 @@ def test_confirmation_uses_the_inputs_of_this_calculation():
     assert sources == {"row_2": "inferred", "row_3": "auto_confirmed"}
     assert "row_1" not in sources
     assert "row_4" not in sources
+
+
+def test_a_fact_without_a_key_is_recovered_when_the_binding_is_unique():
+    """Ключ одного факта не прячет второй, если его привязка одна."""
+
+    from finance_analysis.domain.actor import confirmation_of
+
+    evidence = _evidence_of(_use("cfads", "row_2", "CFS!N"), _use("debt_service", None, "Debt!A"))
+    bindings = [
+        {"binding_key": "row_2", "source": "inferred", "effective_concept": "cfads", "is_primary": True},
+        {"binding_key": "row_3", "source": "auto_confirmed", "effective_concept": "debt_service", "is_primary": True},
+    ]
+    kind, key, inputs = confirmation_of(evidence, bindings)
+    by_binding = {item["binding_key"]: item["confirmation_kind"] for item in inputs}
+    assert by_binding == {"row_2": "inferred", "row_3": "auto_confirmed"}
+    assert kind == "inferred"
+    assert key is None
+
+
+def test_a_fact_without_a_unique_binding_stays_unresolved():
+    """Неоднозначная или отсутствующая привязка остаётся в следе как неразрешённый вход."""
+
+    from finance_analysis.domain.actor import confirmation_of
+
+    evidence = _evidence_of(
+        _use("ebitda", "row_e", "PL!E"),
+        _use("interest", None, "PL!I"),
+        _use("tax", None, "PL!T"),
+    )
+    bindings = [
+        {"binding_key": "row_e", "source": "confirmed", "effective_concept": "ebitda", "is_primary": True},
+        {"binding_key": "row_a", "source": "confirmed", "effective_concept": "interest", "is_primary": True},
+        {"binding_key": "row_b", "source": "auto_confirmed", "effective_concept": "interest", "is_primary": True},
+    ]
+    kind, key, inputs = confirmation_of(evidence, bindings)
+    unresolved = [item for item in inputs if item["confirmation_kind"] == "unresolved"]
+    assert {item["concept"] for item in unresolved} == {"interest", "tax"}
+    assert all(item["binding_key"] is None and item["source"] is None for item in unresolved)
+    assert {item["binding_key"] for item in inputs if item["confirmation_kind"] != "unresolved"} == {"row_e"}
+    assert "row_a" not in {item["binding_key"] for item in inputs}
+    assert "row_b" not in {item["binding_key"] for item in inputs}
+    assert kind == "unresolved"
+    assert key is None
 
 
 def test_an_unlisted_service_user_is_classified_as_human():
