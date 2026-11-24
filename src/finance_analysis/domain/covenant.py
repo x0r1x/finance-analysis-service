@@ -1923,7 +1923,7 @@ def _reported_book_dscr(
             sign_convention=sign_convention,
             marker_class=marker_class,
             explicit_phases=explicit_phases,
-            plan_content_sha256=None,
+            plan_content_sha256=(getattr(plan, "content_sha256", None) if plan is not None else None),
         )
     reported = _book_dscr_rows(facts, book, periods, reader)
     if not reported:

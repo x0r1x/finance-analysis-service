@@ -358,6 +358,70 @@ def test_reported_fallback_keeps_the_attempt_trace():
     assert period.numerator is None and period.denominator is None
 
 
+def test_published_read_keeps_the_attempt_plan_digest():
+    """The published cell names the same plan as the attempt that did not run.
+
+    The digest is the plan that chose the row, so a later audit can reproduce
+    that choice (https://www.w3.org/TR/prov-dm/). The number stays the cell.
+    """
+
+    class _Need:
+        subject = "cfads"
+
+        def as_dict(self):
+            return {"kind": "concept", "reason": "concept_unknown", "subject": self.subject}
+
+    class _Plan:
+        status = "missing_input"
+        content_sha256 = "plan-digest-reported"
+        needs_input = (_Need(),)
+        warnings = ()
+        inputs = ()
+        diagnostic = ()
+        rejected = ()
+        fallbacks = ()
+
+    types = load_model_types()
+    collect: list = []
+    got = select_ratio(
+        "dscr",
+        None,
+        {
+            "facts": [
+                {
+                    "row_key": "dscr",
+                    "axis_id": "A",
+                    "period_id": "Y1",
+                    "cell_id": "Model!D12",
+                    "normalized_value": "3.5",
+                }
+            ],
+            "bindings": [_primary("dscr")],
+            "periods": [{"axis_id": "A", "period_id": "Y1"}],
+            "period_phase": {},
+            "explicit_phases": False,
+            "sign_convention": "outflow_negative",
+            "marker_class": None,
+            "absent": frozenset(),
+        },
+        profile=None,
+        profile_ref=None,
+        composed=types.composed,
+        concepts=frozenset({"cfads", "debt_service", "dscr"}),
+        money=frozenset({"cfads", "debt_service"}),
+        interest_order=types.interest_order,
+        row_fallbacks=types.row_fallbacks,
+        plan=_Plan(),
+        collect=collect,
+    )
+    assert got["definition_source"] == "reported"
+    attempt, published = collect
+    assert attempt.execution_status == "not_run"
+    assert published.execution_status == "published"
+    assert published.plan_content_sha256 == attempt.plan_content_sha256 == "plan-digest-reported"
+    assert [step.operation for step in published.period_results[0].steps] == ["publication"]
+
+
 def test_a_plan_that_rejected_the_book_row_does_not_report_it():
     """The book cell is a cache, not a second scan. A row the plan rejected stays out."""
 
