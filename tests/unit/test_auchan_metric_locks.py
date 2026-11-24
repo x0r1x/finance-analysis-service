@@ -240,8 +240,11 @@ def _book_call(attempt: dict) -> dict:
 
 @pytest.mark.parametrize("status", ["scale_unconfirmed", "basis_mismatch", "no_debt_service", "input_absent"])
 def test_other_recalculation_statuses_do_not_take_the_book_row(status):
-    """A refusal that is not a missing input stays that refusal, even when the book has a DSCR cell."""
-    attempt = _book_attempt(status, value="1")
+    """A refusal that is not a missing input stays that refusal, even when the book has a DSCR cell.
+
+    The attempt has no number. A value would return before the status check and hide the contract.
+    """
+    attempt = _book_attempt(status, value=None)
     assert _book_call(attempt) is attempt
 
 
@@ -288,22 +291,33 @@ def test_needs_input_reports_the_book_row_and_keeps_the_question():
 
 
 def test_reported_fallback_keeps_the_attempt_trace():
-    """The formula trace stays. The book row does not erase it."""
+    """The formula that did not run stays. The published book cell is a separate read.
+
+    Selective classification does not fill a refusal with another definition
+    (https://arxiv.org/abs/1705.08500). Here the formula did not run, and the
+    number on the page is the cell that was read, not a quotient.
+    """
+    from decimal import Decimal
+
+    from finance_analysis.domain.trace_limit import view_from_evidence
+
     types = load_model_types()
     collect: list = []
+    binding = {**_primary("dscr"), "row_key": "model.dscr"}
     got = select_ratio(
         "dscr",
         None,
         {
             "facts": [
                 {
-                    "row_key": "dscr",
+                    "row_key": "model.dscr",
                     "axis_id": "A",
                     "period_id": "Y1",
+                    "cell_id": "Model!D12",
                     "normalized_value": "3.5",
                 }
             ],
-            "bindings": [_primary("dscr")],
+            "bindings": [binding],
             "periods": [{"axis_id": "A", "period_id": "Y1"}],
             "period_phase": {},
             "explicit_phases": False,
@@ -321,7 +335,27 @@ def test_reported_fallback_keeps_the_attempt_trace():
         collect=collect,
     )
     assert got["definition_source"] == "reported"
-    assert [item.execution_status for item in collect] == ["not_run"]
+    assert got["definition_ref"] == "model.dscr"
+    assert [item.execution_status for item in collect] == ["not_run", "published"]
+    attempt, published = collect
+    assert got["rows"][0]["value"] == Decimal("3.5")
+    assert attempt.fact_observations == ()
+    assert attempt.published_read == published.implementation == "dscr.reported"
+    assert view_from_evidence(attempt)["published_read"] == "dscr.reported"
+    assert published.sums_additions == 0
+    observed = published.fact_observations
+    assert len(observed) == 1
+    assert observed[0].cell_id == "Model!D12"
+    assert observed[0].axis_id == "A"
+    assert observed[0].period_id == "Y1"
+    assert observed[0].raw_value == Decimal("3.5")
+    assert observed[0].effective_value == Decimal("3.5")
+    period = published.period_results[0]
+    assert (period.axis_id, period.period_id) == ("A", "Y1")
+    assert [step.operation for step in period.steps] == ["publication"]
+    assert period.steps[0].parameters["row_key"] == "model.dscr"
+    assert period.steps[0].input_refs == ("cell:Model!D12",)
+    assert period.numerator is None and period.denominator is None
 
 
 def test_a_plan_that_rejected_the_book_row_does_not_report_it():
