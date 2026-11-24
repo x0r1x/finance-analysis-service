@@ -13,6 +13,7 @@ from finance_analysis.domain.audit import (
     Finding,
     Location,
     Rule,
+    RuleRunResult,
     project_finance_dscr,
 )
 from finance_analysis.domain.binding_resolution import declared_concept
@@ -21,7 +22,7 @@ from finance_analysis.domain.measure import (
     metadata_factor,
     stamp_facts,
 )
-from finance_analysis.domain.metrics import coverage_ratio
+from finance_analysis.domain.metrics import calculate_coverage
 from finance_analysis.domain.model_type import sheet_name_key
 from finance_analysis.domain.period_basis import basis_of
 from finance_analysis.domain.periods import marker_class, split_period_key
@@ -109,15 +110,18 @@ def _cached(data: AuditInput, row_key: str) -> dict[tuple[str, str], Decimal]:
 
 class RatioMismatch(Rule):
     def check(self, data: AuditInput) -> list[Finding]:
+        return list(self.run(data).findings)
+
+    def run(self, data: AuditInput) -> RuleRunResult:
         if not data.bindings or not project_finance_dscr(data):
-            return []
+            return RuleRunResult(())
         model = _cached_model_row(data, "dscr")
         if (
             model is None
             or _primary(data, "cfads", "dscr") is None
             or _primary(data, "debt_service", "dscr") is None
         ):
-            return []
+            return RuleRunResult(())
         phases = {}
         for row in data.periods:
             phase = row.get("phase")
@@ -127,7 +131,7 @@ class RatioMismatch(Rule):
             base = row.get("period_key_base")
             if base:
                 phases[(row["axis_id"], base)] = phase
-        result = coverage_ratio(
+        outcome = calculate_coverage(
             metric="dscr",
             facts=data.facts,
             bindings=data.bindings,
@@ -135,7 +139,10 @@ class RatioMismatch(Rule):
             period_phase=phases,
             explicit_phases=bool(phases),
             plan=(data.plans or {}).get("dscr"),
+            evidence=True,
         )
+        result = outcome.result
+        evidence = () if outcome.evidence is None else (outcome.evidence,)
         cached = _cached(data, model["row_key"])
         findings = []
         for row in result["rows"]:
@@ -154,7 +161,7 @@ class RatioMismatch(Rule):
                     params={"metric": "dscr", "fas": str(row["value"]), "model": str(other)},
                 )
             )
-        return findings
+        return RuleRunResult(tuple(findings), evidence)
 
 
 def _marker_of(data: AuditInput) -> dict[str, str]:
@@ -237,8 +244,11 @@ class IcrReference(Rule):
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
+        return list(self.run(data).findings)
+
+    def run(self, data: AuditInput) -> RuleRunResult:
         if data.applicable_metrics is not None and "icr" not in data.applicable_metrics:
-            return []
+            return RuleRunResult(())
         plan = (data.plans or {}).get("icr")
         numerator_keys = None
         if plan is None:
@@ -250,15 +260,16 @@ class IcrReference(Rule):
             interest = _primary(data, "interest", "icr")
             numerator_keys = {numerator["row_key"]} if numerator and numerator.get("row_key") else set()
         if numerator is None or not data.periods:
-            return []
+            return RuleRunResult(())
         computed = {}
+        evidence = ()
         if interest is not None:
             phases = {}
             for row in data.periods:
                 phase = row.get("phase")
                 if phase:
                     phases[(row["axis_id"], row["period_id"])] = phase
-            result = coverage_ratio(
+            outcome = calculate_coverage(
                 metric="icr",
                 facts=_scaled_facts(data),
                 bindings=data.bindings,
@@ -266,7 +277,10 @@ class IcrReference(Rule):
                 period_phase=phases,
                 explicit_phases=bool(phases),
                 plan=(data.plans or {}).get("icr"),
+                evidence=True,
             )
+            result = outcome.result
+            evidence = () if outcome.evidence is None else (outcome.evidence,)
             computed = {(row["axis_id"], row["period_id"]): row for row in result["rows"] if row.get("value") is not None}
         fas_axes = {axis for axis, _period in computed}
         if not fas_axes:
@@ -278,15 +292,18 @@ class IcrReference(Rule):
             numerator_keys,
         )
         if reference is None:
-            return []
+            return RuleRunResult((), evidence)
         if reference == "ambiguous":
-            return [
-                self.finding(
-                    data,
-                    params={"cause": "ambiguous", "message": _ICR_AMBIGUOUS},
-                    finding_kind="ambiguity",
-                )
-            ]
+            return RuleRunResult(
+                (
+                    self.finding(
+                        data,
+                        params={"cause": "ambiguous", "message": _ICR_AMBIGUOUS},
+                        finding_kind="ambiguity",
+                    ),
+                ),
+                evidence,
+            )
         model_key = reference
         ref_axes = _row_axes(data, model_key) & fas_axes or _row_axes(data, model_key)
         if not ref_axes:
@@ -349,7 +366,7 @@ class IcrReference(Rule):
                     },
                 )
             )
-        return findings
+        return RuleRunResult(tuple(findings), evidence)
 
 
 def _scaled_facts(data: AuditInput) -> list[dict]:

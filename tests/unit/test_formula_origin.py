@@ -2,7 +2,11 @@
 
 from finance_analysis.application.model_types import load_metric_catalog
 from finance_analysis.application.report import render_markdown
-from finance_analysis.application.rule_engine import load_rules, run_rules, select_rules
+from finance_analysis.application.rule_engine import (
+    execute_rules,
+    load_rules,
+    select_rules,
+)
 from finance_analysis.domain.audit import AuditInput
 from finance_analysis.domain.formula_origin import origin_view
 from finance_analysis.domain.model_type import MetricExpression
@@ -98,7 +102,7 @@ def _book():
 
 def test_direct_inputs_stay_short_and_the_chain_is_complete():
     data, driver = _book()
-    findings = run_rules(select_rules(load_rules(), ["formula_pattern_break", "literal_in_formula"]), data)
+    findings = execute_rules(select_rules(load_rules(), ["formula_pattern_break", "literal_in_formula"]), data).findings
     view = origin_view(
         data,
         findings,
@@ -180,7 +184,7 @@ def test_loaded_empty_graph_links_stays_complete():
 
 
 def _view(data, expressions):
-    findings = run_rules(select_rules(load_rules(), ["formula_pattern_break"]), data)
+    findings = execute_rules(select_rules(load_rules(), ["formula_pattern_break"]), data).findings
     view = origin_view(data, findings, expressions, interest_order=_orders())
     return findings, view
 

@@ -48,7 +48,9 @@ async def _row(service, label: str) -> dict:
 
 
 async def _set(service, decisions: list[dict]) -> None:
-    decided = await service.submit_decisions(RVI, {"decisions": decisions}, Actor(), wait_sec=60)
+    decided = await service.submit_decisions(
+        RVI, {"decisions": decisions}, Actor(user_id="alex", client_id="desk"), wait_sec=60
+    )
     assert [item["status"] for item in decided["results"]] == ["accepted"] * len(decisions), decided
 
 
@@ -103,7 +105,7 @@ async def test_rvi_dscr_quotient_and_icr(local_service):
     posted = await local_service.submit_decisions(
         RVI,
         {"decisions": [{"kind": "concept.set", "target": interest["binding_key"], "value": "interest", "expected_seq": None}]},
-        Actor(),
+        Actor(user_id="alex", client_id="desk"),
         wait_sec=60,
     )
     assert posted["results"][0]["status"] == "accepted", posted

@@ -61,6 +61,7 @@ class FactObservation:
     scale_applied: bool
     normalization_source: str
     considered: str | None = None
+    binding_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,7 @@ class FactUse:
     result_axis_id: str | None
     result_period_id: str | None
     operand: str
+    binding_key: str | None = None
 
 
 @dataclass(frozen=True)

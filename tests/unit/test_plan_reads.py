@@ -136,7 +136,7 @@ def test_stale_ebitda_and_interest_are_not_icr_inputs(monkeypatch):
     def forbidden(**_kwargs):
         raise AssertionError("формула не считается, пока план не подтвердил EBITDA и проценты")
 
-    monkeypatch.setattr("finance_analysis.plugins.rules.ratios.coverage_ratio", forbidden)
+    monkeypatch.setattr("finance_analysis.plugins.rules.ratios.calculate_coverage", forbidden)
     data = AuditInput(
         bindings=[stale_ebitda, stale_interest, model],
         plans={"icr": plan},

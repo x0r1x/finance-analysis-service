@@ -17,6 +17,7 @@ from finance_analysis.domain.audit import (
     Finding,
     Location,
     Rule,
+    RuleRunResult,
     project_finance_dscr,
 )
 from finance_analysis.domain.binding_resolution import declared_concept
@@ -29,7 +30,7 @@ from finance_analysis.domain.metrics import (
     _groups,
     _primaries,
     absent_concepts,
-    coverage_ratio,
+    calculate_coverage,
 )
 
 _BOUND = frozenset({"bound", "bound_with_warning"})
@@ -51,13 +52,13 @@ def _phases(data: AuditInput) -> dict[tuple[str, str], str]:
     return found
 
 
-def dscr_rows(data: AuditInput) -> list[dict]:
-    """DSCR FAS по тестовым периодам книги, как в `…/analyses` `ratios`."""
+def dscr_outcome(data: AuditInput):
+    """Один проход DSCR. `None` — правило калькулятор не вызывало."""
 
     if not data.bindings or not project_finance_dscr(data):
-        return []
+        return None
     phases = _phases(data)
-    result = coverage_ratio(
+    return calculate_coverage(
         metric="dscr",
         facts=data.facts,
         bindings=data.bindings,
@@ -68,8 +69,17 @@ def dscr_rows(data: AuditInput) -> list[dict]:
         marker_class=data.profile.get("marker_class"),
         absent=data.absent,
         plan=(data.plans or {}).get("dscr"),
+        evidence=True,
     )
-    return result["rows"]
+
+
+def dscr_rows(data: AuditInput) -> list[dict]:
+    """DSCR FAS по тестовым периодам книги, как в `…/analyses` `ratios`."""
+
+    outcome = dscr_outcome(data)
+    if outcome is None:
+        return []
+    return outcome.result["rows"]
 
 
 def _primary(data: AuditInput, concept: str, metric: str = "dscr") -> dict | None:
@@ -114,26 +124,33 @@ class SculptingDeviation(Rule):
     """
 
     def check(self, data: AuditInput) -> list[Finding]:
-        rows = [row for row in dscr_rows(data) if row.get("status") == "computed"]
+        return list(self.run(data).findings)
+
+    def run(self, data: AuditInput) -> RuleRunResult:
+        outcome = dscr_outcome(data)
+        if outcome is None:
+            return RuleRunResult(())
+        evidence = () if outcome.evidence is None else (outcome.evidence,)
+        rows = [row for row in outcome.result["rows"] if row.get("status") == "computed"]
         debt = _primary(data, "debt_service")
         if not rows or debt is None:
-            return []
+            return RuleRunResult((), evidence)
         target_row = _primary(data, "target_dscr")
         target = _scalar(data, target_row["row_key"]) if target_row else None
         basis = "target_dscr"
         if target is None:
             if len(rows) < SCULPT_MIN_PERIODS:
-                return []
+                return RuleRunResult((), evidence)
             values = sorted(row["value"] for row in rows)
             target = values[len(values) // 2]
             near = sum(1 for value in values if abs(value - target) <= SCULPT_TOLERANCE)
             if Decimal(near) < SCULPT_SHARE * len(values):
-                return []
+                return RuleRunResult((), evidence)
             basis = "median"
         off = [row for row in rows if abs(row["value"] - target) > SCULPT_TOLERANCE]
         if not off:
-            return []
-        return [
+            return RuleRunResult((), evidence)
+        return RuleRunResult((
             self.finding(
                 data,
                 locations=[Location(None, debt["row_key"], row["axis_id"], row["period_id"]) for row in off],
@@ -144,8 +161,8 @@ class SculptingDeviation(Rule):
                     "periods": len(off),
                     "max_deviation": str(max(abs(row["value"] - target) for row in off)),
                 },
-            )
-        ]
+            ),
+        ), evidence)
 
 
 @dataclass(frozen=True)
@@ -153,9 +170,16 @@ class PeriodGrainMismatch(Rule):
     """Тестовый период DSCR по датам короче `grain` оси (§0 п. 2). Без обеих дат — не проверяется."""
 
     def check(self, data: AuditInput) -> list[Finding]:
+        return list(self.run(data).findings)
+
+    def run(self, data: AuditInput) -> RuleRunResult:
+        outcome = dscr_outcome(data)
+        if outcome is None:
+            return RuleRunResult(())
+        evidence = () if outcome.evidence is None else (outcome.evidence,)
         periods = {(period["axis_id"], period["period_id"]): period for period in data.periods}
         findings = []
-        for row in dscr_rows(data):
+        for row in outcome.result["rows"]:
             period = periods.get((row["axis_id"], row["period_id"]))
             if period is None:
                 continue
@@ -175,7 +199,7 @@ class PeriodGrainMismatch(Rule):
                     params={"grain": period.get("grain"), "period_days": actual, "expected_days": expected},
                 )
             )
-        return findings
+        return RuleRunResult(tuple(findings), evidence)
 
 
 @dataclass(frozen=True)

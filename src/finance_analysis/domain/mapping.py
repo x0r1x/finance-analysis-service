@@ -207,7 +207,7 @@ def assign_rows(
     facts: list[dict] | None = None,
 ) -> dict[str, Assignment]:
     apply_block_titles(rows)
-    human, ignored, absent, accepted, marks = _decisions(events)
+    human, ignored, absent, accepted, marks, automatic = _decisions(events)
     sheet_codes: dict[str, set[str]] = {}
     for row in rows:
         code = marked_line_code(row.get("line_code"))
@@ -227,6 +227,7 @@ def assign_rows(
             accepted,
             sheet_codes.get(str(row.get("sheet") or ""), set()),
             marks,
+            automatic,
         )
         missed = _statement_filtered(row, glossary, roles)
         if missed:
@@ -386,6 +387,7 @@ def _one(
     accepted: dict[str, str],
     sheet_codes: set[str] | None = None,
     marks: dict[str, dict] | None = None,
+    automatic: dict[str, str] | None = None,
 ) -> Assignment:
     key = row["binding_key"]
     if key in ignored:
@@ -407,6 +409,11 @@ def _one(
             "normal",
             evidence=evidence,
         )
+    if key in (automatic or {}):
+        concept = automatic[key]
+        if concept in absent:
+            return Assignment(concept, "unknown", "auto_confirmed", False, None, "normal")
+        return Assignment(concept, "bound", "auto_confirmed", True, None, "normal")
     if row.get("excluded"):
         return Assignment(None, "not_applicable", "inferred", False, None, "normal")
     coded = _line_code_assignment(row, glossary)
@@ -1421,31 +1428,46 @@ def absent_in_journal(events: list[dict]) -> frozenset[str]:
     return frozenset(_decisions(events)[2])
 
 
+def _service_confirmation(event: dict) -> bool:
+    return event.get("source") == "auto_confirmed" or event.get("actor_type") == "service"
+
+
 def _decisions(events: list[dict]):
     from finance_analysis.domain.state import fold
 
     human: dict[str, str] = {}
-    ignored: set[str] = set()
-    absent: set[str] = set()
+    automatic: dict[str, str] = {}
     accepted: dict[str, str] = {}
     marks: dict[str, dict] = {}
+    for event in sorted(events, key=lambda item: int(item["seq"])):
+        kind = event.get("type")
+        binding = str(event.get("binding_key") or event.get("target") or "")
+        value = event.get("value")
+        if kind not in _HUMAN or not isinstance(value, str) or binding == "book":
+            continue
+        if _service_confirmation(event):
+            if binding not in human:
+                automatic[binding] = value
+            continue
+        human[binding] = value
+        automatic.pop(binding, None)
+        raw = event.get("evidence")
+        if isinstance(raw, dict) and depreciation_evidence_error(value, raw) is None:
+            marks[binding] = stamped_depreciation_evidence(raw, event)
+        else:
+            marks.pop(binding, None)
+        if event.get("meaning") == OPERATING_PROFIT_MEANING and value == "operating_profit":
+            accepted[binding] = OPERATING_PROFIT_MEANING
+        else:
+            accepted.pop(binding, None)
+    ignored: set[str] = set()
+    absent: set[str] = set()
     for event in sorted(fold(events).values(), key=lambda item: int(item["seq"])):
         kind = event.get("type")
         binding = str(event.get("binding_key") or event.get("target") or "")
         value = event.get("value")
-        if kind in _HUMAN and isinstance(value, str) and binding != "book":
-            human[binding] = value
-            raw = event.get("evidence")
-            if isinstance(raw, dict) and depreciation_evidence_error(value, raw) is None:
-                marks[binding] = stamped_depreciation_evidence(raw, event)
-            else:
-                marks.pop(binding, None)
-            if event.get("meaning") == OPERATING_PROFIT_MEANING and value == "operating_profit":
-                accepted[binding] = OPERATING_PROFIT_MEANING
-            else:
-                accepted.pop(binding, None)
-        elif kind == "concept.ignored":
+        if kind == "concept.ignored":
             ignored.add(binding)
         elif kind == "concept.absent" and isinstance(value, str):
             absent.add(value)
-    return human, ignored, absent, accepted, marks
+    return human, ignored, absent, accepted, marks, automatic

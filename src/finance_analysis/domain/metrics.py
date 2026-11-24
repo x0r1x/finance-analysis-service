@@ -1191,6 +1191,7 @@ def _adopt(book, period, aligned, slots, extra_cells) -> None:
                 result_axis_id=None if result_axis is None else str(result_axis),
                 result_period_id=None if result_period is None else str(result_period),
                 operand=operand,
+                binding_key=obs.binding_key,
             )
         )
 
@@ -2208,6 +2209,7 @@ def _sums(
                     scale_applied=applied,
                     normalization_source=source,
                     considered=considered,
+                    binding_key=binding.get("binding_key") if isinstance(binding.get("binding_key"), str) else None,
                 )
             )
     origins = {

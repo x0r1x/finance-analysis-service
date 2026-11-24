@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime
 
 from finance_analysis.application.keys import log_key
+from finance_analysis.domain.actor import classify_actor
 from finance_analysis.domain.binding_evidence import depreciation_evidence_error
 from finance_analysis.domain.book import Actor
 from finance_analysis.domain.errors import (
@@ -103,6 +104,7 @@ class Journal:
         request_id: str,
         meaning: str | None = None,
         evidence: dict | None = None,
+        incoming_source: str | None = None,
     ) -> dict | None:
         if request_id and request_id in self._requests.get(job_id, {}):
             found = self._requests[job_id][request_id]
@@ -112,6 +114,8 @@ class Journal:
         canon = json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
         found = self._values.get(job_id, {}).get((target, event_type, canon))
         if found is None:
+            return None
+        if found.get("source") == "auto_confirmed" and incoming_source != "auto_confirmed":
             return None
         if self._keys.get(job_id, {}).get(_slot(event_type, target)) != found.get("seq"):
             return None
@@ -161,6 +165,8 @@ class Journal:
         supersedes: dict | None = None,
         question_id: str | None = None,
         evidence: dict | None = None,
+        claimed_type: str | None = None,
+        service_subjects: frozenset[str] | None = None,
     ) -> tuple[dict, bool]:
         """Проверка дубля и запись под одним замком. Второй элемент — duplicate."""
 
@@ -168,6 +174,12 @@ class Journal:
             while True:
                 await self._sync(job_id)
                 meaning = operating_profit_stamp(event_type, value)
+                identity = classify_actor(actor, claimed_type=claimed_type, service_subjects=service_subjects)
+                incoming = (
+                    "auto_confirmed"
+                    if identity.actor_type == "service" and event_type in {"concept.set", "concept.confirmed"}
+                    else None
+                )
                 if evidence is not None and event_type in {"concept.set", "concept.confirmed"} and isinstance(value, str):
                     problem = depreciation_evidence_error(value, evidence)
                     if problem:
@@ -180,6 +192,7 @@ class Journal:
                     request_id=request_id,
                     meaning=meaning,
                     evidence=evidence,
+                    incoming_source=incoming,
                 )
                 if existing is not None:
                     return existing, True
@@ -198,6 +211,8 @@ class Journal:
                         question_id=question_id,
                         meaning=meaning,
                         evidence=evidence,
+                        identity=identity,
+                        incoming_source=incoming,
                     )
                 except AlreadyExists:
                     self._last[job_id] = 0
@@ -221,6 +236,8 @@ class Journal:
         question_id: str | None = None,
         meaning: str | None = None,
         evidence: dict | None = None,
+        identity=None,
+        incoming_source: str | None = None,
     ) -> dict:
         actual = self._keys.get(job_id, {}).get(_slot(event_type, target))
         if actual != expected_seq:
@@ -239,6 +256,8 @@ class Journal:
             "binding_key": binding_key or target,
             "value": value,
             "actor": {"user_id": actor.user_id, "client_id": actor.client_id},
+            "actor_type": identity.actor_type,
+            "actor_id": identity.actor_id,
             "expected_seq": expected_seq,
             "request_id": request_id,
             "at_utc": (at_utc or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -249,6 +268,10 @@ class Journal:
             event["question_id"] = question_id
         if meaning:
             event["meaning"] = meaning
+        if incoming_source == "auto_confirmed":
+            event["source"] = "auto_confirmed"
+        if identity is not None and identity.claimed_diverged:
+            event["actor_claim"] = "diverged"
         if evidence is not None:
             event["evidence"] = evidence
         await self.store.put_if_absent(
