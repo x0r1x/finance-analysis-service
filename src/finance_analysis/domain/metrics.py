@@ -650,6 +650,153 @@ def _denominator_names(denominator_name, fallback_parts) -> tuple[str, ...]:
     return (fallback_parts[0], "principal")
 
 
+def _not_computed(metric: str, reason: str) -> dict:
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [],
+        "missing_inputs": [],
+        "warnings": [],
+        "status": "not_computed",
+        "reason": reason,
+        "message": reason,
+    }
+
+
+def _declared_terms(definition, slots) -> set[str]:
+    expr = definition.normalized_expression
+    names = (
+        set(expr.numerator_plus)
+        | set(expr.numerator_minus)
+        | set(expr.denominator_plus)
+        | set(expr.denominator_minus)
+        | set(expr.one_of)
+    )
+    if expr.rate:
+        names.add(expr.rate)
+    names.update(expr.rates)
+    if expr.terminal:
+        names.add(expr.terminal)
+    if expr.compare_with:
+        names.add(expr.compare_with)
+    if expr.add_back:
+        names.update(expr.add_back)
+    for slot in slots:
+        names.update(slot.original_terms)
+        names.update(slot.resolved_terms)
+    return names
+
+
+def coverage_expression_supported(expression) -> bool:
+    """Исполнитель покрытия считает одно слагаемое на сторону и не считает вычитание.
+
+    Состав профиля может быть шире. Такое выражение не становится определением,
+    которое заведомо кончится ``not_computed``.
+    """
+
+    return bool(
+        len(expression.numerator_plus) == 1
+        and not expression.numerator_minus
+        and len(expression.denominator_plus) == 1
+        and not expression.denominator_minus
+        and not expression.one_of
+        and not expression.rate
+        and not expression.rates
+        and not expression.aggregate
+        and not expression.terminal
+        and not expression.compare_with
+        and not expression.add_back
+        and not expression.base
+    )
+
+
+def _roles_from_definition(definition, plan):
+    """Стороны частного: выражение и уже выбранный слот. Выбор не повторяется."""
+
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        slots_for,
+    )
+    from finance_analysis.domain.metric_contract import UndeclaredInput
+
+    if (
+        plan.metric_id != definition.metric_id
+        or plan.variant != definition.variant
+        or plan.variant_source != definition.variant_source
+        or plan.definition_hash != definition.definition_hash
+    ):
+        return "definition_mismatch"
+    expr = definition.normalized_expression
+    if (
+        expr.numerator_minus
+        or expr.denominator_minus
+        or len(expr.denominator_plus) > 1
+        or (expr.numerator_plus and expr.one_of)
+        or expr.rate
+        or expr.rates
+        or expr.aggregate
+        or expr.terminal
+        or expr.compare_with
+        or expr.add_back
+        or expr.base
+    ):
+        return "unsupported_formula"
+    try:
+        slots = slots_for(definition, plan)
+    except ExecutionContractError as exc:
+        return exc.reason
+    declared = _declared_terms(definition, slots)
+    for item in plan.inputs:
+        if item.confirmed and not item.ambiguous and item.concept not in declared:
+            raise UndeclaredInput(item.concept)
+    by_id = {slot.slot_id: slot for slot in slots}
+    if expr.one_of:
+        chosen = by_id.get("numerator")
+        if chosen is None or len(chosen.resolved_terms) != 1:
+            return "unsupported_formula"
+        numerator = chosen.resolved_terms[0]
+    elif len(expr.numerator_plus) == 1:
+        numerator = expr.numerator_plus[0]
+    else:
+        return "unsupported_formula"
+    debt = by_id.get("debt_service")
+    interest = by_id.get("interest")
+    if debt is not None:
+        if len(debt.resolved_terms) != 2:
+            return "unsupported_formula"
+        denominator = debt.resolved_terms[0]
+        fallback = debt.resolved_terms
+        needed = (numerator, *debt.resolved_terms)
+    elif interest is not None:
+        if len(interest.resolved_terms) != 1:
+            return "unsupported_formula"
+        denominator = interest.resolved_terms[0]
+        fallback = None
+        needed = (numerator, denominator)
+    elif len(expr.denominator_plus) == 1:
+        denominator = expr.denominator_plus[0]
+        fallback = None
+        needed = (numerator, denominator)
+    else:
+        return "unsupported_formula"
+    for name in needed:
+        if name not in declared:
+            raise UndeclaredInput(name)
+    return fallback, needed, denominator, numerator
+
+
+def coverage_from_definition(definition, plan, **kwargs):
+    """Частное по определению. Нерешённый план оставляет прежний статус, не исключение."""
+
+    return calculate_coverage(
+        metric=definition.metric_id,
+        plan=plan,
+        definition=definition,
+        evidence=False,
+        **kwargs,
+    ).result
+
+
 @implements("dscr", "dscr", implementation_version="dscr@1", inputs=DSCR_INPUTS)
 @implements("icr", "icr", implementation_version="icr@1", inputs=ICR_INPUTS)
 @implements("icr_ebit", "icr_ebit", implementation_version="icr_ebit@1", inputs=ICR_EBIT_INPUTS)
@@ -669,6 +816,7 @@ def coverage_ratio(
     profile: dict | None = None,
     declared: tuple[str, ...] | None = None,
     plan: Any | None = None,
+    definition: Any | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -694,6 +842,7 @@ def coverage_ratio(
         profile=profile,
         declared=declared,
         plan=plan,
+        definition=definition,
     ).result
 
 
@@ -722,6 +871,7 @@ def calculate_coverage(
     declared: tuple[str, ...] | None = None,
     plan: Any | None = None,
     evidence: bool = True,
+    definition: Any | None = None,
 ) -> CalculationOutcome:
     """Единственный проход. ``result`` — прежнее тело ``coverage_ratio``.
 
@@ -749,7 +899,13 @@ def calculate_coverage(
             return _finish(book, early)
         primaries = _plan_rows(plan, bindings)
         warnings = [item.as_dict() for item in plan.warnings]
-        fallback_parts, needed, denominator_name, numerator_name = _plan_roles(metric, plan)
+        if definition is not None:
+            derived = _roles_from_definition(definition, plan)
+            if isinstance(derived, str):
+                return _finish(book, _not_computed(metric, derived))
+            fallback_parts, needed, denominator_name, numerator_name = derived
+        else:
+            fallback_parts, needed, denominator_name, numerator_name = _plan_roles(metric, plan)
         missing = [name for name in (*needed, numerator_name) if name not in primaries]
         ambiguous = []
     else:
@@ -835,6 +991,9 @@ def calculate_coverage(
         )
     numerator_basis = _flow_basis(primaries[numerator_name])
     denominator_basis = _flow_basis(primaries[denominator_name])
+    formula_window = None
+    if definition is not None:
+        formula_window = definition.normalized_expression.window
     named = {numerator_name: primaries[numerator_name], denominator_name: primaries[denominator_name]}
     if fallback_parts is not None:
         named["principal"] = primaries["principal"]
@@ -867,7 +1026,12 @@ def calculate_coverage(
     scale_policy = "sheet" if sheet else _scale_policy(facts, list(named.values()))
     if book is not None:
         book.sheet = sheet
-    if numerator_basis == "ltm" and denominator_basis == "period":
+    # Пустое окно оставляет выбор базе привязки. period считает один период.
+    # LTM ниже суммирует обе стороны за двенадцать месяцев и не подменяет частное.
+    binding_ltm = numerator_basis == "ltm" and denominator_basis == "period"
+    if formula_window in {"period", "LTM"}:
+        binding_ltm = False
+    if binding_ltm:
         extra = []
         if fallback_parts is not None:
             extra.append(primaries["principal"])
@@ -962,6 +1126,27 @@ def calculate_coverage(
         else:
             message = "Числитель ICR не содержит значений на оси процентов. Коэффициент не рассчитан."
         return _finish(book, _explained(metric, periods, "input_absent", message, warnings))
+    if formula_window == "LTM":
+        return _finish(
+            book,
+            _definition_ltm(
+                metric,
+                numerator,
+                denominator,
+                periods,
+                aligned,
+                home,
+                sign_convention,
+                warnings,
+                book,
+                period_phase,
+                explicit_phases,
+                marker_class,
+                numerator_name,
+                denominator_name,
+                fallback_parts,
+            ),
+        )
     rows = []
     for period in periods:
         axis, period_id = period["axis_id"], period["period_id"]
@@ -1255,6 +1440,7 @@ def dscr_pf(
     row_fallbacks: dict | None = None,
     profile: dict | None = None,
     plan: Any | None = None,
+    definition: Any | None = None,
 ) -> dict:
     """Проектный DSCR. Те же числа, что coverage_ratio для metric=dscr. Книгу улики не собирает."""
 
@@ -1275,6 +1461,7 @@ def dscr_pf(
         row_fallbacks=row_fallbacks,
         profile=profile,
         plan=plan,
+        definition=definition,
         evidence=False,
     ).result
 
@@ -1294,6 +1481,7 @@ def calculate_dscr_pf(
     profile: dict | None = None,
     plan: Any | None = None,
     evidence: bool = True,
+    definition: Any | None = None,
 ) -> CalculationOutcome:
     """Тот же проход, что у DSCR, с идентичностью ``dscr.pf@1`` на улике."""
 
@@ -1319,6 +1507,7 @@ def calculate_dscr_pf(
         declared=DSCR_INPUTS,
         plan=plan,
         evidence=evidence,
+        definition=definition,
     )
     if outcome.evidence is None:
         return outcome
@@ -1753,6 +1942,168 @@ def _lease_ltm_rows(
     if not rows:
         return [_noted(metric, periods[0], "partial_window", PARTIAL_DENOMINATOR)] if periods else [], False
     return rows, computed
+
+
+def _definition_ltm(
+    metric: str,
+    numerator: dict,
+    denominator: dict,
+    periods: list[dict],
+    aligned: dict,
+    home: set[str],
+    sign_convention: str,
+    warnings: list[dict],
+    book: EvidenceBook | None,
+    period_phase: dict,
+    explicit_phases: bool,
+    marker_class: str | None,
+    numerator_name: str,
+    denominator_name: str,
+    fallback_parts,
+) -> dict:
+    """Окно ``LTM`` определения: сумма за двенадцать месяцев, не частное одного периода.
+
+    Неполное окно не подменяется значением одного периода. ``period`` и пустое окно
+    остаются на прежнем проходе по периодам. Фаза и маркер те же, что у частного за период.
+    """
+
+    from finance_analysis.domain.cover_metrics import _window
+    from finance_analysis.domain.coverage import is_coverage_test_period
+
+    ordered = _dated_periods([item for item in periods if item.get("axis_id") in home])
+    rows = []
+    for period in periods:
+        if period.get("axis_id") not in home:
+            _remember(book, period, "skipped", "axis_not_home", ())
+            continue
+        marker = period.get("marker_class")
+        if marker_class and marker and marker != marker_class:
+            _remember(book, period, "skipped", "marker_mismatch", ())
+            continue
+        window = None
+        if period.get("period_start") is not None and period.get("period_end") is not None:
+            window = _window(ordered, period, "lookback")
+        if window is None:
+            rows.append(_row(metric, period, None, "not_computed", "partial_window"))
+            _remember(book, period, "partial_window", "partial_window", ())
+            continue
+        total_num = Decimal(0)
+        total_den = Decimal(0)
+        complete = True
+        for item in window:
+            key = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
+            if key not in numerator or key not in denominator:
+                complete = False
+                break
+            total_num += numerator[key]
+            total_den += _payment(denominator[key], sign_convention)
+        phase = period_phase.get((period.get("axis_id"), period.get("period_id")))
+        if phase is None:
+            phase = period_phase.get((period.get("axis_id"), period.get("period_key_base") or period.get("period_id")))
+        if complete and metric == "dscr" and not is_coverage_test_period(
+            debt_service_nonzero=total_den != 0,
+            phase=phase,
+            explicit_phases=explicit_phases,
+        ):
+            _remember(book, period, "skipped", "not_coverage_test_period", ())
+            continue
+        if not complete or total_den == 0:
+            reason = "zero_denominator" if complete else "partial_window"
+            status = "no_debt_service" if metric == "dscr" and complete else "not_computed"
+            rows.append(_row(metric, period, None, status, reason))
+            _remember(book, period, status, reason, ())
+            continue
+        with localcontext() as ctx:
+            ctx.prec = 38
+            ctx.rounding = "ROUND_HALF_EVEN"
+            raw_ratio = total_num / total_den
+            value = quantize_ratio(raw_ratio)
+        steps: list = []
+        if book is not None:
+            num_refs: list[str] = []
+            den_refs: list[str] = []
+            keys = set()
+            for item in window:
+                key = aligned.get((item["axis_id"], item["period_id"]), (item["axis_id"], item["period_id"]))
+                keys.add(key)
+                num_refs.extend(_part_terminal(steps, book, numerator_name, key, aligned))
+                parts = (book.fallback or {}).get(key)
+                if parts is None:
+                    raw_den = denominator[key]
+                    den_refs.extend(
+                        _part_terminal(
+                            steps,
+                            book,
+                            denominator_name,
+                            key,
+                            aligned,
+                            before=raw_den,
+                            after=_payment(raw_den, sign_convention),
+                            rule=sign_convention,
+                        )
+                    )
+                else:
+                    for part in parts["parts"]:
+                        den_refs.extend(
+                            _part_terminal(
+                                steps,
+                                book,
+                                part["concept"],
+                                key,
+                                aligned,
+                                before=part["before"],
+                                after=part["after"],
+                                rule=sign_convention,
+                            )
+                        )
+            num_terminal = tuple(dict.fromkeys(num_refs))
+            if len(num_terminal) != 1:
+                _step(steps, "aggregation", num_terminal, total_num, side="numerator")
+                num_terminal = (f"step:{steps[-1].step_id}",)
+            den_terminal = tuple(dict.fromkeys(den_refs))
+            if len(den_terminal) != 1:
+                _step(steps, "aggregation", den_terminal, total_den, side="denominator")
+                den_terminal = (f"step:{steps[-1].step_id}",)
+            _step(
+                steps,
+                "division",
+                tuple(dict.fromkeys((*num_terminal, *den_terminal))),
+                raw_ratio,
+                numerator=total_num,
+                denominator=total_den,
+            )
+            if value != raw_ratio:
+                _step(
+                    steps,
+                    "quantization",
+                    (f"step:{steps[-1].step_id}",),
+                    value,
+                    precision=38,
+                    quantum=RATIO,
+                    rounding="ROUND_HALF_EVEN",
+                )
+            names = _denominator_names(denominator_name, fallback_parts)
+            slots = [("numerator", numerator_name, keys)]
+            roles = {numerator_name: "numerator"}
+            for name in names:
+                slots.append(("denominator", name, keys))
+                roles[name] = "denominator"
+            _adopt(book, period, aligned, tuple(slots), _cell_roles(book, roles, keys))
+        row = _row(metric, period, value, "computed", None)
+        row["window"] = [item["period_id"] for item in window]
+        rows.append(row)
+        _remember(
+            book,
+            period,
+            "computed",
+            None,
+            steps,
+            value=value,
+            numerator=total_num,
+            denominator=total_den,
+            window_periods=tuple(item["period_id"] for item in window),
+        )
+    return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": "succeeded"}
 
 
 def _ltm_numerator(

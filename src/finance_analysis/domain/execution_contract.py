@@ -1,4 +1,4 @@
-"""Контракт исполнения. Диспетчер расчёта его пока не вызывает.
+"""Контракт исполнения. Базовые DSCR, DSCR pf, ICR и ICR EBIT берут стороны отсюда.
 
 Идентичность исполнителя — отдельный объект с одним методом, как в PEP 544:
 https://peps.python.org/pep-0544/
@@ -36,7 +36,7 @@ class ProfileDscrRecord:
     """Состав профиля целиком: стороны, окно, версия и ссылка на пункт."""
 
     expression: MetricExpression
-    profile_ref: str
+    profile_ref: str | None = None
     window: str | None = None
     basis_ref: str | None = None
 
@@ -353,13 +353,14 @@ def _overlay(expression: NormalizedExpression, composed: Composed) -> Normalized
     )
 
 
-def _profile_ref(profile_ref: str | None, basis_ref: str | None = None) -> Mapping[str, str | None] | None:
-    if not isinstance(profile_ref, str) or not profile_ref:
-        return None
-    profile_id = profile_ref.split("@", 1)[0] if "@" in profile_ref else profile_ref
+def _profile_ref(profile_ref: str | None, basis_ref: str | None = None) -> Mapping[str, str | None]:
+    """Версия профиля, если она есть. Пустая строка не становится именем ``profile``."""
+
+    version = profile_ref if isinstance(profile_ref, str) and profile_ref else None
     basis = basis_ref if isinstance(basis_ref, str) and basis_ref else None
+    profile_id = version.split("@", 1)[0] if version and "@" in version else version
     return MappingProxyType(
-        {"profile_id": profile_id, "profile_version": profile_ref, "basis_ref": basis}
+        {"profile_id": profile_id, "profile_version": version, "basis_ref": basis}
     )
 
 

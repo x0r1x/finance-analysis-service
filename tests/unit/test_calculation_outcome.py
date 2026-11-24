@@ -41,6 +41,8 @@ EXCLUDED = frozenset(
         "absent_concepts",
         "_plan_rows",
         "_plan_roles",
+        "_roles_from_definition",
+        "_not_computed",
         "_coverage_from_plan",
         "BoundInputs",
         "methodology_block",
