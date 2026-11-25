@@ -12,7 +12,7 @@ def exclusion(row: dict, *, empty_series: bool) -> tuple[bool, str | None]:
         return True, "check_row"
     if row.get("kind") in _EXCLUDED_KINDS:
         return True, row["kind"]
-    if row.get("hidden"):
+    if row.get("hidden") and not row.get("hidden_by_outline"):
         return True, "hidden"
     if empty_series:
         return True, "empty_series"

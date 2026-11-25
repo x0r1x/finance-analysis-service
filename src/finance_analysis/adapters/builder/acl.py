@@ -82,6 +82,7 @@ class RowIn(_In):
     indent: int | None = None
     hidden: bool | None = None
     check_row: bool | None = None
+    hidden_by_outline: bool | None = None
     values: list[Any] | None = None
     value_statuses: list[Any] | None = None
     normalized_values: list[Any] | None = None
@@ -412,6 +413,7 @@ def _read_row(
         indent=int(parsed.indent or 0),
         hidden=bool(parsed.hidden or False),
         check_row=bool(parsed.check_row or False),
+        hidden_by_outline=parsed.hidden_by_outline,
         hints=dict(parsed.hints or {}),
         scale_factor=parsed.scale_factor,
         series=tuple(series),

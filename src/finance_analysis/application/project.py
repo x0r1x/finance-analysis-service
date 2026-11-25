@@ -115,6 +115,7 @@ def project(
                 "kind": row.kind,
                 "indent": row.indent,
                 "hidden": row.hidden,
+                "hidden_by_outline": row.hidden_by_outline,
                 "check_row": row.check_row,
                 "unit": hints.get("unit") or row.unit,
                 "unit_per": hints.get("unit_per"),

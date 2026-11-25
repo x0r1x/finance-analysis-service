@@ -263,3 +263,27 @@ async def test_projection_refresh_preserves_bindings_and_resolves_only_calendar_
         wait_sec=60,
     )
     assert [item["status"] for item in decisions["results"]] == ["rejected", "rejected"]
+
+
+async def test_outline_hidden_fact_stays_in_analysis_after_storage(local_service, tmp_path):
+    payload = _context("1.15.0", mixed=True)
+    folded, manual, legacy = (block["rows"][0] for block in payload["blocks"][:3])
+    for row in (folded, manual, legacy):
+        row["hidden"] = True
+    folded["hidden_by_outline"] = True
+    manual["hidden_by_outline"] = False
+    book = tmp_path / JOB
+    book.mkdir()
+    (book / "context.json").write_text(json.dumps(payload), encoding="utf-8")
+    (book / "graph.json").write_text('{"schema_version":"1.7.0","links":[]}', encoding="utf-8")
+    local_service.builder = FixtureBuilder(tmp_path)
+
+    head = await local_service.perform_load(JOB, actor=Actor(), fence=1)
+    stored = {row["row_key"]: row for row in await local_service._dataset_rows(JOB, head, "dim_row")}
+    semantics = {row["row_key"]: row for row in await local_service._dataset_rows(JOB, head, "row_semantics")}
+    for source, marker in ((folded, True), (manual, False), (legacy, None)):
+        key = source["row_key"]
+        assert stored[key]["hidden"] is True
+        assert stored[key]["hidden_by_outline"] is marker
+        assert semantics[key]["excluded"] is (marker is not True)
+        assert semantics[key]["exclusion_reason"] == (None if marker else "hidden")
