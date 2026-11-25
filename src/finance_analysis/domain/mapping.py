@@ -734,6 +734,21 @@ def _one_primary(
             if concept in {"cash_inflow", "cash_outflow"}:
                 _keep(draft, exact, exact[0], "ncf_aggregate")
                 continue
+            if concept == "depreciation_notes":
+                # Один код формы может стоять у раскрытия и у расчётного ряда.
+                disclosures = [
+                    index
+                    for index in exact
+                    if draft[index][1].matched_label != draft[index][1].evidence.get("line_code")
+                ]
+                if len(disclosures) == 1:
+                    _keep(draft, exact, disclosures[0], "disclosure_label")
+                    continue
+                if disclosures:
+                    for index in set(exact) - set(disclosures):
+                        row, item = draft[index]
+                        draft[index] = (row, _drop_primary(item))
+                    exact = disclosures
             marks = {
                 str(draft[index][0].get("row_key")): {
                     "role": draft[index][1].evidence.get("role"),
