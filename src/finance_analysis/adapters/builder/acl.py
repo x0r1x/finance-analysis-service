@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -91,7 +91,7 @@ class RowIn(_In):
 class BlockIn(_In):
     block_id: str
     sheet: str
-    kind: str
+    kind: Literal["timeline", "params", "key_value", "matrix"]
     rows: list[Any]
     label_col: int | None = None
     periods: list[Any] | None = None
@@ -241,7 +241,7 @@ def _periods(
 
 
 def _axis_pairs(axes_raw, missing: list[str]) -> list[tuple[str, dict]]:
-    if isinstance(axes_raw, dict) and axes_raw:
+    if isinstance(axes_raw, dict):
         pairs: list[tuple[str, dict]] = []
         for key, axis in axes_raw.items():
             if not isinstance(axis, dict):
@@ -249,7 +249,7 @@ def _axis_pairs(axes_raw, missing: list[str]) -> list[tuple[str, dict]]:
                 continue
             pairs.append((str(key), axis))
         return pairs
-    if isinstance(axes_raw, list) and axes_raw:
+    if isinstance(axes_raw, list):
         pairs = []
         for index, axis in enumerate(axes_raw):
             if not isinstance(axis, dict):
@@ -337,7 +337,7 @@ def _synthesize_axis(
     missing: list[str],
     max_col: dict[str, int],
 ) -> None:
-    """Ось params не лежит в `axes`: её периоды — на блоке, без `index`."""
+    """Колонки блока без глобальной оси хранятся в локальном `periods`."""
 
     periods_raw = raw.get("periods")
     if not block.block_id or block.block_id in axes or not isinstance(periods_raw, list) or not periods_raw:
@@ -353,7 +353,7 @@ def _synthesize_axis(
         return
     for period in periods:
         max_col[block.sheet] = max(max_col.get(block.sheet, 1), period.col)
-    kind = "params" if block.kind == "params" else "time"
+    kind = "time" if block.kind == "timeline" else "params"
     axes[block.block_id] = SnapshotAxis(
         id=block.block_id,
         sheet=block.sheet,

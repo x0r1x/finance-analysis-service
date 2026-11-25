@@ -538,7 +538,9 @@ def derive_rows(
     period_semantics = []
     counted: dict[tuple[str, str], int] = {}
     for period in sorted(projected["dim_period"], key=lambda item: (item["axis_id"], item["period_index"])):
-        phase = phases.get((period["axis_id"], period.get("period_key_base") or period["period_id"]))
+        phase = None
+        if period.get("axis_kind") != "params":
+            phase = phases.get((period["axis_id"], period.get("period_key_base") or period["period_id"]))
         phase_year = None
         source = "inferred"
         if phase:

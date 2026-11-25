@@ -24,7 +24,7 @@ def _dictionaries_stamp() -> str:
 
 
 # База 3 — SSOT маркеров из YAML; суффикс — содержимое dictionaries.yaml.
-FAS_PROJECTION_VERSION = f"3:{_dictionaries_stamp()}"
+FAS_PROJECTION_VERSION = f"4:{_dictionaries_stamp()}"
 
 _WS = re.compile(r"\s+")
 
