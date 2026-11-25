@@ -425,7 +425,7 @@ def _one(
     found = lexical_hit(row, glossary)
     if found is None:
         return Assignment(None, "unknown", "inferred", False, None, "peripheral")
-    hit, strength = found
+    hit, strength, origin = found
     concept = glossary.concepts[hit.concept]
     warning = concept.sign_conflict(row.get("sign"))
     status = "bound_with_warning" if warning else "bound"
@@ -436,6 +436,14 @@ def _one(
     code = marked_line_code(row.get("line_code"))
     if code:
         evidence["line_code"] = code
+    if hit.concept == "depreciation_notes":
+        if origin == "line_code":
+            evidence["depreciation_match"] = "line_code_fallback"
+        elif origin == "row_label":
+            label = hit.text.strip()
+            evidence["depreciation_match"] = (
+                "code_alias" if label.isdecimal() or marked_line_code(label) else "disclosure_label"
+            )
     if hit.concept == "borrowings_total":
         evidence["granularity"] = "total"
     notes: tuple[str, ...] = ()
@@ -578,7 +586,7 @@ def _operating_profit_review(concept: str, meaning: str | None) -> dict:
     return {"needs_review": _OPERATING_PROFIT_REVIEW}
 
 
-def lexical_hit(row: dict, glossary: GlossaryPackage):
+def lexical_hit(row: dict, glossary: GlossaryPackage) -> tuple[LabelHit, str, str] | None:
     """Стадия 1: точная метка глоссария, если её не отсеяли % и отрицательные метки.
 
     Своя метка важнее заголовка. Заголовок смотрится, только когда метка сама
@@ -587,22 +595,23 @@ def lexical_hit(row: dict, glossary: GlossaryPackage):
 
     label = str(row.get("label") or "")
     if _lease_breakdown(row) and glossary.concepts.get("lease_liability") is not None:
-        return LabelHit("lease_liability", "alt", label), "exact"
+        return LabelHit("lease_liability", "alt", label), "exact", "row_label"
     found = glossary.resolve_match(label)
     if found is not None:
-        hit, _strength = found
+        hit, strength = found
         # Та же стадия 4, что у модельных кандидатов: единица (unit.set приоритетнее), % и negative.
         if not structure_pass(row, glossary.concepts[hit.concept], label=label):
             return None
-        return found
+        return hit, strength, "row_label"
     code = marked_line_code(row.get("line_code"))
     if code and code != label:
         coded = glossary.resolve_match(code)
         if coded is not None:
-            hit, _strength = coded
+            hit, strength = coded
             if structure_pass(row, glossary.concepts[hit.concept], label=label):
-                return coded
-    return _heading_hit(row, glossary, label)
+                return hit, strength, "line_code"
+    heading = _heading_hit(row, glossary, label)
+    return (*heading, "section_heading") if heading else None
 
 
 def _heading_hit(row: dict, glossary: GlossaryPackage, label: str):
@@ -739,7 +748,7 @@ def _one_primary(
                 disclosures = [
                     index
                     for index in exact
-                    if draft[index][1].matched_label != draft[index][1].evidence.get("line_code")
+                    if draft[index][1].evidence.get("depreciation_match") == "disclosure_label"
                 ]
                 if len(disclosures) == 1:
                     _keep(draft, exact, disclosures[0], "disclosure_label")

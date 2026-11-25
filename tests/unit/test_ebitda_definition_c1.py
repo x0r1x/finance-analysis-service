@@ -420,7 +420,9 @@ def test_depreciation_disclosure_keeps_priority_over_a_calculated_row_with_the_s
     rows = [{**row, "line_code": code} for row in (annual, quarter)]
     assigned = assign_rows(rows, [], glossary, roles=roles)
     assert assigned["annual"].is_primary
+    assert assigned["annual"].evidence["depreciation_match"] == "disclosure_label"
     assert assigned["quarter"].concept == "depreciation_notes"
+    assert assigned["quarter"].evidence["depreciation_match"] == "line_code_fallback"
     assert not assigned["quarter"].is_primary
     assert assign_rows(rows[1:], [], glossary, roles=roles)["quarter"].is_primary
 
@@ -445,6 +447,27 @@ def test_depreciation_disclosure_keeps_priority_over_a_calculated_row_with_the_s
     assert not confirmed["annual"].is_primary
     assert confirmed["quarter"].is_primary
     assert confirmed["quarter"].evidence["value_basis"] == "period"
+
+
+@pytest.mark.parametrize(("label", "line_code"), [("5640", "ф.5 (740)"), ("ф.5 (740)", None)])
+def test_depreciation_code_alias_has_no_disclosure_priority(label, line_code):
+    sheet = "Фин отчетность РСБУ"
+    roles = SheetRoles(statement=(sheet,), outputs=(), assumptions=())
+    code_alias = {**_row("alias", label), "sheet": sheet, "line_code": line_code}
+    fallback = {
+        **_row("fallback", "Расчётная квартальная амортизация"),
+        "sheet": sheet,
+        "line_code": "ф.5 (740)",
+        "has_formula": True,
+    }
+
+    assigned = assign_rows([code_alias, fallback], [], load_catalog(), roles=roles)
+
+    assert assigned["alias"].concept == "depreciation_notes"
+    assert not assigned["alias"].is_primary
+    assert assigned["alias"].evidence["depreciation_match"] == "code_alias"
+    assert assigned["fallback"].is_primary
+    assert assigned["fallback"].evidence["selection"] == "formula"
 
 
 def test_ras_lines_bind_and_operating_profit_stays_apart():
