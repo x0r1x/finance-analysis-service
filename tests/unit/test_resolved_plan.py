@@ -1174,7 +1174,9 @@ async def test_analyses_passes_one_plan_object(monkeypatch):
         host = __import__(module, fromlist=[name])
         monkeypatch.setattr(host, name, guard(getattr(host, name)))
 
-    real_select = analyses_mod.select_ratio
+    from finance_analysis.domain import covenant
+
+    real_select = covenant.select_ratio
 
     def spy_select_ratio(*args, **kwargs):
         held["calc"] = kwargs.get("plan")
@@ -1201,7 +1203,7 @@ async def test_analyses_passes_one_plan_object(monkeypatch):
         held["trace"] = kwargs.get("plan")
         return real_trace(*args, **kwargs)
 
-    monkeypatch.setattr(analyses_mod, "select_ratio", spy_select_ratio)
+    monkeypatch.setattr(covenant, "select_ratio", spy_select_ratio)
     monkeypatch.setattr(analyses_mod, "origin_view", spy_origin)
     monkeypatch.setattr(analyses_mod, "execute_rules", spy_rules)
     monkeypatch.setattr(graphs, "trace_metric", spy_trace)

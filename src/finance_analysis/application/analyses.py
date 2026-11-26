@@ -44,16 +44,10 @@ from finance_analysis.domain.book import (
     sha256_bytes,
 )
 from finance_analysis.domain.book_cite import cite_type_book_rows
-from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.cover_metrics import (
     BASES,
     DIRECTIONS,
-    LOAN_LIFE,
     METRIC_INPUTS,
-    REDUCED,
-    adscr,
-    dscr_reductions,
-    loan_life_ratio,
     ratio_cells,
 )
 from finance_analysis.domain.deadline import effective
@@ -65,13 +59,18 @@ from finance_analysis.domain.errors import (
     NotAcceptable,
     NotFound,
 )
+from finance_analysis.domain.execution_contract import MetricExecutionContext
 from finance_analysis.domain.formula_origin import origin_view
-from finance_analysis.domain.housing_cover import dispatch_cover
 from finance_analysis.domain.ids import build_key as check_build
 from finance_analysis.domain.ids import fingerprint as check_fingerprint
 from finance_analysis.domain.ids import ulid as check_ulid
 from finance_analysis.domain.lbo_cite import cite_lbo_book_rows
 from finance_analysis.domain.mapping import absent_in_journal
+from finance_analysis.domain.metric_dispatch import (
+    CalculationRequest,
+    route_for,
+    run_calculation,
+)
 from finance_analysis.domain.metrics import _primaries
 from finance_analysis.domain.model_type import (
     applicability,
@@ -1192,29 +1191,23 @@ class Analyses:
                     }
                 )
                 continue
-            routed = dispatch_cover(
+            route = route_for(
                 metric,
                 metric_variant=variant_of.get(metric),
                 dscr_variant=dscr_variant,
                 profile=body,
-                basis=basis,
-                direction=direction,
-                common=common,
-                plan=plans.get(metric),
             )
-            if routed is not None:
-                result = routed
-            elif metric in LOAN_LIFE:
-                result = loan_life_ratio(metric, basis=basis, plan=plans.get(metric), **common)
-            elif metric in REDUCED:
-                result = dscr_reductions(metric, plan=plans.get("dscr"), collect=evidences, **common)
-            elif metric == "adscr":
-                result = adscr(direction=direction, plan=plans.get("dscr"), collect=evidences, **common)
-            else:
-                result = select_ratio(
-                    metric,
-                    dscr_variant if metric == "dscr" else variant_of.get(metric),
-                    common,
+            plan = plans.get("dscr") if route in {"reduced", "adscr"} else plans.get(metric)
+            outcome = run_calculation(
+                route,
+                CalculationRequest(
+                    metric=metric,
+                    variant=dscr_variant if metric == "dscr" else variant_of.get(metric),
+                    metric_variant=variant_of.get(metric),
+                    dscr_variant=dscr_variant,
+                    common=common,
+                    basis=basis,
+                    direction=direction,
                     profile=body,
                     profile_ref=profile_ref if isinstance(profile_ref, str) else None,
                     composed=svc.model_types.composed,
@@ -1225,11 +1218,20 @@ class Analyses:
                     row_fallbacks=svc.model_types.row_fallbacks,
                     links=links,
                     statement_sheets=statement_sheets,
-                    plan=plans.get(metric),
+                    plan=plan,
                     collect=evidences,
                     definition=definitions.get(metric),
                     outflows=outflows,
-                )
+                ),
+                MetricExecutionContext(
+                    definition=definitions.get(metric),
+                    plan=plan,
+                    calculation_origin="calculated",
+                ),
+            )
+            result = outcome.result
+            if result.get("reason") in {"missing_executor", "incompatible_executor"}:
+                warnings.append({"code": result["reason"], "params": {"metric": metric}})
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
                 warnings.append({"code": "input_absent", "params": _absent_params(metric, result)})

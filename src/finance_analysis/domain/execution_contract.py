@@ -119,10 +119,10 @@ class ExecutionTrace:
 
 @dataclass(frozen=True)
 class MetricExecutionContext:
-    definition: EffectiveMetricDefinition
-    plan: ResolvedMetricPlan
-    slots: tuple[ResolvedFormulaSlot, ...]
-    calculation_origin: str
+    definition: EffectiveMetricDefinition | None = None
+    plan: ResolvedMetricPlan | None = None
+    slots: tuple[ResolvedFormulaSlot, ...] = ()
+    calculation_origin: str = "calculated"
 
 
 class MetricExecutor(Protocol):
