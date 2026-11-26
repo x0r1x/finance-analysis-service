@@ -173,7 +173,7 @@ def test_missing_marker_class_raises():
 def test_dictionaries_yaml_in_derive_fingerprint_and_projection_stamp():
     assert "configs/glossary/dictionaries.yaml" in CONFIG_SOURCES
     assert "domain/dictionaries.py" in PACKAGE_SOURCES
-    assert FAS_PROJECTION_VERSION.startswith("3:")
+    assert FAS_PROJECTION_VERSION.startswith("5:")
     assert len(FAS_PROJECTION_VERSION) > 4
     assert derive_fingerprint() == derive_fingerprint()
 

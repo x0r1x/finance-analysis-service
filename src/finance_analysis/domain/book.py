@@ -24,7 +24,7 @@ def _dictionaries_stamp() -> str:
 
 
 # База 3 — SSOT маркеров из YAML; суффикс — содержимое dictionaries.yaml.
-FAS_PROJECTION_VERSION = f"3:{_dictionaries_stamp()}"
+FAS_PROJECTION_VERSION = f"5:{_dictionaries_stamp()}"
 
 _WS = re.compile(r"\s+")
 
@@ -265,6 +265,8 @@ class SnapshotRow:
     block_kind: str
     formula_exceptions: tuple[str, ...] = ()
     line_code: str | None = None
+    hidden_by_outline: bool | None = None
+    axisless: bool = False
 
 
 @dataclass(frozen=True)

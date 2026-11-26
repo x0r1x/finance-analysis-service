@@ -115,6 +115,7 @@ def project(
                 "kind": row.kind,
                 "indent": row.indent,
                 "hidden": row.hidden,
+                "hidden_by_outline": row.hidden_by_outline,
                 "check_row": row.check_row,
                 "unit": hints.get("unit") or row.unit,
                 "unit_per": hints.get("unit_per"),
@@ -129,6 +130,8 @@ def project(
                 "line_code": row.line_code,
             }
         )
+        if row.axisless:
+            continue
         series_list = list(row.series)
         if not series_list and snapshot.axes:
             axis_id = next(iter(snapshot.axes))
@@ -538,7 +541,9 @@ def derive_rows(
     period_semantics = []
     counted: dict[tuple[str, str], int] = {}
     for period in sorted(projected["dim_period"], key=lambda item: (item["axis_id"], item["period_index"])):
-        phase = phases.get((period["axis_id"], period.get("period_key_base") or period["period_id"]))
+        phase = None
+        if period.get("axis_kind") != "params":
+            phase = phases.get((period["axis_id"], period.get("period_key_base") or period["period_id"]))
         phase_year = None
         source = "inferred"
         if phase:

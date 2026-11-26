@@ -1506,7 +1506,11 @@ class FasService:
             items = [body]
         if not isinstance(items, list):
             raise InvalidArgument("decisions должен быть списком")
-        periods = await self._dataset_rows(job_id, head, "dim_period")
+        periods = [
+            period
+            for period in await self._dataset_rows(job_id, head, "dim_period")
+            if period["axis_kind"] == "time"
+        ]
         rows = await self._dataset_rows(job_id, head, "dim_row")
         known = _decision_targets(periods, rows)
         events = await self.guard.read_all(job_id)
@@ -1742,7 +1746,7 @@ class FasService:
         table = await self.query.sql(
             job_id,
             "SELECT axis_id, period_id, period_key_base, period_marker, period_start, period_end, "
-            "calendar_year, phase, period_index FROM series ORDER BY period_index",
+            "calendar_year, phase, period_index FROM series WHERE axis_kind = 'time' ORDER BY period_index",
             pin=pin,
         )
         rows = _unique_periods(table.to_pylist())

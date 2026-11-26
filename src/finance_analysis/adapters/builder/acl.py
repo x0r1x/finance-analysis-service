@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -82,6 +83,7 @@ class RowIn(_In):
     indent: int | None = None
     hidden: bool | None = None
     check_row: bool | None = None
+    hidden_by_outline: bool | None = None
     values: list[Any] | None = None
     value_statuses: list[Any] | None = None
     normalized_values: list[Any] | None = None
@@ -95,6 +97,9 @@ class BlockIn(_In):
     rows: list[Any]
     label_col: int | None = None
     periods: list[Any] | None = None
+
+
+_KNOWN_BLOCK_KINDS = frozenset({"timeline", "params", "key_value", "matrix"})
 
 
 class IdCountIn(_In):
@@ -241,7 +246,7 @@ def _periods(
 
 
 def _axis_pairs(axes_raw, missing: list[str]) -> list[tuple[str, dict]]:
-    if isinstance(axes_raw, dict) and axes_raw:
+    if isinstance(axes_raw, dict):
         pairs: list[tuple[str, dict]] = []
         for key, axis in axes_raw.items():
             if not isinstance(axis, dict):
@@ -249,7 +254,7 @@ def _axis_pairs(axes_raw, missing: list[str]) -> list[tuple[str, dict]]:
                 continue
             pairs.append((str(key), axis))
         return pairs
-    if isinstance(axes_raw, list) and axes_raw:
+    if isinstance(axes_raw, list):
         pairs = []
         for index, axis in enumerate(axes_raw):
             if not isinstance(axis, dict):
@@ -296,6 +301,7 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         built = _axis_from(key, axis, missing, max_col)
         if built is not None:
             axes[built.id] = built
+    time_axes = {axis_id: axis for axis_id, axis in axes.items() if axis.axis_kind == "time" and axis.periods}
     blocks_raw = payload.get("blocks")
     if not isinstance(blocks_raw, list):
         missing.append("blocks")
@@ -311,15 +317,25 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         except ValidationError as exc:
             missing.extend(_fields(exc, path))
             continue
-        _synthesize_axis(block, parsed, bindex, axes, missing, max_col)
-        block_rows = parsed.rows
-        if not isinstance(block_rows, list):
-            missing.append(f"{path}.rows")
-            continue
-        for rindex, row in enumerate(block_rows):
+        known_kind = parsed.kind in _KNOWN_BLOCK_KINDS
+        if known_kind:
+            _synthesize_axis(block, parsed, bindex, axes, missing, max_col)
+        row_start = len(rows)
+        before = len(missing)
+        for rindex, row in enumerate(parsed.rows):
             built = _read_row(row, parsed, bindex, rindex, missing, max_row)
             if built is not None:
                 rows.append(built)
+        if not known_kind and len(missing) == before:
+            block_rows = rows[row_start:]
+            if (
+                block.get("axis_ids") in (None, [])
+                and parsed.block_id not in axes
+                and _is_heading_only_block(parsed, block_rows)
+            ):
+                rows[row_start:] = [replace(row, axisless=True) for row in block_rows]
+            else:
+                _read_new_block_axis(block, parsed, bindex, block_rows, time_axes, axes, missing, max_col)
     if missing:
         raise UnsupportedBuilderShape(
             "форма context.json не поддерживается",
@@ -327,6 +343,70 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         )
     used = {sheet: (max_row.get(sheet, 1), max_col.get(sheet, 1)) for sheet in set(max_row) | set(max_col)}
     return WorkbookSnapshot(axes=axes, rows=tuple(rows), links=(), used_range=used)
+
+
+def _is_heading_only_block(block: BlockIn, rows: list[SnapshotRow]) -> bool:
+    return bool(rows) and not block.periods and all(
+        row.kind == "abstract"
+        and not (row.values or row.value_statuses or row.normalized_values or row.formula or row.formula_exceptions)
+        and all(
+            series.axis_id == block.block_id
+            and not (
+                series.values
+                or series.value_statuses
+                or series.normalized_values
+                or series.formula
+                or series.formula_exceptions
+            )
+            for series in row.series
+        )
+        for row in rows
+    )
+
+
+def _read_new_block_axis(
+    raw: dict,
+    block: BlockIn,
+    bindex: int,
+    rows: list[SnapshotRow],
+    time_axes: dict[str, SnapshotAxis],
+    axes: dict[str, SnapshotAxis],
+    missing: list[str],
+    max_col: dict[str, int],
+) -> None:
+    """Infer the axis only from the published series and column map."""
+    path = f"blocks[{bindex}]"
+    declared = raw.get("axis_ids")
+    if declared is not None and (
+        not isinstance(declared, list) or any(not isinstance(axis_id, str) or not axis_id for axis_id in declared)
+    ):
+        missing.append(f"{path}.axis_ids")
+        return
+    if any(not row.series for row in rows):
+        missing.append(path)
+        return
+
+    references = {series.axis_id for row in rows for series in row.series}
+    if not declared and block.periods and block.block_id and block.block_id not in axes and (
+        not rows or references == {block.block_id}
+    ):
+        _synthesize_axis(raw, block, bindex, axes, missing, max_col)
+        return
+
+    selected = references if declared is None else set(declared)
+    if not selected or not references <= selected or any(
+        axis_id not in time_axes or time_axes[axis_id].sheet != block.sheet for axis_id in selected
+    ):
+        missing.append(path)
+        return
+    if block.periods:
+        local = _periods(block.periods, path, missing, require_index=False)
+        columns = [(period.period_key, period.col) for period in sorted(local, key=lambda item: item.index)]
+        if len(selected) != 1 or columns != [
+            (period.period_key, period.col)
+            for period in sorted(time_axes[next(iter(selected))].periods, key=lambda item: item.index)
+        ]:
+            missing.append(f"{path}.periods")
 
 
 def _synthesize_axis(
@@ -337,7 +417,7 @@ def _synthesize_axis(
     missing: list[str],
     max_col: dict[str, int],
 ) -> None:
-    """Ось params не лежит в `axes`: её периоды — на блоке, без `index`."""
+    """Колонки блока без глобальной оси хранятся в локальном `periods`."""
 
     periods_raw = raw.get("periods")
     if not block.block_id or block.block_id in axes or not isinstance(periods_raw, list) or not periods_raw:
@@ -353,7 +433,7 @@ def _synthesize_axis(
         return
     for period in periods:
         max_col[block.sheet] = max(max_col.get(block.sheet, 1), period.col)
-    kind = "params" if block.kind == "params" else "time"
+    kind = "time" if block.kind == "timeline" else "params"
     axes[block.block_id] = SnapshotAxis(
         id=block.block_id,
         sheet=block.sheet,
@@ -412,6 +492,7 @@ def _read_row(
         indent=int(parsed.indent or 0),
         hidden=bool(parsed.hidden or False),
         check_row=bool(parsed.check_row or False),
+        hidden_by_outline=parsed.hidden_by_outline,
         hints=dict(parsed.hints or {}),
         scale_factor=parsed.scale_factor,
         series=tuple(series),

@@ -28,11 +28,15 @@ def test_service_version_is_0_23():
     assert FAS_SCHEMA_VERSION == "1.1"
 
 
-def test_dim_row_schema_has_currency_source():
+def test_dim_row_schema_has_currency_source_and_outline_provenance():
     doc = load_schema("dim_row")
     names = [column["name"] for column in doc["columns"]]
-    assert doc["version"] == "1.0"
+    assert doc["version"] == "1.1"
     assert names[names.index("currency") + 1] == "currency_source"
+    outline = doc["columns"][-1]
+    assert (outline["name"], outline["type"], outline["nullable"], outline["since"]) == (
+        "hidden_by_outline", "bool", True, "1.1"
+    )
     period = json.loads(Path("src/finance_analysis/adapters/storage/schemas/dim_period.json").read_text())
     assert period["version"] == "1.0"
 
