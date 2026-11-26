@@ -23,8 +23,8 @@ def _dictionaries_stamp() -> str:
     return hashlib.sha256(body).hexdigest()[:12]
 
 
-# База 3 — SSOT маркеров из YAML; суффикс — содержимое dictionaries.yaml.
-FAS_PROJECTION_VERSION = f"5:{_dictionaries_stamp()}"
+# Поколение 6 — адрес ячейки транспонированной оси. Суффикс — dictionaries.yaml.
+FAS_PROJECTION_VERSION = f"6:{_dictionaries_stamp()}"
 
 _WS = re.compile(r"\s+")
 
