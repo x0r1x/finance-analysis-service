@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import anyio
 from ulid import ULID
 
 from finance_analysis.application import keys
@@ -235,8 +236,10 @@ class Learning:
         profile: str | None,
         identities: dict[str, list[str]],
     ) -> dict:
-        data = labeling_input(prepared, bindings, facts, links, package, identities)
-        votes = run_all(data)
+        def _votes():
+            return run_all(labeling_input(prepared, bindings, facts, links, package, identities))
+
+        votes = await anyio.to_thread.run_sync(_votes)
         rows = {row["binding_key"]: row for row in prepared}
         signals = [
             _signal(
@@ -247,7 +250,7 @@ class Learning:
             if vote.binding_key in rows and str(rows[vote.binding_key].get("label") or "").strip()
         ]
         await self._signals(signals)
-        totals = _abs_by_row(facts)
+        totals = await anyio.to_thread.run_sync(lambda: _abs_by_row(facts))
         grand = sum(totals.values()) or Decimal(0)
         unknown = []
         now = datetime.now(UTC)

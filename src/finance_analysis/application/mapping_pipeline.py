@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import weakref
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -45,14 +46,39 @@ def concept_document(package: GlossaryPackage, concept_id: str) -> str:
     return " · ".join(part for part in parts if part)
 
 
+# id пакета → (слабая ссылка, шаблоны). Пакет глоссария нехешируемый, поэтому не WeakKeyDictionary.
+_EXPANSIONS: dict[int, tuple[weakref.ReferenceType, tuple[tuple[re.Pattern[str], str], ...]]] = {}
+
+
+def _expansion_pairs(package: GlossaryPackage) -> tuple[tuple[re.Pattern[str], str], ...]:
+    """Отдельный шаблон на каждую аббревиатуру. Общий `|` теряет перекрывающиеся совпадения."""
+
+    ident = id(package)
+    cached = _EXPANSIONS.get(ident)
+    if cached is not None and cached[0]() is package:
+        return cached[1]
+    pairs = tuple(
+        (re.compile(rf"(?<!\w){re.escape(short)}(?!\w)", re.IGNORECASE), full)
+        for concept in package.concepts.values()
+        for short, full in concept.expand.items()
+    )
+
+    def _drop(ref, ident=ident):
+        current = _EXPANSIONS.get(ident)
+        if current is not None and current[0] is ref:
+            _EXPANSIONS.pop(ident, None)
+
+    try:
+        _EXPANSIONS[ident] = (weakref.ref(package, _drop), pairs)
+    except TypeError:
+        return pairs
+    return pairs
+
+
 def expand(text: str, package: GlossaryPackage) -> str:
     """Стадия 1: аббревиатуры понятий раскрываются рядом с исходным текстом."""
 
-    extra = []
-    for concept in package.concepts.values():
-        for short, full in concept.expand.items():
-            if re.search(rf"(?<!\w){re.escape(short)}(?!\w)", text, flags=re.IGNORECASE):
-                extra.append(full)
+    extra = [full for pattern, full in _expansion_pairs(package) if pattern.search(text)]
     if not extra:
         return text
     return f"{text} ({'; '.join(sorted(set(extra)))})"
@@ -140,7 +166,9 @@ class MappingPipeline:
                 nearest_example = [None for _ in targets]
         if not any(recall):
             # Без embed кандидаты для rerank — все понятия каталога.
-            recall = [[Candidate(name) for name in concept_ids] for _ in targets]
+            # Candidate неизменяем, а _rerank собирает новые списки, поэтому список один на все строки.
+            shared = [Candidate(name) for name in concept_ids]
+            recall = [shared for _ in targets]
         reranked = await self._rerank(texts, recall, package, deadline, result)
         evidence = {
             row["binding_key"]: RowEvidence(

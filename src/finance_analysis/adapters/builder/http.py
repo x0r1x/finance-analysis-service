@@ -8,6 +8,7 @@ import random
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
+import anyio
 import httpx
 
 from finance_analysis.adapters.builder.acl import (
@@ -124,7 +125,11 @@ class HttpBuilder:
         if response.status_code == 404:
             raise NotFound("книга builder не найдена")
         response.raise_for_status()
-        return parse_context(response.json())
+
+        def _snapshot():
+            return parse_context(response.json())
+
+        return await anyio.to_thread.run_sync(_snapshot)
 
     async def graph(self, job_id: str) -> tuple[GraphLink, ...] | ReportNotReady:
         response = await self._request("GET", self._path(job_id, "graph.json"))
