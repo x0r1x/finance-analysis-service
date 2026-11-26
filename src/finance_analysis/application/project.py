@@ -171,7 +171,7 @@ def project(
                         "axis_id": series.axis_id,
                         "axis_kind": axis.axis_kind,
                         "period_id": period.period_key,
-                        "cell_id": cell_id(row.sheet, period.col, row.row),
+                        "cell_id": _fact_cell(row, axis, period),
                         "value_raw": None if raw is None else str(raw),
                         "value": value_dec,
                         "value_dec": value_dec,
@@ -193,6 +193,14 @@ def project(
         "fact_observation": facts,
         "graph_links": _links(snapshot, model_id, build),
     }, warnings
+
+
+def _fact_cell(row, axis: SnapshotAxis, period: SnapshotPeriod) -> str:
+    """Горизонтальная ось: колонка периода и строка ряда. Вертикальная: value_col и строка периода."""
+
+    if axis.transposed and period.row and row.value_col:
+        return cell_id(row.sheet, row.value_col, period.row)
+    return cell_id(row.sheet, period.col, row.row)
 
 
 # builder режет formula_exceptions до 8 ячеек на серию (§2.3). Ровно 8 не отличить

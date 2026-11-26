@@ -40,6 +40,7 @@ class PeriodIn(_In):
     end_date: date | None = None
     flags: dict[str, Any] | None = None
     hidden: bool | None = None
+    row: int | None = None
 
 
 class AxisIn(_In):
@@ -48,6 +49,7 @@ class AxisIn(_In):
     grain: str | None = None
     timeline_id: str | None = None
     kind: str | None = None
+    transposed: bool | None = None
     periods: list[PeriodIn]
 
 
@@ -88,6 +90,7 @@ class RowIn(_In):
     value_statuses: list[Any] | None = None
     normalized_values: list[Any] | None = None
     series: list[SeriesIn] | None = None
+    value_col: int | None = None
 
 
 class BlockIn(_In):
@@ -214,6 +217,7 @@ def _period(item: PeriodIn, *, index: int) -> SnapshotPeriod:
         end_date=item.end_date,
         flags=dict(item.flags or {}),
         hidden=bool(item.hidden or False),
+        row=None if item.row is None else int(item.row),
     )
 
 
@@ -287,6 +291,7 @@ def _axis_from(key: str, axis: dict, missing: list[str], max_col: dict[str, int]
         timeline_id=parsed.timeline_id,
         axis_kind=kind,
         periods=tuple(periods),
+        transposed=bool(parsed.transposed),
     )
 
 
@@ -503,6 +508,7 @@ def _read_row(
         block_kind=block.kind,
         formula_exceptions=tuple(_strings(parsed.formula_exceptions)),
         line_code=_line_code(parsed, block),
+        value_col=None if parsed.value_col is None else int(parsed.value_col),
     )
 
 

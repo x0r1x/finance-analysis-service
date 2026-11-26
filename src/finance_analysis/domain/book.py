@@ -219,6 +219,7 @@ class SnapshotPeriod:
     end_date: date | None = None
     flags: dict = field(default_factory=dict)
     hidden: bool = False
+    row: int | None = None
 
 
 @dataclass(frozen=True)
@@ -229,6 +230,7 @@ class SnapshotAxis:
     timeline_id: str | None
     axis_kind: str
     periods: tuple[SnapshotPeriod, ...]
+    transposed: bool = False
 
 
 @dataclass(frozen=True)
@@ -267,6 +269,7 @@ class SnapshotRow:
     line_code: str | None = None
     hidden_by_outline: bool | None = None
     axisless: bool = False
+    value_col: int | None = None
 
 
 @dataclass(frozen=True)
