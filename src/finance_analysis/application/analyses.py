@@ -1136,6 +1136,9 @@ class Analyses:
         aggregations = {
             name: item.effective_aggregation for name, item in svc.catalog.concepts.items()
         }
+        outflows = frozenset(
+            name for name, item in svc.catalog.concepts.items() if item.expected_sign == "outflow"
+        )
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
@@ -1225,6 +1228,7 @@ class Analyses:
                     plan=plans.get(metric),
                     collect=evidences,
                     definition=definitions.get(metric),
+                    outflows=outflows,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})

@@ -353,6 +353,33 @@ def test_profile_overlay_changes_the_formula_only_when_compile_receives_it():
     assert _value(got) == Decimal("2.4000000000")
 
 
+def test_denominator_sign_follows_the_declared_concept_not_the_metric_name():
+    """Знак знаменателя — expected_sign понятия, не имя метрики."""
+
+    outflows = frozenset({"interest", "principal", "capex", "cash_taxes"})
+    periods = [_year()]
+    loss = composed_ratio(
+        "cover_custom",
+        _formula((("net_debt",), ()), (("ebitda",), ()), "LTM"),
+        facts=[_fact("net_debt", "100"), _fact("ebitda", "-40")],
+        bindings=[_bind("net_debt"), _bind("ebitda")],
+        periods=periods,
+        aggregations={"net_debt": "last", "ebitda": "sum"},
+        outflows=outflows,
+    )
+    assert loss["rows"][0]["value"] == Decimal("-2.5000000000")
+    paid = composed_ratio(
+        "net_debt_ebitda",
+        _formula((("ebitda",), ()), (("interest",), ()), "LTM"),
+        facts=[_fact("ebitda", "100"), _fact("interest", "-40")],
+        bindings=[_bind("ebitda"), _bind("interest")],
+        periods=periods,
+        aggregations={"ebitda": "sum", "interest": "sum"},
+        outflows=outflows,
+    )
+    assert paid["rows"][0]["value"] == Decimal("2.5000000000")
+
+
 def test_stock_and_flow_follow_aggregations():
     periods = [
         {

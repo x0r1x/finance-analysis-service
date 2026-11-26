@@ -314,6 +314,7 @@ def covenant_dscr(
     composed: dict[str, Composed] | None = None,
     aggregations: Mapping[str, str] | None = None,
     plan: Any | None = None,
+    outflows: frozenset[str] | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
         profile, profile_ref, default, concepts=concepts, money=money, composed=composed
@@ -350,6 +351,7 @@ def covenant_dscr(
         profile=profile,
         aggregations=aggregations,
         plan=plan,
+        outflows=outflows,
     )
     if source == "default" and result["status"] == "succeeded":
         notes = [*notes, *_mismatch(result["rows"], facts, bindings, periods, absent)]
@@ -391,6 +393,7 @@ def dscr_ocf_covenant(
     composed: dict[str, Composed] | None = None,
     aggregations: Mapping[str, str] | None = None,
     plan: Any | None = None,
+    outflows: frozenset[str] | None = None,
 ) -> dict:
     """OCF-ковенант по составу каталога. Нет входов состава — метрика не считается, CFADS не подставляется."""
 
@@ -415,6 +418,7 @@ def dscr_ocf_covenant(
         composed=composed,
         aggregations=aggregations,
         plan=plan,
+        outflows=outflows,
     )
 
 
@@ -615,6 +619,7 @@ def composed_ratio(
     plan: Any | None = None,
     definition: Any | None = None,
     collect: list | None = None,
+    outflows: frozenset[str] | None = None,
 ) -> dict:
     book = _open_trace(metric, definition, collect, sign_convention, plan, marker_class)
 
@@ -626,6 +631,14 @@ def composed_ratio(
         return finish(_composed_stop(metric, resolved))
     if resolved is not None:
         formula = resolved
+    if outflows is not None:
+        plus_names = (*formula.numerator.plus, *formula.denominator.plus)
+        formula = Composed(
+            formula.numerator,
+            formula.denominator,
+            formula.window,
+            frozenset(name for name in plus_names if name in outflows),
+        )
     if definition is not None and plan is not None and (
         plan.metric_id != definition.metric_id
         or plan.variant != definition.variant
@@ -739,7 +752,7 @@ def composed_ratio(
     absent_message = _stock_message(num_names)
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
     shared = frozenset(formula.numerator.plus) & frozenset(formula.denominator.plus)
-    denominator_pay = metric not in _EBITDA_STOCK
+    payment_terms = formula.payment_terms
     rows = []
     for axis in sorted(_axes_of(facts, primaries[home_name])):
         ordered = _ordered(periods, axis)
@@ -789,6 +802,7 @@ def composed_ratio(
                 default=num_default,
                 pay_plus=False,
                 pay_names=shared,
+                pay_terms=payment_terms,
                 convention=sign_convention,
                 basis=basis,
                 period=period,
@@ -801,8 +815,9 @@ def composed_ratio(
                 formula.denominator,
                 aggregations=aggregations,
                 default="sum",
-                pay_plus=denominator_pay,
+                pay_plus=False,
                 pay_names=frozenset(),
+                pay_terms=payment_terms,
                 convention=sign_convention,
                 basis=basis,
                 period=period,
@@ -919,6 +934,7 @@ def _fold_side(
     default: str,
     pay_plus: bool,
     pay_names: frozenset[str],
+    pay_terms: frozenset[str],
     convention: str,
     basis: dict,
     period: dict,
@@ -948,7 +964,7 @@ def _fold_side(
         chosen, problem = _chosen_keys(keys, name, basis, aggregations)
         if problem:
             return None, problem, ()
-        pay = forced_pay or pay_plus or name in pay_names
+        pay = forced_pay or pay_plus or name in pay_names or name in pay_terms
         part, problem = _part(keys, series, name, convention, pay, basis, aggregations)
         if problem:
             return None, problem, ()
@@ -2334,6 +2350,7 @@ def select_ratio(
     plan: Any | None = None,
     collect: list | None = None,
     definition: Any | None = None,
+    outflows: frozenset[str] | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -2473,6 +2490,7 @@ def select_ratio(
             composed=composed,
             aggregations=aggregations,
             plan=plan,
+            outflows=outflows,
         )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         attempt = covenant_dscr(
@@ -2492,6 +2510,7 @@ def select_ratio(
             composed=composed,
             aggregations=aggregations,
             plan=plan,
+            outflows=outflows,
         )
         attempt_evidence = None
         if (
@@ -2571,6 +2590,7 @@ def select_ratio(
             plan=plan,
             definition=definition,
             collect=collect,
+            outflows=outflows,
         )
     attempt_evidence = None
     if collect is None:
@@ -2640,7 +2660,8 @@ def _rename(formula: Composed, chosen: str) -> Composed:
             tuple(chosen if name == "interest" else name for name in side.minus),
         )
 
-    return Composed(replace(formula.numerator), replace(formula.denominator), formula.window)
+    terms = frozenset(chosen if name == "interest" else name for name in formula.payment_terms)
+    return Composed(replace(formula.numerator), replace(formula.denominator), formula.window, terms)
 
 
 def _row_for(bindings: list[dict], item: Any) -> dict | None:
@@ -2677,7 +2698,8 @@ def _swap_interest(
             tuple(chosen if name == "interest" else name for name in side.minus),
         )
 
-    return Composed(replace(formula.numerator), replace(formula.denominator), formula.window), warning
+    terms = frozenset(chosen if name == "interest" else name for name in formula.payment_terms)
+    return Composed(replace(formula.numerator), replace(formula.denominator), formula.window, terms), warning
 
 
 def _span(window: str, ordered: list[dict], period: dict, aligned: dict, axis: str):
