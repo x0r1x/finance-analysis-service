@@ -42,11 +42,15 @@ class Side:
 
 @dataclass(frozen=True)
 class Composed:
-    """Числитель и знаменатель из понятий каталога и окно `LTM` или `period`."""
+    """Числитель и знаменатель из понятий каталога и окно `LTM` или `period`.
+
+    `payment_terms` — плюс-термы с `expected_sign: outflow`. Их модуль берётся из понятия, не из имени метрики.
+    """
 
     numerator: Side
     denominator: Side
     window: str
+    payment_terms: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)

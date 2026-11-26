@@ -281,6 +281,54 @@ def _coverage_catalog(model_types, financial) -> dict:
     return found
 
 
+_COMPOSED_METRICS = frozenset(
+    {
+        "net_debt_ebitda",
+        "escrow_coverage",
+        "total_debt_ebitda",
+        "debt_off_balance_ebitda",
+    }
+)
+
+
+def _composed_definitions(model_types, financial) -> dict:
+    """Составные формулы каталога. Версия определения не выдумывается, исполнитель свой."""
+
+    from finance_analysis.application.model_types import load_coverage_document
+    from finance_analysis.domain.execution_contract import (
+        CatalogMetricRecord,
+        compile_definition,
+    )
+
+    document = load_coverage_document().get("metrics") or {}
+    indicators = getattr(financial, "indicators", None) or {}
+    expressions = getattr(model_types, "metric_expressions", None) or {}
+    composed = getattr(model_types, "composed", None) or {}
+    found = {}
+    for metric in _COMPOSED_METRICS:
+        expression = expressions.get(metric)
+        if expression is None or metric not in composed:
+            continue
+        body = document.get(metric) or {}
+        formula_id = body.get("formula_id") if isinstance(body.get("formula_id"), str) else None
+        version = body.get("definition_version") if isinstance(body.get("definition_version"), str) else None
+        indicator = indicators.get(metric)
+        window = indicator.window if indicator is not None and indicator.window else composed[metric].window
+        found[metric] = compile_definition(
+            CatalogMetricRecord(
+                metric_id=metric,
+                expression=expression,
+                executor_key="composed",
+                executor_id="composed_ratio",
+                executor_version="composed_ratio@1",
+                formula_id=formula_id,
+                definition_version=version,
+                window=window,
+            )
+        )
+    return found
+
+
 def _attach_book_rows(envelope: dict, got: dict) -> None:
     """Кладёт цитаты строк книги в результат, только когда список не пуст.
 
@@ -1088,6 +1136,9 @@ class Analyses:
         aggregations = {
             name: item.effective_aggregation for name, item in svc.catalog.concepts.items()
         }
+        outflows = frozenset(
+            name for name, item in svc.catalog.concepts.items() if item.expected_sign == "outflow"
+        )
         profile_ref = target.head.versions.get("profile")
         variant_of = confirmed_variants(svc.model_types, verdict)
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
@@ -1105,6 +1156,9 @@ class Analyses:
             warnings=warnings,
             catalog=_coverage_catalog(svc.model_types, getattr(svc, "financial_catalog", None)),
             variants=_variant_ids(svc.model_types.composed),
+        )
+        definitions.update(
+            _composed_definitions(svc.model_types, getattr(svc, "financial_catalog", None))
         )
         plans = plans_for(
             metrics,
@@ -1174,6 +1228,7 @@ class Analyses:
                     plan=plans.get(metric),
                     collect=evidences,
                     definition=definitions.get(metric),
+                    outflows=outflows,
                 )
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
@@ -1187,7 +1242,7 @@ class Analyses:
             warnings.extend(result["warnings"])
             published = [{**row, "metric": metric} for row in result["rows"]]
             computed.extend(published)
-            if published and not evidences[before:]:
+            if published and not _trace_available(evidences[before:]):
                 evidences.append(_unsupported(metric, common["sign_convention"]))
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
@@ -2219,6 +2274,12 @@ def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
         status = "evidence_available" if (metric, version) in EVIDENCE_AVAILABLE else "evidence_not_supported"
         rows.append((metric, version, status))
     return tuple(rows)
+
+
+def _trace_available(evidences: list) -> bool:
+    """Готовый след закрывает заглушку. Неполная оболочка её не заменяет."""
+
+    return any(getattr(item, "evidence_status", None) == "evidence_available" for item in evidences)
 
 
 def _unsupported(metric: str, sign_convention: str):

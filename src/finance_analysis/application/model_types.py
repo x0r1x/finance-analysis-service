@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
@@ -583,6 +584,20 @@ def load_model_types(path: Path | None = None, *, concepts: frozenset[str] | Non
     )
     compatible = _compatible(common.get("compatible"), documents)
     types = {type_id: _spec(type_id, body) for type_id, body in documents.items()}
+    outflows = frozenset(
+        name for name, item in package.concepts.items() if item.expected_sign == "outflow"
+    )
+    composed = {
+        metric_id: replace(
+            formula,
+            payment_terms=frozenset(
+                term
+                for term in (*formula.numerator.plus, *formula.denominator.plus)
+                if term in outflows
+            ),
+        )
+        for metric_id, formula in composed.items()
+    }
     version = hashlib.sha256(
         canonical_json({"common": common, "types": documents}).encode("utf-8")
     ).hexdigest()[:16]

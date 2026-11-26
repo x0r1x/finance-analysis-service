@@ -963,6 +963,7 @@ def test_ltm_numerator_uses_a_full_denominator_window():
             _binding("interest", "i"),
         ],
         periods=quarters,
+        outflows=frozenset({"interest"}),
     )
     assert rolled["rows"][-1]["status"] == "computed"
     assert rolled["rows"][-1]["value"] == Decimal("1.0000000000")
