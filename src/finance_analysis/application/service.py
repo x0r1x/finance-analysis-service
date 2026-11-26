@@ -789,11 +789,16 @@ class FasService:
         """Привязка книги: правила + стадии моделей (§5.5). Сбор сигналов и unknown-строк — в фоне.
 
         `learn=False` — свёртка на прошлой сборке: сигналы этой сборки уже собраны при её загрузке.
+        Подготовка строк и свёртка синхронные и идут в рабочем потоке, как проекция.
         """
 
         package = await self._book_package(versions.get("glossary", "none"), events)
         calibrator = await self.calibrators.active()
-        prepared = prepare_rows(projected, events, package, facts)
+
+        def _prepare():
+            return prepare_rows(projected, events, package, facts)
+
+        prepared = await anyio.to_thread.run_sync(_prepare, limiter=self._cpu)
         scored = None
         if self.pipeline.enabled:
             scored = await self.pipeline.score(
@@ -806,18 +811,23 @@ class FasService:
                 skip=_human_keys(events),
                 calibrator=calibrator,
             )
-        derived = derive_rows(
-            projected,
-            state_seq=state_seq,
-            derive=derive,
-            versions=versions,
-            events=events,
-            glossary=package,
-            facts=facts,
-            evidence=None if scored is None else scored.evidence,
-            calibrator=calibrator,
-            prepared=prepared,
-        )
+        evidence = None if scored is None else scored.evidence
+
+        def _bind():
+            return derive_rows(
+                projected,
+                state_seq=state_seq,
+                derive=derive,
+                versions=versions,
+                events=events,
+                glossary=package,
+                facts=facts,
+                evidence=evidence,
+                calibrator=calibrator,
+                prepared=prepared,
+            )
+
+        derived = await anyio.to_thread.run_sync(_bind, limiter=self._cpu)
         if not learn:
             return derived
         nearest = {}

@@ -26,7 +26,12 @@ from finance_analysis.domain.periods import (
     split_period_key,
 )
 from finance_analysis.domain.phases import PHASES, split_phase_target
-from finance_analysis.domain.semantics import empty_series, exclusion, infer_row
+from finance_analysis.domain.semantics import (
+    exclusion,
+    facts_by_row,
+    infer_row,
+    series_is_empty,
+)
 from finance_analysis.domain.state import fold
 
 
@@ -387,9 +392,10 @@ def prepare_rows(projected: dict[str, list[dict]], events: list[dict], glossary,
 
     signs = _sign_map(events)
     units = _unit_map(events)
+    by_row = facts_by_row(facts)
     prepared = []
     for row in projected["dim_row"]:
-        excluded, reason = exclusion(row, empty_series=empty_series(row["row_key"], facts))
+        excluded, reason = exclusion(row, empty_series=series_is_empty(row["row_key"], by_row))
         inferred = infer_row(row, glossary.flows)
         sign = signs.get(row["binding_key"], inferred["sign"])
         prepared.append(
