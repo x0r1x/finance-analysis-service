@@ -141,10 +141,11 @@ def _fact(
     *,
     cell: str | None = None,
     scale: str | None = None,
+    axis: str = "a",
 ) -> dict:
     row = {
         "row_key": concept,
-        "axis_id": "a",
+        "axis_id": axis,
         "period_id": period,
         "normalized_value": value,
     }
@@ -166,6 +167,51 @@ def _year() -> dict:
         "period_start": date(2024, 1, 1),
         "period_end": date(2024, 12, 31),
     }
+
+
+def _axis_year(axis: str) -> dict:
+    """Свой timeline, чтобы суммы осей не склеились. Общий только period_id."""
+
+    return {**_year(), "axis_id": axis, "timeline_id": axis}
+
+
+def _fact_use(operand: str, axis: str, period: str, cell: str):
+    from finance_analysis.domain.calculation_evidence import FactUse
+
+    return FactUse(
+        concept="net_debt" if operand == "numerator" else "ebitda",
+        cell_id=cell,
+        axis_id=axis,
+        period_id=period,
+        timeline_id=axis,
+        period_index=1,
+        field="normalized_value",
+        sheet=False,
+        raw_value=Decimal(1),
+        effective_value=Decimal(1),
+        scale_factor=None,
+        scale_policy="plain",
+        scale_applied=False,
+        normalization_source="unset",
+        result_axis_id=axis,
+        result_period_id=period,
+        operand=operand,
+    )
+
+
+def _computed_period(axis: str, period: str, refs: tuple[tuple[str, ...], tuple[str, ...]]):
+    from finance_analysis.domain.calculation_evidence import (
+        PeriodResult,
+        TransformationStep,
+    )
+
+    numerator_refs, denominator_refs = refs
+    steps = (
+        TransformationStep(1, "numerator_assembly", numerator_refs, Decimal(1), {}),
+        TransformationStep(2, "denominator_assembly", denominator_refs, Decimal(1), {}),
+        TransformationStep(3, "ratio", ("step:1", "step:2"), Decimal(1), {}),
+    )
+    return PeriodResult(axis, period, "computed", None, Decimal(1), Decimal(1), Decimal(1), steps)
 
 
 def _bindings():
@@ -480,6 +526,99 @@ def test_a_computed_trace_records_operands_steps_and_fact_use():
     assert ("numerator", "Debt!N", Decimal(300)) in uses
     assert ("denominator", "PL!E", Decimal(100)) in uses
     assert evidence.fact_observations
+
+
+def test_operand_refs_stay_on_the_axis_that_shares_the_period_id():
+    """Две оси с одним period_id не подмешивают чужие ячейки в шаг."""
+
+    metric = "net_debt_ebitda"
+    definition = _definition(metric, (("net_debt",), ()), (("ebitda",), ()), "LTM")
+    periods = [_axis_year("left"), _axis_year("right")]
+    facts = [
+        _fact("net_debt", "300", cell="Debt!L", axis="left"),
+        _fact("ebitda", "100", cell="PL!L", axis="left"),
+        _fact("net_debt", "200", cell="Debt!R", axis="right"),
+        _fact("ebitda", "100", cell="PL!R", axis="right"),
+    ]
+    collected: list = []
+    got = composed_ratio(
+        metric,
+        _formula((("net_debt",), ()), (("ebitda",), ()), "LTM"),
+        facts=facts,
+        bindings=[_bind("net_debt"), _bind("ebitda")],
+        periods=periods,
+        aggregations={"net_debt": "last", "ebitda": "sum"},
+        definition=definition,
+        collect=collected,
+    )
+    assert got["status"] == "succeeded"
+    by_axis = {row["axis_id"]: row for row in got["rows"] if row["status"] == "computed"}
+    assert by_axis["left"]["value"] == Decimal("3.0000000000")
+    assert by_axis["right"]["value"] == Decimal("2.0000000000")
+    evidence = collected[0]
+    assert evidence.evidence_status == "evidence_available"
+    for axis, debt, profit in (("left", "Debt!L", "PL!L"), ("right", "Debt!R", "PL!R")):
+        period = next(item for item in evidence.period_results if item.axis_id == axis and item.status == "computed")
+        cited = {
+            step.operation: step.input_refs
+            for step in period.steps
+            if step.operation in {"numerator_assembly", "denominator_assembly"}
+        }
+        assert cited == {
+            "numerator_assembly": (f"cell:{debt}",),
+            "denominator_assembly": (f"cell:{profit}",),
+        }
+        uses = {
+            (item.operand, item.result_axis_id, item.result_period_id, item.cell_id)
+            for item in evidence.fact_uses
+            if item.result_axis_id == axis
+        }
+        assert uses == {
+            ("numerator", axis, "Y1", debt),
+            ("denominator", axis, "Y1", profit),
+        }
+
+
+def test_a_computed_period_without_its_own_facts_is_not_evidence():
+    """Пустые ссылки шага и один чужой FactUse не делают след готовым."""
+
+    from finance_analysis.domain.calculation_evidence import EvidenceBook
+    from finance_analysis.domain.covenant import _trace_ready
+
+    book = EvidenceBook(metric="net_debt_ebitda", sign_convention="outflow_negative", marker_class="actual", explicit_phases=False, plan_content_sha256=None)
+    book.fact_uses = [_fact_use("numerator", "left", "Y1", "Debt!L")]
+    book.periods = [
+        _computed_period("left", "Y1", (("cell:Debt!L",), ("cell:PL!L",))),
+        _computed_period("right", "Y1", ((), ())),
+    ]
+    assert _trace_ready(book) is False
+    ready = EvidenceBook(metric="net_debt_ebitda", sign_convention="outflow_negative", marker_class="actual", explicit_phases=False, plan_content_sha256=None)
+    ready.fact_uses = [
+        _fact_use("numerator", "left", "Y1", "Debt!L"),
+        _fact_use("denominator", "left", "Y1", "PL!L"),
+    ]
+    ready.periods = [_computed_period("left", "Y1", (("cell:Debt!L",), ("cell:PL!L",)))]
+    assert _trace_ready(ready) is True
+
+
+def test_the_chosen_marker_class_is_stored_on_the_evidence():
+    metric = "net_debt_ebitda"
+    definition = _definition(metric, (("net_debt",), ()), (("ebitda",), ()), "LTM")
+    collected: list = []
+    period = {**_year(), "marker_class": "actual"}
+    got = _run(
+        metric,
+        _formula((("net_debt",), ()), (("ebitda",), ()), "LTM"),
+        definition,
+        collect=collected,
+        periods=[period],
+        marker_class="actual",
+        facts=[_fact("net_debt", "300", cell="Debt!N"), _fact("ebitda", "100", cell="PL!E")],
+        bindings=[_bind("net_debt"), _bind("ebitda")],
+    )
+    assert got["status"] == "succeeded"
+    assert collected[0].marker_class == "actual"
+    assert collected[0].evidence_status == "evidence_available"
 
 
 def test_every_exit_publishes_the_definition_and_the_execution_status():

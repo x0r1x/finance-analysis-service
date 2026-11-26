@@ -485,25 +485,43 @@ def _mark_profile(result: dict, definition) -> dict:
     }
 
 
-def _open_trace(metric: str, definition, collect, sign_convention: str, plan):
+def _open_trace(metric: str, definition, collect, sign_convention: str, plan, marker_class: str | None):
     if collect is None or definition is None:
         return None
     return EvidenceBook(
         metric=str(metric),
         sign_convention=sign_convention,
-        marker_class=None,
+        marker_class=marker_class,
         explicit_phases=False,
         plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
     )
 
 
 def _trace_ready(book: EvidenceBook) -> bool:
-    """Успешный след называет операнды, шаги и факты. Пустая оболочка им не считается."""
+    """Готов только период, у которого свои FactUse числителя и знаменателя и непустые ссылки шага.
+
+    Один FactUse на весь расчёт и пустой input_refs этого не заменяют.
+    """
 
     computed = [item for item in book.periods or [] if item.status == "computed"]
-    if not computed or not book.fact_uses:
+    if not computed:
         return False
-    return all(item.numerator is not None and item.denominator is not None and item.steps for item in computed)
+    for item in computed:
+        if item.numerator is None or item.denominator is None or not item.steps:
+            return False
+        axis = None if item.axis_id is None else str(item.axis_id)
+        period_id = None if item.period_id is None else str(item.period_id)
+        operands = {
+            use.operand
+            for use in book.fact_uses or []
+            if use.result_axis_id == axis and use.result_period_id == period_id
+        }
+        if "numerator" not in operands or "denominator" not in operands:
+            return False
+        assemblies = [step for step in item.steps if step.operation in {"numerator_assembly", "denominator_assembly"}]
+        if len(assemblies) != 2 or any(not step.input_refs for step in assemblies):
+            return False
+    return True
 
 
 def _fill_periods(book: EvidenceBook, rows: list[dict]) -> None:
@@ -532,13 +550,22 @@ def _fill_periods(book: EvidenceBook, rows: list[dict]) -> None:
     book.periods = ordered
 
 
-def _remember_composed(result: dict, definition, collect, sign_convention: str, plan, book=None) -> dict:
+def _remember_composed(
+    result: dict, definition, collect, sign_convention: str, plan, book=None, marker_class: str | None = None
+) -> dict:
     """Версии определения и исполнителя. Пустой успешный след не публикуется как готовый."""
 
     if collect is None or definition is None:
         return result
     if book is None:
-        book = _open_trace(str(result.get("metric") or definition.metric_id), definition, collect, sign_convention, plan)
+        book = _open_trace(
+            str(result.get("metric") or definition.metric_id),
+            definition,
+            collect,
+            sign_convention,
+            plan,
+            marker_class,
+        )
     assert book is not None
     _fill_periods(book, list(result.get("rows") or []))
     status = result.get("status")
@@ -565,9 +592,11 @@ def _remember_composed(result: dict, definition, collect, sign_convention: str, 
     return result
 
 
-def _publish_composed(result: dict, definition, collect, sign_convention: str, plan, book=None) -> dict:
+def _publish_composed(
+    result: dict, definition, collect, sign_convention: str, plan, book=None, marker_class: str | None = None
+) -> dict:
     return _remember_composed(
-        _mark_profile(result, definition), definition, collect, sign_convention, plan, book
+        _mark_profile(result, definition), definition, collect, sign_convention, plan, book, marker_class
     )
 
 
@@ -587,10 +616,10 @@ def composed_ratio(
     definition: Any | None = None,
     collect: list | None = None,
 ) -> dict:
-    book = _open_trace(metric, definition, collect, sign_convention, plan)
+    book = _open_trace(metric, definition, collect, sign_convention, plan, marker_class)
 
     def finish(result: dict) -> dict:
-        return _publish_composed(result, definition, collect, sign_convention, plan, book)
+        return _publish_composed(result, definition, collect, sign_convention, plan, book, marker_class)
 
     resolved = _definition_formula(definition)
     if isinstance(resolved, str):
@@ -2836,9 +2865,10 @@ def _operand_refs(book, period: dict, operand: str) -> tuple[str, ...]:
     if book is None:
         return ()
     period_id = None if period.get("period_id") is None else str(period.get("period_id"))
+    axis_id = None if period.get("axis_id") is None else str(period.get("axis_id"))
     refs = []
     for item in book.fact_uses or []:
-        if item.result_period_id != period_id or item.operand != operand:
+        if item.result_axis_id != axis_id or item.result_period_id != period_id or item.operand != operand:
             continue
         refs.append(f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}")
     return tuple(refs)
