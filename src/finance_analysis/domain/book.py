@@ -23,8 +23,8 @@ def _dictionaries_stamp() -> str:
     return hashlib.sha256(body).hexdigest()[:12]
 
 
-# База 3 — SSOT маркеров из YAML; суффикс — содержимое dictionaries.yaml.
-FAS_PROJECTION_VERSION = f"5:{_dictionaries_stamp()}"
+# Поколение 6 — адрес ячейки транспонированной оси. Суффикс — dictionaries.yaml.
+FAS_PROJECTION_VERSION = f"6:{_dictionaries_stamp()}"
 
 _WS = re.compile(r"\s+")
 
@@ -219,6 +219,7 @@ class SnapshotPeriod:
     end_date: date | None = None
     flags: dict = field(default_factory=dict)
     hidden: bool = False
+    row: int | None = None
 
 
 @dataclass(frozen=True)
@@ -229,6 +230,7 @@ class SnapshotAxis:
     timeline_id: str | None
     axis_kind: str
     periods: tuple[SnapshotPeriod, ...]
+    transposed: bool = False
 
 
 @dataclass(frozen=True)
@@ -267,6 +269,7 @@ class SnapshotRow:
     line_code: str | None = None
     hidden_by_outline: bool | None = None
     axisless: bool = False
+    value_col: int | None = None
 
 
 @dataclass(frozen=True)
