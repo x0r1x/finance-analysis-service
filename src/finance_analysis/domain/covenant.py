@@ -37,6 +37,7 @@ from finance_analysis.domain.metric_contract import (
     ConceptDependency,
     ConceptGroup,
     DynamicInputs,
+    UndeclaredInput,
     implements,
 )
 from finance_analysis.domain.metrics import (
@@ -428,6 +429,109 @@ def _unplanned(metric: str, names: list[str]) -> dict:
     }
 
 
+def _definition_formula(definition) -> Composed | str | None:
+    """Стороны определения. Форма вне плюс/минус/окно не считается прежней формулой."""
+
+    if definition is None:
+        return None
+    expr = definition.normalized_expression
+    if (
+        expr.one_of
+        or expr.rate
+        or expr.rates
+        or expr.aggregate
+        or expr.terminal
+        or expr.compare_with
+        or expr.add_back
+        or expr.base
+    ):
+        return "unsupported_formula"
+    if not (expr.numerator_plus or expr.numerator_minus):
+        return "unsupported_formula"
+    if not (expr.denominator_plus or expr.denominator_minus):
+        return "unsupported_formula"
+    if expr.window not in _WINDOWS:
+        return "unsupported_formula"
+    return Composed(
+        Side(expr.numerator_plus, expr.numerator_minus),
+        Side(expr.denominator_plus, expr.denominator_minus),
+        expr.window,
+    )
+
+
+def _composed_stop(metric: str, reason: str) -> dict:
+    return {
+        "metric": metric,
+        "rows": [],
+        "needs_input": [],
+        "missing_inputs": [],
+        "warnings": [],
+        "status": "not_computed",
+        "reason": reason,
+        "message": reason,
+    }
+
+
+def _mark_profile(result: dict, definition) -> dict:
+    if definition is None or definition.definition_source != "profile":
+        return result
+    ref = definition.definition_ref
+    return {
+        **result,
+        "definition_source": definition.definition_source,
+        "definition_ref": None if ref is None else dict(ref),
+    }
+
+
+def _remember_composed(result: dict, definition, collect, sign_convention: str, plan) -> dict:
+    """Версии определения и исполнителя. implementation_version составной формуле не выдумывается."""
+
+    if collect is None or definition is None:
+        return result
+    recorded = [
+        PeriodResult(
+            axis_id=row.get("axis_id"),
+            period_id=row.get("period_id"),
+            status=str(row.get("status")),
+            reason=row.get("reason"),
+            value=row.get("value"),
+            numerator=None,
+            denominator=None,
+            steps=(),
+        )
+        for row in result.get("rows") or []
+    ]
+    status = result.get("status")
+    if status == "succeeded":
+        execution = "succeeded"
+    elif status in {"scale_unconfirmed", "basis_mismatch", "input_absent"}:
+        execution = "refused"
+    else:
+        execution = "not_run"
+    book = EvidenceBook(
+        metric=str(result.get("metric") or definition.metric_id),
+        sign_convention=sign_convention,
+        marker_class=None,
+        explicit_phases=False,
+        plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
+        periods=recorded,
+    )
+    collect.append(
+        book.freeze(
+            execution,
+            "",
+            definition_version=definition.definition_version,
+            executor_id=definition.executor_id,
+            executor_version=definition.executor_version,
+        )
+    )
+    return result
+
+
+def _publish_composed(result: dict, definition, collect, sign_convention: str, plan) -> dict:
+    return _remember_composed(_mark_profile(result, definition), definition, collect, sign_convention, plan)
+
+
 def composed_ratio(
     metric: str,
     formula: Composed,
@@ -441,7 +545,23 @@ def composed_ratio(
     profile: dict | None = None,
     aggregations: Mapping[str, str] | None = None,
     plan: Any | None = None,
+    definition: Any | None = None,
+    collect: list | None = None,
 ) -> dict:
+    resolved = _definition_formula(definition)
+    if isinstance(resolved, str):
+        return _publish_composed(_composed_stop(metric, resolved), definition, collect, sign_convention, plan)
+    if resolved is not None:
+        formula = resolved
+    if definition is not None and plan is not None and (
+        plan.metric_id != definition.metric_id
+        or plan.variant != definition.variant
+        or plan.variant_source != definition.variant_source
+        or plan.definition_hash != definition.definition_hash
+    ):
+        return _publish_composed(
+            _composed_stop(metric, "definition_mismatch"), definition, collect, sign_convention, plan
+        )
     blocked = methodology_block(
         profile,
         bindings,
@@ -472,10 +592,21 @@ def composed_ratio(
 
         primaries = bound_rows(plan, bindings)
         confirmed = frozenset(item.concept for item in plan.inputs)
+        if definition is not None:
+            declared = (
+                set(formula.numerator.plus)
+                | set(formula.numerator.minus)
+                | set(formula.denominator.plus)
+                | set(formula.denominator.minus)
+            )
+            for item in plan.inputs:
+                if item.confirmed and not item.ambiguous and item.concept not in declared:
+                    raise UndeclaredInput(item.concept)
     unbound: frozenset[str] = frozenset()
-    if metric == "debt_off_balance_ebitda" and plan is None:
+    if plan is None and "off_balance_obligations" in formula.numerator.plus:
         bound = _primaries(bindings, absent)
-        if "total_debt" in bound and "off_balance_obligations" not in bound:
+        others = [name for name in formula.numerator.plus if name != "off_balance_obligations"]
+        if "off_balance_obligations" not in bound and any(name in bound for name in others):
             unbound = frozenset({"off_balance_obligations"})
     needed = (
         *formula.numerator.plus,
@@ -513,18 +644,31 @@ def composed_ratio(
     basis = {name: basis_of(primaries[name])[0] for name in series}
     roll = formula.window == "period" and _rolls(primaries, formula)
     window_name = "LTM" if roll else formula.window
-    # Строка EBITDA со способом `ltm` уже покрывает двенадцать месяцев.
-    # Четыре квартала такой строки не складываются и не требуют полного окна.
-    ebitda_ltm = metric in _EBITDA_STOCK and basis.get("ebitda") == "ltm"
-    span_name = "period" if ebitda_ltm else window_name
+    num_names = (*formula.numerator.plus, *formula.numerator.minus)
+    den_names = (*formula.denominator.plus, *formula.denominator.minus)
+    num_default = "last" if aggregations is None and metric in _EBITDA_STOCK else "sum"
+    # Поток со способом `ltm` уже покрывает двенадцать месяцев: полное окно не требуется.
+    folds = {name: _term_fold(name, aggregations, num_default) for name in num_names}
+    folds.update({name: _term_fold(name, aggregations, "sum") for name in den_names})
+    summed = [name for name, fold in folds.items() if fold == "sum"]
+    flow_ltm = bool(summed) and all(basis.get(name) == "ltm" for name in summed)
+    span_name = "period" if flow_ltm else window_name
+    numerator_stock = _all_last(num_names, aggregations, num_default)
+    absent_message = _stock_message(num_names)
     home_name = formula.denominator.plus[0] if formula.denominator.plus else formula.denominator.minus[0]
-    stock = series.get("net_debt") or {}
+    shared = frozenset(formula.numerator.plus) & frozenset(formula.denominator.plus)
+    denominator_pay = metric not in _EBITDA_STOCK
     rows = []
     for axis in sorted(_axes_of(facts, primaries[home_name])):
         ordered = _ordered(periods, axis)
         axis_keys = [aligned.get((axis, item["period_id"]), (axis, item["period_id"])) for item in ordered]
-        dated = any(_stock_choice(item, periods, aligned, stock)[0] is not None for item in ordered)
-        debt_on_axis = metric != "net_debt_ebitda" or any(key in stock for key in axis_keys) or dated
+        dated = numerator_stock and any(
+            _stock_choice(item, periods, aligned, series.get(name) or {})[0] is not None
+            for item in ordered
+            for name in num_names
+        )
+        on_axis = any(key in (series.get(name) or {}) for name in num_names for key in axis_keys)
+        debt_on_axis = not (numerator_stock and window_name == "LTM") or on_axis or dated
         for period in ordered:
             if unbound:
                 rows.append(
@@ -546,114 +690,62 @@ def composed_ratio(
             keys, window, problem = _span(span_name, ordered, period, aligned, axis)
             if problem and not debt_on_axis:
                 rows.append(
-                    _line(metric, period, None, "input_absent", "input_absent", inputs, window, message=_NET_DEBT_ABSENT)
+                    _line(
+                        metric, period, None, "input_absent", "input_absent", inputs, window, message=absent_message
+                    )
                 )
                 continue
             if problem:
                 message = PARTIAL_DENOMINATOR if roll and problem == "partial_window" else None
                 rows.append(_line(metric, period, None, "not_computed", problem, inputs, window, message=message))
                 continue
-            if metric == "net_debt_ebitda":
-                numerator, stock_problem = _stock_choice(period, periods, aligned, stock)
-                if stock_problem:
-                    rows.append(
-                        _line(
-                            metric,
-                            period,
-                            None,
-                            "not_computed",
-                            stock_problem,
-                            inputs,
-                            window,
-                            message=_AMBIGUOUS_STOCK,
-                        )
+            numerator, num_fold = _fold_side(
+                keys,
+                series,
+                formula.numerator,
+                aggregations=aggregations,
+                default=num_default,
+                pay_plus=False,
+                pay_names=shared,
+                convention=sign_convention,
+                basis=basis,
+                period=period,
+                periods=periods,
+                aligned=aligned,
+            )
+            denominator, den_fold = _fold_side(
+                keys,
+                series,
+                formula.denominator,
+                aggregations=aggregations,
+                default="sum",
+                pay_plus=denominator_pay,
+                pay_names=frozenset(),
+                convention=sign_convention,
+                basis=basis,
+                period=period,
+                periods=periods,
+                aligned=aligned,
+            )
+            fold_problem = num_fold or den_fold
+            if fold_problem:
+                text = _AMBIGUOUS_STOCK if fold_problem == "ambiguous_stock" else None
+                rows.append(_line(metric, period, None, "not_computed", fold_problem, inputs, window, message=text))
+                continue
+            if numerator_stock and numerator is None and not _series_present(keys, series, num_names):
+                rows.append(
+                    _line(
+                        metric,
+                        period,
+                        None,
+                        "input_absent",
+                        "input_absent",
+                        inputs,
+                        window,
+                        message=absent_message,
                     )
-                    continue
-                denominator, fold_problem = _part(
-                    keys, series, "ebitda", sign_convention, False, basis, aggregations
                 )
-                if fold_problem:
-                    rows.append(_line(metric, period, None, "not_computed", fold_problem, inputs, window))
-                    continue
-                if numerator is None and not any(key in series["net_debt"] for key in keys):
-                    rows.append(
-                        _line(
-                            metric,
-                            period,
-                            None,
-                            "input_absent",
-                            "input_absent",
-                            inputs,
-                            window,
-                            message=_NET_DEBT_ABSENT,
-                        )
-                    )
-                    continue
-            elif metric in _STOCK_RATIOS:
-                numerator, stock_problem = _stock_numerator(
-                    period, periods, aligned, series, formula.numerator
-                )
-                if stock_problem:
-                    rows.append(
-                        _line(
-                            metric,
-                            period,
-                            None,
-                            "not_computed",
-                            stock_problem,
-                            inputs,
-                            window,
-                            message=_AMBIGUOUS_STOCK,
-                        )
-                    )
-                    continue
-                denominator, fold_problem = _part(
-                    keys, series, "ebitda", sign_convention, False, basis, aggregations
-                )
-                if fold_problem:
-                    rows.append(_line(metric, period, None, "not_computed", fold_problem, inputs, window))
-                    continue
-                names = (*formula.numerator.plus, *formula.numerator.minus)
-                present = any(key in (series.get(name) or {}) for name in names for key in keys)
-                if numerator is None and not present:
-                    rows.append(
-                        _line(
-                            metric,
-                            period,
-                            None,
-                            "input_absent",
-                            "input_absent",
-                            inputs,
-                            window,
-                            message=_OFF_BALANCE_ABSENT if "off_balance_obligations" in names else _STOCK_ABSENT,
-                        )
-                    )
-                    continue
-            else:
-                shared = frozenset(formula.numerator.plus) & frozenset(formula.denominator.plus)
-                numerator, num_fold = _total(
-                    keys,
-                    series,
-                    formula.numerator,
-                    sign_convention,
-                    pay_plus=False,
-                    basis=basis,
-                    pay_names=shared,
-                    aggregations=aggregations,
-                )
-                denominator, den_fold = _total(
-                    keys,
-                    series,
-                    formula.denominator,
-                    sign_convention,
-                    pay_plus=True,
-                    basis=basis,
-                    aggregations=aggregations,
-                )
-                fold_problem = num_fold or den_fold
-                if fold_problem:
-                    rows.append(_line(metric, period, None, "not_computed", fold_problem, inputs, window))
-                    continue
+                continue
             if numerator is None or denominator is None:
                 rows.append(_line(metric, period, None, "missing_input", "no_binding", inputs, window))
                 continue
@@ -663,21 +755,25 @@ def composed_ratio(
                 continue
             line = _line(metric, period, _ratio(numerator, denominator), "computed", None, inputs, window)
             if metric == "net_debt_ebitda":
-                used = [period] if ebitda_ltm else [item for item in ordered if item["period_id"] in set(window or [])]
+                used = [period] if flow_ltm else [item for item in ordered if item["period_id"] in set(window or [])]
                 line["components"] = {
-                    "net_debt": _component_cells(facts, primaries["net_debt"], _same_end(periods, period)),
-                    "ebitda": _component_cells(facts, primaries["ebitda"], used or [period]),
+                    name: _component_cells(facts, primaries[name], _same_end(periods, period)) for name in num_names
                 }
+                line["components"].update(
+                    {
+                        name: _component_cells(facts, primaries[name], used or [period])
+                        for name in den_names
+                    }
+                )
             rows.append(line)
     if metric == "escrow_coverage":
         warnings.extend(_escrow_coverage_book(rows, facts, bindings, periods, absent, warnings))
     status = "succeeded"
     message = None
-    debt_absent = metric == "net_debt_ebitda" and any(row["status"] == "input_absent" for row in rows)
-    stock_absent = metric in _STOCK_RATIOS and any(row["status"] == "input_absent" for row in rows)
-    if (debt_absent or stock_absent) and not any(row["status"] == "computed" for row in rows):
+    stock_absent = numerator_stock and window_name == "LTM" and any(row["status"] == "input_absent" for row in rows)
+    if stock_absent and not any(row["status"] == "computed" for row in rows):
         status = "input_absent"
-        message = next((row.get("message") for row in rows if row.get("message")), _NET_DEBT_ABSENT)
+        message = next((row.get("message") for row in rows if row.get("message")), absent_message)
     elif roll and rows and not any(row["status"] == "computed" for row in rows):
         if any(row.get("reason") == "partial_window" for row in rows):
             status = "partial_window"
@@ -685,14 +781,85 @@ def composed_ratio(
     elif any(row.get("reason") == "ambiguous_stock" for row in rows) and not any(row["status"] == "computed" for row in rows):
         status = "not_computed"
         message = _AMBIGUOUS_STOCK
-    elif any(row.get("reason") == "not_folded" for row in rows) and not any(
+    elif any(row.get("reason") in {"not_folded", "aggregation_unknown"} for row in rows) and not any(
         row["status"] == "computed" for row in rows
     ):
         status = "not_computed"
     result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
     if message:
         result["message"] = message
-    return result
+    return _publish_composed(result, definition, collect, sign_convention, plan)
+
+
+_KNOWN_FOLDS = frozenset({"sum", "last", "average", "none"})
+
+
+def _term_fold(name: str, aggregations: Mapping[str, str] | None, default: str) -> str | None:
+    if aggregations is None:
+        return default
+    fold = aggregations.get(name)
+    if fold not in _KNOWN_FOLDS:
+        return None
+    return fold
+
+
+def _all_last(names: tuple[str, ...], aggregations: Mapping[str, str] | None, default: str) -> bool:
+    return bool(names) and all(_term_fold(name, aggregations, default) == "last" for name in names)
+
+
+def _series_present(keys, series: dict, names: tuple[str, ...]) -> bool:
+    return any(key in (series.get(name) or {}) for name in names for key in keys)
+
+
+def _stock_message(names: tuple[str, ...]) -> str:
+    if "off_balance_obligations" in names:
+        return _OFF_BALANCE_ABSENT
+    if names == ("net_debt",):
+        return _NET_DEBT_ABSENT
+    return _STOCK_ABSENT
+
+
+def _fold_side(
+    keys,
+    series: dict,
+    side: Side,
+    *,
+    aggregations: Mapping[str, str] | None,
+    default: str,
+    pay_plus: bool,
+    pay_names: frozenset[str],
+    convention: str,
+    basis: dict,
+    period: dict,
+    periods: list[dict],
+    aligned: dict,
+) -> tuple[Decimal | None, str | None]:
+    """Остаток (`last`) берётся на дату, поток складывается окном. Неизвестная свёртка не подменяется."""
+
+    total = Decimal(0)
+    for name, sign, forced_pay in (
+        *((item, 1, False) for item in side.plus),
+        *((item, -1, True) for item in side.minus),
+    ):
+        fold = _term_fold(name, aggregations, default)
+        if fold is None:
+            return None, "aggregation_unknown"
+        if fold == "last":
+            value, problem = _stock_choice(period, periods, aligned, series.get(name) or {})
+            if problem:
+                return None, problem
+            if value is None:
+                return None, None
+            total += sign * value
+            continue
+        pay = forced_pay or pay_plus or name in pay_names
+        part, problem = _part(keys, series, name, convention, pay, basis, aggregations)
+        if problem:
+            return None, problem
+        if part is None:
+            return None, None
+        total += sign * part
+    return total, None
 
 
 def _rolls(primaries: dict, formula: Composed) -> bool:
@@ -2305,6 +2472,8 @@ def select_ratio(
             profile=profile,
             aggregations=aggregations,
             plan=plan,
+            definition=definition,
+            collect=collect,
         )
     attempt_evidence = None
     if collect is None:
@@ -2573,7 +2742,6 @@ _NET_DEBT_ABSENT = (
     "Чистый долг не содержит значений на оси, по которой считается отношение к EBITDA. "
     "Коэффициент не рассчитан."
 )
-_STOCK_RATIOS = frozenset({"total_debt_ebitda", "debt_off_balance_ebitda"})
 _EBITDA_STOCK = frozenset({"net_debt_ebitda", "total_debt_ebitda", "debt_off_balance_ebitda"})
 _OFF_BALANCE_ABSENT = (
     "Забалансовые обязательства не привязаны. "

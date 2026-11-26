@@ -281,6 +281,54 @@ def _coverage_catalog(model_types, financial) -> dict:
     return found
 
 
+_COMPOSED_METRICS = frozenset(
+    {
+        "net_debt_ebitda",
+        "escrow_coverage",
+        "total_debt_ebitda",
+        "debt_off_balance_ebitda",
+    }
+)
+
+
+def _composed_definitions(model_types, financial) -> dict:
+    """Составные формулы каталога. Версия определения не выдумывается, исполнитель свой."""
+
+    from finance_analysis.application.model_types import load_coverage_document
+    from finance_analysis.domain.execution_contract import (
+        CatalogMetricRecord,
+        compile_definition,
+    )
+
+    document = load_coverage_document().get("metrics") or {}
+    indicators = getattr(financial, "indicators", None) or {}
+    expressions = getattr(model_types, "metric_expressions", None) or {}
+    composed = getattr(model_types, "composed", None) or {}
+    found = {}
+    for metric in _COMPOSED_METRICS:
+        expression = expressions.get(metric)
+        if expression is None or metric not in composed:
+            continue
+        body = document.get(metric) or {}
+        formula_id = body.get("formula_id") if isinstance(body.get("formula_id"), str) else None
+        version = body.get("definition_version") if isinstance(body.get("definition_version"), str) else None
+        indicator = indicators.get(metric)
+        window = indicator.window if indicator is not None and indicator.window else composed[metric].window
+        found[metric] = compile_definition(
+            CatalogMetricRecord(
+                metric_id=metric,
+                expression=expression,
+                executor_key="composed",
+                executor_id="composed_ratio",
+                executor_version="composed_ratio@1",
+                formula_id=formula_id,
+                definition_version=version,
+                window=window,
+            )
+        )
+    return found
+
+
 def _attach_book_rows(envelope: dict, got: dict) -> None:
     """Кладёт цитаты строк книги в результат, только когда список не пуст.
 
@@ -1105,6 +1153,9 @@ class Analyses:
             warnings=warnings,
             catalog=_coverage_catalog(svc.model_types, getattr(svc, "financial_catalog", None)),
             variants=_variant_ids(svc.model_types.composed),
+        )
+        definitions.update(
+            _composed_definitions(svc.model_types, getattr(svc, "financial_catalog", None))
         )
         plans = plans_for(
             metrics,

@@ -115,6 +115,9 @@ class CalculationEvidence:
     sums_additions: int = 0
     evidence_status: str = "evidence_available"
     published_read: str | None = None
+    definition_version: str | None = None
+    executor_id: str | None = None
+    executor_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,7 +154,15 @@ class EvidenceBook:
         self.fallback = {} if self.fallback is None else self.fallback
         self.basis_sides = [] if self.basis_sides is None else self.basis_sides
 
-    def freeze(self, execution: str, implementation: str) -> CalculationEvidence:
+    def freeze(
+        self,
+        execution: str,
+        implementation: str,
+        *,
+        definition_version: str | None = None,
+        executor_id: str | None = None,
+        executor_version: str | None = None,
+    ) -> CalculationEvidence:
         return CalculationEvidence(
             metric=self.metric,
             execution_status=execution,
@@ -168,6 +179,9 @@ class EvidenceBook:
             basis_sides=tuple(self.basis_sides or ()),
             sums_additions=self.sums_additions,
             evidence_status="evidence_available",
+            definition_version=definition_version,
+            executor_id=executor_id,
+            executor_version=executor_version,
         )
 
 

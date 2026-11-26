@@ -167,6 +167,12 @@ def view_from_evidence(evidence: CalculationEvidence) -> dict:
     limited["basis_sides"] = [_record(side) for side in evidence.basis_sides]
     if evidence.published_read is not None:
         limited["published_read"] = evidence.published_read
+    if evidence.definition_version is not None:
+        limited["definition_version"] = evidence.definition_version
+    if evidence.executor_id is not None:
+        limited["executor_id"] = evidence.executor_id
+    if evidence.executor_version is not None:
+        limited["executor_version"] = evidence.executor_version
     return limited
 
 
