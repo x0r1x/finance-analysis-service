@@ -185,6 +185,136 @@ def test_a_missing_executor_refuses_without_the_old_call(route, monkeypatch):
     assert outcome.evidence is None
 
 
+def test_a_request_definition_is_checked_when_the_context_has_none(monkeypatch):
+    """Контекст пуст, а определение лежит на запросе. Проверка и вызов — один объект.
+
+    Ключ, которого нет у маршрута, — отказ. Калькулятор не вызывается.
+    """
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("select_ratio")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", boom)
+    monkeypatch.setattr("finance_analysis.domain.metrics.calculate_coverage", boom)
+    definition = _definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="loan_life",
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _request("dscr", common=_common([], []), composed={}, definition=definition),
+        _context(),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "incompatible_executor"
+    assert outcome.result["rows"] == []
+
+
+def test_two_different_definitions_refuse_before_the_calculator(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("select_ratio")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", boom)
+    one = _definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+    other = _definition(
+        "dscr",
+        _expr(numerator_plus=("ebitda",), denominator_plus=("debt_service",)),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+    assert one is not other
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _request("dscr", common=_common([], []), composed={}, definition=one),
+        _context(other),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "definition_mismatch"
+    assert outcome.result["rows"] == []
+
+
+def test_the_executor_receives_the_definition_that_was_checked():
+    definition = _definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+    seen = {}
+
+    class _Spy:
+        identities = (("coverage", "calculate_coverage", "calculate_coverage@1"),)
+        compatible = frozenset({"coverage"})
+
+        def __init__(self, _request):
+            return None
+
+        def execute(self, context):
+            seen["definition"] = context.definition
+            return CalculationOutcome(
+                {"metric": "dscr", "rows": [], "needs_input": [], "warnings": [], "status": "succeeded"},
+                None,
+            )
+
+    from finance_analysis.domain.calculation_evidence import CalculationOutcome
+
+    _, _, _, run_calculation = _dispatch()
+    run_calculation(
+        "select_ratio",
+        _request("dscr", definition=definition),
+        _context(),
+        executors={"select_ratio": _Spy},
+    )
+    assert seen["definition"] is definition
+
+
+def test_an_unregistered_executor_version_refuses(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("select_ratio")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", boom)
+    definition = _definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@2",
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _request("dscr", common=_common([], []), composed={}),
+        _context(definition),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "incompatible_executor"
+
+
+def test_the_plan_stays_on_the_context_not_the_request():
+    """План — контракт исполнения. Финансовые параметры остаются на запросе."""
+
+    _, calculation_request, _, _ = _dispatch()
+    assert "plan" not in calculation_request.__dataclass_fields__
+
+
+def test_route_for_and_the_registry_are_one_registration():
+    import finance_analysis.domain.metric_dispatch as dispatch
+
+    assert dispatch.route_names() == frozenset(dispatch.CALCULATION_EXECUTORS)
+    assert dispatch.route_names() == frozenset(dispatch._returns_of_route_for())
+
+
 def test_an_incompatible_executor_does_not_fall_through_to_select_ratio(monkeypatch):
     def boom(*_args, **_kwargs):
         raise AssertionError("select_ratio")
@@ -233,7 +363,6 @@ def test_an_in_memory_definition_change_changes_the_result():
             _request(
                 "dscr",
                 common=_common(facts, bindings),
-                plan=plan,
                 definition=definition,
                 composed={},
                 concepts=frozenset({"cfads", "ebitda", "debt_service"}),
@@ -286,7 +415,6 @@ def test_an_undeclared_concept_refuses_through_the_dispatcher():
             _request(
                 "dscr",
                 common=_common(facts, bindings),
-                plan=foreign,
                 definition=definition,
                 composed={},
             ),
@@ -349,23 +477,22 @@ def test_specialized_routes_keep_the_same_call_without_a_definition(monkeypatch)
             basis="period_end",
             direction="lookback",
             common=common,
-            plan=plan,
         ),
         _context(plan=plan),
     )
     run_calculation(
         "loan_life",
-        _request("plcr", basis="period_start", common=common, plan=plan),
+        _request("plcr", basis="period_start", common=common),
         _context(plan=plan),
     )
     run_calculation(
         "reduced",
-        _request("dscr_min", common=common, plan=plan, collect=collected),
+        _request("dscr_min", common=common, collect=collected),
         _context(plan=plan),
     )
     run_calculation(
         "adscr",
-        _request("adscr", direction="lookforward", common=common, plan=plan, collect=collected),
+        _request("adscr", direction="lookforward", common=common, collect=collected),
         _context(plan=plan),
     )
     assert seen["cover"]["plan"] is plan

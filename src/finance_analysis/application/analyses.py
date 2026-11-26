@@ -1218,9 +1218,7 @@ class Analyses:
                     row_fallbacks=svc.model_types.row_fallbacks,
                     links=links,
                     statement_sheets=statement_sheets,
-                    plan=plan,
                     collect=evidences,
-                    definition=definitions.get(metric),
                     outflows=outflows,
                 ),
                 MetricExecutionContext(
@@ -1230,7 +1228,7 @@ class Analyses:
                 ),
             )
             result = outcome.result
-            if result.get("reason") in {"missing_executor", "incompatible_executor"}:
+            if result.get("reason") in {"missing_executor", "incompatible_executor", "definition_mismatch"}:
                 warnings.append({"code": result["reason"], "params": {"metric": metric}})
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})
