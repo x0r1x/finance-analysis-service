@@ -185,12 +185,58 @@ def test_missing_or_invalid_axes_are_diagnosed(fields, missing):
     assert raised.value.extra["fields"] == [missing]
 
 
-def test_unknown_block_kind_is_diagnosed():
+@pytest.mark.parametrize(
+    ("block_index", "axis_kind", "with_periods", "observations"),
+    [
+        (0, "params", False, [("Inputs!B3", Decimal(11))]),
+        (-1, "time", False, [("Cash Flow!B3", Decimal(5)), ("Cash Flow!C3", Decimal(6))]),
+        (-1, "time", True, [("Cash Flow!B3", Decimal(5)), ("Cash Flow!C3", Decimal(6))]),
+    ],
+)
+def test_new_block_kind_preserves_facts_with_a_supported_axis(
+    block_index, axis_kind, with_periods, observations
+):
     payload = _context("1.15.0", mixed=True)
-    payload["blocks"][1]["kind"] = "future_kind"
+    block = payload["blocks"][block_index]
+    block["kind"] = "future_kind"
+    if with_periods:
+        block["periods"] = [dict(period) for period in payload["axes"][0]["periods"]]
+    tables, _ = project(parse_context(payload), model_id=JOB, build="build")
+    row = next(row for row in tables["dim_row"] if row["block_id"] == block["block_id"])
+    assert row["block_kind"] == "future_kind"
+    facts = [fact for fact in tables["fact_observation"] if fact["row_key"] == row["row_key"]]
+    assert {fact["axis_kind"] for fact in facts} == {axis_kind}
+    assert [(fact["cell_id"], fact["value_dec"]) for fact in facts] == observations
+
+
+def test_new_time_block_with_conflicting_columns_is_diagnosed():
+    payload = _context("1.15.0", mixed=True)
+    block = payload["blocks"][-1]
+    block["kind"] = "future_kind"
+    block["periods"] = [dict(period, col=period["col"] + 1) for period in payload["axes"][0]["periods"]]
     with pytest.raises(UnsupportedBuilderShape) as raised:
         parse_context(payload)
-    assert raised.value.extra["fields"] == ["blocks[1].kind"]
+    assert raised.value.extra["fields"] == ["blocks[3].periods"]
+
+
+@pytest.mark.parametrize("problem", ["missing_axis", "mixed_axes", "no_series", "axis_collision"])
+def test_new_block_kind_with_unsupported_axis_is_diagnosed(problem):
+    payload = _context("1.15.0", mixed=True)
+    block = payload["blocks"][1]
+    block["kind"] = "future_kind"
+    series = block["rows"][0]["series"]
+    if problem == "missing_axis":
+        series[0]["axis_id"] = "unknown-axis"
+    elif problem == "mixed_axes":
+        series.append({"axis_id": payload["axes"][0]["id"], "values": ["5"]})
+    elif problem == "no_series":
+        block["rows"][0]["series"] = []
+        block["rows"][0]["values"] = ["125.5", "0"]
+    else:
+        payload["axes"].append({**payload["axes"][0], "id": block["block_id"]})
+    with pytest.raises(UnsupportedBuilderShape) as raised:
+        parse_context(payload)
+    assert raised.value.extra["fields"] == ["blocks[1]"]
 
 
 async def test_projection_refresh_preserves_bindings_and_resolves_only_calendar_periods(

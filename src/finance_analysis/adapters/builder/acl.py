@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -92,10 +92,13 @@ class RowIn(_In):
 class BlockIn(_In):
     block_id: str
     sheet: str
-    kind: Literal["timeline", "params", "key_value", "matrix"]
+    kind: str
     rows: list[Any]
     label_col: int | None = None
     periods: list[Any] | None = None
+
+
+_KNOWN_BLOCK_KINDS = frozenset({"timeline", "params", "key_value", "matrix"})
 
 
 class IdCountIn(_In):
@@ -297,6 +300,7 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         built = _axis_from(key, axis, missing, max_col)
         if built is not None:
             axes[built.id] = built
+    time_axes = {axis_id: axis for axis_id, axis in axes.items() if axis.axis_kind == "time" and axis.periods}
     blocks_raw = payload.get("blocks")
     if not isinstance(blocks_raw, list):
         missing.append("blocks")
@@ -312,15 +316,17 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         except ValidationError as exc:
             missing.extend(_fields(exc, path))
             continue
-        _synthesize_axis(block, parsed, bindex, axes, missing, max_col)
-        block_rows = parsed.rows
-        if not isinstance(block_rows, list):
-            missing.append(f"{path}.rows")
-            continue
-        for rindex, row in enumerate(block_rows):
+        known_kind = parsed.kind in _KNOWN_BLOCK_KINDS
+        if known_kind:
+            _synthesize_axis(block, parsed, bindex, axes, missing, max_col)
+        row_start = len(rows)
+        before = len(missing)
+        for rindex, row in enumerate(parsed.rows):
             built = _read_row(row, parsed, bindex, rindex, missing, max_row)
             if built is not None:
                 rows.append(built)
+        if not known_kind and len(missing) == before:
+            _read_new_block_axis(block, parsed, bindex, rows[row_start:], time_axes, axes, missing, max_col)
     if missing:
         raise UnsupportedBuilderShape(
             "форма context.json не поддерживается",
@@ -328,6 +334,51 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         )
     used = {sheet: (max_row.get(sheet, 1), max_col.get(sheet, 1)) for sheet in set(max_row) | set(max_col)}
     return WorkbookSnapshot(axes=axes, rows=tuple(rows), links=(), used_range=used)
+
+
+def _read_new_block_axis(
+    raw: dict,
+    block: BlockIn,
+    bindex: int,
+    rows: list[SnapshotRow],
+    time_axes: dict[str, SnapshotAxis],
+    axes: dict[str, SnapshotAxis],
+    missing: list[str],
+    max_col: dict[str, int],
+) -> None:
+    """Infer the axis only from the published series and column map."""
+    path = f"blocks[{bindex}]"
+    declared = raw.get("axis_ids")
+    if declared is not None and (
+        not isinstance(declared, list) or any(not isinstance(axis_id, str) or not axis_id for axis_id in declared)
+    ):
+        missing.append(f"{path}.axis_ids")
+        return
+    if any(not row.series for row in rows):
+        missing.append(path)
+        return
+
+    references = {series.axis_id for row in rows for series in row.series}
+    if not declared and block.periods and block.block_id and block.block_id not in axes and (
+        not rows or references == {block.block_id}
+    ):
+        _synthesize_axis(raw, block, bindex, axes, missing, max_col)
+        return
+
+    selected = references if declared is None else set(declared)
+    if not selected or not references <= selected or any(
+        axis_id not in time_axes or time_axes[axis_id].sheet != block.sheet for axis_id in selected
+    ):
+        missing.append(path)
+        return
+    if block.periods:
+        local = _periods(block.periods, path, missing, require_index=False)
+        columns = [(period.period_key, period.col) for period in sorted(local, key=lambda item: item.index)]
+        if len(selected) != 1 or columns != [
+            (period.period_key, period.col)
+            for period in sorted(time_axes[next(iter(selected))].periods, key=lambda item: item.index)
+        ]:
+            missing.append(f"{path}.periods")
 
 
 def _synthesize_axis(
