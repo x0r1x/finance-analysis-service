@@ -162,12 +162,14 @@ class EvidenceBook:
         definition_version: str | None = None,
         executor_id: str | None = None,
         executor_version: str | None = None,
+        evidence_status: str = "evidence_available",
+        stamp: str | None = None,
     ) -> CalculationEvidence:
         return CalculationEvidence(
             metric=self.metric,
             execution_status=execution,
             implementation=implementation,
-            calculation_stamp=calculation_stamp(),
+            calculation_stamp=calculation_stamp() if stamp is None else stamp,
             plan_content_sha256=self.plan_content_sha256,
             sign_convention=self.sign_convention,
             marker_class=self.marker_class,
@@ -178,7 +180,7 @@ class EvidenceBook:
             period_results=tuple(self.periods or ()),
             basis_sides=tuple(self.basis_sides or ()),
             sums_additions=self.sums_additions,
-            evidence_status="evidence_available",
+            evidence_status=evidence_status,
             definition_version=definition_version,
             executor_id=executor_id,
             executor_version=executor_version,
@@ -299,4 +301,85 @@ def calculation_stamp() -> str:
     """16 hex исходников пути числа и констант кванта. Файла ``metrics.py`` в хеше нет."""
 
     text = "\n".join(f"{name}\n{source}" for name, source in calculation_sources())
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def declared_composed_dependencies() -> tuple[tuple[str, Any], ...]:
+    """Исходники составного исполнителя. Штамп покрытия от них не зависит."""
+
+    from finance_analysis.domain.covenant import (
+        _all_last,
+        _chosen_keys,
+        _definition_formula,
+        _fold_side,
+        _part,
+        _rolls,
+        _series_present,
+        _span,
+        _stock_choice,
+        _term_fold,
+        composed_ratio,
+    )
+    from finance_analysis.domain.cover_metrics import _as_date as _cover_as_date
+    from finance_analysis.domain.cover_metrics import (
+        _ctx,
+        _ordered,
+        _ratio,
+        _window,
+        grain_months,
+    )
+    from finance_analysis.domain.metrics import (
+        _assume_sheet_units,
+        _axes_of,
+        _flow_basis,
+        _payment,
+        _sums,
+        aligned_keys,
+        quantize_ratio,
+        unconfirmed_scale,
+    )
+    from finance_analysis.domain.period_basis import basis_of
+
+    named = (
+        ("_all_last", _all_last),
+        ("_as_date", _cover_as_date),
+        ("_ctx", _ctx),
+        ("_definition_formula", _definition_formula),
+        ("_ordered", _ordered),
+        ("_assume_sheet_units", _assume_sheet_units),
+        ("_axes_of", _axes_of),
+        ("_chosen_keys", _chosen_keys),
+        ("_flow_basis", _flow_basis),
+        ("_fold_side", _fold_side),
+        ("_part", _part),
+        ("_payment", _payment),
+        ("_ratio", _ratio),
+        ("_rolls", _rolls),
+        ("_series_present", _series_present),
+        ("_span", _span),
+        ("_stock_choice", _stock_choice),
+        ("_sums", _sums),
+        ("_term_fold", _term_fold),
+        ("_window", _window),
+        ("aligned_keys", aligned_keys),
+        ("basis_of", basis_of),
+        ("composed_ratio", composed_ratio),
+        ("grain_months", grain_months),
+        ("quantize_ratio", quantize_ratio),
+        ("unconfirmed_scale", unconfirmed_scale),
+    )
+    return tuple(sorted(named))
+
+
+def composed_calculation_sources() -> tuple[tuple[str, str], ...]:
+    parts = [("composed", "1")]
+    parts.extend((name, _dependency_source(obj)) for name, obj in declared_composed_dependencies())
+    return tuple(parts)
+
+
+@lru_cache(maxsize=1)
+def composed_calculation_stamp() -> str:
+    """16 hex исходников составной свёртки. ``composed_ratio@1`` этот хеш не заменяет."""
+
+    text = "\n".join(f"{name}\n{source}" for name, source in composed_calculation_sources())
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]

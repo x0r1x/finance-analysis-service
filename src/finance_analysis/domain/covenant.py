@@ -19,6 +19,7 @@ from typing import Any
 from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.calculation_evidence import (
     EvidenceBook,
+    FactUse,
     PeriodResult,
     TransformationStep,
 )
@@ -50,6 +51,7 @@ from finance_analysis.domain.metrics import (
     _flow_basis,
     _payment,
     _primaries,
+    _step,
     _sums,
     aligned_keys,
     calculate_coverage,
@@ -483,24 +485,62 @@ def _mark_profile(result: dict, definition) -> dict:
     }
 
 
-def _remember_composed(result: dict, definition, collect, sign_convention: str, plan) -> dict:
-    """Версии определения и исполнителя. implementation_version составной формуле не выдумывается."""
+def _open_trace(metric: str, definition, collect, sign_convention: str, plan):
+    if collect is None or definition is None:
+        return None
+    return EvidenceBook(
+        metric=str(metric),
+        sign_convention=sign_convention,
+        marker_class=None,
+        explicit_phases=False,
+        plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
+    )
+
+
+def _trace_ready(book: EvidenceBook) -> bool:
+    """Успешный след называет операнды, шаги и факты. Пустая оболочка им не считается."""
+
+    computed = [item for item in book.periods or [] if item.status == "computed"]
+    if not computed or not book.fact_uses:
+        return False
+    return all(item.numerator is not None and item.denominator is not None and item.steps for item in computed)
+
+
+def _fill_periods(book: EvidenceBook, rows: list[dict]) -> None:
+    detailed = {(item.axis_id, item.period_id): item for item in book.periods or []}
+    ordered = []
+    for row in rows:
+        key = (row.get("axis_id"), row.get("period_id"))
+        found = detailed.get(key)
+        if found is not None:
+            ordered.append(found)
+            continue
+        window = row.get("window") or ()
+        ordered.append(
+            PeriodResult(
+                axis_id=row.get("axis_id"),
+                period_id=row.get("period_id"),
+                status=str(row.get("status")),
+                reason=row.get("reason"),
+                value=row.get("value"),
+                numerator=None,
+                denominator=None,
+                steps=(),
+                window_periods=tuple(window),
+            )
+        )
+    book.periods = ordered
+
+
+def _remember_composed(result: dict, definition, collect, sign_convention: str, plan, book=None) -> dict:
+    """Версии определения и исполнителя. Пустой успешный след не публикуется как готовый."""
 
     if collect is None or definition is None:
         return result
-    recorded = [
-        PeriodResult(
-            axis_id=row.get("axis_id"),
-            period_id=row.get("period_id"),
-            status=str(row.get("status")),
-            reason=row.get("reason"),
-            value=row.get("value"),
-            numerator=None,
-            denominator=None,
-            steps=(),
-        )
-        for row in result.get("rows") or []
-    ]
+    if book is None:
+        book = _open_trace(str(result.get("metric") or definition.metric_id), definition, collect, sign_convention, plan)
+    assert book is not None
+    _fill_periods(book, list(result.get("rows") or []))
     status = result.get("status")
     if status == "succeeded":
         execution = "succeeded"
@@ -508,14 +548,9 @@ def _remember_composed(result: dict, definition, collect, sign_convention: str, 
         execution = "refused"
     else:
         execution = "not_run"
-    book = EvidenceBook(
-        metric=str(result.get("metric") or definition.metric_id),
-        sign_convention=sign_convention,
-        marker_class=None,
-        explicit_phases=False,
-        plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
-        periods=recorded,
-    )
+    from finance_analysis.domain.calculation_evidence import composed_calculation_stamp
+
+    ready = execution == "succeeded" and _trace_ready(book)
     collect.append(
         book.freeze(
             execution,
@@ -523,13 +558,17 @@ def _remember_composed(result: dict, definition, collect, sign_convention: str, 
             definition_version=definition.definition_version,
             executor_id=definition.executor_id,
             executor_version=definition.executor_version,
+            evidence_status="evidence_available" if ready else "evidence_unavailable",
+            stamp=composed_calculation_stamp(),
         )
     )
     return result
 
 
-def _publish_composed(result: dict, definition, collect, sign_convention: str, plan) -> dict:
-    return _remember_composed(_mark_profile(result, definition), definition, collect, sign_convention, plan)
+def _publish_composed(result: dict, definition, collect, sign_convention: str, plan, book=None) -> dict:
+    return _remember_composed(
+        _mark_profile(result, definition), definition, collect, sign_convention, plan, book
+    )
 
 
 def composed_ratio(
@@ -548,9 +587,14 @@ def composed_ratio(
     definition: Any | None = None,
     collect: list | None = None,
 ) -> dict:
+    book = _open_trace(metric, definition, collect, sign_convention, plan)
+
+    def finish(result: dict) -> dict:
+        return _publish_composed(result, definition, collect, sign_convention, plan, book)
+
     resolved = _definition_formula(definition)
     if isinstance(resolved, str):
-        return _publish_composed(_composed_stop(metric, resolved), definition, collect, sign_convention, plan)
+        return finish(_composed_stop(metric, resolved))
     if resolved is not None:
         formula = resolved
     if definition is not None and plan is not None and (
@@ -559,9 +603,7 @@ def composed_ratio(
         or plan.variant_source != definition.variant_source
         or plan.definition_hash != definition.definition_hash
     ):
-        return _publish_composed(
-            _composed_stop(metric, "definition_mismatch"), definition, collect, sign_convention, plan
-        )
+        return finish(_composed_stop(metric, "definition_mismatch"))
     blocked = methodology_block(
         profile,
         bindings,
@@ -574,17 +616,19 @@ def composed_ratio(
         ),
     )
     if blocked:
-        return blocked
+        return finish(blocked)
     if plan is not None and plan.status in {"needs_input", "missing_input"}:
         needs = [item.as_dict() for item in plan.needs_input]
-        return {
-            "metric": metric,
-            "rows": [],
-            "needs_input": needs,
-            "missing_inputs": [item.subject for item in plan.needs_input],
-            "warnings": [item.as_dict() for item in plan.warnings],
-            "status": plan.status,
-        }
+        return finish(
+            {
+                "metric": metric,
+                "rows": [],
+                "needs_input": needs,
+                "missing_inputs": [item.subject for item in plan.needs_input],
+                "warnings": [item.as_dict() for item in plan.warnings],
+                "status": plan.status,
+            }
+        )
     confirmed: frozenset[str] | None = None
     primaries: dict | None = None
     if plan is not None:
@@ -618,28 +662,37 @@ def composed_ratio(
     if plan is not None:
         outside = [name for name in needed if name not in (confirmed or frozenset())]
         if outside:
-            return _unplanned(metric, outside)
+            return finish(_unplanned(metric, outside))
         lost = [name for name in needed if name not in (primaries or {})]
         if lost:
-            return _unplanned(metric, lost)
+            return finish(_unplanned(metric, lost))
     else:
         missing = _missing(metric, bindings, needed, absent)
         if missing:
-            return missing
+            return finish(missing)
         primaries = _primaries(bindings, absent)
     assert primaries is not None
     inputs = list(dict.fromkeys(needed))
     if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
-        return _refused(metric, periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)
+        return finish(_refused(metric, periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs))
     flow = {_flow_basis(primaries[name]) for name in inputs}
     reconciled = formula.window == "LTM" or (formula.window == "period" and _rolls(primaries, formula))
     if len(flow) > 1 and not reconciled:
-        return _refused(metric, periods, "basis_mismatch", MIXED_BASIS, inputs)
+        return finish(_refused(metric, periods, "basis_mismatch", MIXED_BASIS, inputs))
     warnings: list[dict] = []
     sheet = _assume_sheet_units(facts, [primaries[name] for name in inputs], warnings)
     aligned = aligned_keys(periods)
     series = {
-        name: _sums(facts, primaries[name], aligned, periods, sheet=sheet) for name in dict.fromkeys(needed)
+        name: _sums(
+            facts,
+            primaries[name],
+            aligned,
+            periods,
+            sheet=sheet,
+            book=book,
+            concept=name,
+        )
+        for name in dict.fromkeys(needed)
     }
     basis = {name: basis_of(primaries[name])[0] for name in series}
     roll = formula.window == "period" and _rolls(primaries, formula)
@@ -699,7 +752,7 @@ def composed_ratio(
                 message = PARTIAL_DENOMINATOR if roll and problem == "partial_window" else None
                 rows.append(_line(metric, period, None, "not_computed", problem, inputs, window, message=message))
                 continue
-            numerator, num_fold = _fold_side(
+            numerator, num_fold, num_used = _fold_side(
                 keys,
                 series,
                 formula.numerator,
@@ -713,7 +766,7 @@ def composed_ratio(
                 periods=periods,
                 aligned=aligned,
             )
-            denominator, den_fold = _fold_side(
+            denominator, den_fold, den_used = _fold_side(
                 keys,
                 series,
                 formula.denominator,
@@ -749,11 +802,20 @@ def composed_ratio(
             if numerator is None or denominator is None:
                 rows.append(_line(metric, period, None, "missing_input", "no_binding", inputs, window))
                 continue
+            _cite_used(book, period, aligned, num_used, "numerator")
+            _cite_used(book, period, aligned, den_used, "denominator")
+            steps: list = []
+            _step(steps, "numerator_assembly", _operand_refs(book, period, "numerator"), numerator)
+            _step(steps, "denominator_assembly", _operand_refs(book, period, "denominator"), denominator)
             if denominator == 0:
                 status = "no_debt_service" if metric == "dscr" else "missing_input"
+                _record_period(book, period, status, "zero_denominator", None, numerator, denominator, steps, window)
                 rows.append(_line(metric, period, None, status, "zero_denominator", inputs, window))
                 continue
-            line = _line(metric, period, _ratio(numerator, denominator), "computed", None, inputs, window)
+            value = _ratio(numerator, denominator)
+            _step(steps, "ratio", ("step:1", "step:2"), value)
+            _record_period(book, period, "computed", None, value, numerator, denominator, steps, window)
+            line = _line(metric, period, value, "computed", None, inputs, window)
             if metric == "net_debt_ebitda":
                 used = [period] if flow_ltm else [item for item in ordered if item["period_id"] in set(window or [])]
                 line["components"] = {
@@ -788,7 +850,7 @@ def composed_ratio(
     result = {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
     if message:
         result["message"] = message
-    return _publish_composed(result, definition, collect, sign_convention, plan)
+    return finish(result)
 
 
 _KNOWN_FOLDS = frozenset({"sum", "last", "average", "none"})
@@ -833,33 +895,39 @@ def _fold_side(
     period: dict,
     periods: list[dict],
     aligned: dict,
-) -> tuple[Decimal | None, str | None]:
+) -> tuple[Decimal | None, str | None, tuple[tuple[str, tuple], ...]]:
     """Остаток (`last`) берётся на дату, поток складывается окном. Неизвестная свёртка не подменяется."""
 
     total = Decimal(0)
+    used: list[tuple[str, tuple]] = []
     for name, sign, forced_pay in (
         *((item, 1, False) for item in side.plus),
         *((item, -1, True) for item in side.minus),
     ):
         fold = _term_fold(name, aggregations, default)
         if fold is None:
-            return None, "aggregation_unknown"
+            return None, "aggregation_unknown", ()
         if fold == "last":
-            value, problem = _stock_choice(period, periods, aligned, series.get(name) or {})
+            value, problem, key = _stock_choice(period, periods, aligned, series.get(name) or {})
             if problem:
-                return None, problem
-            if value is None:
-                return None, None
+                return None, problem, ()
+            if value is None or key is None:
+                return None, None, ()
             total += sign * value
+            used.append((name, key))
             continue
+        chosen, problem = _chosen_keys(keys, name, basis, aggregations)
+        if problem:
+            return None, problem, ()
         pay = forced_pay or pay_plus or name in pay_names
         part, problem = _part(keys, series, name, convention, pay, basis, aggregations)
         if problem:
-            return None, problem
+            return None, problem, ()
         if part is None:
-            return None, None
+            return None, None, ()
         total += sign * part
-    return total, None
+        used.extend((name, key) for key in chosen or ())
+    return total, None, tuple(used)
 
 
 def _rolls(primaries: dict, formula: Composed) -> bool:
@@ -2618,10 +2686,10 @@ def _stock_choice(
     axis = period["axis_id"]
     own = aligned.get((axis, period["period_id"]), (axis, period["period_id"]))
     if own in values:
-        return values[own], None
+        return values[own], None, own
     end = period.get("period_end")
     if end is None:
-        return None, None
+        return None, None, None
     seen: dict[tuple, dict] = {}
     for item in periods:
         if item.get("period_end") != end:
@@ -2630,17 +2698,18 @@ def _stock_choice(
         if key in values:
             seen[key] = item
     if not seen:
-        return None, None
+        return None, None, None
     same_axis = {key: item for key, item in seen.items() if item.get("axis_id") == axis}
     grain = period.get("grain")
     pool = same_axis or (
         {key: item for key, item in seen.items() if grain and item.get("grain") == grain} if grain else {}
     )
     if len(pool) == 1:
-        return values[next(iter(pool))], None
+        chosen = next(iter(pool))
+        return values[chosen], None, chosen
     if len(pool) > 1:
-        return None, "ambiguous_stock"
-    return None, None
+        return None, "ambiguous_stock", None
+    return None, None, None
 
 
 def _stock_numerator(
@@ -2650,7 +2719,7 @@ def _stock_numerator(
 
     total = Decimal(0)
     for name, sign in (*((item, 1) for item in side.plus), *((item, -1) for item in side.minus)):
-        value, problem = _stock_choice(period, periods, aligned, series.get(name) or {})
+        value, problem, _key = _stock_choice(period, periods, aligned, series.get(name) or {})
         if problem:
             return None, problem
         if value is None:
@@ -2709,6 +2778,90 @@ def _total(
     return total, None
 
 
+def _chosen_keys(keys, name: str, basis: dict | None, aggregations: Mapping[str, str] | None):
+    """Ключи окна, которые входят в свёртку. `average` и `none` на нескольких ключах не сворачиваются."""
+
+    fold = None if not aggregations else aggregations.get(name)
+    if fold == "average" and len(keys) > 1:
+        return None, "not_folded"
+    if keys and ((basis and basis.get(name) == "ltm") or fold == "last"):
+        return keys[-1:], None
+    if fold == "none" and len(keys) > 1:
+        return None, "not_folded"
+    return list(keys), None
+
+
+def _cite_used(book, period: dict, aligned: dict, used: tuple[tuple[str, tuple], ...], operand: str) -> None:
+    if book is None:
+        return
+    result_axis = period.get("axis_id")
+    result_period = period.get("period_id")
+    taken = set()
+    for concept, key in used:
+        for obs in book.observations or []:
+            if obs.concept != concept:
+                continue
+            own = (obs.axis_id, obs.period_id)
+            if aligned.get(own, own) != key:
+                continue
+            identity = (obs.cell_id, obs.concept, obs.axis_id, obs.period_id, result_period, operand)
+            if identity in taken:
+                continue
+            taken.add(identity)
+            book.fact_uses.append(
+                FactUse(
+                    concept=obs.concept,
+                    cell_id=obs.cell_id,
+                    axis_id=obs.axis_id,
+                    period_id=obs.period_id,
+                    timeline_id=obs.timeline_id,
+                    period_index=obs.period_index,
+                    field=obs.field,
+                    sheet=obs.sheet,
+                    raw_value=obs.raw_value,
+                    effective_value=obs.effective_value,
+                    scale_factor=obs.scale_factor,
+                    scale_policy=obs.scale_policy,
+                    scale_applied=obs.scale_applied,
+                    normalization_source=obs.normalization_source,
+                    result_axis_id=None if result_axis is None else str(result_axis),
+                    result_period_id=None if result_period is None else str(result_period),
+                    operand=operand,
+                    binding_key=obs.binding_key,
+                )
+            )
+
+
+def _operand_refs(book, period: dict, operand: str) -> tuple[str, ...]:
+    if book is None:
+        return ()
+    period_id = None if period.get("period_id") is None else str(period.get("period_id"))
+    refs = []
+    for item in book.fact_uses or []:
+        if item.result_period_id != period_id or item.operand != operand:
+            continue
+        refs.append(f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}")
+    return tuple(refs)
+
+
+def _record_period(book, period, status, reason, value, numerator, denominator, steps, window) -> None:
+    if book is None:
+        return
+    book.periods.append(
+        PeriodResult(
+            axis_id=period.get("axis_id"),
+            period_id=period.get("period_id"),
+            status=status,
+            reason=reason,
+            value=value,
+            numerator=numerator,
+            denominator=denominator,
+            steps=tuple(steps),
+            window_periods=tuple(window or ()),
+        )
+    )
+
+
 def _part(
     keys,
     series: dict,
@@ -2720,15 +2873,10 @@ def _part(
 ) -> tuple[Decimal | None, str | None]:
     """Складывает окно. `ltm` и `last` берутся на конец. `none` и `average` не сворачиваются."""
 
-    fold = None if not aggregations else aggregations.get(name)
-    if fold == "average" and len(keys) > 1:
-        return None, "not_folded"
-    if keys and ((basis and basis.get(name) == "ltm") or fold == "last"):
-        chosen = keys[-1:]
-    elif fold == "none" and len(keys) > 1:
-        return None, "not_folded"
-    else:
-        chosen = keys
+    chosen, problem = _chosen_keys(keys, name, basis, aggregations)
+    if problem:
+        return None, problem
+    assert chosen is not None
     total = Decimal(0)
     for key in chosen:
         if key not in series[name]:

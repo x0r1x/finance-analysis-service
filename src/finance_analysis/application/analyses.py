@@ -1238,7 +1238,7 @@ class Analyses:
             warnings.extend(result["warnings"])
             published = [{**row, "metric": metric} for row in result["rows"]]
             computed.extend(published)
-            if published and not evidences[before:]:
+            if published and not _trace_available(evidences[before:]):
                 evidences.append(_unsupported(metric, common["sign_convention"]))
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
@@ -2270,6 +2270,12 @@ def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
         status = "evidence_available" if (metric, version) in EVIDENCE_AVAILABLE else "evidence_not_supported"
         rows.append((metric, version, status))
     return tuple(rows)
+
+
+def _trace_available(evidences: list) -> bool:
+    """Готовый след закрывает заглушку. Неполная оболочка её не заменяет."""
+
+    return any(getattr(item, "evidence_status", None) == "evidence_available" for item in evidences)
 
 
 def _unsupported(metric: str, sign_convention: str):

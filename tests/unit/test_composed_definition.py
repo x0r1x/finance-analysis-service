@@ -134,13 +134,26 @@ def _bind(concept: str) -> dict:
     }
 
 
-def _fact(concept: str, value: str, period: str = "Y1") -> dict:
-    return {
+def _fact(
+    concept: str,
+    value: str,
+    period: str = "Y1",
+    *,
+    cell: str | None = None,
+    scale: str | None = None,
+) -> dict:
+    row = {
         "row_key": concept,
         "axis_id": "a",
         "period_id": period,
         "normalized_value": value,
     }
+    if cell is not None:
+        row["cell_id"] = cell
+    if scale is not None:
+        row["value"] = "1"
+        row["scale_factor"] = scale
+    return row
 
 
 def _year() -> dict:
@@ -252,7 +265,12 @@ def test_an_unexecutable_formula_is_not_computed(metric: str):
     assert _value(got) != spec["catalog_value"]
 
 
-def test_profile_override_is_the_composition_that_ran():
+def test_profile_overlay_changes_the_formula_only_when_compile_receives_it():
+    """Профиль ковенанта не подменяет составной коэффициент в ``compute_metrics``.
+
+    ``dscr_definition`` принадлежит DSCR. ``_composed_definitions`` его не читает.
+    Подмена ниже — только явный аргумент ``compile_definition``.
+    """
     metric = "net_debt_ebitda"
     catalog = _formula((("net_debt",), ()), (("ebitda",), ()), "LTM")
     definition = compile_definition(
@@ -387,3 +405,367 @@ def test_shipped_composed_definitions_do_not_invent_a_version():
         assert record.executor_version == _EXECUTOR_VERSION
         assert record.formula_id == metric
         assert "@1" not in record.executor_id
+        assert record.definition_source == "catalog"
+
+
+def test_unknown_aggregation_is_not_computed():
+    metric = "net_debt_ebitda"
+    catalog = _formula((("net_debt",), ()), (("ebitda",), ()), "LTM")
+    definition = _definition(metric, (("net_debt",), ()), (("ebitda",), ()), "LTM")
+    got = _run(
+        metric,
+        catalog,
+        definition,
+        aggregations={**_AGGREGATIONS, "ebitda": "median"},
+    )
+    assert got["status"] == "not_computed"
+    assert any(row.get("reason") == "aggregation_unknown" for row in got["rows"])
+    assert _value(got) != Decimal("3.0000000000")
+
+
+def test_quarterly_stock_and_flow_follow_the_definition_and_the_plan():
+    periods = _quarters()
+    facts = []
+    for index in range(1, 5):
+        facts.append(_fact("net_debt", "100", f"Q{index}", cell=f"N{index}"))
+        facts.append(_fact("ebitda", "10", f"Q{index}", cell=f"E{index}"))
+    bindings = [_bind("net_debt"), _bind("ebitda")]
+    definition = _definition("net_debt_ebitda", (("net_debt",), ()), (("ebitda",), ()), "LTM")
+    wrong = _formula((("net_debt",), ()), (("cash",), ()), "LTM")
+    plan = _plan(definition, ("net_debt", "ebitda"))
+    got = composed_ratio(
+        "net_debt_ebitda",
+        wrong,
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        aggregations={"net_debt": "last", "ebitda": "sum"},
+        definition=definition,
+        plan=plan,
+    )
+    final = next(row for row in got["rows"] if row["period_id"] == "Q4")
+    assert final["status"] == "computed"
+    assert final["value"] == Decimal("2.5000000000")
+
+
+def test_a_computed_trace_records_operands_steps_and_fact_use():
+    metric = "net_debt_ebitda"
+    definition = _definition(metric, (("net_debt",), ()), (("ebitda",), ()), "LTM")
+    collected: list = []
+    facts = [
+        _fact("net_debt", "300", cell="Debt!N"),
+        _fact("ebitda", "100", cell="PL!E"),
+    ]
+    got = _run(
+        metric,
+        _formula((("net_debt",), ()), (("ebitda",), ()), "LTM"),
+        definition,
+        collect=collected,
+        facts=facts,
+        bindings=[_bind("net_debt"), _bind("ebitda")],
+    )
+    assert got["status"] == "succeeded"
+    assert len(collected) == 1
+    evidence = collected[0]
+    assert evidence.evidence_status == "evidence_available"
+    period = next(item for item in evidence.period_results if item.status == "computed")
+    assert period.numerator == Decimal(300)
+    assert period.denominator == Decimal(100)
+    assert [step.operation for step in period.steps] == [
+        "numerator_assembly",
+        "denominator_assembly",
+        "ratio",
+    ]
+    uses = {(item.operand, item.cell_id, item.effective_value) for item in evidence.fact_uses}
+    assert ("numerator", "Debt!N", Decimal(300)) in uses
+    assert ("denominator", "PL!E", Decimal(100)) in uses
+    assert evidence.fact_observations
+
+
+def test_every_exit_publishes_the_definition_and_the_execution_status():
+    metric = "net_debt_ebitda"
+    definition = _definition(metric, (("net_debt",), ()), (("ebitda",), ()), "LTM")
+    catalog = _formula((("net_debt",), ()), (("ebitda",), ()), "LTM")
+
+    def published(**extra):
+        collected: list = []
+        got = _run(metric, catalog, definition, collect=collected, **extra)
+        assert len(collected) == 1
+        evidence = collected[0]
+        assert evidence.definition_version == f"{metric}@2"
+        assert evidence.executor_id == _EXECUTOR_ID
+        assert evidence.executor_version == _EXECUTOR_VERSION
+        assert evidence.evidence_status != "evidence_available"
+        return got, evidence
+
+    blocked, evidence = published(profile={"ebitda_definition": "ras"})
+    assert blocked["status"] == "not_computed"
+    assert evidence.execution_status == "not_run"
+
+    empty = _plan(definition, (), status="needs_input")
+    refused_plan, evidence = published(plan=empty)
+    assert refused_plan["status"] == "needs_input"
+    assert evidence.execution_status == "not_run"
+
+    partial = _plan(definition, ("net_debt",))
+    unplanned, evidence = published(plan=partial)
+    assert unplanned["status"] == "missing_input"
+    assert evidence.execution_status == "not_run"
+
+    missing, evidence = published(bindings=[_bind("net_debt")])
+    assert missing["status"] == "missing_input"
+    assert evidence.execution_status == "not_run"
+
+    scaled = [
+        _fact("net_debt", "300", cell="Debt!N", scale="1000"),
+        _fact("ebitda", "100", cell="PL!E"),
+    ]
+    scale, evidence = published(
+        facts=scaled,
+        bindings=[_bind("net_debt"), _bind("ebitda")],
+    )
+    assert scale["status"] == "scale_unconfirmed"
+    assert evidence.execution_status == "refused"
+
+    period_definition = _definition(metric, (("net_debt",), ()), (("ebitda",), ()), "period")
+    mismatched = [
+        {**_bind("net_debt"), "evidence": {"period_basis": "ytd", "period_basis_source": "label"}},
+        _bind("ebitda"),
+    ]
+    collected: list = []
+    basis = composed_ratio(
+        metric,
+        _formula((("net_debt",), ()), (("ebitda",), ()), "period"),
+        facts=[_fact("net_debt", "300"), _fact("ebitda", "100")],
+        bindings=mismatched,
+        periods=[_year()],
+        aggregations=_AGGREGATIONS,
+        definition=period_definition,
+        collect=collected,
+    )
+    evidence = collected[0]
+    assert basis["status"] == "basis_mismatch"
+    assert evidence.execution_status == "refused"
+    assert evidence.definition_version == f"{metric}@2"
+    assert evidence.evidence_status != "evidence_available"
+
+
+def test_composed_stamp_changes_when_a_declared_dependency_changes():
+    import hashlib
+    import inspect
+
+    from finance_analysis.domain.calculation_evidence import (
+        composed_calculation_sources,
+        composed_calculation_stamp,
+        declared_calculation_dependencies,
+        declared_composed_dependencies,
+    )
+    from tests.unit.test_calculation_outcome import EXCLUDED, _project_calls
+
+    declared = {name for name, _obj in declared_composed_dependencies()}
+    for required in ("composed_ratio", "_fold_side", "_term_fold", "_stock_choice", "_span", "_part"):
+        assert required in declared
+    base = composed_calculation_stamp()
+    changed = [
+        (name, source + "\n" if name == "_fold_side" else source)
+        for name, source in composed_calculation_sources()
+    ]
+    text = "\n".join(f"{name}\n{source}" for name, source in changed)
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] != base
+    covered = declared | {name for name, _obj in declared_calculation_dependencies()}
+    calls = set()
+    for name, obj in declared_composed_dependencies():
+        if inspect.isfunction(obj):
+            calls |= _project_calls(obj)
+    assert calls - covered - EXCLUDED - _COMPOSED_STAMP_EXCLUDED == set()
+
+
+async def test_compute_metrics_does_not_treat_an_incomplete_trace_as_support():
+    """Отказ без операндов не заменяет ``evidence_not_supported``."""
+
+    got = await _metrics(
+        ["net_debt_ebitda"],
+        facts=[
+            _fact("net_debt", "300", cell="Debt!N", scale="1000"),
+            _fact("ebitda", "100", cell="PL!E"),
+        ],
+        bindings=[_bind("net_debt"), _bind("ebitda")],
+        periods=[_year()],
+    )
+    statuses = {item.evidence_status for item in got["evidences"]}
+    assert "evidence_not_supported" in statuses
+    assert "evidence_available" not in statuses
+    refused = [item for item in got["evidences"] if item.execution_status == "refused"]
+    assert refused
+    assert refused[0].evidence_status == "evidence_unavailable"
+
+
+async def test_compute_metrics_keeps_the_catalog_composition_beside_a_dscr_profile():
+    """``dscr_definition`` не становится формулой net_debt_ebitda."""
+
+    from finance_analysis.application.analyses import _composed_definitions
+    from finance_analysis.application.financial_catalog import load_financial_catalog
+    from finance_analysis.application.model_types import load_model_types
+
+    got = await _metrics(
+        ["net_debt_ebitda"],
+        facts=[_fact("net_debt", "300", cell="Debt!N"), _fact("ebitda", "100", cell="PL!E")],
+        bindings=[_bind("net_debt"), _bind("ebitda")],
+        periods=[_year()],
+        profile={
+            "dscr_definition": {
+                "numerator": {"plus": ["net_debt"], "minus": ["cash"]},
+                "denominator": {"plus": ["ebitda"]},
+                "window": "LTM",
+            }
+        },
+    )
+    row = next(item for item in got["rows"] if item["metric"] == "net_debt_ebitda")
+    assert row["value"] == Decimal("3.0000000000")
+    catalog = _composed_definitions(load_model_types(), load_financial_catalog())["net_debt_ebitda"]
+    assert got["plans"]["net_debt_ebitda"].definition_hash == catalog.definition_hash
+    entry = next(item for item in got["applicability"] if item["metric"] == "net_debt_ebitda")
+    assert "definition_source" not in entry
+    evidence = next(item for item in got["evidences"] if item.evidence_status == "evidence_available")
+    assert evidence.executor_id == _EXECUTOR_ID
+    assert {item.cell_id for item in evidence.fact_uses} == {"Debt!N", "PL!E"}
+
+
+async def _metrics(metrics, *, facts, bindings, periods, profile=None):
+    import finance_analysis.application.analyses as analyses_mod
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    types = load_model_types()
+    original = analyses_mod.applicability
+
+    def allow(model_catalog, labels, metric):
+        if metric in metrics:
+            return "required"
+        return original(model_catalog, labels, metric)
+
+    analyses_mod.applicability = allow
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Glossary:
+        async def profile_body(self, _profile_id):
+            return profile or {}
+
+    class _Service:
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset == "bindings":
+                return bindings
+            if dataset == "fact_observation":
+                return facts
+            if dataset == "dim_period":
+                return periods
+            if dataset in {"dim_row", "period_semantics", "graph_links"}:
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                ("corporate",),
+                "corporate",
+                "confirmed",
+                None,
+                1,
+                None,
+                1.0,
+                {"corporate": 1.0},
+                (),
+            )
+
+    try:
+        head = Head(
+            build_key="build",
+            state_seq=1,
+            derive_key="derive",
+            versions={"profile": "book@3"} if profile else {},
+        )
+        service = _Service()
+        service.model_types = types
+        service.catalog = load_catalog()
+        service.financial_catalog = None
+        service.guard = _Guard()
+        service.glossary = _Glossary()
+        return await Analyses(service).compute_metrics("job", Target(head=head, build="build", manifest={}, fresh=True), metrics)
+    finally:
+        analyses_mod.applicability = original
+
+
+_COMPOSED_STAMP_EXCLUDED = frozenset(
+    {
+        "Composed",
+        "Side",
+        "UndeclaredInput",
+        "_cite",
+        "_cite_used",
+        "_composed_stop",
+        "_escrow_coverage_book",
+        "_line",
+        "_mark_profile",
+        "_missing",
+        "_open_trace",
+        "_operand_refs",
+        "_publish_composed",
+        "_record_period",
+        "_refused",
+        "_remember_composed",
+        "_same_end",
+        "_stock_message",
+        "_trace_ready",
+        "_unplanned",
+        "bound_rows",
+        "composed_calculation_stamp",
+    }
+)
+
+
+def _quarters() -> list[dict]:
+    periods = []
+    for index, end in ((1, date(2024, 3, 31)), (2, date(2024, 6, 30)), (3, date(2024, 9, 30)), (4, date(2024, 12, 31))):
+        start_month = (index - 1) * 3 + 1
+        periods.append(
+            {
+                "axis_id": "a",
+                "period_id": f"Q{index}",
+                "period_index": index,
+                "grain": "quarter",
+                "timeline_id": "t",
+                "period_start": date(2024, start_month, 1),
+                "period_end": end,
+            }
+        )
+    return periods
+
+
+def _plan(definition, names: tuple[str, ...], *, status: str = "resolved"):
+    inputs = tuple(
+        ResolvedInput(name, "all_of", "formula", name, name, None, False, True) for name in names
+    )
+    return seal(
+        metric_id=definition.metric_id,
+        variant=None,
+        variant_source="formula",
+        catalog_version=None,
+        semantic_model_version=None,
+        build_key=None,
+        model_id=None,
+        status=status,
+        inputs=inputs,
+        diagnostic=(),
+        rejected=(),
+        fallbacks=(),
+        warnings=(),
+        needs_input=(),
+        shield=None,
+        definition_hash=definition.definition_hash,
+    )
