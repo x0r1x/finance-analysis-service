@@ -266,6 +266,7 @@ class SnapshotRow:
     formula_exceptions: tuple[str, ...] = ()
     line_code: str | None = None
     hidden_by_outline: bool | None = None
+    axisless: bool = False
 
 
 @dataclass(frozen=True)

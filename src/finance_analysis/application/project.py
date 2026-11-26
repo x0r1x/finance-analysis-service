@@ -130,6 +130,8 @@ def project(
                 "line_code": row.line_code,
             }
         )
+        if row.axisless:
+            continue
         series_list = list(row.series)
         if not series_list and snapshot.axes:
             axis_id = next(iter(snapshot.axes))

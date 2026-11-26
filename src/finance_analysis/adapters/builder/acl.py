@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -326,7 +327,15 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
             if built is not None:
                 rows.append(built)
         if not known_kind and len(missing) == before:
-            _read_new_block_axis(block, parsed, bindex, rows[row_start:], time_axes, axes, missing, max_col)
+            block_rows = rows[row_start:]
+            if (
+                block.get("axis_ids") in (None, [])
+                and parsed.block_id not in axes
+                and _is_heading_only_block(parsed, block_rows)
+            ):
+                rows[row_start:] = [replace(row, axisless=True) for row in block_rows]
+            else:
+                _read_new_block_axis(block, parsed, bindex, block_rows, time_axes, axes, missing, max_col)
     if missing:
         raise UnsupportedBuilderShape(
             "форма context.json не поддерживается",
@@ -334,6 +343,25 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         )
     used = {sheet: (max_row.get(sheet, 1), max_col.get(sheet, 1)) for sheet in set(max_row) | set(max_col)}
     return WorkbookSnapshot(axes=axes, rows=tuple(rows), links=(), used_range=used)
+
+
+def _is_heading_only_block(block: BlockIn, rows: list[SnapshotRow]) -> bool:
+    return bool(rows) and not block.periods and all(
+        row.kind == "abstract"
+        and not (row.values or row.value_statuses or row.normalized_values or row.formula or row.formula_exceptions)
+        and all(
+            series.axis_id == block.block_id
+            and not (
+                series.values
+                or series.value_statuses
+                or series.normalized_values
+                or series.formula
+                or series.formula_exceptions
+            )
+            for series in row.series
+        )
+        for row in rows
+    )
 
 
 def _read_new_block_axis(

@@ -219,6 +219,71 @@ def test_new_time_block_with_conflicting_columns_is_diagnosed():
     assert raised.value.extra["fields"] == ["blocks[3].periods"]
 
 
+def _prepend_heading_block(payload, *, with_series):
+    block_id = "Sensitivity!r1"
+    row = {
+        "row_key": f"Sensitivity|1|{block_id}",
+        "sheet": "Sensitivity",
+        "row": 1,
+        "kind": "abstract",
+        "label": "Sensitivity",
+        "values": [],
+        "value_statuses": [],
+        "normalized_values": [],
+        "series": [],
+    }
+    if with_series:
+        row["series"].append(
+            {"axis_id": block_id, "values": [], "value_statuses": [], "normalized_values": []}
+        )
+    payload["blocks"].insert(
+        0,
+        {
+            "block_id": block_id,
+            "sheet": "Sensitivity",
+            "kind": "future_kind",
+            "axis_ids": [],
+            "periods": [],
+            "rows": [row],
+        },
+    )
+    return row
+
+
+@pytest.mark.parametrize("with_series", [True, False])
+def test_new_heading_block_without_axis_preserves_row_without_facts(with_series):
+    payload = _context("1.15.0", mixed=True)
+    baseline, _ = project(parse_context(payload), model_id=JOB, build="build")
+    heading = _prepend_heading_block(payload, with_series=with_series)
+
+    snapshot = parse_context(payload)
+    assert payload["blocks"][0]["block_id"] not in snapshot.axes
+    tables, _ = project(snapshot, model_id=JOB, build="build")
+    row = next(row for row in tables["dim_row"] if row["row_key"] == heading["row_key"])
+    assert (row["label"], row["row_num"], row["block_kind"]) == ("Sensitivity", 1, "future_kind")
+    assert tables["fact_observation"] == baseline["fact_observation"]
+
+
+@pytest.mark.parametrize(
+    ("in_series", "field", "data"),
+    [
+        (False, "values", ["0"]),
+        (True, "normalized_values", ["0"]),
+        (True, "value_statuses", ["empty"]),
+        (True, "axis_id", "unknown-axis"),
+    ],
+)
+def test_new_heading_block_with_unmapped_data_or_axis_is_diagnosed(in_series, field, data):
+    payload = _context("1.15.0", mixed=True)
+    heading = _prepend_heading_block(payload, with_series=True)
+    target = heading["series"][0] if in_series else heading
+    target[field] = data
+
+    with pytest.raises(UnsupportedBuilderShape) as raised:
+        parse_context(payload)
+    assert raised.value.extra["fields"] == ["blocks[0]"]
+
+
 @pytest.mark.parametrize("problem", ["missing_axis", "mixed_axes", "no_series", "axis_collision"])
 def test_new_block_kind_with_unsupported_axis_is_diagnosed(problem):
     payload = _context("1.15.0", mixed=True)
