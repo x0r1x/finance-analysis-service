@@ -305,7 +305,7 @@ def execute_bound(
 ) -> CalculationOutcome:
     """Проверка до вызова. Статус кроме resolved — отказ здесь, не внутри исполнителя.
 
-    Калькуляторы покрытия сюда не подключены.
+    Слоты собираются один раз и передаются исполнителю.
     """
 
     if plan.metric_id != definition.metric_id:
@@ -316,10 +316,17 @@ def execute_bound(
         raise ExecutionContractError("definition_mismatch")
     if plan.status != "resolved":
         raise ExecutionContractError("plan_not_resolved")
+    # Слоты — уже решённый план. Исполнитель их не выбирает заново.
+    # https://www.w3.org/TR/prov-dm/#term-Plan
+    slots = slots_for(definition, plan)
+    if definition.executor_key == "coverage":
+        from finance_analysis.domain.metrics import _guard_declared
+
+        _guard_declared(definition, plan, slots)
     context = MetricExecutionContext(
         definition=definition,
         plan=plan,
-        slots=slots_for(definition, plan),
+        slots=slots,
         calculation_origin=calculation_origin,
     )
     return executor.execute(context)

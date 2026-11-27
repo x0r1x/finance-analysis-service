@@ -29,8 +29,6 @@ from finance_analysis.domain.housing_cover import use_housing_cover
 _CONFLICT = object()
 # ADSCR, dscr_min и dscr_avg читают план DSCR. Их определение — своё.
 _DERIVED_ON_DSCR = frozenset({"adscr", "dscr_min", "dscr_avg"})
-# Эти причины уже возвращает калькулятор. Повторный отказ здесь сменил бы улику.
-_SLOT_REFUSALS = frozenset({"ambiguous_one_of", "undeclared_alternative", "inconsistent_fallback"})
 # (executor_key, executor_id, executor_version) — алгоритм, который маршрут реально вызывает.
 _SELECT_RATIO = (
     ("coverage", "calculate_coverage", "calculate_coverage@1"),
@@ -133,9 +131,8 @@ def run_calculation(
             calculation_origin=context.calculation_origin,
         )
     except ExecutionContractError as exc:
-        # shortcut: отвергнутый слот считает прежний калькулятор, пока операнды не читаются из context.slots.
-        if exc.reason in _SLOT_REFUSALS:
-            return executor.execute(context)
+        # Слот уже отвергнут. Второй slots_for в калькуляторе его не перерешивает.
+        # https://www.w3.org/TR/prov-dm/#term-Plan
         return CalculationOutcome(_refusal(request.metric, exc.reason), None)
 
 
@@ -379,4 +376,5 @@ def _call_select_ratio(request: CalculationRequest, context: MetricExecutionCont
         collect=request.collect,
         definition=context.definition,
         outflows=request.outflows,
+        slots=context.slots,
     )

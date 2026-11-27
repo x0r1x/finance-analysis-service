@@ -311,6 +311,7 @@ class EvidenceBook:
     basis_sides: list[BasisSide] | None = None
     sums_additions: int = 0
     bound_definition: Any = None
+    opened_inputs: list[str] | None = None
 
     def __post_init__(self) -> None:
         self.observations = [] if self.observations is None else self.observations

@@ -426,12 +426,14 @@ def _seal(book: EvidenceBook, result: dict) -> CalculationOutcome:
                     steps=(),
                 )
             )
+    opened = () if book.opened_inputs is None else tuple(book.opened_inputs)
     return CalculationOutcome(
         result,
         book.freeze(
             execution,
             _registered_version(book.metric, book.metric),
             calculation_origin="calculated",
+            actual_inputs=opened,
             **definition_fields(book.bound_definition),
         ),
     )
@@ -719,8 +721,22 @@ def coverage_expression_supported(expression) -> bool:
     )
 
 
-def _roles_from_definition(definition, plan):
-    """Стороны частного: выражение и уже выбранный слот. Выбор не повторяется."""
+def _guard_declared(definition, plan, slots) -> None:
+    """Подтверждённый вход вне выражения и слотов. Один проход, на предпроверке."""
+
+    from finance_analysis.domain.metric_contract import UndeclaredInput
+
+    declared = _declared_terms(definition, slots)
+    for item in plan.inputs:
+        if item.confirmed and not item.ambiguous and item.concept not in declared:
+            raise UndeclaredInput(item.concept)
+
+
+def _roles_from_definition(definition, plan, slots=None):
+    """Стороны частного. Переданный слот уже выбран: план и запас заново не читаются.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
 
     from finance_analysis.domain.execution_contract import (
         ExecutionContractError,
@@ -728,13 +744,8 @@ def _roles_from_definition(definition, plan):
     )
     from finance_analysis.domain.metric_contract import UndeclaredInput
 
-    if (
-        plan.metric_id != definition.metric_id
-        or plan.variant != definition.variant
-        or plan.variant_source != definition.variant_source
-        or plan.definition_hash != definition.definition_hash
-    ):
-        return "definition_mismatch"
+    if definition is None:
+        return "unsupported_formula"
     expr = definition.normalized_expression
     if (
         expr.numerator_minus
@@ -750,14 +761,20 @@ def _roles_from_definition(definition, plan):
         or expr.base
     ):
         return "unsupported_formula"
-    try:
-        slots = slots_for(definition, plan)
-    except ExecutionContractError as exc:
-        return exc.reason
+    if slots is None:
+        if (
+            plan.metric_id != definition.metric_id
+            or plan.variant != definition.variant
+            or plan.variant_source != definition.variant_source
+            or plan.definition_hash != definition.definition_hash
+        ):
+            return "definition_mismatch"
+        try:
+            slots = slots_for(definition, plan)
+        except ExecutionContractError as exc:
+            return exc.reason
+        _guard_declared(definition, plan, slots)
     declared = _declared_terms(definition, slots)
-    for item in plan.inputs:
-        if item.confirmed and not item.ambiguous and item.concept not in declared:
-            raise UndeclaredInput(item.concept)
     by_id = {slot.slot_id: slot for slot in slots}
     if expr.one_of:
         chosen = by_id.get("numerator")
@@ -826,6 +843,7 @@ def coverage_ratio(
     declared: tuple[str, ...] | None = None,
     plan: Any | None = None,
     definition: Any | None = None,
+    slots: tuple | None = None,
 ) -> dict:
     """`absent` — понятия с записью `concept.absent` в журнале книги (§5.10.5).
 
@@ -852,6 +870,7 @@ def coverage_ratio(
         declared=declared,
         plan=plan,
         definition=definition,
+        slots=slots,
     ).result
 
 
@@ -881,10 +900,12 @@ def calculate_coverage(
     plan: Any | None = None,
     evidence: bool = True,
     definition: Any | None = None,
+    slots: tuple | None = None,
 ) -> CalculationOutcome:
     """Единственный проход. ``result`` — прежнее тело ``coverage_ratio``.
 
     ``evidence=False`` не собирает книгу улики. Число от этого не меняется.
+    Переданные слоты — единственный выбор one_of и запаса. Второй раз он не делается.
     """
 
     from finance_analysis.domain.coverage import is_coverage_test_period
@@ -899,6 +920,8 @@ def calculate_coverage(
             plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
             bound_definition=definition,
         )
+        if slots is not None:
+            book.opened_inputs = []
     if metric in {"icr", "icr_ebit"}:
         blocked = methodology_block(profile, bindings, metric=metric)
         if blocked:
@@ -909,8 +932,8 @@ def calculate_coverage(
             return _finish(book, early)
         primaries = _plan_rows(plan, bindings)
         warnings = [item.as_dict() for item in plan.warnings]
-        if definition is not None:
-            derived = _roles_from_definition(definition, plan)
+        if slots is not None or definition is not None:
+            derived = _roles_from_definition(definition, plan, slots)
             if isinstance(derived, str):
                 return _finish(book, _not_computed(metric, derived))
             fallback_parts, needed, denominator_name, numerator_name = derived
@@ -1451,6 +1474,7 @@ def dscr_pf(
     profile: dict | None = None,
     plan: Any | None = None,
     definition: Any | None = None,
+    slots: tuple | None = None,
 ) -> dict:
     """Проектный DSCR. Те же числа, что coverage_ratio для metric=dscr. Книгу улики не собирает."""
 
@@ -1472,6 +1496,7 @@ def dscr_pf(
         profile=profile,
         plan=plan,
         definition=definition,
+        slots=slots,
         evidence=False,
     ).result
 
@@ -1492,6 +1517,7 @@ def calculate_dscr_pf(
     plan: Any | None = None,
     evidence: bool = True,
     definition: Any | None = None,
+    slots: tuple | None = None,
 ) -> CalculationOutcome:
     """Тот же проход, что у DSCR, с идентичностью ``dscr.pf@1`` на улике."""
 
@@ -1518,6 +1544,7 @@ def calculate_dscr_pf(
         plan=plan,
         evidence=evidence,
         definition=definition,
+        slots=slots,
     )
     if outcome.evidence is None:
         return outcome
@@ -2588,6 +2615,8 @@ def _sums(
         totals[key] = totals.get(key, Decimal(0)) + Decimal(number)
         if book is not None:
             book.sums_additions += 1
+            if concept is not None and book.opened_inputs is not None and concept not in book.opened_inputs:
+                book.opened_inputs.append(concept)
         cell = fact.get("cell_id")
         ref = f"cell:{cell}" if cell else f"fact:{fact['axis_id']}:{fact['period_id']}"
         grouped.setdefault(key, []).append({"cell": str(cell) if cell else None, "ref": ref, "raw": raw, "effective": number})
