@@ -1,8 +1,7 @@
 """Контракт идентичности CalculationEvidence.
 
-Because calculation_stamp is inside the hash, evidence_id identifies one
-execution evidence, not a mathematically equal result. Plan identity stays
-plan_content_sha256.
+Одинаковое каноническое тело, включая отпечаток реализации, даёт один evidence_id.
+Повторная попытка не выпускает новый идентификатор. Идентичность плана — plan_content_sha256.
 
 SHA-256 канонического тела: https://csrc.nist.gov/publications/detail/fips/180/4/final
 Contract test: https://martinfowler.com/bliki/ContractTest.html
@@ -65,13 +64,6 @@ _OUTSIDE_HASH = frozenset(
         "sums_additions",
     }
 )
-
-_DECISION = (
-    "Because calculation_stamp is inside the hash, evidence_id identifies one "
-    "execution evidence, not a mathematically equal result. Plan identity stays "
-    "plan_content_sha256."
-)
-
 
 def _observation(concept: str = "cfads") -> FactObservation:
     return FactObservation(
@@ -227,12 +219,7 @@ def test_identity_matrix_names_every_calculation_evidence_field():
 
 
 def test_hashed_field_changes_evidence_id_and_outside_field_does_not():
-    """Смена входа хеша меняет evidence_id. Смена атрибута — нет.
-
-    Because calculation_stamp is inside the hash, evidence_id identifies one
-    execution evidence, not a mathematically equal result. Plan identity stays
-    plan_content_sha256.
-    """
+    """Смена входа хеша меняет evidence_id. Смена атрибута — нет."""
 
     base = seal(_evidence()).evidence_id
     assert base
@@ -244,7 +231,15 @@ def test_hashed_field_changes_evidence_id_and_outside_field_does_not():
         assert changed == base, name
 
 
-def test_seal_records_that_evidence_id_is_one_execution():
-    """Решение лежит в контракте seal, не только в этом тесте."""
+def test_identical_bodies_share_an_evidence_id():
+    """Одинаковое каноническое тело делит evidence_id. Попытка не выпускает новый."""
 
-    assert _DECISION in " ".join((seal.__doc__ or "").split())
+    first = seal(_evidence())
+    second = seal(_evidence())
+    preset = seal(_evidence(evidence_id="attempt-2"))
+    again = seal(first)
+    assert first.evidence_id
+    assert second.evidence_id == first.evidence_id
+    assert preset.evidence_id == first.evidence_id
+    assert again.evidence_id == first.evidence_id
+    assert preset.evidence_id != "attempt-2"
