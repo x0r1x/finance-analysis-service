@@ -1415,6 +1415,64 @@ def test_confirmed_interest_paid_on_its_own_slot_still_aliases_the_row():
     assert len(alias) == 1
 
 
+@pytest.mark.parametrize(
+    ("terms", "rows", "reason"),
+    [
+        (
+            ((("interest_paid", None, None),),),
+            ["bk-cash"],
+            "bound_slot_without_keys",
+        ),
+        (
+            ((("interest_paid", "bk-missing", "row-missing"),),),
+            ["bk-cash"],
+            "bound_row_not_found",
+        ),
+        (
+            (
+                (("interest_paid", "bk-a", "row-a"),),
+                (("interest_paid", "bk-b", "row-b"),),
+            ),
+            ["bk-a", "bk-b"],
+            "bound_row_conflict",
+        ),
+    ],
+)
+def test_paid_slot_keys_follow_the_coverage_contract(terms, rows, reason):
+    """Дырявый interest_paid не становится тихим None и обычным missing.
+
+    Те же три отказа, что у восстановления строк покрытия.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import _apply_plan
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        ResolvedFormulaSlot,
+    )
+    from finance_analysis.domain.model_type import Composed, Side
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    slots = tuple(
+        ResolvedFormulaSlot(
+            "input:interest_paid",
+            ("interest_paid",),
+            ("interest_paid",),
+            "confirmed",
+            term_rows,
+        )
+        for term_rows in terms
+    )
+    with pytest.raises(ExecutionContractError) as raised:
+        _apply_plan(formula, [], object(), [_bind("cash_interest", key) for key in rows], slots)
+    assert raised.value.reason == reason
+
+
 def test_a_bound_slot_without_a_row_is_a_contract_error():
     """Ключи слота есть, строки нет. Пропуск заменил бы её другой строкой.
 

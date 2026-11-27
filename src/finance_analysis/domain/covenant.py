@@ -2768,9 +2768,9 @@ def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dic
         chosen = interest.resolved_terms[0] if interest is not None and interest.resolved_terms else None
         code = None if interest is None else interest.warning_code
         # interest_paid может лежать на input:interest_paid, не только на слоте interest.
-        # Запас по-прежнему читается только у слота interest. plan.inputs здесь не читается.
+        # Ключи проверяет то же восстановление, что и покрытие. plan.inputs здесь не читается.
         # https://www.w3.org/TR/prov-dm/#term-Plan
-        paid = _paid_from_slot(slots)
+        paid = _paid_from_slot(slots, bindings)
     else:
         fallback = next((item for item in plan.fallbacks if item.replaced == "interest"), None)
         chosen = None if fallback is None else fallback.chosen
@@ -2803,14 +2803,20 @@ def _rename(formula: Composed, chosen: str) -> Composed:
     return Composed(replace(formula.numerator), replace(formula.denominator), formula.window, terms)
 
 
-def _paid_from_slot(slots):
+def _paid_from_slot(slots, bindings):
     from types import SimpleNamespace
 
-    for slot in slots:
-        term = next((row for row in slot.term_rows if row[0] == "interest_paid"), None)
-        if term is not None:
-            return SimpleNamespace(binding_key=term[1], row_key=term[2])
-    return None
+    from finance_analysis.domain.metrics import _rows_from_slots
+
+    paid = tuple(
+        SimpleNamespace(term_rows=tuple(row for row in slot.term_rows if row[0] == "interest_paid"))
+        for slot in slots
+        if any(row[0] == "interest_paid" for row in slot.term_rows)
+    )
+    if not paid:
+        return None
+    source = _rows_from_slots(paid, bindings)["interest_paid"]
+    return SimpleNamespace(binding_key=source.get("binding_key"), row_key=source.get("row_key"))
 
 
 def _row_for(bindings: list[dict], item: Any) -> dict | None:
