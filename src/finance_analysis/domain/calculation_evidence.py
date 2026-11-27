@@ -136,7 +136,13 @@ class CalculationEvidence:
 
 
 def seal(evidence: CalculationEvidence) -> CalculationEvidence:
-    """Идентификатор уже собранной улики. Поля, дописанные после freeze, входят в хеш.
+    """Идентификатор канонического тела улики. Поля, дописанные после freeze, входят в хеш.
+
+    evidence_id identifies the canonical calculation evidence content, including
+    the calculation implementation fingerprint. Identical evidence bodies share
+    the same identifier. It is not a unique execution-attempt identifier.
+    calculation_stamp is a fingerprint of the calculation path and constants,
+    not a unique id of each run. Идентичность плана остаётся plan_content_sha256.
 
     https://csrc.nist.gov/publications/detail/fips/180/4/final
     """
