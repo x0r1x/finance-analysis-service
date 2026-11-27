@@ -722,6 +722,28 @@ def _execution_id(source: str, metric: str, index: int) -> str:
     return f"{metric}-{index}"
 
 
+def _branch_trace(trace: dict) -> str:
+    """Полный след ветви есть только у узла, который сам её выбрал.
+
+    Родитель хранит формулу и результаты периодов. Его ``branch_id`` не
+    достраивается: иначе цепь выглядит как полный прогон каждого узла.
+    Связь родителя — https://www.w3.org/TR/prov-dm/#term-Communication
+    """
+
+    if trace.get("branch_id") and trace.get("actual_inputs"):
+        return "complete"
+    return "incomplete"
+
+
+def _trace_item(execution_id: str, trace: dict) -> dict:
+    return {
+        "execution_id": execution_id,
+        "evidence_id": trace.get("evidence_id"),
+        "metric": trace.get("metric"),
+        "branch_trace": _branch_trace(trace),
+    }
+
+
 def _publication(analysis_id: str, source: str, execution_id: str, metric: str, *, status: str, complete: bool) -> dict:
     return {
         "analysis_id": analysis_id,
@@ -1237,9 +1259,9 @@ class Analyses:
                 evidences,
                 before,
                 metric,
-                definitions,
                 coverage_catalog,
                 dscr_variant if metric == "dscr" else variant_of.get(metric),
+                dscr_variant,
             )
             if result.get("reason") in {"missing_executor", "incompatible_executor", "definition_mismatch"}:
                 warnings.append({"code": result["reason"], "params": {"metric": metric}})
@@ -1263,9 +1285,9 @@ class Analyses:
                     evidences,
                     len(evidences) - 1,
                     metric,
-                    definitions,
                     coverage_catalog,
                     dscr_variant if metric == "dscr" else variant_of.get(metric),
+                    dscr_variant,
                 )
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
@@ -2110,6 +2132,61 @@ class Analyses:
                     item["evidence_complete"] = False
         return records
 
+    async def traces(self, job_id: str, analysis_id: str) -> dict:
+        """Список сохранённых улик анализа. Конверт анализа этот список не несёт."""
+
+        await self._require_analysis(job_id, analysis_id)
+        items = []
+        for row in self._trace_rows(analysis_id):
+            trace = await self._saved_trace(analysis_id, row["execution_id"])
+            items.append(_trace_item(row["execution_id"], trace))
+        return {"analysis_id": analysis_id, "items": items}
+
+    async def trace(self, job_id: str, analysis_id: str, execution_id: str) -> dict:
+        """Одна сохранённая улика. Родитель без следа ветви помечен неполным."""
+
+        await self._require_analysis(job_id, analysis_id)
+        if self._trace_row(analysis_id, execution_id) is None:
+            raise NotFound("след не найден")
+        saved = await self._saved_trace(analysis_id, execution_id)
+        if saved.get("reason") == "pointer_missing":
+            raise NotFound("след не найден")
+        return {
+            "analysis_id": analysis_id,
+            "execution_id": execution_id,
+            "branch_trace": _branch_trace(saved),
+            "trace": saved,
+        }
+
+    async def _require_analysis(self, job_id: str, analysis_id: str) -> None:
+        check_ulid(analysis_id)
+        try:
+            await self.store.get(keys.report_index_key(job_id, analysis_id))
+        except NotFound:
+            raise NotFound("анализ не найден") from None
+
+    def _trace_rows(self, analysis_id: str) -> list:
+        pointer = getattr(self.service, "trace_pointer", None)
+        if pointer is None:
+            return []
+        return pointer.list_analysis(analysis_id)
+
+    def _trace_row(self, analysis_id: str, execution_id: str):
+        pointer = getattr(self.service, "trace_pointer", None)
+        if pointer is None:
+            return None
+        return pointer.get(analysis_id, execution_id)
+
+    async def _saved_trace(self, analysis_id: str, execution_id: str) -> dict:
+        from finance_analysis.application.trace_tail import read_trace
+
+        return await read_trace(
+            self.store,
+            self.service.trace_pointer,
+            analysis_id=analysis_id,
+            execution_id=execution_id,
+        )
+
     async def result(self, job_id: str, analysis_id: str) -> dict:
         check_ulid(analysis_id)
         try:
@@ -2300,11 +2377,13 @@ def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
     return tuple(rows)
 
 
-def _bind_definition_hash(evidences, start: int, metric: str, definitions, catalog, variant) -> None:
+def _bind_definition_hash(evidences, start: int, metric: str, catalog, variant, dscr_variant) -> None:
     """Пишет хеш определения на улики этого прогона, включая родителя.
 
-    Уже записанный хеш не подменяется. Смена хеша родителя переписывает ссылку
-    ребёнка в том же списке, иначе цепь остаётся на старом идентификаторе.
+    Уже записанный хеш не подменяется. Исполнитель в хеше — тот, что реально
+    отмечен в реестре: ADSCR это ``adscr@1``, а родитель DSCR на проектной книге
+    это вариант ``dscr.pf``, не базовая запись. Смена хеша родителя переписывает
+    ссылку ребёнка в том же списке.
     Хеш — SHA-256 канонического определения, FIPS 180-4:
     https://csrc.nist.gov/publications/detail/fips/180/4/final
     Родитель — связь деятельности с деятельностью:
@@ -2315,24 +2394,32 @@ def _bind_definition_hash(evidences, start: int, metric: str, definitions, catal
 
     from finance_analysis.domain.calculation_evidence import seal
     from finance_analysis.domain.execution_contract import compile_definition
+    from finance_analysis.domain.metric_contract import REGISTRY, formula_id_of
 
     if start < 0:
         return
     digests: dict[str, str | None] = {}
 
     def digest_for(name: str) -> str | None:
-        if name in digests:
-            return digests[name]
-        own_variant = variant if name == metric else None
-        bound = definitions.get(name) if definitions else None
-        found = getattr(bound, "definition_hash", None)
-        digest = found if isinstance(found, str) and found else None
-        if digest is None and catalog:
-            key = f"{name}.{own_variant}" if own_variant else name
-            record = catalog.get(key) or catalog.get(name)
+        own_variant = dscr_variant if name == "dscr" else (variant if name == metric else None)
+        cache_key = f"{name}.{own_variant}" if own_variant else name
+        if cache_key in digests:
+            return digests[cache_key]
+        digest = None
+        if catalog:
+            record = catalog.get(cache_key) or catalog.get(name)
             if record is not None:
+                formula = formula_id_of(name, own_variant, {})
+                impl = REGISTRY.get((name, formula))
+                if impl is not None and impl.implementation_version:
+                    record = replace(
+                        record,
+                        executor_key=formula,
+                        executor_id=formula,
+                        executor_version=impl.implementation_version,
+                    )
                 digest = compile_definition(record, catalog).definition_hash
-        digests[name] = digest
+        digests[cache_key] = digest
         return digest
 
     changed: dict[str, str] = {}

@@ -77,6 +77,28 @@ def register(app, settings, *, actor, limited, svc, support, calc, findings_read
             app.state.inflight -= 1
         return Response(content=body, media_type=media)
 
+    @app.get("/v1/books/{job_id}/analyses/{analysis_id}/traces")
+    async def list_calculation_traces(job_id: str, analysis_id: str, request: Request):
+        checked = check_job(job_id)
+        who = actor(request)
+        await limited(request, who)
+        try:
+            async with support().user_inflight(who):
+                return await svc().analyses.traces(checked, analysis_id)
+        finally:
+            app.state.inflight -= 1
+
+    @app.get("/v1/books/{job_id}/analyses/{analysis_id}/traces/{execution_id}")
+    async def get_calculation_trace(job_id: str, analysis_id: str, execution_id: str, request: Request):
+        checked = check_job(job_id)
+        who = actor(request)
+        await limited(request, who)
+        try:
+            async with support().user_inflight(who):
+                return await svc().analyses.trace(checked, analysis_id, execution_id)
+        finally:
+            app.state.inflight -= 1
+
     @app.get("/v1/books/{job_id}/findings")
     async def list_findings(job_id: str, request: Request):
         async def read(checked, who, query):

@@ -839,15 +839,26 @@ async def test_saved_evidence_walks_parents_for_adscr_and_reductions(tmp_path):
     """
 
     import json
+    from contextlib import asynccontextmanager
+    from dataclasses import replace
 
+    from httpx import ASGITransport, AsyncClient
+
+    from finance_analysis.adapters.api.app import create_app
     from finance_analysis.adapters.storage.store import LocalStore
     from finance_analysis.adapters.storage.trace_pointer import DuckDBTracePointer
-    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.analyses import (
+        Analyses,
+        Target,
+        _coverage_catalog,
+    )
     from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.keys import report_index_key
     from finance_analysis.application.model_types import load_model_types
-    from finance_analysis.application.trace_tail import read_trace
     from finance_analysis.domain.book import Head
     from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.execution_contract import compile_definition
+    from finance_analysis.domain.metric_contract import REGISTRY
     from finance_analysis.domain.model_type import Effective
     from finance_analysis.settings import Settings
     from tests.unit.test_cover_provenance import _common, _quarters
@@ -902,6 +913,7 @@ async def test_saved_evidence_walks_parents_for_adscr_and_reductions(tmp_path):
     service.settings = Settings(_env_file=None)
     head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
     analyses = Analyses(service)
+    service.analyses = analyses
     got = await analyses.compute_metrics(
         "job",
         Target(head=head, build="build", manifest={}, fresh=True),
@@ -910,30 +922,85 @@ async def test_saved_evidence_walks_parents_for_adscr_and_reductions(tmp_path):
     for row in got["rows"]:
         _row_is_public(row)
     analysis_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    job_id = "ab" * 32
     await analyses._publish_traces(analysis_id, got.get("evidences") or [], execution_source="ratios")
-    saved = []
-    for row in pointer.list_analysis(analysis_id):
-        payload = json.loads(await store.get(row["object_key"]))
-        assert "branch_traces" not in payload
-        assert "branch_traces" not in payload["trace"]
-        saved.append(await read_trace(store, pointer, analysis_id=analysis_id, execution_id=row["execution_id"]))
+    await store.put(
+        report_index_key(job_id, analysis_id),
+        json.dumps({"analysis_id": analysis_id, "build_key": "b" * 16}).encode(),
+    )
+
+    class _Support:
+        async def rate_limit(self, _who):
+            return None
+
+        @asynccontextmanager
+        async def user_inflight(self, _who):
+            yield
+
+    app = create_app(service.settings, service=service, support=_Support())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
+        listed = await client.get(f"/v1/books/{job_id}/analyses/{analysis_id}/traces")
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert "branch_traces" not in body
+        assert body["items"]
+        saved = []
+        for item in body["items"]:
+            assert item["execution_id"]
+            one = await client.get(
+                f"/v1/books/{job_id}/analyses/{analysis_id}/traces/{item['execution_id']}"
+            )
+            assert one.status_code == 200, one.text
+            detail = one.json()
+            assert "branch_traces" not in detail
+            assert detail["branch_trace"] == item["branch_trace"]
+            assert detail["execution_id"] == item["execution_id"]
+            saved.append(detail["trace"])
+        foreign = await client.get(f"/v1/books/{'cd' * 32}/analyses/{analysis_id}/traces")
+        assert foreign.status_code == 404
     by_id = {item["evidence_id"] for item in saved if item.get("evidence_id")}
     parents = [parent for item in saved for parent in item.get("parent_evidence_ids") or []]
     assert parents
     assert set(parents) <= by_id
+    catalog = _coverage_catalog(service.model_types, None)
+
+    def _hash(key: str, executor_id: str, executor_version: str) -> str:
+        record = catalog[key]
+        specialized = replace(
+            record,
+            executor_key=executor_id,
+            executor_id=executor_id,
+            executor_version=executor_version,
+        )
+        return compile_definition(specialized, catalog).definition_hash
+
     for metric in ("adscr", "dscr_min", "dscr_avg"):
         view = next(item for item in saved if item.get("metric") == metric)
         for name in _AUDIT_FIELDS:
             assert name in view, metric
             assert view[name], metric
         assert view["branch_id"] == metric
+        ran = REGISTRY[(metric, metric)]
+        assert view["executor_id"] == metric
+        assert view["executor_version"] == ran.implementation_version
+        assert view["definition_hash"] == _hash(metric, metric, ran.implementation_version)
+        assert view["definition_hash"] != compile_definition(catalog[metric], catalog).definition_hash
         assert "cfads" in view["actual_inputs"]
         assert "debt_service" in view["actual_inputs"]
         assert view["actual_period_slots"]
         assert all(parent in by_id for parent in view["parent_evidence_ids"])
         for parent_id in view["parent_evidence_ids"]:
             parent = next(item for item in saved if item.get("evidence_id") == parent_id)
-            assert parent["definition_hash"]
+            parent_ran = REGISTRY[("dscr", "dscr.pf")]
+            assert parent["definition_hash"] == _hash("dscr.pf", "dscr.pf", parent_ran.implementation_version)
+            assert parent["definition_hash"] != _hash("dscr", "dscr", REGISTRY[("dscr", "dscr")].implementation_version)
+            assert parent["periods"]
+            assert "branch_id" not in parent
+            assert "actual_inputs" not in parent
+            listed_parent = next(item for item in body["items"] if item.get("evidence_id") == parent_id)
+            assert listed_parent["branch_trace"] == "incomplete"
+        listed_child = next(item for item in body["items"] if item.get("evidence_id") == view["evidence_id"])
+        assert listed_child["branch_trace"] == "complete"
         if metric == "adscr":
             assert ["adscr_direction", "lookback"] in view["profile_values"]
         else:
