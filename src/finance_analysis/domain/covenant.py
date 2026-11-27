@@ -355,6 +355,7 @@ def covenant_dscr(
         aggregations=aggregations,
         plan=plan,
         outflows=outflows,
+        slots=slots,
     )
     if source == "default" and result["status"] == "succeeded":
         notes = [*notes, *_mismatch(result["rows"], facts, bindings, periods, absent)]
@@ -401,7 +402,9 @@ def dscr_ocf_covenant(
 ) -> dict:
     """OCF-ковенант по составу каталога. Нет входов состава — метрика не считается, CFADS не подставляется."""
 
-    if plan is not None:
+    # Слоты уже выбраны. bindings_for_plan снова читал бы план.
+    # https://www.w3.org/TR/prov-dm/#term-Plan
+    if plan is not None and slots is None:
         from finance_analysis.domain.resolved_plan import bindings_for_plan
 
         bindings = list(bindings_for_plan(bindings, plan))
@@ -624,6 +627,7 @@ def composed_ratio(
     definition: Any | None = None,
     collect: list | None = None,
     outflows: frozenset[str] | None = None,
+    slots: tuple | None = None,
 ) -> dict:
     book = _open_trace(metric, definition, collect, sign_convention, plan, marker_class)
 
@@ -678,20 +682,28 @@ def composed_ratio(
     confirmed: frozenset[str] | None = None
     primaries: dict | None = None
     if plan is not None:
-        from finance_analysis.domain.resolved_plan import bound_rows
+        if slots is not None:
+            from finance_analysis.domain.metrics import _rows_from_slots
 
-        primaries = bound_rows(plan, bindings)
-        confirmed = frozenset(item.concept for item in plan.inputs)
-        if definition is not None:
-            declared = (
-                set(formula.numerator.plus)
-                | set(formula.numerator.minus)
-                | set(formula.denominator.plus)
-                | set(formula.denominator.minus)
-            )
-            for item in plan.inputs:
-                if item.confirmed and not item.ambiguous and item.concept not in declared:
-                    raise UndeclaredInput(item.concept)
+            # Строку называет слот. plan.inputs на этом пути не читается.
+            # https://www.w3.org/TR/prov-dm/#term-Plan
+            primaries = _rows_from_slots(slots, bindings)
+            confirmed = frozenset(primaries)
+        else:
+            from finance_analysis.domain.resolved_plan import bound_rows
+
+            primaries = bound_rows(plan, bindings)
+            confirmed = frozenset(item.concept for item in plan.inputs)
+            if definition is not None:
+                declared = (
+                    set(formula.numerator.plus)
+                    | set(formula.numerator.minus)
+                    | set(formula.denominator.plus)
+                    | set(formula.denominator.minus)
+                )
+                for item in plan.inputs:
+                    if item.confirmed and not item.ambiguous and item.concept not in declared:
+                        raise UndeclaredInput(item.concept)
     unbound: frozenset[str] = frozenset()
     if plan is None and "off_balance_obligations" in formula.numerator.plus:
         bound = _primaries(bindings, absent)
@@ -2696,6 +2708,7 @@ def select_ratio(
             definition=definition,
             collect=collect,
             outflows=outflows,
+            slots=slots,
         )
     attempt_evidence = None
     if collect is None:
@@ -2772,6 +2785,7 @@ def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dic
         # https://www.w3.org/TR/prov-dm/#term-Plan
         paid = _paid_from_slot(slots, bindings)
     else:
+        interest = None
         fallback = next((item for item in plan.fallbacks if item.replaced == "interest"), None)
         chosen = None if fallback is None else fallback.chosen
         code = None if fallback is None else fallback.warning_code
@@ -2779,7 +2793,13 @@ def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dic
     if chosen is not None and chosen != "interest":
         definition = _rename(definition, chosen)
         warning = None
-        if code:
+        if slots is not None:
+            # Текст предупреждения уже на слоте. plan.warnings здесь не читается.
+            # https://www.w3.org/TR/prov-dm/#term-Plan
+            params = None if interest is None else interest.warning_params
+            if code and params is not None:
+                warning = {"code": code, "params": dict(params)}
+        elif code:
             warning = next((item.as_dict() for item in plan.warnings if item.code == code), None)
         if warning:
             notes = [*notes, warning]

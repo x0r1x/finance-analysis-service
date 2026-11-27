@@ -347,6 +347,19 @@ def _rows_from_slots(slots, bindings) -> dict:
     return found
 
 
+def _warnings_from_slots(slots) -> list[dict]:
+    """Текст предупреждения уже на слоте. План заново не читается.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    found = []
+    for slot in slots:
+        if slot.warning_code and slot.warning_params is not None:
+            found.append({"code": slot.warning_code, "params": dict(slot.warning_params)})
+    return found
+
+
 def _plan_roles(metric: str, plan: Any) -> tuple[tuple[str, str] | None, tuple[str, ...], str, str]:
     pf = next((item for item in plan.fallbacks if item.replaced == "debt_service"), None)
     if metric == "dscr":
@@ -978,7 +991,9 @@ def calculate_coverage(
         # Слоты уже несут ключ строки. plan.inputs здесь не читается.
         # https://www.w3.org/TR/prov-dm/#term-Plan
         primaries = _rows_from_slots(slots, bindings) if slots is not None else _plan_rows(plan, bindings)
-        warnings = [item.as_dict() for item in plan.warnings]
+        # Текст предупреждения уже на слоте. plan.warnings здесь не читается.
+        # https://www.w3.org/TR/prov-dm/#term-Plan
+        warnings = _warnings_from_slots(slots) if slots is not None else [item.as_dict() for item in plan.warnings]
         if slots is not None or definition is not None:
             derived = _roles_from_definition(definition, plan, slots)
             if isinstance(derived, str):

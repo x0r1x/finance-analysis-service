@@ -1278,6 +1278,13 @@ def test_bound_composed_fallback_uses_the_slot_not_plan_fallbacks():
     )
     slots = (
         ResolvedFormulaSlot(
+            "input:ebitda",
+            ("ebitda",),
+            ("ebitda",),
+            "confirmed",
+            (("ebitda", "ebitda", "ebitda"),),
+        ),
+        ResolvedFormulaSlot(
             "interest",
             ("interest",),
             ("interest_paid",),
@@ -1471,6 +1478,371 @@ def test_paid_slot_keys_follow_the_coverage_contract(terms, rows, reason):
     with pytest.raises(ExecutionContractError) as raised:
         _apply_plan(formula, [], object(), [_bind("cash_interest", key) for key in rows], slots)
     assert raised.value.reason == reason
+
+
+def _closed_plan():
+    """Связанный путь не читает входы и предупреждения плана."""
+
+    class Plan:
+        status = "resolved"
+
+        def __getattribute__(self, name):
+            if name in {"inputs", "warnings"}:
+                raise AssertionError(name)
+            return object.__getattribute__(self, name)
+
+    return Plan()
+
+
+def _confirmed_slot(concept, rows, code=None, params=None):
+    from finance_analysis.domain.execution_contract import ResolvedFormulaSlot
+
+    return ResolvedFormulaSlot(
+        f"input:{concept}",
+        (concept,),
+        (concept,),
+        "confirmed",
+        rows,
+        code,
+        params,
+    )
+
+
+_BOUND_ROW_CASES = [
+    (
+        ((("ebitda", None, None),),),
+        ["bk-ebitda"],
+        "bound_slot_without_keys",
+    ),
+    (
+        ((("ebitda", "bk-missing", "row-missing"),),),
+        ["bk-ebitda"],
+        "bound_row_not_found",
+    ),
+    (
+        (
+            (("ebitda", "bk-a", "row-a"),),
+            (("ebitda", "bk-b", "row-b"),),
+        ),
+        ["bk-a", "bk-b"],
+        "bound_row_conflict",
+    ),
+]
+
+
+def _ocf_formula():
+    from finance_analysis.domain.model_type import Composed, Side
+
+    return Composed(
+        Side(("operating_cash_flow", "interest"), ("capex",)),
+        Side(("interest", "principal"), ()),
+        "period",
+        frozenset({"interest", "capex", "principal", "interest_paid"}),
+    )
+
+
+@pytest.mark.parametrize(("terms", "rows", "reason"), _BOUND_ROW_CASES)
+def test_composed_ratio_bound_slots_follow_the_coverage_contract(terms, rows, reason):
+    """Связанный состав отказывает теми же тремя ошибками. plan.inputs не читается.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import composed_ratio
+    from finance_analysis.domain.execution_contract import ExecutionContractError
+    from finance_analysis.domain.model_type import Composed, Side
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    slots = tuple(_confirmed_slot("ebitda", term_rows) for term_rows in terms)
+    with pytest.raises(ExecutionContractError) as raised:
+        composed_ratio(
+            "icr",
+            formula,
+            facts=[_fact("bk-ebitda", "40")],
+            bindings=[_bind("ebitda", key) for key in rows],
+            periods=_year_period(),
+            plan=_closed_plan(),
+            slots=slots,
+        )
+    assert raised.value.reason == reason
+
+
+@pytest.mark.parametrize(("terms", "rows", "reason"), _BOUND_ROW_CASES)
+def test_dscr_ocf_bound_slots_follow_the_coverage_contract(terms, rows, reason):
+    """Связанный OCF-ковенант отказывает теми же тремя ошибками и не читает план.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import dscr_ocf_covenant
+    from finance_analysis.domain.execution_contract import ExecutionContractError
+
+    slots = tuple(_confirmed_slot("ebitda", term_rows) for term_rows in terms)
+    with pytest.raises(ExecutionContractError) as raised:
+        dscr_ocf_covenant(
+            facts=[_fact("bk-ebitda", "40")],
+            bindings=[_bind("ebitda", key) for key in rows],
+            periods=_year_period(),
+            default=_ocf_formula(),
+            concepts=frozenset({"operating_cash_flow", "interest", "capex", "principal"}),
+            money=frozenset({"operating_cash_flow", "interest", "capex", "principal"}),
+            plan=_closed_plan(),
+            slots=slots,
+        )
+    assert raised.value.reason == reason
+
+
+def test_bound_composed_ratio_reads_the_slot_row_not_the_plan():
+    """Строку берёт слот. Хвост привязок и plan.inputs частное не меняют.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import composed_ratio
+    from finance_analysis.domain.model_type import Composed, Side
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    slots = (
+        _confirmed_slot("ebitda", (("ebitda", "z-ebitda", "z-ebitda"),)),
+        _confirmed_slot("interest", (("interest", "z-interest", "z-interest"),)),
+    )
+    got = composed_ratio(
+        "icr",
+        formula,
+        facts=[
+            _fact("z-ebitda", "40"),
+            _fact("a-ebitda", "8"),
+            _fact("z-interest", "-10"),
+            _fact("a-interest", "-2"),
+        ],
+        bindings=[
+            _bind("ebitda", "z-ebitda"),
+            _bind("interest", "z-interest"),
+            _bind("ebitda", "a-ebitda"),
+            _bind("interest", "a-interest"),
+        ],
+        periods=_year_period(),
+        plan=_closed_plan(),
+        slots=slots,
+    )
+    assert got["rows"][0]["value"] == Decimal("4.0000000000")
+
+
+def test_bound_dscr_ocf_uses_slots_and_does_not_reread_the_plan(monkeypatch):
+    """Связанный OCF не вызывает bindings_for_plan. Строку и предупреждение несёт слот.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import dscr_ocf_covenant
+    from finance_analysis.domain.execution_contract import ResolvedFormulaSlot
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("bindings_for_plan")
+
+    monkeypatch.setattr("finance_analysis.domain.resolved_plan.bindings_for_plan", boom)
+    slots = (
+        _confirmed_slot("operating_cash_flow", (("operating_cash_flow", "z-ocf", "z-ocf"),)),
+        ResolvedFormulaSlot(
+            "interest",
+            ("interest",),
+            ("interest_paid",),
+            "fallback",
+            (("interest_paid", "z-paid", "z-paid"),),
+            "interest_basis_fallback",
+            (
+                ("concept", "interest_paid"),
+                ("canonical", "interest"),
+                ("fallback", "interest_paid"),
+                ("message", "paid"),
+            ),
+        ),
+        _confirmed_slot("capex", (("capex", "z-capex", "z-capex"),)),
+        _confirmed_slot("principal", (("principal", "z-principal", "z-principal"),)),
+    )
+    got = dscr_ocf_covenant(
+        facts=[
+            _fact("z-ocf", "100"),
+            _fact("z-paid", "-20"),
+            _fact("a-paid", "-2"),
+            _fact("z-capex", "-10"),
+            _fact("z-principal", "-30"),
+        ],
+        bindings=[
+            _bind("operating_cash_flow", "z-ocf"),
+            _bind("interest_paid", "z-paid"),
+            _bind("capex", "z-capex"),
+            _bind("principal", "z-principal"),
+            _bind("interest_paid", "a-paid"),
+        ],
+        periods=_year_period(),
+        default=_ocf_formula(),
+        concepts=frozenset({"operating_cash_flow", "interest", "interest_paid", "capex", "principal"}),
+        money=frozenset({"operating_cash_flow", "interest", "interest_paid", "capex", "principal"}),
+        plan=_closed_plan(),
+        slots=slots,
+    )
+    assert got["rows"][0]["value"] == Decimal("2.2000000000")
+    warning = next(item for item in got["warnings"] if item["code"] == "interest_basis_fallback")
+    assert warning["params"]["concept"] == "interest_paid"
+
+
+def test_bound_coverage_takes_the_warning_from_the_slot():
+    """Предупреждение связанного покрытия лежит на слоте. plan.warnings не читается.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.metrics import calculate_coverage
+
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    slots = (
+        _confirmed_slot(
+            "cfads",
+            (("cfads", "z-cfads", "z-cfads"),),
+            "icr_numerator",
+            (("concept", "ebitda"),),
+        ),
+        _confirmed_slot("debt_service", (("debt_service", "z-debt", "z-debt"),)),
+    )
+    outcome = calculate_coverage(
+        metric="dscr",
+        facts=[_fact("z-cfads", "80"), _fact("a-cfads", "8"), _fact("z-debt", "-10")],
+        bindings=[
+            _bind("cfads", "z-cfads"),
+            _bind("debt_service", "z-debt"),
+            _bind("cfads", "a-cfads"),
+        ],
+        periods=_year_period(),
+        period_phase={},
+        explicit_phases=False,
+        plan=_closed_plan(),
+        definition=definition,
+        slots=slots,
+        evidence=False,
+    )
+    assert outcome.result["rows"][0]["value"] == Decimal("8.0000000000")
+    assert outcome.result["warnings"] == [{"code": "icr_numerator", "params": {"concept": "ebitda"}}]
+
+
+def test_slots_for_copies_the_ready_warning_onto_the_numerator_slot():
+    """Текст icr_numerator переносится на слот при сборке. Калькулятор план не перечитывает.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.execution_contract import slots_for
+    from finance_analysis.domain.metrics import calculate_coverage
+    from finance_analysis.domain.resolved_plan import PlanWarning
+
+    definition = _coverage_definition(
+        "icr",
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
+    )
+    plan = seal(
+        metric_id="icr",
+        variant=None,
+        variant_source="formula",
+        catalog_version=None,
+        semantic_model_version=None,
+        build_key=None,
+        model_id=None,
+        status="resolved",
+        inputs=(
+            ResolvedInput("ebitda", "one_of", "formula", "z-ebitda", "z-ebitda", None, False, True),
+            ResolvedInput("interest", "all_of", "formula", "z-interest", "z-interest", None, False, True),
+        ),
+        diagnostic=(),
+        rejected=(),
+        fallbacks=(),
+        warnings=(PlanWarning("icr_numerator", (("concept", "ebitda"),)),),
+        needs_input=(),
+        shield=None,
+        definition_hash=definition.definition_hash,
+    )
+    slots = slots_for(definition, plan)
+    numerator = next(slot for slot in slots if slot.slot_id == "numerator")
+    assert numerator.warning_code == "icr_numerator"
+    assert numerator.warning_params == (("concept", "ebitda"),)
+    outcome = calculate_coverage(
+        metric="icr",
+        facts=[_fact("z-ebitda", "80"), _fact("a-ebitda", "8"), _fact("z-interest", "-10")],
+        bindings=[
+            _bind("ebitda", "z-ebitda"),
+            _bind("interest", "z-interest"),
+            _bind("ebitda", "a-ebitda"),
+        ],
+        periods=_year_period(),
+        period_phase={},
+        explicit_phases=False,
+        plan=_closed_plan(),
+        definition=definition,
+        slots=slots,
+        evidence=False,
+    )
+    assert outcome.result["rows"][0]["value"] == Decimal("8.0000000000")
+    assert outcome.result["warnings"] == [{"code": "icr_numerator", "params": {"concept": "ebitda"}}]
+
+
+def test_an_undeclared_composed_concept_still_refuses_before_the_calculator():
+    """Чужое подтверждённое имя составной формулы — отказ до калькулятора.
+
+    Калькулятор связанного пути plan.inputs не перечитывает.
+    https://www.w3.org/TR/prov-dm/#term-Activity
+    """
+
+    from finance_analysis.domain.model_type import Composed, Side
+
+    definition = _definition(
+        "net_debt_ebitda",
+        _expr(numerator_plus=("net_debt",), denominator_plus=("ebitda",)),
+        executor_key="composed",
+        executor_id="composed_ratio",
+        executor_version="composed_ratio@1",
+        window="LTM",
+    )
+    formula = Composed(
+        Side(("net_debt",), ()),
+        Side(("ebitda",), ()),
+        "LTM",
+        frozenset({"net_debt"}),
+    )
+    plan = _seal_plan("net_debt_ebitda", definition, ("net_debt", "ebitda", "cash_taxes"))
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _request(
+            "net_debt_ebitda",
+            common=_common(
+                [_fact("net_debt", "40"), _fact("ebitda", "10"), _fact("cash_taxes", "1")],
+                [_bind("net_debt", "net_debt"), _bind("ebitda", "ebitda"), _bind("cash_taxes", "cash_taxes")],
+            ),
+            composed={"net_debt_ebitda": formula},
+            concepts=frozenset({"net_debt", "ebitda", "cash_taxes"}),
+            money=frozenset({"net_debt", "ebitda", "cash_taxes"}),
+        ),
+        _context(definition, plan),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "undeclared_input"
+    assert outcome.result["rows"] == []
 
 
 def test_a_bound_slot_without_a_row_is_a_contract_error():
