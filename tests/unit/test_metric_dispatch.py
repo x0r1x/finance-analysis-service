@@ -1348,6 +1348,73 @@ def test_bound_apply_plan_takes_interest_paid_from_the_slot():
     assert [row["binding_key"] for row in paid] == ["z-paid"]
 
 
+def test_confirmed_interest_paid_on_its_own_slot_still_aliases_the_row():
+    """Подтверждённый interest_paid живёт на input:interest_paid, не на слоте interest.
+
+    Ключ указывает на строку с другим понятием, поэтому нужна копия-алиас.
+    Подмена запаса по-прежнему смотрит только слот interest.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import _apply_plan
+    from finance_analysis.domain.execution_contract import ResolvedFormulaSlot
+    from finance_analysis.domain.model_type import Composed, Side
+
+    def blocked(name):
+        def read(_self):
+            raise AssertionError(name)
+
+        return property(read)
+
+    class Plan:
+        inputs = blocked("plan.inputs")
+        fallbacks = blocked("plan.fallbacks")
+        warnings = blocked("plan.warnings")
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    slots = (
+        ResolvedFormulaSlot(
+            "interest",
+            ("interest",),
+            ("interest",),
+            "fallback",
+            (("interest", "bk-interest", "row-interest"),),
+        ),
+        ResolvedFormulaSlot(
+            "input:interest_paid",
+            ("interest_paid",),
+            ("interest_paid",),
+            "confirmed",
+            (("interest_paid", "bk-cash", "row-cash"),),
+        ),
+    )
+    definition, _notes, bindings = _apply_plan(
+        formula,
+        [],
+        Plan(),
+        [_bind("cash_interest", "bk-cash"), _bind("interest", "bk-interest")],
+        slots,
+    )
+    assert definition.denominator.plus == ("interest",)
+    original = [
+        row
+        for row in bindings
+        if row["binding_key"] == "bk-cash" and row.get("effective_concept") == "cash_interest"
+    ]
+    alias = [
+        row
+        for row in bindings
+        if row["binding_key"] == "bk-cash" and row.get("effective_concept") == "interest_paid"
+    ]
+    assert len(original) == 1
+    assert len(alias) == 1
+
+
 def test_a_bound_slot_without_a_row_is_a_contract_error():
     """Ключи слота есть, строки нет. Пропуск заменил бы её другой строкой.
 
