@@ -45,6 +45,8 @@ _MARKERS = (
     "_plan_rows",
     "_coverage_from_plan",
     "_core_rows",
+    # Связанный путь читает план через слоты, не вторым проходом по привязкам.
+    "execute_bound(",
 )
 _DISPATCHERS = frozenset(
     {
@@ -309,7 +311,13 @@ def _needs_plan(module: str, name: str, functions: dict, seen: set) -> bool:
 
 
 def _call_passes_plan(call: ast.Call) -> bool:
-    return any(keyword.arg == "plan" for keyword in call.keywords)
+    """План передан аргументом ``plan`` или конструктором контекста, у которого он есть."""
+
+    if any(keyword.arg == "plan" for keyword in call.keywords):
+        return True
+    nested = [arg for arg in call.args if isinstance(arg, ast.Call)]
+    nested.extend(keyword.value for keyword in call.keywords if isinstance(keyword.value, ast.Call))
+    return any(_call_passes_plan(item) for item in nested)
 
 
 def test_dispatchers_pass_the_plan_into_every_formula_reread():

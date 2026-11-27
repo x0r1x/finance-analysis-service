@@ -1263,7 +1263,13 @@ class Analyses:
                 dscr_variant if metric == "dscr" else variant_of.get(metric),
                 dscr_variant,
             )
-            if result.get("reason") in {"missing_executor", "incompatible_executor", "definition_mismatch"}:
+            if result.get("reason") in {
+                "missing_executor",
+                "incompatible_executor",
+                "definition_mismatch",
+                "metric_mismatch",
+                "variant_mismatch",
+            }:
                 warnings.append({"code": result["reason"], "params": {"metric": metric}})
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
                 uses.append({"metric": metric, "applicability": "optional", "skipped": "input_absent"})

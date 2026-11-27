@@ -19,10 +19,18 @@ from typing import Any
 
 from finance_analysis.domain.calculation_evidence import CalculationOutcome
 from finance_analysis.domain.cover_metrics import LOAN_LIFE, REDUCED
-from finance_analysis.domain.execution_contract import MetricExecutionContext
+from finance_analysis.domain.execution_contract import (
+    ExecutionContractError,
+    MetricExecutionContext,
+    execute_bound,
+)
 from finance_analysis.domain.housing_cover import use_housing_cover
 
 _CONFLICT = object()
+# ADSCR, dscr_min и dscr_avg читают план DSCR. Их определение — своё.
+_DERIVED_ON_DSCR = frozenset({"adscr", "dscr_min", "dscr_avg"})
+# Эти причины уже возвращает калькулятор. Повторный отказ здесь сменил бы улику.
+_SLOT_REFUSALS = frozenset({"ambiguous_one_of", "undeclared_alternative", "inconsistent_fallback"})
 # (executor_key, executor_id, executor_version) — алгоритм, который маршрут реально вызывает.
 _SELECT_RATIO = (
     ("coverage", "calculate_coverage", "calculate_coverage@1"),
@@ -107,7 +115,24 @@ def run_calculation(
     rejected = _rejection(executor, context.definition)
     if rejected is not None:
         return CalculationOutcome(_refusal(request.metric, rejected), None)
-    return executor.execute(context)
+    plan = context.plan
+    definition = context.definition
+    if _uses_todays_calculator(request, plan, definition):
+        return executor.execute(context)
+    if not _plan_matches(plan, definition):
+        return CalculationOutcome(_refusal(request.metric, _integrity_reason(plan, definition)), None)
+    try:
+        return execute_bound(
+            executor,
+            definition,
+            plan,
+            calculation_origin=context.calculation_origin,
+        )
+    except ExecutionContractError as exc:
+        # shortcut: отвергнутый слот считает прежний калькулятор, пока операнды не читаются из context.slots.
+        if exc.reason in _SLOT_REFUSALS:
+            return executor.execute(context)
+        return CalculationOutcome(_refusal(request.metric, exc.reason), None)
 
 
 class DispatchCoverExecutor:
@@ -200,6 +225,42 @@ def _resolve_definition(request: CalculationRequest, context: MetricExecutionCon
     if bound is not None:
         return bound
     return supplied
+
+
+def _uses_todays_calculator(request: CalculationRequest, plan, definition) -> bool:
+    """Плана нет, он не решён, определения нет, либо производная метрика читает план DSCR.
+
+    У ADSCR, dscr_min и dscr_avg определение своё, а план — ``dscr``. Метрики
+    различаются, поэтому связанный путь здесь был бы ``metric_mismatch``.
+    Определение DSCR на их место не ставится.
+    Чужой план не становится использованием этого определения:
+    https://www.w3.org/TR/prov-dm/#term-Usage
+    """
+
+    if plan is None or getattr(plan, "status", None) != "resolved" or definition is None:
+        return True
+    return (
+        request.metric in _DERIVED_ON_DSCR
+        and definition.metric_id == request.metric
+        and getattr(plan, "metric_id", None) == "dscr"
+    )
+
+
+def _plan_matches(plan, definition) -> bool:
+    return (
+        plan.metric_id == definition.metric_id
+        and plan.variant == definition.variant
+        and plan.variant_source == definition.variant_source
+        and plan.definition_hash == definition.definition_hash
+    )
+
+
+def _integrity_reason(plan, definition) -> str:
+    if plan.metric_id != definition.metric_id:
+        return "metric_mismatch"
+    if plan.variant != definition.variant or plan.variant_source != definition.variant_source:
+        return "variant_mismatch"
+    return "definition_mismatch"
 
 
 def _rejection(executor: Any, definition: Any) -> str | None:
