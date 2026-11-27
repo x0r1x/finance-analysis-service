@@ -23,6 +23,7 @@ from finance_analysis.domain.calculation_evidence import (
     FactUse,
     PeriodResult,
     TransformationStep,
+    definition_fields,
 )
 from finance_analysis.domain.mapping import marked_line_code
 from finance_analysis.domain.metric_contract import BoundInputs, implements
@@ -425,7 +426,15 @@ def _seal(book: EvidenceBook, result: dict) -> CalculationOutcome:
                     steps=(),
                 )
             )
-    return CalculationOutcome(result, book.freeze(execution, _registered_version(book.metric, book.metric)))
+    return CalculationOutcome(
+        result,
+        book.freeze(
+            execution,
+            _registered_version(book.metric, book.metric),
+            calculation_origin="calculated",
+            **definition_fields(book.bound_definition),
+        ),
+    )
 
 
 def _note(book: EvidenceBook | None, concept: str | None, key) -> dict | None:
@@ -888,6 +897,7 @@ def calculate_coverage(
             marker_class=marker_class,
             explicit_phases=explicit_phases,
             plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
+            bound_definition=definition,
         )
     if metric in {"icr", "icr_ebit"}:
         blocked = methodology_block(profile, bindings, metric=metric)

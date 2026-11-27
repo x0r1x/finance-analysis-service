@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal, localcontext
 from itertools import pairwise
@@ -18,6 +19,7 @@ from finance_analysis.domain.calculation_evidence import (
     EvidenceBook,
     PeriodResult,
     TransformationStep,
+    trace_fields,
 )
 from finance_analysis.domain.coverage import is_coverage_test_period
 from finance_analysis.domain.metric_contract import REGISTRY, BoundInputs, implements
@@ -199,7 +201,7 @@ def adscr(
     if not _inside:
         from finance_analysis.domain.execution_branches import ADSCR, run_branch
 
-        return run_branch(
+        result = run_branch(
             ADSCR,
             {"adscr_direction": direction},
             facts,
@@ -220,6 +222,8 @@ def adscr(
             ),
             periods=periods,
         )
+        _copy_trace(collect, "adscr")
+        return result
     source = None
     if collect is None:
         dscr = _dscr_result(
@@ -364,7 +368,7 @@ def dscr_reductions(
         )
 
         branch = DSCR_MIN if metric == "dscr_min" else DSCR_AVG
-        return run_branch(
+        result = run_branch(
             branch,
             {},
             facts,
@@ -385,6 +389,8 @@ def dscr_reductions(
             ),
             periods=periods,
         )
+        _copy_trace(collect, metric)
+        return result
     source = None
     if collect is None:
         dscr = _dscr_result(
@@ -469,6 +475,39 @@ def _dscr_result(**kwargs) -> dict:
     return calculate_coverage(metric="dscr", evidence=True, **kwargs).result
 
 
+def _period_parents(source) -> tuple[str, ...]:
+    """Узлы периодов, которые свёртка читает, и улика DSCR, которой они принадлежат."""
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for period in source.period_results:
+        if period.status != "computed" or not period.period_id:
+            continue
+        node = period.node_id or f"period:{period.axis_id}:{period.period_id}"
+        if node in seen:
+            continue
+        seen.add(node)
+        found.append(node)
+    if source.evidence_id:
+        found.append(source.evidence_id)
+    return tuple(found)
+
+
+def _copy_trace(collect, metric: str) -> None:
+    """Кладёт уже собранный след на улику этой метрики. Публичную строку не трогает."""
+
+    if not collect:
+        return
+    from finance_analysis.domain.execution_branches import peek_trace
+
+    fields = trace_fields(peek_trace())
+    if not fields:
+        return
+    for index, item in enumerate(collect):
+        if getattr(item, "metric", None) == metric:
+            collect[index] = replace(item, **fields)
+
+
 def _carry_source(book: EvidenceBook, source) -> None:
     """Переносит факты, использования и масштаб исходного расчёта в новую улику."""
 
@@ -526,7 +565,18 @@ def _keep_adscr(collect, rows, sums, source, *, sign_convention, marker_class, e
     if source is not None:
         _carry_source(book, source)
     book.periods = [*periods, *(source.period_results if source is not None else ())]
-    collect.append(book.freeze("succeeded", REGISTRY[("adscr", "adscr")].implementation_version))
+    version = REGISTRY[("adscr", "adscr")].implementation_version
+    parents = (source.evidence_id,) if source is not None and source.evidence_id else ()
+    collect.append(
+        book.freeze(
+            "succeeded",
+            version,
+            executor_id="adscr",
+            executor_version=version,
+            parent_evidence_ids=parents,
+            calculation_origin="calculated",
+        )
+    )
 
 
 def _keep_reduction(collect, metric, rows, source, *, sign_convention, marker_class, explicit_phases) -> None:
@@ -581,7 +631,17 @@ def _keep_reduction(collect, metric, rows, source, *, sign_convention, marker_cl
     )
     _carry_source(book, source)
     book.periods = [*source.period_results, *summaries]
-    collect.append(book.freeze("succeeded", REGISTRY[(metric, metric)].implementation_version))
+    version = REGISTRY[(metric, metric)].implementation_version
+    collect.append(
+        book.freeze(
+            "succeeded",
+            version,
+            executor_id=metric,
+            executor_version=version,
+            parent_evidence_ids=_period_parents(source),
+            calculation_origin="calculated",
+        )
+    )
 
 
 LOAN_LIFE_INPUTS = ("debt_service", "cfads", "debt_outstanding", "discount_rate")

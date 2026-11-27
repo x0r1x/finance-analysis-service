@@ -118,6 +118,55 @@ class CalculationEvidence:
     definition_version: str | None = None
     executor_id: str | None = None
     executor_version: str | None = None
+    definition_source: str | None = None
+    definition_ref: Mapping[str, Any] | None = None
+    definition_hash: str | None = None
+    branch_id: str | None = None
+    actual_inputs: tuple[str, ...] = ()
+    actual_fact_uses: tuple[str, ...] = ()
+    actual_periods: tuple[str, ...] = ()
+    actual_period_slots: tuple[tuple[str, str], ...] = ()
+    profile_values: tuple[tuple[str, Any], ...] = ()
+    parent_evidence_ids: tuple[str, ...] = ()
+    calculation_origin: str | None = None
+    evidence_id: str | None = None
+
+
+def evidence_identity(metric: str, execution: str, implementation: str, plan_hash: str | None) -> str:
+    """Идентификатор прохода. Родитель ссылается на него, не на публичную строку."""
+
+    text = "\n".join((metric, execution, implementation, plan_hash or ""))
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def definition_fields(definition) -> dict[str, Any]:
+    """Поля определения. Пустая версия остаётся пустой и не берётся у исполнителя."""
+
+    if definition is None:
+        return {}
+    return {
+        "definition_version": definition.definition_version,
+        "definition_source": definition.definition_source,
+        "definition_ref": definition.definition_ref,
+        "definition_hash": definition.definition_hash,
+        "executor_id": definition.executor_id,
+        "executor_version": definition.executor_version,
+    }
+
+
+def trace_fields(trace) -> dict[str, Any]:
+    """След выбранной ветви. Нет следа — поля не выдумываются."""
+
+    if trace is None:
+        return {}
+    return {
+        "branch_id": trace.branch_id,
+        "actual_inputs": trace.actual_inputs,
+        "actual_fact_uses": trace.actual_fact_uses,
+        "actual_periods": trace.actual_periods,
+        "actual_period_slots": trace.actual_period_slots,
+        "profile_values": trace.profile_values,
+    }
 
 
 @dataclass(frozen=True)
@@ -145,6 +194,7 @@ class EvidenceBook:
     fallback: dict | None = None
     basis_sides: list[BasisSide] | None = None
     sums_additions: int = 0
+    bound_definition: Any = None
 
     def __post_init__(self) -> None:
         self.observations = [] if self.observations is None else self.observations
@@ -163,6 +213,17 @@ class EvidenceBook:
         definition_version: str | None = None,
         executor_id: str | None = None,
         executor_version: str | None = None,
+        definition_source: str | None = None,
+        definition_ref: Mapping[str, Any] | None = None,
+        definition_hash: str | None = None,
+        branch_id: str | None = None,
+        actual_inputs: tuple[str, ...] = (),
+        actual_fact_uses: tuple[str, ...] = (),
+        actual_periods: tuple[str, ...] = (),
+        actual_period_slots: tuple[tuple[str, str], ...] = (),
+        profile_values: tuple[tuple[str, Any], ...] = (),
+        parent_evidence_ids: tuple[str, ...] = (),
+        calculation_origin: str | None = None,
         evidence_status: str = "evidence_available",
         stamp: str | None = None,
     ) -> CalculationEvidence:
@@ -185,6 +246,18 @@ class EvidenceBook:
             definition_version=definition_version,
             executor_id=executor_id,
             executor_version=executor_version,
+            definition_source=definition_source,
+            definition_ref=definition_ref,
+            definition_hash=definition_hash,
+            branch_id=branch_id,
+            actual_inputs=tuple(actual_inputs),
+            actual_fact_uses=tuple(actual_fact_uses),
+            actual_periods=tuple(actual_periods),
+            actual_period_slots=tuple(actual_period_slots),
+            profile_values=tuple(profile_values),
+            parent_evidence_ids=tuple(parent_evidence_ids),
+            calculation_origin=calculation_origin,
+            evidence_id=evidence_identity(self.metric, execution, implementation, self.plan_content_sha256),
         )
 
 

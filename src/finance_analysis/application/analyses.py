@@ -1231,6 +1231,7 @@ class Analyses:
             result = outcome.result
             if outcome.trace is not None:
                 branch_traces.append({"metric": metric, "trace": outcome.trace})
+                _apply_trace(evidences[before:], outcome.trace)
             if result.get("reason") in {"missing_executor", "incompatible_executor", "definition_mismatch"}:
                 warnings.append({"code": result["reason"], "params": {"metric": metric}})
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
@@ -1247,6 +1248,8 @@ class Analyses:
             computed.extend(published)
             if published and not _trace_available(evidences[before:]):
                 evidences.append(_unsupported(metric, common["sign_convention"]))
+                if outcome.trace is not None:
+                    _apply_trace(evidences[-1:], outcome.trace)
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
                 entry["definition_source"] = result["definition_source"]
@@ -2278,6 +2281,22 @@ def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
         status = "evidence_available" if (metric, version) in EVIDENCE_AVAILABLE else "evidence_not_supported"
         rows.append((metric, version, status))
     return tuple(rows)
+
+
+def _apply_trace(evidences: list, trace) -> None:
+    """След ветви остаётся на улике. В конверт коэффициента он не входит."""
+
+    from dataclasses import replace
+
+    from finance_analysis.domain.calculation_evidence import trace_fields
+
+    fields = trace_fields(trace)
+    if not fields:
+        return
+    for index, item in enumerate(evidences):
+        if item is None:
+            continue
+        evidences[index] = replace(item, **fields)
 
 
 def _trace_available(evidences: list) -> bool:
