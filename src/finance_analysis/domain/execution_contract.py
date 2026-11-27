@@ -477,10 +477,19 @@ def _ready_params(plan, code: str | None):
     return None if found is None else found.params
 
 
-def _place_ready_warnings(slots: list, plan) -> None:
-    """Предупреждение без своего запаса, например icr_numerator, ложится на числитель.
+# Код предупреждения называет слот. Свободный числитель не выбирается.
+# https://www.w3.org/TR/prov-dm/#term-Plan
+_WARNING_HOME = {
+    "icr_numerator": frozenset({"numerator"}),
+    "interest_basis_fallback": frozenset({"interest", "debt_service"}),
+}
 
-    Калькулятор потом читает слот, а не plan.warnings.
+
+def _place_ready_warnings(slots: list, plan) -> None:
+    """Предупреждение без своего запаса ложится на слот, который называет код.
+
+    Предупреждение не всегда про числитель, поэтому свободный числитель его не принимает.
+    Два кода остаются на двух слотах. Калькулятор потом читает слот, а не plan.warnings.
     https://www.w3.org/TR/prov-dm/#term-Plan
     """
 
@@ -488,11 +497,18 @@ def _place_ready_warnings(slots: list, plan) -> None:
     for item in plan.warnings:
         if item.code in taken:
             continue
-        for index, slot in enumerate(slots):
-            if slot.slot_id == "numerator" and slot.warning_code is None:
-                slots[index] = replace(slot, warning_code=item.code, warning_params=item.params)
-                taken.add(item.code)
-                break
+        homes = _WARNING_HOME.get(item.code)
+        if not homes:
+            continue
+        hits = [
+            index
+            for index, slot in enumerate(slots)
+            if slot.slot_id in homes and slot.warning_code is None
+        ]
+        if len(hits) != 1:
+            continue
+        slots[hits[0]] = replace(slots[hits[0]], warning_code=item.code, warning_params=item.params)
+        taken.add(item.code)
 
 
 def _term_row(item) -> tuple[str, str | None, str | None]:

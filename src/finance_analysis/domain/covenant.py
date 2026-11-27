@@ -359,7 +359,27 @@ def covenant_dscr(
     )
     if source == "default" and result["status"] == "succeeded":
         notes = [*notes, *_mismatch(result["rows"], facts, bindings, periods, absent)]
-    return {**result, "warnings": [*notes, *result["warnings"]], "definition_source": source, "definition_ref": ref}
+    return {
+        **result,
+        "warnings": _join_warnings(notes, result["warnings"]),
+        "definition_source": source,
+        "definition_ref": ref,
+    }
+
+
+def _join_warnings(notes: list, warnings: list) -> list:
+    """Заметка _apply_plan и тот же текст со слота остаются одной строкой.
+
+    Сначала заметки ковенанта, затем новые. Форма строки — code и params.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    joined = list(notes)
+    for item in warnings:
+        if any(kept.get("code") == item.get("code") and kept.get("params") == item.get("params") for kept in joined):
+            continue
+        joined.append(item)
+    return joined
 
 
 # Состав каталога dscr.ocf_covenant. interest_paid — запасной вход по interest_order, а не синоним interest: это разные понятия.
@@ -738,6 +758,12 @@ def composed_ratio(
     if len(flow) > 1 and not reconciled:
         return finish(_refused(metric, periods, "basis_mismatch", MIXED_BASIS, inputs))
     warnings: list[dict] = []
+    if slots is not None:
+        from finance_analysis.domain.metrics import _warnings_from_slots
+
+        # Текст уже на слоте. plan.warnings на этом пути не читается.
+        # https://www.w3.org/TR/prov-dm/#term-Plan
+        warnings.extend(_warnings_from_slots(slots))
     sheet = _assume_sheet_units(facts, [primaries[name] for name in inputs], warnings)
     aligned = aligned_keys(periods)
     series = {

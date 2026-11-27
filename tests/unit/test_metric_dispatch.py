@@ -1801,6 +1801,190 @@ def test_slots_for_copies_the_ready_warning_onto_the_numerator_slot():
     assert outcome.result["warnings"] == [{"code": "icr_numerator", "params": {"concept": "ebitda"}}]
 
 
+def test_composed_ratio_copies_the_slot_warning_into_the_result():
+    """Составной путь кладёт предупреждение слота в результат. plan.warnings не читается.
+
+    Тот же контракт, что у покрытия: слот уже несёт icr_numerator.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import composed_ratio
+    from finance_analysis.domain.execution_contract import slots_for
+    from finance_analysis.domain.model_type import Composed, Side
+    from finance_analysis.domain.resolved_plan import PlanWarning
+
+    definition = _coverage_definition(
+        "icr",
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
+    )
+    plan = seal(
+        metric_id="icr",
+        variant=None,
+        variant_source="formula",
+        catalog_version=None,
+        semantic_model_version=None,
+        build_key=None,
+        model_id=None,
+        status="resolved",
+        inputs=(
+            ResolvedInput("ebitda", "one_of", "formula", "z-ebitda", "z-ebitda", None, False, True),
+            ResolvedInput("interest", "all_of", "formula", "z-interest", "z-interest", None, False, True),
+        ),
+        diagnostic=(),
+        rejected=(),
+        fallbacks=(),
+        warnings=(PlanWarning("icr_numerator", (("concept", "ebitda"),)),),
+        needs_input=(),
+        shield=None,
+        definition_hash=definition.definition_hash,
+    )
+    slots = slots_for(definition, plan)
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    got = composed_ratio(
+        "icr",
+        formula,
+        facts=[_fact("z-ebitda", "80"), _fact("a-ebitda", "8"), _fact("z-interest", "-10")],
+        bindings=[
+            _bind("ebitda", "z-ebitda"),
+            _bind("interest", "z-interest"),
+            _bind("ebitda", "a-ebitda"),
+        ],
+        periods=_year_period(),
+        plan=_closed_plan(),
+        slots=slots,
+    )
+    assert got["rows"][0]["value"] == Decimal("8.0000000000")
+    assert got["warnings"] == [{"code": "icr_numerator", "params": {"concept": "ebitda"}}]
+    assert set(got["warnings"][0]) == {"code", "params"}
+
+
+def test_covenant_does_not_repeat_a_warning_the_slot_already_gave_apply_plan():
+    """Ковенант не повторяет предупреждение, которое _apply_plan уже взял со слота.
+
+    Составной результат приносит тот же текст. В строке коэффициента он один раз.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import dscr_ocf_covenant
+    from finance_analysis.domain.execution_contract import ResolvedFormulaSlot
+
+    slots = (
+        _confirmed_slot(
+            "operating_cash_flow",
+            (("operating_cash_flow", "z-ocf", "z-ocf"),),
+            "icr_numerator",
+            (("concept", "ebitda"),),
+        ),
+        ResolvedFormulaSlot(
+            "interest",
+            ("interest",),
+            ("interest_paid",),
+            "fallback",
+            (("interest_paid", "z-paid", "z-paid"),),
+            "interest_basis_fallback",
+            (
+                ("concept", "interest_paid"),
+                ("canonical", "interest"),
+                ("fallback", "interest_paid"),
+                ("message", "paid"),
+            ),
+        ),
+        _confirmed_slot("capex", (("capex", "z-capex", "z-capex"),)),
+        _confirmed_slot("principal", (("principal", "z-principal", "z-principal"),)),
+    )
+    got = dscr_ocf_covenant(
+        facts=[
+            _fact("z-ocf", "100"),
+            _fact("z-paid", "-20"),
+            _fact("z-capex", "-10"),
+            _fact("z-principal", "-30"),
+        ],
+        bindings=[
+            _bind("operating_cash_flow", "z-ocf"),
+            _bind("interest_paid", "z-paid"),
+            _bind("capex", "z-capex"),
+            _bind("principal", "z-principal"),
+        ],
+        periods=_year_period(),
+        default=_ocf_formula(),
+        concepts=frozenset({"operating_cash_flow", "interest", "interest_paid", "capex", "principal"}),
+        money=frozenset({"operating_cash_flow", "interest", "interest_paid", "capex", "principal"}),
+        plan=_closed_plan(),
+        slots=slots,
+    )
+    assert got["rows"][0]["value"] == Decimal("2.2000000000")
+    codes = [item["code"] for item in got["warnings"]]
+    assert codes.count("interest_basis_fallback") == 1
+    assert codes.count("icr_numerator") == 1
+    assert all(set(item) == {"code", "params"} for item in got["warnings"])
+
+
+def test_two_independent_warnings_keep_their_own_slots():
+    """Два предупреждения остаются на своих слотах. Свободный числитель их не собирает.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.execution_contract import slots_for
+    from finance_analysis.domain.resolved_plan import PlanWarning
+
+    definition = _coverage_definition(
+        "icr",
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
+    )
+    plan = seal(
+        metric_id="icr",
+        variant=None,
+        variant_source="formula",
+        catalog_version=None,
+        semantic_model_version=None,
+        build_key=None,
+        model_id=None,
+        status="resolved",
+        inputs=(
+            ResolvedInput("ebitda", "one_of", "formula", "z-ebitda", "z-ebitda", None, False, True),
+            ResolvedInput("interest_paid", "all_of", "fallback", "z-paid", "z-paid", None, False, True),
+        ),
+        diagnostic=(),
+        rejected=(),
+        fallbacks=(AppliedFallback("icr", "interest", "interest_paid", None),),
+        warnings=(
+            PlanWarning(
+                "interest_basis_fallback",
+                (
+                    ("concept", "interest_paid"),
+                    ("canonical", "interest"),
+                    ("fallback", "interest_paid"),
+                    ("message", "paid"),
+                ),
+            ),
+            PlanWarning("icr_numerator", (("concept", "ebitda"),)),
+        ),
+        needs_input=(),
+        shield=None,
+        definition_hash=definition.definition_hash,
+    )
+    slots = slots_for(definition, plan)
+    by_id = {slot.slot_id: slot for slot in slots}
+    assert by_id["numerator"].warning_code == "icr_numerator"
+    assert by_id["numerator"].warning_params == (("concept", "ebitda"),)
+    assert by_id["interest"].warning_code == "interest_basis_fallback"
+    assert dict(by_id["interest"].warning_params)["concept"] == "interest_paid"
+
+
 def test_an_undeclared_composed_concept_still_refuses_before_the_calculator():
     """Чужое подтверждённое имя составной формулы — отказ до калькулятора.
 
