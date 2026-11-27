@@ -991,9 +991,18 @@ async def test_saved_evidence_walks_parents_for_adscr_and_reductions(tmp_path):
         assert all(parent in by_id for parent in view["parent_evidence_ids"])
         for parent_id in view["parent_evidence_ids"]:
             parent = next(item for item in saved if item.get("evidence_id") == parent_id)
-            parent_ran = REGISTRY[("dscr", "dscr.pf")]
-            assert parent["definition_hash"] == _hash("dscr.pf", "dscr.pf", parent_ran.implementation_version)
-            assert parent["definition_hash"] != _hash("dscr", "dscr", REGISTRY[("dscr", "dscr")].implementation_version)
+            # calculate_coverage(metric="dscr") запечатывает dscr@1. План DSCR
+            # не строился, вариант книги в этот проход не передавался. Хеш
+            # dscr.pf при implementation dscr@1 называл бы другой путь.
+            # https://csrc.nist.gov/publications/detail/fips/180/4/final
+            ran_parent = REGISTRY[("dscr", "dscr")]
+            assert parent["implementation"] == ran_parent.implementation_version
+            assert "definition_hash" not in parent
+            assert parent.get("definition_hash") != _hash(
+                "dscr.pf",
+                "dscr.pf",
+                REGISTRY[("dscr", "dscr.pf")].implementation_version,
+            )
             assert parent["periods"]
             assert "branch_id" not in parent
             assert "actual_inputs" not in parent
@@ -1006,3 +1015,105 @@ async def test_saved_evidence_walks_parents_for_adscr_and_reductions(tmp_path):
         else:
             assert view["parent_period_ids"]
             assert "profile_values" not in view or view["profile_values"] == []
+
+
+async def test_unfinished_pointer_is_not_published_evidence(tmp_path):
+    """Незавершённый указатель не выглядит опубликованной уликой.
+
+    Список называет стадию и не отдаёт тело. Чтение одного такого указателя
+    не возвращает объект. Нет строки — «след не найден».
+    https://microservices.io/patterns/data/transactional-outbox.html
+    """
+
+    import json
+    from contextlib import asynccontextmanager
+
+    from httpx import ASGITransport, AsyncClient
+
+    from finance_analysis.adapters.api.app import create_app
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.adapters.storage.trace_pointer import DuckDBTracePointer
+    from finance_analysis.application.analyses import Analyses
+    from finance_analysis.application.keys import report_index_key
+    from finance_analysis.settings import Settings
+
+    analysis_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    job_id = "ab" * 32
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+
+    class _Service:
+        pass
+
+    class _Support:
+        async def rate_limit(self, _who):
+            return None
+
+        @asynccontextmanager
+        async def user_inflight(self, _who):
+            yield
+
+    service = _Service()
+    service.store = store
+    service.trace_pointer = pointer
+    service.settings = Settings(_env_file=None)
+    service.analyses = Analyses(service)
+    await store.put(
+        report_index_key(job_id, analysis_id),
+        json.dumps({"analysis_id": analysis_id}).encode(),
+    )
+    marker = "secret-uncommitted-cell"
+    for state in ("pending_object", "pending_retention", "pending_commit"):
+        execution_id = f"hold-{state}"
+        key = f"traces/{analysis_id}/{execution_id}.json"
+        pointer.put(
+            {
+                "analysis_id": analysis_id,
+                "execution_id": execution_id,
+                "object_key": key,
+                "evidence_complete": True,
+                "dropped_cell_count": 0,
+                "retained_until": None,
+                "state": state,
+            }
+        )
+        await store.put(
+            key,
+            json.dumps(
+                {
+                    "trace": {
+                        "metric": "adscr",
+                        "evidence_id": marker,
+                        "branch_id": "adscr",
+                        "actual_inputs": ["cfads"],
+                    }
+                }
+            ).encode(),
+        )
+    app = create_app(service.settings, service=service, support=_Support())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
+        listed = await client.get(f"/v1/books/{job_id}/analyses/{analysis_id}/traces")
+        assert listed.status_code == 200, listed.text
+        assert marker not in listed.text
+        body = listed.json()
+        assert "branch_traces" not in body
+        for state in ("pending_object", "pending_retention", "pending_commit"):
+            execution_id = f"hold-{state}"
+            item = next(row for row in body["items"] if row["execution_id"] == execution_id)
+            assert item["publication"] == state
+            assert "branch_trace" not in item
+            assert "trace" not in item
+            assert "evidence_id" not in item
+            one = await client.get(
+                f"/v1/books/{job_id}/analyses/{analysis_id}/traces/{execution_id}"
+            )
+            assert one.status_code == 404, one.text
+            assert marker not in one.text
+            problem = one.json()
+            assert problem["detail"] == "след не опубликован"
+            assert problem["publication"] == state
+            assert "trace" not in problem
+        missing = await client.get(f"/v1/books/{job_id}/analyses/{analysis_id}/traces/missing-0")
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "след не найден"
+        assert "publication" not in missing.json()

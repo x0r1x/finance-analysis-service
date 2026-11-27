@@ -2133,21 +2133,40 @@ class Analyses:
         return records
 
     async def traces(self, job_id: str, analysis_id: str) -> dict:
-        """Список сохранённых улик анализа. Конверт анализа этот список не несёт."""
+        """Список подтверждённых улик. Незавершённый указатель — только стадия, без тела.
+
+        Объект до ``committed`` наружу не читается: публикация не объявляется
+        раньше подтверждения указателя.
+        https://microservices.io/patterns/data/transactional-outbox.html
+        """
 
         await self._require_analysis(job_id, analysis_id)
         items = []
         for row in self._trace_rows(analysis_id):
+            state = str(row.get("state") or "committed")
+            if state != "committed":
+                items.append({"execution_id": row["execution_id"], "publication": state})
+                continue
             trace = await self._saved_trace(analysis_id, row["execution_id"])
             items.append(_trace_item(row["execution_id"], trace))
         return {"analysis_id": analysis_id, "items": items}
 
     async def trace(self, job_id: str, analysis_id: str, execution_id: str) -> dict:
-        """Одна сохранённая улика. Родитель без следа ветви помечен неполным."""
+        """Одна подтверждённая улика. Родитель без следа ветви помечен неполным.
+
+        Нет строки — «след не найден». Строка ``pending_object``,
+        ``pending_retention`` или ``pending_commit`` — «след не опубликован»,
+        объект не читается.
+        https://microservices.io/patterns/data/transactional-outbox.html
+        """
 
         await self._require_analysis(job_id, analysis_id)
-        if self._trace_row(analysis_id, execution_id) is None:
+        row = self._trace_row(analysis_id, execution_id)
+        if row is None:
             raise NotFound("след не найден")
+        state = str(row.get("state") or "committed")
+        if state != "committed":
+            raise NotFound("след не опубликован", extra={"publication": state})
         saved = await self._saved_trace(analysis_id, execution_id)
         if saved.get("reason") == "pointer_missing":
             raise NotFound("след не найден")
@@ -2378,12 +2397,14 @@ def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
 
 
 def _bind_definition_hash(evidences, start: int, metric: str, catalog, variant, dscr_variant) -> None:
-    """Пишет хеш определения на улики этого прогона, включая родителя.
+    """Пишет хеш определения на улики этого прогона, у которых он ещё не задан.
 
-    Уже записанный хеш не подменяется. Исполнитель в хеше — тот, что реально
-    отмечен в реестре: ADSCR это ``adscr@1``, а родитель DSCR на проектной книге
-    это вариант ``dscr.pf``, не базовая запись. Смена хеша родителя переписывает
-    ссылку ребёнка в том же списке.
+    Уже записанный хеш не подменяется. Исполнитель запрошенной метрики берётся
+    из реестра: ADSCR это ``adscr@1``. Родитель DSCR, которого посчитал
+    ``calculate_coverage(metric="dscr")``, запечатан как ``dscr@1``. Если ``dscr``
+    не запрашивали, плана DSCR нет и вариант книги в этот проход не входил.
+    Такой родитель остаётся без ``definition_hash``: хеш ``dscr.pf`` при
+    ``implementation`` ``dscr@1`` называл бы путь, который не шёл.
     Хеш — SHA-256 канонического определения, FIPS 180-4:
     https://csrc.nist.gov/publications/detail/fips/180/4/final
     Родитель — связь деятельности с деятельностью:
@@ -2426,6 +2447,8 @@ def _bind_definition_hash(evidences, start: int, metric: str, catalog, variant, 
     for index in range(start, len(evidences)):
         item = evidences[index]
         if item is None or item.definition_hash:
+            continue
+        if item.metric == "dscr" and metric != "dscr":
             continue
         digest = digest_for(item.metric)
         if not digest:
