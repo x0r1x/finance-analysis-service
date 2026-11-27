@@ -106,6 +106,10 @@ def run_calculation(
     definition = _resolve_definition(request, context)
     if definition is _CONFLICT:
         return CalculationOutcome(_refusal(request.metric, "definition_mismatch"), None)
+    # План сверяется с определением, исполнитель — со своим ключом. Метрика запроса отдельно.
+    # Деятельность — запрошенная метрика: https://www.w3.org/TR/prov-dm/#term-Activity
+    if definition is not None and definition.metric_id != request.metric:
+        return CalculationOutcome(_refusal(request.metric, "metric_mismatch"), None)
     context = replace(context, definition=definition)
     table = CALCULATION_EXECUTORS if executors is None else executors
     factory = table.get(route)

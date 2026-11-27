@@ -958,6 +958,66 @@ def test_a_resolved_mismatch_is_an_integrity_error(monkeypatch, plan_metric, var
     assert outcome.evidence is None
 
 
+@pytest.mark.parametrize(
+    ("metric", "other", "executor_key", "executor_id", "executor_version", "numerator", "denominator"),
+    [
+        ("icr", "dscr", "coverage", "calculate_coverage", "calculate_coverage@1", "cfads", "debt_service"),
+        (
+            "net_debt_ebitda",
+            "total_debt_ebitda",
+            "composed",
+            "composed_ratio",
+            "composed_ratio@1",
+            "total_debt",
+            "ebitda",
+        ),
+    ],
+)
+def test_a_definition_of_another_metric_is_an_integrity_error(
+    monkeypatch,
+    metric,
+    other,
+    executor_key,
+    executor_id,
+    executor_version,
+    numerator,
+    denominator,
+):
+    """Запрошена одна метрика, определение и план — другая. Исполнитель при этом тот же.
+
+    ``_plan_matches`` сверяет план с определением. ``_rejection`` сверяет исполнителя, не метрику.
+    https://www.w3.org/TR/prov-dm/#term-Activity
+    """
+
+    seen = _watch_bound(monkeypatch)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("calculator")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", boom)
+    monkeypatch.setattr("finance_analysis.domain.metrics.calculate_coverage", boom)
+    definition = _definition(
+        other,
+        _expr(numerator_plus=(numerator,), denominator_plus=(denominator,)),
+        executor_key=executor_key,
+        executor_id=executor_id,
+        executor_version=executor_version,
+    )
+    plan = _seal_plan(other, definition, (numerator, denominator))
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request(metric, [], []),
+        _context(definition, plan),
+    )
+    assert seen == []
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "metric_mismatch"
+    assert outcome.result["metric"] == metric
+    assert outcome.result["rows"] == []
+    assert outcome.evidence is None
+
+
 @pytest.mark.parametrize("metric", ["adscr", "dscr_min", "dscr_avg"])
 def test_a_derived_metric_keeps_todays_calculator_on_the_dscr_plan(monkeypatch, metric):
     """План DSCR и определение производной метрики различаются. Это не связанное исполнение.
