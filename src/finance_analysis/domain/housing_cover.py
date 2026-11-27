@@ -603,6 +603,7 @@ def _blend(facts, bindings, period, aligned, convention, absent, scale):
     uncovered = drawn - covered
     base = _decimal(scale["base_rate"])
     value = _divide(covered * special + uncovered * base, drawn)
+    claim("effective_rate")
     book, book_missing = _at(facts, bindings, period, aligned, "effective_rate", convention, absent)
     warnings = []
     if not book_missing and book is not None and quantize_ratio(book) != value:

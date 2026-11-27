@@ -155,7 +155,7 @@ ESCROW = _keep(
         "escrow_blended_rate",
         "metric:escrow_blended_rate",
         ("escrow_balance", "debt_outstanding"),
-        (),
+        ("effective_rate",),
         ("escrow_rate_scale",),
     ),
     _Shape(("escrow_balance",), ("debt_outstanding",), window="period"),
@@ -501,16 +501,7 @@ def _plan_extra(branch: ExecutionBranchDefinition, plan) -> str | None:
 
 
 def _complete(trace: ExecutionTrace, result: Mapping[str, object], facts, bindings) -> ExecutionTrace:
-    periods: list[str] = []
-    for row in result.get("rows") or []:
-        if not isinstance(row, Mapping):
-            continue
-        if row.get("period_id"):
-            periods.append(str(row["period_id"]))
-        for key in ("window", "over"):
-            found = row.get(key)
-            if isinstance(found, (list, tuple)):
-                periods.extend(str(item) for item in found)
+    slots = _slots(result)
     claimed = set(trace.actual_inputs)
     uses: list[str] = []
     keys: dict[str, str] = {}
@@ -520,23 +511,48 @@ def _complete(trace: ExecutionTrace, result: Mapping[str, object], facts, bindin
         concept = declared_concept(row)
         if concept and concept in claimed and row.get("row_key"):
             keys[str(row["row_key"])] = concept
-    seen = set(periods)
-    for fact in facts or []:
-        if not isinstance(fact, Mapping):
-            continue
-        concept = keys.get(str(fact.get("row_key")))
-        if concept is None:
-            continue
-        period = str(fact.get("period_id") or "")
-        if seen and period not in seen:
-            continue
-        cell = fact.get("cell_id") or f"{concept}:{fact.get('axis_id')}:{period}"
-        uses.append(str(cell))
+    if slots:
+        for fact in facts or []:
+            if not isinstance(fact, Mapping):
+                continue
+            concept = keys.get(str(fact.get("row_key")))
+            if concept is None:
+                continue
+            pair = (str(fact.get("axis_id")), str(fact.get("period_id") or ""))
+            if pair not in slots:
+                continue
+            period = pair[1]
+            cell = fact.get("cell_id") or f"{concept}:{pair[0]}:{period}"
+            uses.append(str(cell))
     return replace(
         trace,
-        actual_periods=tuple(dict.fromkeys(periods)),
+        actual_periods=tuple(dict.fromkeys(period for _axis, period in slots)),
         actual_fact_uses=tuple(dict.fromkeys(uses)),
     )
+
+
+def _slots(result: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
+    """Пары ось–период строк результата. Пустой набор не означает «все факты»."""
+
+    found: list[tuple[str, str]] = []
+    for row in result.get("rows") or []:
+        if not isinstance(row, Mapping):
+            continue
+        axis = row.get("axis_id")
+        axis_text = None if axis is None else str(axis)
+        period = row.get("period_id")
+        if axis_text is not None and period:
+            found.append((axis_text, str(period)))
+        for key in ("window", "over"):
+            items = row.get(key)
+            if not isinstance(items, (list, tuple, set, frozenset)):
+                continue
+            for item in items:
+                if isinstance(item, tuple) and len(item) == 2 and item[0] is not None and item[1]:
+                    found.append((str(item[0]), str(item[1])))
+                elif axis_text is not None and item:
+                    found.append((axis_text, str(item)))
+    return tuple(dict.fromkeys(found))
 
 
 def _stop(metric: str, reason: str) -> dict:
