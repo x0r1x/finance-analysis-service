@@ -9,10 +9,12 @@ from __future__ import annotations
 import hashlib
 import inspect
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import lru_cache
 from typing import Any
+
+from finance_analysis.domain.book import canonical_json
 
 CALCULATION_ENGINE_VERSION = "1"
 
@@ -118,6 +120,163 @@ class CalculationEvidence:
     definition_version: str | None = None
     executor_id: str | None = None
     executor_version: str | None = None
+    definition_source: str | None = None
+    definition_ref: Mapping[str, Any] | None = None
+    definition_hash: str | None = None
+    branch_id: str | None = None
+    actual_inputs: tuple[str, ...] = ()
+    actual_fact_uses: tuple[str, ...] = ()
+    actual_periods: tuple[str, ...] = ()
+    actual_period_slots: tuple[tuple[str, str], ...] = ()
+    profile_values: tuple[tuple[str, Any], ...] = ()
+    parent_evidence_ids: tuple[str, ...] = ()
+    parent_period_ids: tuple[str, ...] = ()
+    calculation_origin: str | None = None
+    evidence_id: str | None = None
+
+
+def seal(evidence: CalculationEvidence) -> CalculationEvidence:
+    """Идентификатор уже собранной улики. Поля, дописанные после freeze, входят в хеш.
+
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    return replace(evidence, evidence_id=_identity(evidence))
+
+
+def _identity(evidence: CalculationEvidence) -> str:
+    """SHA-256 канонического тела. Версия исполнителя сюда не входит."""
+
+    body = {
+        "actual_fact_uses": list(evidence.actual_fact_uses),
+        "actual_inputs": list(evidence.actual_inputs),
+        "actual_period_slots": [list(pair) for pair in evidence.actual_period_slots],
+        "actual_periods": list(evidence.actual_periods),
+        "basis_sides": [_basis(item) for item in evidence.basis_sides],
+        "branch_id": evidence.branch_id or "",
+        "calculation_stamp": evidence.calculation_stamp,
+        "definition_hash": evidence.definition_hash or "",
+        "execution": evidence.execution_status,
+        "fact_observations": [_observed(item) for item in evidence.fact_observations],
+        "fact_uses": [_used_fact(item) for item in evidence.fact_uses],
+        "implementation": evidence.implementation,
+        "marker_class": evidence.marker_class or "",
+        "metric": evidence.metric,
+        "parent_evidence_ids": list(evidence.parent_evidence_ids),
+        "parent_period_ids": list(evidence.parent_period_ids),
+        "period_results": [_period_body(item) for item in evidence.period_results],
+        "plan_hash": evidence.plan_content_sha256 or "",
+        "profile_values": [[name, _plain(value)] for name, value in evidence.profile_values],
+        "sign_convention": evidence.sign_convention,
+    }
+    return hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
+
+
+def _basis(item: BasisSide) -> dict[str, str]:
+    return {"concept": item.concept, "period_basis": item.period_basis, "source": item.source}
+
+
+def _reading(item: FactUse | FactObservation) -> dict[str, Any]:
+    """Сырое число и путь нормализации. Эффективное число одно, история чтения другая."""
+
+    return {
+        "axis_id": item.axis_id,
+        "binding_key": item.binding_key or "",
+        "cell_id": item.cell_id or "",
+        "concept": item.concept,
+        "effective_value": format(item.effective_value, "f"),
+        "field": item.field,
+        "normalization_source": item.normalization_source,
+        "period_id": item.period_id,
+        "period_index": "" if item.period_index is None else str(item.period_index),
+        "raw_value": format(item.raw_value, "f"),
+        "scale_applied": item.scale_applied,
+        "scale_factor": "" if item.scale_factor is None else format(item.scale_factor, "f"),
+        "scale_policy": item.scale_policy,
+        "sheet": item.sheet,
+        "timeline_id": item.timeline_id or "",
+    }
+
+
+def _used_fact(item: FactUse) -> dict[str, Any]:
+    body = _reading(item)
+    body["operand"] = item.operand
+    body["result_axis_id"] = item.result_axis_id or ""
+    body["result_period_id"] = item.result_period_id or ""
+    return body
+
+
+def _observed(item: FactObservation) -> dict[str, Any]:
+    body = _reading(item)
+    body["considered"] = item.considered or ""
+    return body
+
+
+def _period_body(item: PeriodResult) -> dict[str, Any]:
+    return {
+        "axis_id": item.axis_id or "",
+        "denominator": _plain(item.denominator),
+        "missing_concepts": [[label, list(subjects)] for label, subjects in item.missing_concepts],
+        "node_id": item.node_id or "",
+        "numerator": _plain(item.numerator),
+        "period_id": item.period_id or "",
+        "reason": item.reason or "",
+        "status": item.status,
+        "steps": [
+            {
+                "input_refs": list(step.input_refs),
+                "operation": step.operation,
+                "output_value": _plain(step.output_value),
+                "parameters": _plain(step.parameters),
+            }
+            for step in item.steps
+        ],
+        "value": _plain(item.value),
+        "window_missing": list(item.window_missing),
+        "window_periods": list(item.window_periods),
+    }
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_plain(item) for item in value]
+    return str(value)
+
+
+def definition_fields(definition) -> dict[str, Any]:
+    """Поля определения. Пустая версия остаётся пустой и не берётся у исполнителя."""
+
+    if definition is None:
+        return {}
+    return {
+        "definition_version": definition.definition_version,
+        "definition_source": definition.definition_source,
+        "definition_ref": definition.definition_ref,
+        "definition_hash": definition.definition_hash,
+        "executor_id": definition.executor_id,
+        "executor_version": definition.executor_version,
+    }
+
+
+def trace_fields(trace) -> dict[str, Any]:
+    """След выбранной ветви. Нет следа — поля не выдумываются."""
+
+    if trace is None:
+        return {}
+    return {
+        "branch_id": trace.branch_id,
+        "actual_inputs": trace.actual_inputs,
+        "actual_fact_uses": trace.actual_fact_uses,
+        "actual_periods": trace.actual_periods,
+        "actual_period_slots": trace.actual_period_slots,
+        "profile_values": trace.profile_values,
+    }
 
 
 @dataclass(frozen=True)
@@ -145,6 +304,7 @@ class EvidenceBook:
     fallback: dict | None = None
     basis_sides: list[BasisSide] | None = None
     sums_additions: int = 0
+    bound_definition: Any = None
 
     def __post_init__(self) -> None:
         self.observations = [] if self.observations is None else self.observations
@@ -163,28 +323,57 @@ class EvidenceBook:
         definition_version: str | None = None,
         executor_id: str | None = None,
         executor_version: str | None = None,
+        definition_source: str | None = None,
+        definition_ref: Mapping[str, Any] | None = None,
+        definition_hash: str | None = None,
+        branch_id: str | None = None,
+        actual_inputs: tuple[str, ...] = (),
+        actual_fact_uses: tuple[str, ...] = (),
+        actual_periods: tuple[str, ...] = (),
+        actual_period_slots: tuple[tuple[str, str], ...] = (),
+        profile_values: tuple[tuple[str, Any], ...] = (),
+        parent_evidence_ids: tuple[str, ...] = (),
+        parent_period_ids: tuple[str, ...] = (),
+        calculation_origin: str | None = None,
         evidence_status: str = "evidence_available",
         stamp: str | None = None,
     ) -> CalculationEvidence:
-        return CalculationEvidence(
-            metric=self.metric,
-            execution_status=execution,
-            implementation=implementation,
-            calculation_stamp=calculation_stamp() if stamp is None else stamp,
-            plan_content_sha256=self.plan_content_sha256,
-            sign_convention=self.sign_convention,
-            marker_class=self.marker_class,
-            explicit_phases=self.explicit_phases,
-            sheet=self.sheet,
-            fact_observations=tuple(self.observations or ()),
-            fact_uses=tuple(self.fact_uses or ()),
-            period_results=tuple(self.periods or ()),
-            basis_sides=tuple(self.basis_sides or ()),
-            sums_additions=self.sums_additions,
-            evidence_status=evidence_status,
-            definition_version=definition_version,
-            executor_id=executor_id,
-            executor_version=executor_version,
+        stamped = calculation_stamp() if stamp is None else stamp
+        uses = tuple(self.fact_uses or ())
+        return seal(
+            CalculationEvidence(
+                metric=self.metric,
+                execution_status=execution,
+                implementation=implementation,
+                calculation_stamp=stamped,
+                plan_content_sha256=self.plan_content_sha256,
+                sign_convention=self.sign_convention,
+                marker_class=self.marker_class,
+                explicit_phases=self.explicit_phases,
+                sheet=self.sheet,
+                fact_observations=tuple(self.observations or ()),
+                fact_uses=uses,
+                period_results=tuple(self.periods or ()),
+                basis_sides=tuple(self.basis_sides or ()),
+                sums_additions=self.sums_additions,
+                evidence_status=evidence_status,
+                definition_version=definition_version,
+                executor_id=executor_id,
+                executor_version=executor_version,
+                definition_source=definition_source,
+                definition_ref=definition_ref,
+                definition_hash=definition_hash,
+                branch_id=branch_id,
+                actual_inputs=tuple(actual_inputs),
+                actual_fact_uses=tuple(actual_fact_uses),
+                actual_periods=tuple(actual_periods),
+                actual_period_slots=tuple(actual_period_slots),
+                profile_values=tuple(profile_values),
+                parent_evidence_ids=tuple(parent_evidence_ids),
+                parent_period_ids=tuple(parent_period_ids),
+                calculation_origin=calculation_origin,
+                evidence_id=None,
+            )
         )
 
 

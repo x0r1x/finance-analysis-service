@@ -173,6 +173,32 @@ def view_from_evidence(evidence: CalculationEvidence) -> dict:
         limited["executor_id"] = evidence.executor_id
     if evidence.executor_version is not None:
         limited["executor_version"] = evidence.executor_version
+    if evidence.definition_source is not None:
+        limited["definition_source"] = evidence.definition_source
+    if evidence.definition_ref is not None:
+        limited["definition_ref"] = _plain(evidence.definition_ref)
+    if evidence.definition_hash is not None:
+        limited["definition_hash"] = evidence.definition_hash
+    if evidence.branch_id is not None:
+        limited["branch_id"] = evidence.branch_id
+    if evidence.actual_inputs:
+        limited["actual_inputs"] = list(evidence.actual_inputs)
+    if evidence.actual_fact_uses:
+        limited["actual_fact_uses"] = list(evidence.actual_fact_uses)
+    if evidence.actual_periods:
+        limited["actual_periods"] = list(evidence.actual_periods)
+    if evidence.actual_period_slots:
+        limited["actual_period_slots"] = [list(pair) for pair in evidence.actual_period_slots]
+    if evidence.profile_values:
+        limited["profile_values"] = [[name, _plain(value)] for name, value in evidence.profile_values]
+    if evidence.parent_evidence_ids:
+        limited["parent_evidence_ids"] = list(evidence.parent_evidence_ids)
+    if evidence.parent_period_ids:
+        limited["parent_period_ids"] = list(evidence.parent_period_ids)
+    if evidence.calculation_origin is not None:
+        limited["calculation_origin"] = evidence.calculation_origin
+    if evidence.evidence_id is not None:
+        limited["evidence_id"] = evidence.evidence_id
     return limited
 
 

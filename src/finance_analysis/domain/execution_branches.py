@@ -467,6 +467,12 @@ def claim(name: str) -> None:
         raise
 
 
+def peek_trace() -> ExecutionTrace | None:
+    """След после прогона. Забирает его диспетчер, улика только читает."""
+
+    return _last.get()
+
+
 def take_trace() -> ExecutionTrace | None:
     trace = _last.get()
     _last.set(None)
