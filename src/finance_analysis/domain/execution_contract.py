@@ -322,9 +322,15 @@ def execute_bound(
     # https://www.w3.org/TR/prov-dm/#term-Plan
     slots = slots_for(definition, plan)
     if definition.executor_key == "coverage":
+        from finance_analysis.domain.metric_contract import UndeclaredInput
         from finance_analysis.domain.metrics import _guard_declared
 
-        _guard_declared(definition, plan, slots)
+        # UndeclaredInput — это KeyError. Отказ деятельности должен остаться исходом.
+        # https://www.w3.org/TR/prov-dm/#term-Activity
+        try:
+            _guard_declared(definition, plan, slots)
+        except UndeclaredInput:
+            raise ExecutionContractError("undeclared_input") from None
     context = MetricExecutionContext(
         definition=definition,
         plan=plan,

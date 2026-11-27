@@ -17,7 +17,6 @@ from finance_analysis.domain.execution_contract import (
     MetricExecutionContext,
     compile_definition,
 )
-from finance_analysis.domain.metric_contract import UndeclaredInput
 from finance_analysis.domain.model_type import MetricExpression
 from finance_analysis.domain.resolved_plan import AppliedFallback, ResolvedInput, seal
 from finance_analysis.domain.semantic_input import resolve_metric_plan
@@ -448,6 +447,12 @@ def test_an_in_memory_definition_change_changes_the_result():
 
 
 def test_an_undeclared_concept_refuses_through_the_dispatcher():
+    """Подтверждённое имя вне определения — отказ расчёта, не исключение.
+
+    ``UndeclaredInput`` наследует ``KeyError``. Диспетчер ловит только ошибку контракта.
+    https://www.w3.org/TR/prov-dm/#term-Activity
+    """
+
     definition = _definition(
         "dscr",
         _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
@@ -480,18 +485,20 @@ def test_an_undeclared_concept_refuses_through_the_dispatcher():
         definition_hash=definition.definition_hash,
     )
     _, _, _, run_calculation = _dispatch()
-    with pytest.raises(UndeclaredInput) as raised:
-        run_calculation(
-            "select_ratio",
-            _request(
-                "dscr",
-                common=_common(facts, bindings),
-                definition=definition,
-                composed={},
-            ),
-            _context(definition, foreign),
-        )
-    assert raised.value.name == "ebitda"
+    outcome = run_calculation(
+        "select_ratio",
+        _request(
+            "dscr",
+            common=_common(facts, bindings),
+            definition=definition,
+            composed={},
+        ),
+        _context(definition, foreign),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "undeclared_input"
+    assert outcome.result["rows"] == []
+    assert outcome.evidence is None
 
 
 def test_a_definition_the_specialized_executor_cannot_run_is_not_computed(monkeypatch):
