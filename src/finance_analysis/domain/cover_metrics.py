@@ -202,6 +202,7 @@ def adscr(
     if not _inside:
         from finance_analysis.domain.execution_branches import ADSCR, run_branch
 
+        prior = 0 if collect is None else len(collect)
         result = run_branch(
             ADSCR,
             {"adscr_direction": direction},
@@ -223,7 +224,7 @@ def adscr(
             ),
             periods=periods,
         )
-        _copy_trace(collect, "adscr")
+        _copy_trace(collect, "adscr", prior)
         return result
     source = None
     if collect is None:
@@ -369,6 +370,7 @@ def dscr_reductions(
         )
 
         branch = DSCR_MIN if metric == "dscr_min" else DSCR_AVG
+        prior = 0 if collect is None else len(collect)
         result = run_branch(
             branch,
             {},
@@ -390,7 +392,7 @@ def dscr_reductions(
             ),
             periods=periods,
         )
-        _copy_trace(collect, metric)
+        _copy_trace(collect, metric, prior)
         return result
     source = None
     if collect is None:
@@ -508,17 +510,18 @@ def _store_parent(collect, source) -> None:
     collect.append(source)
 
 
-def _copy_trace(collect, metric: str) -> None:
-    """Кладёт уже собранный след на улику этой метрики. Публичную строку не трогает."""
+def _copy_trace(collect, metric: str, start: int = 0) -> None:
+    """Кладёт след на улики этого вызова. Более ранние улики той же метрики не переписывает."""
 
-    if not collect:
+    if not collect or start >= len(collect):
         return
     from finance_analysis.domain.execution_branches import peek_trace
 
     fields = trace_fields(peek_trace())
     if not fields:
         return
-    for index, item in enumerate(collect):
+    for index in range(start, len(collect)):
+        item = collect[index]
         if getattr(item, "metric", None) == metric:
             collect[index] = seal(replace(item, **fields))
 

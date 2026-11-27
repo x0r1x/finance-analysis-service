@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from finance_analysis.application.model_types import load_model_types
 from finance_analysis.domain.calculation_evidence import (
+    BasisSide,
     CalculationEvidence,
     EvidenceBook,
     FactObservation,
@@ -471,6 +472,59 @@ def test_two_adscr_directions_do_not_share_an_evidence_id():
     assert found["lookback"].evidence_id != found["lookforward"].evidence_id
     assert found["lookback"].definition_version is None
     assert found["lookback"].executor_version == "adscr@1"
+
+
+def test_a_second_adscr_call_does_not_rewrite_the_first_evidence():
+    """След пишется только на улики этого вызова. Предыдущее направление остаётся."""
+
+    periods, facts = _quarters()
+    common = _common(periods, facts)
+    collected: list = []
+    first = adscr(direction="lookback", collect=collected, **common)
+    kept = tuple(collected)
+    second = adscr(direction="lookforward", collect=collected, **common)
+    assert collected[: len(kept)] == list(kept)
+    for old, current in zip(kept, collected[: len(kept)], strict=True):
+        assert current is old
+    lookback = next(item for item in kept if item.metric == "adscr")
+    lookforward = next(item for item in collected[len(kept) :] if item.metric == "adscr")
+    assert ("adscr_direction", "lookback") in lookback.profile_values
+    assert ("adscr_direction", "lookforward") in lookforward.profile_values
+    assert lookback.evidence_id != lookforward.evidence_id
+    assert lookback.definition_version is None
+    assert lookback.executor_version == "adscr@1"
+    for row in (*first["rows"], *second["rows"]):
+        _row_is_public(row)
+
+
+def test_basis_source_changes_the_evidence_id():
+    """Источник способа показа входит в идентификатор. Факты и результат те же.
+
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    def frozen(source: str):
+        book = _identity_book()
+        book.fact_uses = [_one_fact()]
+        book.basis_sides = [BasisSide("cfads", "period_end", source)]
+        return book.freeze(
+            "succeeded",
+            "dscr@1",
+            stamp="stamp",
+            executor_id="calculate_coverage",
+            executor_version="calculate_coverage@1",
+        )
+
+    header = frozen("header")
+    formula = frozen("formula")
+    assert header.basis_sides[0].concept == formula.basis_sides[0].concept
+    assert header.basis_sides[0].period_basis == formula.basis_sides[0].period_basis
+    assert header.fact_uses == formula.fact_uses
+    assert header.period_results == formula.period_results
+    assert header.evidence_id != formula.evidence_id
+    assert header.definition_version is None
+    assert header.executor_version == "calculate_coverage@1"
+    assert header.executor_version != header.definition_version
 
 
 def test_every_parent_evidence_id_is_in_the_same_collection():

@@ -152,6 +152,7 @@ def _identity(evidence: CalculationEvidence) -> str:
         "actual_inputs": list(evidence.actual_inputs),
         "actual_period_slots": [list(pair) for pair in evidence.actual_period_slots],
         "actual_periods": list(evidence.actual_periods),
+        "basis_sides": [_basis(item) for item in evidence.basis_sides],
         "branch_id": evidence.branch_id or "",
         "calculation_stamp": evidence.calculation_stamp,
         "definition_hash": evidence.definition_hash or "",
@@ -169,6 +170,10 @@ def _identity(evidence: CalculationEvidence) -> str:
         "sign_convention": evidence.sign_convention,
     }
     return hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
+
+
+def _basis(item: BasisSide) -> dict[str, str]:
+    return {"concept": item.concept, "period_basis": item.period_basis, "source": item.source}
 
 
 def _reading(item: FactUse | FactObservation) -> dict[str, Any]:
