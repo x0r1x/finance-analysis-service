@@ -138,6 +138,10 @@ class CalculationEvidence:
 def seal(evidence: CalculationEvidence) -> CalculationEvidence:
     """Идентификатор уже собранной улики. Поля, дописанные после freeze, входят в хеш.
 
+    Because calculation_stamp is inside the hash, evidence_id identifies one
+    execution evidence, not a mathematically equal result. Plan identity stays
+    plan_content_sha256.
+
     https://csrc.nist.gov/publications/detail/fips/180/4/final
     """
 
