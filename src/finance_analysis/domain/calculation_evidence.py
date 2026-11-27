@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import lru_cache
 from typing import Any
@@ -135,33 +135,38 @@ class CalculationEvidence:
     evidence_id: str | None = None
 
 
-def evidence_identity(
-    *,
-    metric: str,
-    execution: str,
-    implementation: str,
-    plan_hash: str | None,
-    calculation_stamp: str,
-    definition_hash: str | None,
-    sign_convention: str,
-    marker_class: str | None,
-    fact_uses: tuple[FactUse, ...],
-) -> str:
-    """SHA-256 канонического тела. Версия исполнителя сюда не входит и версию определения не заполняет.
+def seal(evidence: CalculationEvidence) -> CalculationEvidence:
+    """Идентификатор уже собранной улики. Поля, дописанные после freeze, входят в хеш.
 
     https://csrc.nist.gov/publications/detail/fips/180/4/final
     """
 
+    return replace(evidence, evidence_id=_identity(evidence))
+
+
+def _identity(evidence: CalculationEvidence) -> str:
+    """SHA-256 канонического тела. Версия исполнителя сюда не входит."""
+
     body = {
-        "calculation_stamp": calculation_stamp,
-        "definition_hash": definition_hash or "",
-        "execution": execution,
-        "fact_uses": [_used_fact(item) for item in fact_uses],
-        "implementation": implementation,
-        "marker_class": marker_class or "",
-        "metric": metric,
-        "plan_hash": plan_hash or "",
-        "sign_convention": sign_convention,
+        "actual_fact_uses": list(evidence.actual_fact_uses),
+        "actual_inputs": list(evidence.actual_inputs),
+        "actual_period_slots": [list(pair) for pair in evidence.actual_period_slots],
+        "actual_periods": list(evidence.actual_periods),
+        "branch_id": evidence.branch_id or "",
+        "calculation_stamp": evidence.calculation_stamp,
+        "definition_hash": evidence.definition_hash or "",
+        "execution": evidence.execution_status,
+        "fact_observations": [_observed(item) for item in evidence.fact_observations],
+        "fact_uses": [_used_fact(item) for item in evidence.fact_uses],
+        "implementation": evidence.implementation,
+        "marker_class": evidence.marker_class or "",
+        "metric": evidence.metric,
+        "parent_evidence_ids": list(evidence.parent_evidence_ids),
+        "parent_period_ids": list(evidence.parent_period_ids),
+        "period_results": [_period_body(item) for item in evidence.period_results],
+        "plan_hash": evidence.plan_content_sha256 or "",
+        "profile_values": [[name, _plain(value)] for name, value in evidence.profile_values],
+        "sign_convention": evidence.sign_convention,
     }
     return hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
 
@@ -175,6 +180,49 @@ def _used_fact(item: FactUse) -> dict[str, str]:
         "operand": item.operand,
         "period_id": item.period_id,
     }
+
+
+def _observed(item: FactObservation) -> dict[str, str]:
+    return {
+        "axis_id": item.axis_id,
+        "cell_id": item.cell_id or "",
+        "concept": item.concept,
+        "effective_value": format(item.effective_value, "f"),
+        "period_id": item.period_id,
+    }
+
+
+def _period_body(item: PeriodResult) -> dict[str, Any]:
+    return {
+        "axis_id": item.axis_id or "",
+        "denominator": _plain(item.denominator),
+        "node_id": item.node_id or "",
+        "numerator": _plain(item.numerator),
+        "period_id": item.period_id or "",
+        "status": item.status,
+        "steps": [
+            {
+                "input_refs": list(step.input_refs),
+                "operation": step.operation,
+                "output_value": _plain(step.output_value),
+                "parameters": _plain(step.parameters),
+            }
+            for step in item.steps
+        ],
+        "value": _plain(item.value),
+    }
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_plain(item) for item in value]
+    return str(value)
 
 
 def definition_fields(definition) -> dict[str, Any]:
@@ -268,48 +316,40 @@ class EvidenceBook:
     ) -> CalculationEvidence:
         stamped = calculation_stamp() if stamp is None else stamp
         uses = tuple(self.fact_uses or ())
-        return CalculationEvidence(
-            metric=self.metric,
-            execution_status=execution,
-            implementation=implementation,
-            calculation_stamp=stamped,
-            plan_content_sha256=self.plan_content_sha256,
-            sign_convention=self.sign_convention,
-            marker_class=self.marker_class,
-            explicit_phases=self.explicit_phases,
-            sheet=self.sheet,
-            fact_observations=tuple(self.observations or ()),
-            fact_uses=uses,
-            period_results=tuple(self.periods or ()),
-            basis_sides=tuple(self.basis_sides or ()),
-            sums_additions=self.sums_additions,
-            evidence_status=evidence_status,
-            definition_version=definition_version,
-            executor_id=executor_id,
-            executor_version=executor_version,
-            definition_source=definition_source,
-            definition_ref=definition_ref,
-            definition_hash=definition_hash,
-            branch_id=branch_id,
-            actual_inputs=tuple(actual_inputs),
-            actual_fact_uses=tuple(actual_fact_uses),
-            actual_periods=tuple(actual_periods),
-            actual_period_slots=tuple(actual_period_slots),
-            profile_values=tuple(profile_values),
-            parent_evidence_ids=tuple(parent_evidence_ids),
-            parent_period_ids=tuple(parent_period_ids),
-            calculation_origin=calculation_origin,
-            evidence_id=evidence_identity(
+        return seal(
+            CalculationEvidence(
                 metric=self.metric,
-                execution=execution,
+                execution_status=execution,
                 implementation=implementation,
-                plan_hash=self.plan_content_sha256,
                 calculation_stamp=stamped,
-                definition_hash=definition_hash,
+                plan_content_sha256=self.plan_content_sha256,
                 sign_convention=self.sign_convention,
                 marker_class=self.marker_class,
+                explicit_phases=self.explicit_phases,
+                sheet=self.sheet,
+                fact_observations=tuple(self.observations or ()),
                 fact_uses=uses,
-            ),
+                period_results=tuple(self.periods or ()),
+                basis_sides=tuple(self.basis_sides or ()),
+                sums_additions=self.sums_additions,
+                evidence_status=evidence_status,
+                definition_version=definition_version,
+                executor_id=executor_id,
+                executor_version=executor_version,
+                definition_source=definition_source,
+                definition_ref=definition_ref,
+                definition_hash=definition_hash,
+                branch_id=branch_id,
+                actual_inputs=tuple(actual_inputs),
+                actual_fact_uses=tuple(actual_fact_uses),
+                actual_periods=tuple(actual_periods),
+                actual_period_slots=tuple(actual_period_slots),
+                profile_values=tuple(profile_values),
+                parent_evidence_ids=tuple(parent_evidence_ids),
+                parent_period_ids=tuple(parent_period_ids),
+                calculation_origin=calculation_origin,
+                evidence_id=None,
+            )
         )
 
 

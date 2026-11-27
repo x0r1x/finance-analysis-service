@@ -270,7 +270,7 @@ def test_adscr_points_at_the_dscr_evidence_and_keeps_the_branch_trace():
     assert isinstance(source, CalculationEvidence)
     collected: list = []
     traced = adscr(direction="lookback", collect=collected, **common)
-    evidence = collected[0]
+    evidence = next(item for item in collected if item.metric == "adscr")
     assert evidence.parent_evidence_ids == (source.evidence_id,)
     assert evidence.evidence_id != source.evidence_id
     assert evidence.definition_version is None
@@ -302,7 +302,7 @@ def test_reductions_point_at_the_periods_and_the_dscr_evidence():
     for metric in ("dscr_min", "dscr_avg"):
         collected: list = []
         traced = dscr_reductions(metric, collect=collected, **common)
-        evidence = collected[0]
+        evidence = next(item for item in collected if item.metric == metric)
         assert evidence.parent_period_ids == period_ids
         assert evidence.parent_evidence_ids == (source.evidence_id,)
         assert all(item == source.evidence_id for item in evidence.parent_evidence_ids)
@@ -316,6 +316,131 @@ def test_reductions_point_at_the_periods_and_the_dscr_evidence():
         assert evidence.calculation_origin == "calculated"
         for row in traced["rows"]:
             _row_is_public(row)
+
+
+def test_two_adscr_directions_do_not_share_an_evidence_id():
+    """Окно и направление входят в идентификатор уже собранной улики.
+
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    periods, facts = _quarters()
+    common = _common(periods, facts)
+    found = {}
+    for direction in ("lookback", "lookforward"):
+        collected: list = []
+        adscr(direction=direction, collect=collected, **common)
+        evidence = next(item for item in collected if item.metric == "adscr")
+        assert ("adscr_direction", direction) in evidence.profile_values
+        found[direction] = evidence
+    assert found["lookback"].evidence_id != found["lookforward"].evidence_id
+    assert found["lookback"].definition_version is None
+    assert found["lookback"].executor_version == "adscr@1"
+
+
+def test_every_parent_evidence_id_is_in_the_same_collection():
+    periods, facts = _quarters()
+    common = _common(periods, facts)
+    runs = [
+        lambda collect: adscr(direction="lookback", collect=collect, **common),
+        lambda collect: dscr_reductions("dscr_min", collect=collect, **common),
+        lambda collect: dscr_reductions("dscr_avg", collect=collect, **common),
+    ]
+    for run in runs:
+        collected: list = []
+        traced = run(collected)
+        by_id = {item.evidence_id for item in collected}
+        parents = [parent for item in collected for parent in item.parent_evidence_ids]
+        assert parents
+        assert set(parents) <= by_id
+        for row in traced["rows"]:
+            _row_is_public(row)
+
+
+def _published_read(value: str, cell_id: str):
+    class _Need:
+        subject = "cash_taxes"
+        reason = "concept_unknown"
+
+        def as_dict(self):
+            return {"kind": "concept", "reason": self.reason, "subject": self.subject}
+
+    class _Plan:
+        status = "missing_input"
+        content_sha256 = "plan-digest-corporate"
+        needs_input = (_Need(),)
+        warnings = ()
+        inputs = ()
+        diagnostic = ()
+        rejected = ()
+        fallbacks = ()
+
+    types = load_model_types()
+    collect: list = []
+    got = select_ratio(
+        "dscr",
+        "corporate_covenant",
+        {
+            "facts": [
+                {
+                    "row_key": "book-dscr",
+                    "axis_id": "Outputs!r1",
+                    "period_id": "2016",
+                    "cell_id": cell_id,
+                    "normalized_value": value,
+                    "value_status": "cached",
+                }
+            ],
+            "bindings": [
+                {
+                    "row_key": "book-dscr",
+                    "binding_key": "book-dscr",
+                    "is_primary": True,
+                    "status": "bound",
+                    "effective_concept": "dscr",
+                    "source": "inferred",
+                }
+            ],
+            "periods": [{"axis_id": "Outputs!r1", "period_id": "2016", "period_key_base": "2016"}],
+            "period_phase": {},
+            "explicit_phases": False,
+            "sign_convention": "outflow_negative",
+            "marker_class": None,
+            "absent": frozenset(),
+        },
+        profile=None,
+        profile_ref=None,
+        composed=types.composed,
+        concepts=frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal", "dscr"}),
+        money=frozenset({"ebitda", "cash_taxes", "capex", "interest", "principal"}),
+        interest_order=types.interest_order,
+        row_fallbacks=types.row_fallbacks,
+        plan=_Plan(),
+        collect=collect,
+    )
+    published = next(item for item in collect if item.calculation_origin == "reported")
+    return got, published
+
+
+def test_reported_reads_with_a_different_cell_or_value_do_not_share_an_evidence_id():
+    """Ячейка и опубликованное число входят в идентификатор улики reported.
+
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    first_got, first = _published_read("1.476", "Outputs!D20")
+    other_cell_got, other_cell = _published_read("1.476", "Outputs!E20")
+    other_value_got, other_value = _published_read("2.500", "Outputs!D20")
+    assert first.plan_content_sha256 == other_cell.plan_content_sha256 == other_value.plan_content_sha256
+    assert first.evidence_id != other_cell.evidence_id
+    assert first.evidence_id != other_value.evidence_id
+    assert first.definition_version is None
+    assert first.executor_version is None
+    for got in (first_got, other_cell_got, other_value_got):
+        row = got["rows"][0]
+        assert row["reason"] == "reported"
+        assert row["variant"] == "reported"
+        _row_is_public(row)
 
 
 async def test_compute_metrics_keeps_the_select_ratio_trace_on_the_evidence():

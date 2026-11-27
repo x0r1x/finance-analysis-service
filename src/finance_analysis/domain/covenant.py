@@ -23,6 +23,7 @@ from finance_analysis.domain.calculation_evidence import (
     PeriodResult,
     TransformationStep,
     definition_fields,
+    seal,
 )
 from finance_analysis.domain.cash_flow import net_cash_flow as period_net_cash_flow
 from finance_analysis.domain.cover_metrics import (
@@ -2255,17 +2256,19 @@ def _publish_reported_read(
     """Отдельная улика опубликованного числа. След попытки не переписывается."""
 
     ref = None if row_key is None else MappingProxyType({"row_key": str(row_key)})
-    publication = replace(
-        reader.freeze(
-            "published",
-            _REPORTED_READ,
-            calculation_origin="reported",
-            definition_source="reported",
-            definition_ref=ref,
-        ),
-        sums_additions=0,
-        fact_uses=(),
-        period_results=_publication_periods(rows, reader, aligned_keys(periods), row_key),
+    publication = seal(
+        replace(
+            reader.freeze(
+                "published",
+                _REPORTED_READ,
+                calculation_origin="reported",
+                definition_source="reported",
+                definition_ref=ref,
+            ),
+            sums_additions=0,
+            fact_uses=(),
+            period_results=_publication_periods(rows, reader, aligned_keys(periods), row_key),
+        )
     )
     if attempt_evidence is not None:
         for index, item in enumerate(collect):

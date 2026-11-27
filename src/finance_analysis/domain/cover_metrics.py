@@ -19,6 +19,7 @@ from finance_analysis.domain.calculation_evidence import (
     EvidenceBook,
     PeriodResult,
     TransformationStep,
+    seal,
     trace_fields,
 )
 from finance_analysis.domain.coverage import is_coverage_test_period
@@ -497,6 +498,16 @@ def _evidence_parent(source) -> tuple[str, ...]:
     return ()
 
 
+def _store_parent(collect, source) -> None:
+    """Родитель лежит в том же списке, что и производная улика. Повтор того же id не копируется."""
+
+    if source is None or not source.evidence_id:
+        return
+    if any(getattr(item, "evidence_id", None) == source.evidence_id for item in collect):
+        return
+    collect.append(source)
+
+
 def _copy_trace(collect, metric: str) -> None:
     """Кладёт уже собранный след на улику этой метрики. Публичную строку не трогает."""
 
@@ -509,7 +520,7 @@ def _copy_trace(collect, metric: str) -> None:
         return
     for index, item in enumerate(collect):
         if getattr(item, "metric", None) == metric:
-            collect[index] = replace(item, **fields)
+            collect[index] = seal(replace(item, **fields))
 
 
 def _carry_source(book: EvidenceBook, source) -> None:
@@ -570,6 +581,7 @@ def _keep_adscr(collect, rows, sums, source, *, sign_convention, marker_class, e
         _carry_source(book, source)
     book.periods = [*periods, *(source.period_results if source is not None else ())]
     version = REGISTRY[("adscr", "adscr")].implementation_version
+    _store_parent(collect, source)
     collect.append(
         book.freeze(
             "succeeded",
@@ -635,6 +647,7 @@ def _keep_reduction(collect, metric, rows, source, *, sign_convention, marker_cl
     _carry_source(book, source)
     book.periods = [*source.period_results, *summaries]
     version = REGISTRY[(metric, metric)].implementation_version
+    _store_parent(collect, source)
     collect.append(
         book.freeze(
             "succeeded",

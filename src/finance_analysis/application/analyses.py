@@ -1231,7 +1231,7 @@ class Analyses:
             result = outcome.result
             if outcome.trace is not None:
                 branch_traces.append({"metric": metric, "trace": outcome.trace})
-                _apply_trace(evidences, outcome.trace, before)
+                _apply_trace(evidences, outcome.trace, before, metric)
             if result.get("reason") in {"missing_executor", "incompatible_executor", "definition_mismatch"}:
                 warnings.append({"code": result["reason"], "params": {"metric": metric}})
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
@@ -1249,7 +1249,7 @@ class Analyses:
             if published and not _trace_available(evidences[before:]):
                 evidences.append(_unsupported(metric, common["sign_convention"]))
                 if outcome.trace is not None:
-                    _apply_trace(evidences, outcome.trace, len(evidences) - 1)
+                    _apply_trace(evidences, outcome.trace, len(evidences) - 1, metric)
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
                 entry["definition_source"] = result["definition_source"]
@@ -2283,21 +2283,25 @@ def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
     return tuple(rows)
 
 
-def _apply_trace(evidences: list, trace, start: int) -> None:
-    """След ветви пишется в исходный список. Срез — новая коллекция, замена в ней теряется."""
+def _apply_trace(evidences: list, trace, start: int, metric: str) -> None:
+    """След ветви пишется в исходный список, только на улику этой метрики.
+
+    Родитель с другим metric остаётся со своим идентификатором. Срез — новая
+    коллекция, замена в ней теряется.
+    """
 
     from dataclasses import replace
 
-    from finance_analysis.domain.calculation_evidence import trace_fields
+    from finance_analysis.domain.calculation_evidence import seal, trace_fields
 
     fields = trace_fields(trace)
     if not fields or start < 0:
         return
     for index in range(start, len(evidences)):
         item = evidences[index]
-        if item is None:
+        if item is None or getattr(item, "metric", None) != metric:
             continue
-        evidences[index] = replace(item, **fields)
+        evidences[index] = seal(replace(item, **fields))
 
 
 def _trace_available(evidences: list) -> bool:

@@ -57,9 +57,10 @@ def test_adscr_evidence_names_the_window_and_the_sums():
     collected: list = []
     traced = adscr(direction="lookback", collect=collected, **common)
     assert traced["rows"] == plain["rows"]
-    assert [item.metric for item in collected] == ["adscr"]
+    assert [item.metric for item in collected] == ["dscr", "adscr"]
     published = next(row for row in traced["rows"] if row["period_id"] == "2025Q4")
-    period = next(item for item in collected[0].period_results if item.period_id == "2025Q4")
+    evidence = next(item for item in collected if item.metric == "adscr")
+    period = next(item for item in evidence.period_results if item.period_id == "2025Q4")
     step = period.steps[0]
     assert step.operation == "adscr_window"
     assert step.output_value == published["value"]
@@ -70,12 +71,12 @@ def test_adscr_evidence_names_the_window_and_the_sums():
     assert period.denominator == step.parameters["debt_service_sum"]
     assert period.numerator == Decimal(100)
     assert period.denominator == Decimal(80)
-    assert collected[0].fact_observations
-    assert collected[0].fact_uses
+    assert evidence.fact_observations
+    assert evidence.fact_uses
     window_step = step
     source_periods = [
         item
-        for item in collected[0].period_results
+        for item in evidence.period_results
         if not any(one.operation == "adscr_window" for one in item.steps)
     ]
     source_refs = {f"period:{item.axis_id}:{item.period_id}" for item in source_periods}
@@ -90,10 +91,10 @@ def test_adscr_evidence_names_the_window_and_the_sums():
     }
     observed = {
         f"cell:{item.cell_id}" if item.cell_id else f"fact:{item.axis_id}:{item.period_id}"
-        for item in collected[0].fact_observations
+        for item in evidence.fact_observations
     }
     assert cited & observed
-    assert any(item.normalization_source for item in collected[0].fact_observations)
+    assert any(item.normalization_source for item in evidence.fact_observations)
 
 
 def test_dscr_min_and_avg_link_the_published_value_to_source_periods():
@@ -113,8 +114,8 @@ def test_dscr_min_and_avg_link_the_published_value_to_source_periods():
         collected: list = []
         traced = dscr_reductions(metric, collect=collected, **common)
         assert traced["rows"] == plain["rows"]
-        assert [item.metric for item in collected] == [metric]
-        evidence = collected[0]
+        assert [item.metric for item in collected] == ["dscr", metric]
+        evidence = next(item for item in collected if item.metric == metric)
         summary = evidence.period_results[-1]
         linked = {
             f"period:{item.axis_id}:{item.period_id}": item.value
@@ -154,7 +155,7 @@ def test_reduction_is_separate_per_axis_and_keeps_scale():
     plain = dscr_reductions("dscr_min", **common)
     assert traced["rows"] == plain["rows"]
     assert {row["axis_id"] for row in traced["rows"]} == {"Sheet!a", "Sheet!b"}
-    evidence = collected[0]
+    evidence = next(item for item in collected if item.metric == "dscr_min")
     assert {item.cell_id for item in evidence.fact_observations} >= {"A!Y1:cfads", "B!Y1:debt_service"}
     assert any(item.scale_factor is not None for item in evidence.fact_observations)
     summaries = [item for item in evidence.period_results if item.period_id is None]
@@ -178,7 +179,7 @@ def _available_evidence(metric: str, version: str):
         periods, facts = _quarters()
         collected: list = []
         adscr(direction="lookback", collect=collected, **_common(periods, facts))
-        return collected[0]
+        return next(item for item in collected if item.metric == "adscr")
     if metric in {"dscr_min", "dscr_avg"}:
         periods = [_period(period_id="Y1", index=1), _period(period_id="Y2", index=2)]
         facts = [
@@ -189,7 +190,7 @@ def _available_evidence(metric: str, version: str):
         ]
         collected = []
         dscr_reductions(metric, collect=collected, **_common(periods, facts))
-        return collected[0]
+        return next(item for item in collected if item.metric == metric)
     periods = [_period(period_id="2025", index=0)]
     shared = {
         "periods": periods,
