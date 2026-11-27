@@ -199,6 +199,8 @@ def view_from_evidence(evidence: CalculationEvidence) -> dict:
         limited["calculation_origin"] = evidence.calculation_origin
     if evidence.evidence_id is not None:
         limited["evidence_id"] = evidence.evidence_id
+    if evidence.semantic_model_version is not None:
+        limited["semantic_model_version"] = evidence.semantic_model_version
     return limited
 
 

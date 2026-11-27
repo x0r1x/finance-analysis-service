@@ -534,6 +534,7 @@ def _carry_source(book: EvidenceBook, source) -> None:
     book.basis_sides = list(source.basis_sides)
     book.sums_additions = source.sums_additions
     book.plan_content_sha256 = source.plan_content_sha256
+    book.semantic_model_version = source.semantic_model_version
 
 
 def _keep_adscr(collect, rows, sums, source, *, sign_convention, marker_class, explicit_phases, direction) -> None:
@@ -646,6 +647,7 @@ def _keep_reduction(collect, metric, rows, source, *, sign_convention, marker_cl
         marker_class=marker_class,
         explicit_phases=explicit_phases,
         plan_content_sha256=source.plan_content_sha256,
+        semantic_model_version=source.semantic_model_version,
     )
     _carry_source(book, source)
     book.periods = [*source.period_results, *summaries]

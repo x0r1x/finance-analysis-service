@@ -94,6 +94,8 @@ class EffectiveMetricDefinition:
     # В хеш не входит: знак живёт на понятии, не в теле формулы.
     # https://www.w3.org/TR/skos-reference/#concepts
     payment_terms: frozenset[str] = field(default_factory=frozenset)
+    # SMV на момент сборки. В definition_hash не входит: смена понятия не меняет формулу.
+    semantic_model_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,7 @@ def compile_definition(
     profile: ProfileDscrRecord | None = None,
     covenant: Mapping[str, object] | None = None,
     outflows: frozenset[str] | None = None,
+    semantic_model_version: str | None = None,
 ) -> EffectiveMetricDefinition:
     """Сборка из одной записи, ``_active``, замены ``plans_for`` и ``resolve_covenant``.
 
@@ -241,6 +244,7 @@ def compile_definition(
         executor_id=record.executor_id,
         executor_version=record.executor_version,
         payment_terms=payment_terms,
+        semantic_model_version=semantic_model_version,
     )
 
 
@@ -386,6 +390,10 @@ def execute_bound(
         raise ExecutionContractError("variant_mismatch")
     if plan.definition_hash != definition.definition_hash:
         raise ExecutionContractError("definition_mismatch")
+    # Смена expected_sign меняет SMV понятия, не хеш формулы.
+    # https://www.w3.org/TR/skos-reference/#concepts
+    if (plan.semantic_model_version or "") != (definition.semantic_model_version or ""):
+        raise ExecutionContractError("semantic_mismatch")
     if plan.status != "resolved":
         raise ExecutionContractError("plan_not_resolved")
     # Слоты — уже решённый план, в том числе пустой кортеж. Исполнитель их не выбирает заново.

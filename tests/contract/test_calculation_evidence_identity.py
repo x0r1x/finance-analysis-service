@@ -45,6 +45,7 @@ _IN_HASH = frozenset(
         "period_results",
         "plan_content_sha256",
         "profile_values",
+        "semantic_model_version",
         "sign_convention",
     }
 )
@@ -203,6 +204,7 @@ _ALTERNATE: dict[str, object] = {
     "period_results": (_period("missing"),),
     "plan_content_sha256": "plan-b",
     "published_read": "summary",
+    "semantic_model_version": "smv-b",
     "profile_values": (("rate", "2"),),
     "sheet": True,
     "sign_convention": "outflow_positive",

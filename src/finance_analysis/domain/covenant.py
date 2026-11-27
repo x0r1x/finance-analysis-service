@@ -526,6 +526,7 @@ def _open_trace(metric: str, definition, collect, sign_convention: str, plan, ma
         marker_class=marker_class,
         explicit_phases=False,
         plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
+        semantic_model_version=getattr(plan, "semantic_model_version", None) if plan is not None else None,
     )
 
 
@@ -2370,6 +2371,7 @@ def _reported_book_dscr(
             marker_class=marker_class,
             explicit_phases=explicit_phases,
             plan_content_sha256=(getattr(plan, "content_sha256", None) if plan is not None else None),
+            semantic_model_version=getattr(plan, "semantic_model_version", None) if plan is not None else None,
         )
     reported = _book_dscr_rows(facts, book, periods, reader)
     if not reported:
@@ -2448,6 +2450,7 @@ def _refused_covenant(
         marker_class=marker_class,
         explicit_phases=explicit_phases,
         plan_content_sha256=getattr(plan, "content_sha256", None),
+        semantic_model_version=getattr(plan, "semantic_model_version", None),
         periods=recorded,
     )
     return book.freeze("not_run", REGISTRY[("dscr", "dscr.corporate_covenant")].implementation_version)

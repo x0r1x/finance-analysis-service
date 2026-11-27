@@ -158,6 +158,7 @@ def _coverage_definitions(
     warnings: list | None = None,
     catalog: dict | None = None,
     variants: frozenset[str] | None = None,
+    semantic_model_version: str | None = None,
 ):
     """Определения только для базовых DSCR, DSCR pf, ICR и ICR EBIT.
 
@@ -236,6 +237,7 @@ def _coverage_definitions(
             record,
             catalog,
             profile=profile_for_dscr if metric == "dscr" else None,
+            semantic_model_version=semantic_model_version,
         )
     return found, None if profile_for_dscr is None else profile_for_dscr.expression
 
@@ -290,7 +292,12 @@ _COMPOSED_METRICS = frozenset(
 )
 
 
-def _composed_definitions(model_types, financial, outflows: frozenset[str] | None = None) -> dict:
+def _composed_definitions(
+    model_types,
+    financial,
+    outflows: frozenset[str] | None = None,
+    semantic_model_version: str | None = None,
+) -> dict:
     """Составные формулы каталога. Версия определения не выдумывается, исполнитель свой.
 
     ``outflows`` — понятия с ``expected_sign: outflow``. Нормализация кладёт их
@@ -329,6 +336,7 @@ def _composed_definitions(model_types, financial, outflows: frozenset[str] | Non
                 window=window,
             ),
             outflows=outflows,
+            semantic_model_version=semantic_model_version,
         )
     return found
 
@@ -1184,12 +1192,14 @@ class Analyses:
             warnings=warnings,
             catalog=coverage_catalog,
             variants=_variant_ids(svc.model_types.composed),
+            semantic_model_version=target.semantic_model,
         )
         definitions.update(
             _composed_definitions(
                 svc.model_types,
                 getattr(svc, "financial_catalog", None),
                 outflows=outflows,
+                semantic_model_version=target.semantic_model,
             )
         )
         plans = plans_for(

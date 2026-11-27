@@ -58,7 +58,7 @@ def test_confirmed_inputs_match_the_resolver_and_diagnostic_is_separate():
     assert {item.concept for item in plan.inputs} == confirmed
 
 
-def test_hash_uses_engine_version_and_ignores_semantic_model_version_and_array_order():
+def test_hash_uses_engine_version_semantic_model_version_and_ignores_array_order():
     bindings = [_bind("cfads", 1), _bind("debt_service", 2)]
     left = resolve_metric_plan(
         "dscr",
@@ -73,12 +73,11 @@ def test_hash_uses_engine_version_and_ignores_semantic_model_version_and_array_o
         semantic_model_version="smv-b",
     )
     assert left is not None and right is not None
-    assert left.content_sha256 == right.content_sha256
+    assert left.content_sha256 != right.content_sha256
     assert left.plan_id == left.content_sha256[:16]
     assert len(left.plan_id) == 16
     assert left.semantic_model_version == "smv-a"
     assert left.resolution_engine_version
-    assert "semantic_model_version" not in left.content_sha256
 
 
 def test_missing_input_source_and_role_change_plan_identity():
@@ -123,7 +122,7 @@ def test_missing_input_source_and_role_change_plan_identity():
         ),
     )
     assert left.content_sha256 != right.content_sha256
-    assert left.content_sha256 == other_version.content_sha256
+    assert left.content_sha256 != other_version.content_sha256
     assert reordered.content_sha256 == same.content_sha256
 
 
@@ -134,8 +133,8 @@ def test_engine_version_changes_the_digest():
     assert content_digest(body) != content_digest({**body, "resolution_engine_version": "2"})
 
 
-def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
-    """Как читается строка, входит в хеш. Целый SMV — нет."""
+def test_reader_stamp_and_semantic_model_version_are_in_the_hash():
+    """Как читается строка и семантическая версия входят в хеш."""
 
     from finance_analysis.domain.resolved_plan import (
         content_digest,
@@ -148,13 +147,14 @@ def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
     left = resolve_metric_plan("dscr", bindings, EXPRESSIONS, semantic_model_version="smv-a")
     right = resolve_metric_plan("dscr", bindings, EXPRESSIONS, semantic_model_version="smv-b")
     assert left is not None and right is not None
-    assert left.content_sha256 == right.content_sha256
+    assert left.content_sha256 != right.content_sha256
     body = hashed_body(
         resolution_engine_version=left.resolution_engine_version,
         metric_id=left.metric_id,
         variant=left.variant,
         variant_source=left.variant_source,
         catalog_version=left.catalog_version,
+        semantic_model_version=left.semantic_model_version,
         build_key=left.build_key,
         model_id=left.model_id,
         status=left.status,
@@ -168,7 +168,7 @@ def test_reader_stamp_is_in_the_hash_and_semantic_model_version_is_not():
         lineage=left.lineage,
     )
     assert body["input_read_stamp"] == input_read_stamp()
-    assert "semantic_model_version" not in body
+    assert body["semantic_model_version"] == "smv-a"
     assert content_digest(body) == left.content_sha256
     changed = {**body, "input_read_stamp": "0" * 16}
     assert content_digest(changed) != left.content_sha256
@@ -218,7 +218,7 @@ def test_resolution_stamp_covers_every_selection_function():
         shield=None,
     )
     assert body["input_read_stamp"] == stamp
-    assert "semantic_model_version" not in body
+    assert body["semantic_model_version"] == ""
     assert content_digest(body) != content_digest({**body, "input_read_stamp": "0" * 16})
     bumped = text.replace(RESOLUTION_ENGINE_VERSION, RESOLUTION_ENGINE_VERSION + "-other", 1)
     assert hashlib.sha256(bumped.encode("utf-8")).hexdigest()[:16] != stamp
