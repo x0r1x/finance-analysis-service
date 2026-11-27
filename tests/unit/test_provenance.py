@@ -12,7 +12,9 @@ from finance_analysis.application.model_types import load_model_types
 from finance_analysis.domain.calculation_evidence import (
     CalculationEvidence,
     EvidenceBook,
+    FactObservation,
     FactUse,
+    PeriodResult,
 )
 from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.cover_metrics import adscr, dscr_reductions
@@ -252,6 +254,139 @@ def test_stamp_marker_and_facts_change_the_evidence_id():
     used.fact_uses.append(_one_fact())
     with_fact = used.freeze("succeeded", "dscr@1", stamp="stamp-a")
     assert len({plain.evidence_id, other_stamp.evidence_id, marked.evidence_id, with_fact.evidence_id}) == 4
+
+
+def _use(**overrides) -> FactUse:
+    fields = {
+        "concept": "cfads",
+        "cell_id": "c!Y1",
+        "axis_id": "a",
+        "period_id": "Y1",
+        "timeline_id": None,
+        "period_index": 1,
+        "field": "value",
+        "sheet": False,
+        "raw_value": Decimal(8),
+        "effective_value": Decimal(80),
+        "scale_factor": Decimal(10),
+        "scale_policy": "thousands",
+        "scale_applied": True,
+        "normalization_source": "sheet",
+        "result_axis_id": "a",
+        "result_period_id": "Y1",
+        "operand": "numerator",
+    }
+    fields.update(overrides)
+    return FactUse(**fields)
+
+
+def _observation(**overrides) -> FactObservation:
+    used = _use(**overrides)
+    return FactObservation(
+        concept=used.concept,
+        cell_id=used.cell_id,
+        axis_id=used.axis_id,
+        period_id=used.period_id,
+        timeline_id=used.timeline_id,
+        period_index=used.period_index,
+        field=used.field,
+        sheet=used.sheet,
+        raw_value=used.raw_value,
+        effective_value=used.effective_value,
+        scale_factor=used.scale_factor,
+        scale_policy=used.scale_policy,
+        scale_applied=used.scale_applied,
+        normalization_source=used.normalization_source,
+    )
+
+
+def _freeze_book(*, uses=(), observations=(), periods=()):
+    book = _identity_book()
+    book.fact_uses = list(uses)
+    book.observations = list(observations)
+    book.periods = list(periods)
+    return book.freeze(
+        "succeeded",
+        "dscr@1",
+        stamp="stamp",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+
+
+def test_same_cell_and_effective_value_with_a_different_raw_or_scale_does_not_share_an_evidence_id():
+    """Сырое число и путь нормализации входят в идентификатор. Эффективное число одно.
+
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    other_raw = {"raw_value": Decimal(80)}
+    other_scale = {
+        "scale_factor": Decimal(1000),
+        "scale_policy": "millions",
+        "scale_applied": False,
+        "normalization_source": "header",
+    }
+    pairs = (
+        (_use(), _use(**other_raw)),
+        (_use(), _use(**other_scale)),
+        (_observation(), _observation(**other_raw)),
+        (_observation(), _observation(**other_scale)),
+    )
+    for left_fact, right_fact in pairs:
+        assert left_fact.cell_id == right_fact.cell_id
+        assert left_fact.effective_value == right_fact.effective_value
+        if isinstance(left_fact, FactUse):
+            left = _freeze_book(uses=(left_fact,))
+            right = _freeze_book(uses=(right_fact,))
+        else:
+            left = _freeze_book(observations=(left_fact,))
+            right = _freeze_book(observations=(right_fact,))
+        assert left.evidence_id != right.evidence_id
+        assert left.definition_version is None
+        assert left.executor_version == "calculate_coverage@1"
+
+
+def _missing_period(**overrides) -> PeriodResult:
+    fields = {
+        "axis_id": "a",
+        "period_id": "Y1",
+        "status": "missing_input",
+        "reason": "concept_unknown",
+        "value": None,
+        "numerator": None,
+        "denominator": None,
+        "steps": (),
+        "window_periods": (),
+        "window_missing": (),
+        "missing_concepts": (("Y1", ("cfads",)),),
+    }
+    fields.update(overrides)
+    return PeriodResult(**fields)
+
+
+def test_missing_periods_with_a_different_reason_or_gap_do_not_share_an_evidence_id():
+    """Причина отказа и окно, которого нет в шагах, входят в идентификатор периода.
+
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    base = _missing_period()
+    variants = (
+        _missing_period(reason="input_absent"),
+        _missing_period(missing_concepts=(("Y1", ("debt_service",)),)),
+        _missing_period(window_periods=("Y0",), window_missing=("Y2",)),
+    )
+    left = _freeze_book(periods=(base,))
+    assert left.definition_version is None
+    assert left.executor_version == "calculate_coverage@1"
+    for period in variants:
+        assert period.axis_id == base.axis_id
+        assert period.period_id == base.period_id
+        assert period.status == "missing_input"
+        assert period.steps == ()
+        right = _freeze_book(periods=(period,))
+        assert left.evidence_id != right.evidence_id
 
 
 def test_unset_definition_version_is_not_replaced_by_the_executor():

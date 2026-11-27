@@ -171,34 +171,51 @@ def _identity(evidence: CalculationEvidence) -> str:
     return hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
 
 
-def _used_fact(item: FactUse) -> dict[str, str]:
+def _reading(item: FactUse | FactObservation) -> dict[str, Any]:
+    """Сырое число и путь нормализации. Эффективное число одно, история чтения другая."""
+
     return {
         "axis_id": item.axis_id,
+        "binding_key": item.binding_key or "",
         "cell_id": item.cell_id or "",
         "concept": item.concept,
         "effective_value": format(item.effective_value, "f"),
-        "operand": item.operand,
+        "field": item.field,
+        "normalization_source": item.normalization_source,
         "period_id": item.period_id,
+        "period_index": "" if item.period_index is None else str(item.period_index),
+        "raw_value": format(item.raw_value, "f"),
+        "scale_applied": item.scale_applied,
+        "scale_factor": "" if item.scale_factor is None else format(item.scale_factor, "f"),
+        "scale_policy": item.scale_policy,
+        "sheet": item.sheet,
+        "timeline_id": item.timeline_id or "",
     }
 
 
-def _observed(item: FactObservation) -> dict[str, str]:
-    return {
-        "axis_id": item.axis_id,
-        "cell_id": item.cell_id or "",
-        "concept": item.concept,
-        "effective_value": format(item.effective_value, "f"),
-        "period_id": item.period_id,
-    }
+def _used_fact(item: FactUse) -> dict[str, Any]:
+    body = _reading(item)
+    body["operand"] = item.operand
+    body["result_axis_id"] = item.result_axis_id or ""
+    body["result_period_id"] = item.result_period_id or ""
+    return body
+
+
+def _observed(item: FactObservation) -> dict[str, Any]:
+    body = _reading(item)
+    body["considered"] = item.considered or ""
+    return body
 
 
 def _period_body(item: PeriodResult) -> dict[str, Any]:
     return {
         "axis_id": item.axis_id or "",
         "denominator": _plain(item.denominator),
+        "missing_concepts": [[label, list(subjects)] for label, subjects in item.missing_concepts],
         "node_id": item.node_id or "",
         "numerator": _plain(item.numerator),
         "period_id": item.period_id or "",
+        "reason": item.reason or "",
         "status": item.status,
         "steps": [
             {
@@ -210,6 +227,8 @@ def _period_body(item: PeriodResult) -> dict[str, Any]:
             for step in item.steps
         ],
         "value": _plain(item.value),
+        "window_missing": list(item.window_missing),
+        "window_periods": list(item.window_periods),
     }
 
 
