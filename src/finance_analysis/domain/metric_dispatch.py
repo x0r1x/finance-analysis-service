@@ -117,13 +117,10 @@ class DispatchCoverExecutor:
         self.request = request
 
     def execute(self, context: MetricExecutionContext) -> CalculationOutcome:
-        # shortcut: функция не читает определение, поэтому любое определение — отказ; PR 4 называет ветвь
-        if context.definition is not None:
-            return CalculationOutcome(_refusal(self.request.metric, "unsupported_formula"), None)
-        result = _call_dispatch_cover(self.request, context)
+        result = _guarded_call(self.request, context, lambda: _call_dispatch_cover(self.request, context))
         if result is None:
             return CalculationOutcome(_refusal(self.request.metric, "missing_executor"), None)
-        return CalculationOutcome(result, None)
+        return _outcome(result)
 
 
 class LoanLifeExecutor:
@@ -133,10 +130,7 @@ class LoanLifeExecutor:
         self.request = request
 
     def execute(self, context: MetricExecutionContext) -> CalculationOutcome:
-        # shortcut: функция не читает определение, поэтому любое определение — отказ; PR 4 называет ветвь
-        if context.definition is not None:
-            return CalculationOutcome(_refusal(self.request.metric, "unsupported_formula"), None)
-        return CalculationOutcome(_call_loan_life(self.request, context), None)
+        return _outcome(_guarded_call(self.request, context, lambda: _call_loan_life(self.request, context)))
 
 
 class ReducedExecutor:
@@ -146,10 +140,7 @@ class ReducedExecutor:
         self.request = request
 
     def execute(self, context: MetricExecutionContext) -> CalculationOutcome:
-        # shortcut: функция не читает определение, поэтому любое определение — отказ; PR 4 называет ветвь
-        if context.definition is not None:
-            return CalculationOutcome(_refusal(self.request.metric, "unsupported_formula"), None)
-        return CalculationOutcome(_call_reduced(self.request, context), None)
+        return _outcome(_guarded_call(self.request, context, lambda: _call_reduced(self.request, context)))
 
 
 class AdscrExecutor:
@@ -159,10 +150,7 @@ class AdscrExecutor:
         self.request = request
 
     def execute(self, context: MetricExecutionContext) -> CalculationOutcome:
-        # shortcut: функция не читает определение, поэтому любое определение — отказ; PR 4 называет ветвь
-        if context.definition is not None:
-            return CalculationOutcome(_refusal(self.request.metric, "unsupported_formula"), None)
-        return CalculationOutcome(_call_adscr(self.request, context), None)
+        return _outcome(_guarded_call(self.request, context, lambda: _call_adscr(self.request, context)))
 
 
 class SelectRatioExecutor:
@@ -173,7 +161,10 @@ class SelectRatioExecutor:
         self.request = request
 
     def execute(self, context: MetricExecutionContext) -> CalculationOutcome:
-        return CalculationOutcome(_call_select_ratio(self.request, context), None)
+        from finance_analysis.domain.execution_branches import clear_trace, take_trace
+
+        clear_trace()
+        return CalculationOutcome(_call_select_ratio(self.request, context), None, take_trace())
 
 
 CALCULATION_EXECUTORS: dict[str, type] = {
@@ -227,6 +218,29 @@ def _rejection(executor: Any, definition: Any) -> str | None:
     if definition.executor_key not in executor.compatible:
         return "incompatible_executor"
     return None
+
+
+def _guarded_call(request: CalculationRequest, context: MetricExecutionContext, call):
+    from finance_analysis.domain.execution_branches import branch_for, guarded
+
+    variant = request.metric_variant or request.variant
+    if request.metric in {"adscr", "dscr_min", "dscr_avg"} and (
+        request.metric_variant == "housing" or request.dscr_variant == "housing"
+    ):
+        variant = "housing"
+    return guarded(
+        request.metric,
+        branch_for(request.metric, variant=variant, profile=request.profile),
+        context.definition,
+        context.plan,
+        call,
+    )
+
+
+def _outcome(result) -> CalculationOutcome:
+    from finance_analysis.domain.execution_branches import take_trace
+
+    return CalculationOutcome(result, None, take_trace())
 
 
 def _refusal(metric: str, reason: str) -> dict:

@@ -161,6 +161,10 @@ _DSCR_CORE = ("cfads", "debt_service")
 
 
 def _core_rows(bindings: list[dict], absent: frozenset[str], plan: Any | None) -> dict:
+    from finance_analysis.domain.execution_branches import claim
+
+    claim("cfads")
+    claim("debt_service")
     if plan is None:
         return BoundInputs(_DSCR_CORE, _primaries(bindings, absent))
     from finance_analysis.domain.resolved_plan import bound_rows
@@ -182,6 +186,7 @@ def adscr(
     absent: frozenset[str] = frozenset(),
     plan: Any | None = None,
     collect: list | None = None,
+    _inside: bool = False,
 ) -> dict:
     """Сумма CFADS ÷ сумма обслуживания долга за 12 месяцев на каждом тестовом периоде.
 
@@ -191,6 +196,29 @@ def adscr(
     не считается.
     """
 
+    if not _inside:
+        from finance_analysis.domain.execution_branches import ADSCR, run_branch
+
+        return run_branch(
+            ADSCR,
+            {"adscr_direction": direction},
+            facts,
+            bindings,
+            lambda: adscr(
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                period_phase=period_phase,
+                explicit_phases=explicit_phases,
+                sign_convention=sign_convention,
+                marker_class=marker_class,
+                direction=direction,
+                absent=absent,
+                plan=plan,
+                collect=collect,
+                _inside=True,
+            ),
+        )
     source = None
     if collect is None:
         dscr = _dscr_result(
@@ -318,6 +346,7 @@ def dscr_reductions(
     absent: frozenset[str] = frozenset(),
     plan: Any | None = None,
     collect: list | None = None,
+    _inside: bool = False,
 ) -> dict:
     """`dscr_min` — минимум по тестовым периодам; `dscr_avg` — двумя способами.
 
@@ -326,6 +355,34 @@ def dscr_reductions(
     в отношение сумм входит один раз, на последний тестовый период.
     """
 
+    if not _inside:
+        from finance_analysis.domain.execution_branches import (
+            DSCR_AVG,
+            DSCR_MIN,
+            run_branch,
+        )
+
+        branch = DSCR_MIN if metric == "dscr_min" else DSCR_AVG
+        return run_branch(
+            branch,
+            {},
+            facts,
+            bindings,
+            lambda: dscr_reductions(
+                metric,
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                period_phase=period_phase,
+                explicit_phases=explicit_phases,
+                sign_convention=sign_convention,
+                marker_class=marker_class,
+                absent=absent,
+                plan=plan,
+                collect=collect,
+                _inside=True,
+            ),
+        )
     source = None
     if collect is None:
         dscr = _dscr_result(
@@ -543,6 +600,7 @@ def loan_life_ratio(
     basis: str = "period_end",
     absent: frozenset[str] = frozenset(),
     plan: Any | None = None,
+    _inside: bool = False,
 ) -> dict:
     """LLCR и PLCR: NPV CFADS ÷ остаток долга на каждом тестовом периоде.
 
@@ -556,6 +614,29 @@ def loan_life_ratio(
     меняется по периодам; без дат — по длине `grain` с предупреждением.
     """
 
+    if not _inside:
+        from finance_analysis.domain.execution_branches import LLCR, PLCR, run_branch
+
+        return run_branch(
+            LLCR if metric == "llcr" else PLCR,
+            {"llcr_basis": basis},
+            facts,
+            bindings,
+            lambda: loan_life_ratio(
+                metric,
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                period_phase=period_phase,
+                explicit_phases=explicit_phases,
+                sign_convention=sign_convention,
+                marker_class=marker_class,
+                basis=basis,
+                absent=absent,
+                plan=plan,
+                _inside=True,
+            ),
+        )
     if plan is not None:
         from finance_analysis.domain.resolved_plan import bindings_for_plan
 
@@ -563,6 +644,10 @@ def loan_life_ratio(
     missing = _missing(metric, bindings, LOAN_LIFE_INPUTS, absent)
     if missing is not None:
         return missing
+    from finance_analysis.domain.execution_branches import claim
+
+    for name in LOAN_LIFE_INPUTS:
+        claim(name)
     primaries = BoundInputs(LOAN_LIFE_INPUTS, _primaries(bindings, absent))
     aligned = aligned_keys(periods)
     warnings: list[dict] = []

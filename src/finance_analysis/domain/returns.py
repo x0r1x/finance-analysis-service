@@ -31,12 +31,36 @@ def project_return(
     periods: list[dict],
     absent: frozenset[str] = frozenset(),
     plan=None,
+    _inside: bool = False,
 ) -> dict:
+    if not _inside:
+        from finance_analysis.domain.execution_branches import branch_for, run_branch
+
+        branch = branch_for(metric)
+        if branch is not None:
+            return run_branch(
+                branch,
+                {},
+                facts,
+                bindings,
+                lambda: project_return(
+                    metric,
+                    facts=facts,
+                    bindings=bindings,
+                    periods=periods,
+                    absent=absent,
+                    plan=plan,
+                    _inside=True,
+                ),
+            )
     if plan is not None:
         from finance_analysis.domain.resolved_plan import bindings_for_plan
 
         bindings = list(bindings_for_plan(bindings, plan))
     primaries = _primaries(bindings, absent)
+    from finance_analysis.domain.execution_branches import claim
+
+    claim("project_fcf")
     flow = primaries.get("project_fcf")
     if flow is None:
         return _missing(metric, "project_fcf")
@@ -49,6 +73,7 @@ def project_return(
         return _empty(metric, "missing_input")
     rate = None
     if metric == "npv":
+        claim("discount_rate")
         rate_row = primaries.get("discount_rate")
         if rate_row is None:
             return _missing(metric, "discount_rate")

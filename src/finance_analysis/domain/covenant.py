@@ -1746,6 +1746,39 @@ def _bank_icr(
         *formula.denominator.plus,
         *formula.denominator.minus,
     ]
+
+    def _tail():
+        from finance_analysis.domain.execution_branches import claim
+
+        for name in dict.fromkeys(names):
+            claim(name)
+        return _bank_scored(
+            formula,
+            names,
+            warnings,
+            dep_grains,
+            mode,
+            profile,
+            primaries,
+            facts,
+            periods,
+            sign_convention,
+            marker_class,
+        )
+
+    from finance_analysis.domain.execution_branches import (
+        bank_values,
+        branch_for,
+        run_branch,
+    )
+
+    branch = branch_for("icr", variant="bank", profile=profile)
+    if branch is None:
+        return _tail()
+    return run_branch(branch, bank_values(profile, kind, mode), facts, bindings, _tail)
+
+
+def _bank_scored(formula, names, warnings, dep_grains, mode, profile, primaries, facts, periods, sign_convention, marker_class):
     bases = {basis_of(primaries[name])[0] for name in names}
     if len(bases) != 1:
         return _ask("icr", "period_basis", "basis_mismatch")
@@ -1963,6 +1996,7 @@ def cash_covenant_dscr(
     marker_class: str | None = None,
     absent: frozenset[str] = frozenset(),
     plan: Any | None = None,
+    _inside: bool = False,
 ) -> dict:
     """Кассовый DSCR года i. OCF со знаком, остальные входы — модули платежей.
 
@@ -1975,6 +2009,25 @@ def cash_covenant_dscr(
         from finance_analysis.domain.resolved_plan import bindings_for_plan
 
         bindings = list(bindings_for_plan(bindings, plan))
+    if not _inside:
+        from finance_analysis.domain.execution_branches import CASH, run_branch
+
+        return run_branch(
+            CASH,
+            {},
+            facts,
+            bindings,
+            lambda: _CASH_IMPL(
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                sign_convention=sign_convention,
+                marker_class=marker_class,
+                absent=absent,
+                plan=None,
+                _inside=True,
+            ),
+        )
     include_other = _CASH_OTHER not in absent
     needed = (*_CASH_CORE, *((_CASH_OTHER,) if include_other else ()))
     missing = _missing("dscr", bindings, needed, absent)
@@ -1985,6 +2038,10 @@ def cash_covenant_dscr(
         return missing
     primaries = BoundInputs(_CASH_CORE, _primaries(bindings, absent), optional=(_CASH_OTHER,))
     inputs = list(needed)
+    from finance_analysis.domain.execution_branches import claim
+
+    for name in inputs:
+        claim(name)
     if unconfirmed_scale(facts, [primaries[name] for name in inputs]):
         return _refused("dscr", periods, "scale_unconfirmed", SCALE_UNCONFIRMED, inputs)
     if len({_flow_basis(primaries[name]) for name in inputs}) > 1:
@@ -2034,6 +2091,9 @@ def cash_covenant_dscr(
     if message:
         result["message"] = message
     return result
+
+
+_CASH_IMPL = cash_covenant_dscr
 
 
 def _capitalized_interest(bindings: list[dict]) -> dict | None:
@@ -2382,6 +2442,9 @@ def select_ratio(
             plan=plan,
         )
     if metric in {"npv", "irr"}:
+        refused = _refuse_branch(metric, definition, plan)
+        if refused is not None:
+            return refused
         return project_return(
             metric,
             facts=common["facts"],
@@ -2391,6 +2454,9 @@ def select_ratio(
             plan=plan,
         )
     if metric == "fcff":
+        refused = _refuse_branch(metric, definition, plan)
+        if refused is not None:
+            return refused
         return free_cash_flow(
             facts=common["facts"],
             bindings=common["bindings"],
@@ -2440,6 +2506,17 @@ def select_ratio(
             plan=plan,
         )
     if metric == "icr_lease":
+        if definition is not None:
+            from finance_analysis.domain.metrics import lease_branch_mode
+
+            refused = _refuse_branch(
+                metric,
+                definition,
+                plan,
+                lease_mode=lease_branch_mode(common["bindings"], common["absent"], plan=plan),
+            )
+            if refused is not None:
+                return refused
         return lease_interest_coverage(
             facts=common["facts"],
             bindings=common["bindings"],
@@ -2450,6 +2527,9 @@ def select_ratio(
             plan=plan,
         )
     if metric == "dscr" and variant == "cash_covenant":
+        refused = _refuse_branch(metric, definition, plan, variant="cash_covenant")
+        if refused is not None:
+            return refused
         return cash_covenant_dscr(
             facts=common["facts"],
             bindings=common["bindings"],
@@ -2461,6 +2541,9 @@ def select_ratio(
         )
     named = _named_variant(profile)
     if metric == "dscr" and (named or variant) == "housing":
+        refused = _refuse_branch(metric, definition, plan, variant="housing", profile=profile)
+        if refused is not None:
+            return refused
         from finance_analysis.domain.housing_dscr import housing_dscr
 
         return housing_dscr(
@@ -2564,6 +2647,9 @@ def select_ratio(
             collect,
         )
     if metric == "icr" and bank_requested(variant, profile):
+        refused = _refuse_branch(metric, definition, plan, variant="bank", profile=profile)
+        if refused is not None:
+            return refused
         return bank_icr(
             facts=common["facts"],
             bindings=common["bindings"],
@@ -2631,6 +2717,21 @@ def select_ratio(
         sign_convention=common["sign_convention"],
         marker_class=common["marker_class"],
         explicit_phases=bool(common.get("explicit_phases")),
+    )
+
+
+def _refuse_branch(metric, definition, plan, *, variant=None, profile=None, lease_mode=None):
+    """Определение, которое ветвь не считает. Калькулятор при отказе не вызывается."""
+
+    if definition is None:
+        return None
+    from finance_analysis.domain.execution_branches import branch_for, refuse_definition
+
+    return refuse_definition(
+        metric,
+        branch_for(metric, variant=variant, profile=profile, lease_mode=lease_mode),
+        definition,
+        plan,
     )
 
 

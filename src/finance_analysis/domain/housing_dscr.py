@@ -115,6 +115,7 @@ def housing_dscr(
     absent: frozenset[str] = frozenset(),
     profile: dict | None = None,
     plan=None,
+    _inside: bool = False,
 ) -> dict:
     flag = interest_addback(profile)
     fees = _named_flag(profile, "include_senior_fees")
@@ -145,6 +146,30 @@ def housing_dscr(
             "composition": COMPOSITION,
             "standard": "ОДДС",
         }
+    if not _inside:
+        from finance_analysis.domain.execution_branches import (
+            housing_branch,
+            housing_values,
+            run_branch,
+        )
+
+        opened = housing_branch(fees is True, swaps is True)
+        return run_branch(
+            opened,
+            housing_values(flag is True, fees is True, swaps is True),
+            facts,
+            bindings,
+            lambda: housing_dscr(
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                sign_convention=sign_convention,
+                absent=absent,
+                profile=profile,
+                plan=None,
+                _inside=True,
+            ),
+        )
     aligned = aligned_keys(periods)
     rows = []
     warnings = []
@@ -191,7 +216,10 @@ def collect_interval(period, facts, bindings, aligned, convention, absent) -> di
     missing: list[str] = []
     cells: list[str] = []
     notes: list[str] = []
+    from finance_analysis.domain.execution_branches import claim
+
     for concept in _NUMERATOR:
+        claim(concept)
         amount, found, hole = _concept_amount(
             _bound(bindings, concept, absent), facts, key, aligned, payment=False, convention=convention
         )
@@ -231,6 +259,9 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
     numerator = sum(collected["flows"].values(), Decimal(0))
     addback_reason = None
     if addback:
+        from finance_analysis.domain.execution_branches import claim
+
+        claim("interest")
         extra, extra_cells, addback_reason = _cash_interest(bindings, facts, key, aligned, convention, absent)
         if (
             addback_reason is None
@@ -247,9 +278,12 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
         notes.append(addback_reason)
     denominator = collected["denominator"]
     denom_reason = collected["denom_reason"]
+    from finance_analysis.domain.execution_branches import claim
+
     for concept, enabled in (("senior_fees", fees), ("senior_swaps", swaps)):
         if not enabled:
             continue
+        claim(concept)
         extra, problem, extra_cells = _attributed_cash(
             bindings, facts, key, aligned, convention, absent, concept
         )
@@ -326,6 +360,10 @@ def _period_row(period, facts, bindings, aligned, convention, absent, addback: b
 
 
 def _denominator(bindings, facts, key, aligned, convention, absent, split=None):
+    from finance_analysis.domain.execution_branches import claim
+
+    for concept in _DEBT:
+        claim(concept)
     debt = [row for concept in _DEBT for row in _bound(bindings, concept, absent)]
     caps = [row for row in debt if _is_cap(row) and _seniority(row) == "senior" and not _mixed(row)]
     senior = [
