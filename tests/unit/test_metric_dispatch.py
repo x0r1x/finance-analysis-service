@@ -1306,6 +1306,126 @@ def test_bound_composed_fallback_uses_the_slot_not_plan_fallbacks():
     assert got["rows"][0]["value"] == Decimal("4.0000000000")
 
 
+def test_bound_apply_plan_takes_interest_paid_from_the_slot():
+    """Связанный путь берёт interest_paid из term_rows. plan.inputs на этом пути не читается.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import _apply_plan
+    from finance_analysis.domain.execution_contract import ResolvedFormulaSlot
+    from finance_analysis.domain.model_type import Composed, Side
+
+    def blocked(name):
+        def read(_self):
+            raise AssertionError(name)
+
+        return property(read)
+
+    class Plan:
+        inputs = blocked("plan.inputs")
+        fallbacks = blocked("plan.fallbacks")
+        warnings = blocked("plan.warnings")
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    slots = (
+        ResolvedFormulaSlot(
+            "interest",
+            ("interest",),
+            ("interest_paid",),
+            "fallback",
+            (("interest_paid", "z-paid", "z-paid"),),
+        ),
+    )
+    definition, _notes, bindings = _apply_plan(formula, [], Plan(), [_bind("cash_interest", "z-paid")], slots)
+    assert definition.denominator.plus == ("interest_paid",)
+    paid = [row for row in bindings if row.get("effective_concept") == "interest_paid"]
+    assert [row["binding_key"] for row in paid] == ["z-paid"]
+
+
+def test_a_bound_slot_without_a_row_is_a_contract_error():
+    """Ключи слота есть, строки нет. Пропуск заменил бы её другой строкой.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        ResolvedFormulaSlot,
+    )
+    from finance_analysis.domain.metrics import _rows_from_slots
+
+    slot = ResolvedFormulaSlot(
+        "input:cfads",
+        ("cfads",),
+        ("cfads",),
+        "confirmed",
+        (("cfads", "z-confirmed", "z-confirmed"),),
+    )
+    with pytest.raises(ExecutionContractError) as raised:
+        _rows_from_slots((slot,), [_bind("cfads", "a-decoy")])
+    assert raised.value.reason == "bound_row_not_found"
+
+
+def test_a_bound_slot_without_keys_is_a_contract_error():
+    """Слот без ключей — отказ контракта. Пустой список строк его не заменяет.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        ResolvedFormulaSlot,
+    )
+    from finance_analysis.domain.metrics import _rows_from_slots
+
+    slot = ResolvedFormulaSlot("input:cfads", ("cfads",), ("cfads",), "confirmed", ())
+    blank = ResolvedFormulaSlot(
+        "input:cfads",
+        ("cfads",),
+        ("cfads",),
+        "confirmed",
+        (("cfads", None, None),),
+    )
+    with pytest.raises(ExecutionContractError) as raised:
+        _rows_from_slots((slot,), [_bind("cfads", "cfads")])
+    assert raised.value.reason == "bound_slot_without_keys"
+    with pytest.raises(ExecutionContractError) as blank_keys:
+        _rows_from_slots((blank,), [_bind("cfads", "cfads")])
+    assert blank_keys.value.reason == "bound_slot_without_keys"
+
+
+def test_duplicate_bound_concepts_with_different_keys_are_a_contract_error():
+    """Два ключа одного понятия не сливаются. Второй молча затирал бы первый.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        ResolvedFormulaSlot,
+    )
+    from finance_analysis.domain.metrics import _rows_from_slots
+
+    def slot(key):
+        return ResolvedFormulaSlot(
+            "input:cfads",
+            ("cfads",),
+            ("cfads",),
+            "confirmed",
+            (("cfads", key, key),),
+        )
+
+    with pytest.raises(ExecutionContractError) as raised:
+        _rows_from_slots((slot("z-confirmed"), slot("a-decoy")), [_bind("cfads", "z-confirmed"), _bind("cfads", "a-decoy")])
+    assert raised.value.reason == "bound_row_conflict"
+
+
 @pytest.mark.parametrize(
     ("plan_metric", "variant", "source", "digest", "reason"),
     [

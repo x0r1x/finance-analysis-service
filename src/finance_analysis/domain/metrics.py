@@ -314,20 +314,35 @@ def _plan_rows(plan: Any, bindings: list[dict]) -> dict:
 
 
 def _rows_from_slots(slots, bindings) -> dict:
-    """Строка, которую слот уже назвал. План и скан основных строк не выбирают её снова."""
+    """Строка, которую слот уже назвал. План и скан основных строк не выбирают её снова.
+
+    Нет ключей, нет строки или два разных ключа одного понятия — отказ контракта.
+    Слот — единственный источник чтения: https://www.w3.org/TR/prov-dm/#term-Plan
+    """
 
     from types import SimpleNamespace
 
+    from finance_analysis.domain.execution_contract import ExecutionContractError
     from finance_analysis.domain.resolved_plan import recover_row
 
     found: dict[str, dict] = {}
+    keys: dict[str, tuple] = {}
     for slot in slots:
+        if not slot.term_rows:
+            raise ExecutionContractError("bound_slot_without_keys")
         for concept, binding_key, row_key in slot.term_rows:
+            if not binding_key and not row_key:
+                raise ExecutionContractError("bound_slot_without_keys")
+            pair = (binding_key, row_key)
+            previous = keys.get(concept)
+            if previous is not None and previous != pair:
+                raise ExecutionContractError("bound_row_conflict")
             source = recover_row(bindings, SimpleNamespace(binding_key=binding_key, row_key=row_key))
             if source is None:
-                continue
+                raise ExecutionContractError("bound_row_not_found")
             copy = dict(source)
             copy["effective_concept"] = concept
+            keys[concept] = pair
             found[concept] = copy
     return found
 

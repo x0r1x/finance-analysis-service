@@ -2767,10 +2767,14 @@ def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dic
         interest = next((slot for slot in slots if slot.slot_id == "interest"), None)
         chosen = interest.resolved_terms[0] if interest is not None and interest.resolved_terms else None
         code = None if interest is None else interest.warning_code
+        # interest_paid уже назван слотом. plan.inputs и plan.fallbacks здесь не читаются.
+        # https://www.w3.org/TR/prov-dm/#term-Plan
+        paid = _paid_from_slot(interest)
     else:
         fallback = next((item for item in plan.fallbacks if item.replaced == "interest"), None)
         chosen = None if fallback is None else fallback.chosen
         code = None if fallback is None else fallback.warning_code
+        paid = next((item for item in plan.inputs if item.concept == "interest_paid"), None)
     if chosen is not None and chosen != "interest":
         definition = _rename(definition, chosen)
         warning = None
@@ -2778,7 +2782,6 @@ def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dic
             warning = next((item.as_dict() for item in plan.warnings if item.code == code), None)
         if warning:
             notes = [*notes, warning]
-    paid = next((item for item in plan.inputs if item.concept == "interest_paid"), None)
     if paid is not None and not any(
         declared_concept(row) == "interest_paid" and row.get("is_primary") for row in bindings
     ):
@@ -2797,6 +2800,17 @@ def _rename(formula: Composed, chosen: str) -> Composed:
 
     terms = frozenset(chosen if name == "interest" else name for name in formula.payment_terms)
     return Composed(replace(formula.numerator), replace(formula.denominator), formula.window, terms)
+
+
+def _paid_from_slot(interest):
+    if interest is None:
+        return None
+    term = next((row for row in interest.term_rows if row[0] == "interest_paid"), None)
+    if term is None:
+        return None
+    from types import SimpleNamespace
+
+    return SimpleNamespace(binding_key=term[1], row_key=term[2])
 
 
 def _row_for(bindings: list[dict], item: Any) -> dict | None:
