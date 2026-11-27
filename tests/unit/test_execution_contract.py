@@ -247,12 +247,19 @@ def test_slots_record_one_of_and_the_dscr_and_icr_fallbacks():
     assert dscr_slots["debt_service"].original_terms == ("debt_service",)
     assert dscr_slots["debt_service"].resolved_terms == ("interest_paid", "principal")
     assert dscr_slots["debt_service"].resolution_reason == "fallback"
+    assert dscr_slots["debt_service"].term_rows == (
+        ("interest_paid", "bk-interest_paid", "row-interest_paid"),
+        ("principal", "bk-principal", "row-principal"),
+    )
+    assert dscr_slots["input:cfads"].term_rows == (("cfads", "bk-cfads", "row-cfads"),)
     assert icr_slots["numerator"].original_terms == ("ebitda", "ebit")
     assert icr_slots["numerator"].resolved_terms == ("ebitda",)
     assert icr_slots["numerator"].resolution_reason == "one_of"
+    assert icr_slots["numerator"].term_rows == (("ebitda", "bk-ebitda", "row-ebitda"),)
     assert icr_slots["interest"].original_terms == ("interest",)
     assert icr_slots["interest"].resolved_terms == ("interest_paid",)
     assert icr_slots["interest"].resolution_reason == "fallback"
+    assert icr_slots["interest"].term_rows == (("interest_paid", "bk-interest_paid", "row-interest_paid"),)
 
 
 def test_branch_trace_stores_flag_values_and_blocks_a_forbidden_read():

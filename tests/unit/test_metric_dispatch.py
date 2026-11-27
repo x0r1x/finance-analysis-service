@@ -846,13 +846,14 @@ def test_a_diagnostic_read_stays_out_of_the_inputs():
     assert observed == {"cfads", "debt_service"}
     assert {item.considered for item in outcome.evidence.fact_observations} == {"scale"}
     assert outcome.evidence.actual_inputs == ()
+    assert outcome.evidence.actual_fact_uses == ()
     assert outcome.evidence.fact_uses == ()
 
 
 def test_a_resolved_matching_plan_runs_the_bound_path_and_keeps_the_ratio(monkeypatch):
     """Совпали метрика, вариант и хеш — связанный путь. Число остаётся числом калькулятора.
 
-    Подстановок нет, поэтому кортеж слотов пуст. Калькулятор получает его и не вызывает slots_for снова.
+    Подстановок нет. Слоты несут ключ подтверждённой строки и не вызывают slots_for снова.
     """
 
     from finance_analysis.domain.metric_dispatch import SelectRatioExecutor
@@ -863,7 +864,7 @@ def test_a_resolved_matching_plan_runs_the_bound_path_and_keeps_the_ratio(monkey
     real_execute = SelectRatioExecutor.execute
 
     def execute(self, context):
-        entered["slots"] = tuple(slot.resolution_reason for slot in context.slots)
+        entered["slots"] = tuple((slot.resolution_reason, slot.term_rows) for slot in context.slots)
         return real_execute(self, context)
 
     monkeypatch.setattr(SelectRatioExecutor, "execute", execute)
@@ -891,7 +892,9 @@ def test_a_resolved_matching_plan_runs_the_bound_path_and_keeps_the_ratio(monkey
         _context(definition, plan),
     )
     assert seen == ["dscr"]
-    assert entered["slots"] == ()
+    assert {reason for reason, _rows in entered["slots"]} == {"confirmed"}
+    assert ("confirmed", (("cfads", "c", "c"),)) in entered["slots"]
+    assert ("confirmed", (("debt_service", "d", "d"),)) in entered["slots"]
     assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"] == Decimal("8.0000000000")
 
 
@@ -910,6 +913,11 @@ def test_a_matched_fallback_slot_is_passed_to_the_calculator(monkeypatch):
 
     def execute(self, context):
         entered["reasons"] = tuple(slot.resolution_reason for slot in context.slots)
+        entered["rows"] = {
+            concept: row
+            for slot in context.slots
+            for concept, _key, row in slot.term_rows
+        }
         return real_execute(self, context)
 
     def wrapped(metric, variant, common, **kwargs):
@@ -949,7 +957,10 @@ def test_a_matched_fallback_slot_is_passed_to_the_calculator(monkeypatch):
         _context(definition, plan),
     )
     assert seen == ["dscr"]
-    assert entered["reasons"] == ("fallback",)
+    assert entered["reasons"][0] == "fallback"
+    assert entered["rows"]["cfads"] == "cfads"
+    assert entered["rows"]["interest"] == "interest"
+    assert entered["rows"]["principal"] == "principal"
     assert passed["slots"][0].resolution_reason == "fallback"
     assert passed["slots"][0].resolved_terms == ("interest", "principal")
     assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"]
@@ -1006,7 +1017,8 @@ def test_a_matched_one_of_slot_is_passed_to_the_calculator(monkeypatch):
         _context(definition, plan),
     )
     assert seen == ["icr"]
-    assert entered["slots"] == (("numerator", "one_of", ("ebitda",)),)
+    assert ("numerator", "one_of", ("ebitda",)) in entered["slots"]
+    assert ("input:interest", "confirmed", ("interest",)) in entered["slots"]
     assert passed["slots"][0].resolved_terms == ("ebitda",)
     assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"] == Decimal("8.0000000000")
 
@@ -1098,6 +1110,7 @@ def test_bound_one_of_is_not_chosen_again_and_the_evidence_records_the_read(monk
     assert passed["slots"][0].resolved_terms == ("ebitda",)
     assert outcome.result["rows"][0]["value"] == Decimal("8.0000000000")
     assert evidence.actual_inputs == ("ebitda", "interest")
+    assert evidence.actual_fact_uses == ("IS!EBITDA", "IS!INT")
     assert {item.concept for item in evidence.fact_uses} == {"ebitda", "interest"}
     assert {item.cell_id for item in evidence.fact_uses} == {"IS!EBITDA", "IS!INT"}
     assert "ebit" not in evidence.actual_inputs
@@ -1144,10 +1157,398 @@ def test_bound_fallback_is_not_chosen_again_and_the_evidence_records_the_read(mo
     assert passed["slots"][0].resolved_terms == ("interest", "principal")
     assert outcome.result["rows"][0]["value"] == Decimal("2.8571428571")
     assert evidence.actual_inputs == ("cfads", "interest", "principal")
+    assert evidence.actual_fact_uses == ("CFS!CF", "Debt!INT", "Debt!PR")
     assert {item.concept for item in evidence.fact_uses} == {"cfads", "interest", "principal"}
     assert {item.cell_id for item in evidence.fact_uses} == {"CFS!CF", "Debt!INT", "Debt!PR"}
     assert "debt_service" not in evidence.actual_inputs
     assert "interest_paid" not in evidence.actual_inputs
+
+
+def test_bound_path_uses_the_slot_row_and_does_not_reread_the_plan(monkeypatch):
+    """Две строки CFADS. Слот несёт ключ подтверждённой, ``_plan_rows`` не вызывается.
+
+    Скан привязок берёт минимальный ``binding_key`` и сдвинул бы частное.
+    Решённый план не перерешивается: https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.metric_dispatch import SelectRatioExecutor
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("_plan_rows")
+
+    monkeypatch.setattr("finance_analysis.domain.metrics._plan_rows", boom)
+    entered = {}
+    real_execute = SelectRatioExecutor.execute
+
+    def execute(self, context):
+        entered["slots"] = context.slots
+        return real_execute(self, context)
+
+    monkeypatch.setattr(SelectRatioExecutor, "execute", execute)
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    confirmed = _bind("cfads", "z-confirmed")
+    decoy = _bind("cfads", "a-decoy")
+    debt = _bind("debt_service", "debt")
+    plan = _plan_for(definition, [confirmed, debt])
+    facts = [_fact("z-confirmed", "80"), _fact("a-decoy", "8"), _fact("debt", "-10")]
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("dscr", facts, [decoy, confirmed, debt]),
+        _context(definition, plan),
+    )
+    rows = [
+        term
+        for slot in entered["slots"]
+        for term in slot.term_rows
+        if term[0] == "cfads"
+    ]
+    assert rows == [("cfads", "z-confirmed", "z-confirmed")]
+    assert outcome.result["rows"][0]["value"] == Decimal("8.0000000000")
+
+
+def test_bound_dscr_pf_uses_the_slots_and_does_not_reread_the_plan(monkeypatch):
+    """Связанный DSCR pf не вызывает ``bindings_for_plan``. Строку берёт слот.
+
+    Повторное чтение плана заново сузило бы привязки.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("bindings_for_plan")
+
+    monkeypatch.setattr("finance_analysis.domain.resolved_plan.bindings_for_plan", boom)
+    definition = _definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+        variant="pf",
+    )
+    confirmed = _bind("cfads", "z-confirmed")
+    decoy = _bind("cfads", "a-decoy")
+    debt = _bind("debt_service", "debt")
+    plan = _plan_for(definition, [confirmed, debt])
+    facts = [_fact("z-confirmed", "80"), _fact("a-decoy", "8"), _fact("debt", "-10")]
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("dscr", facts, [decoy, confirmed, debt], variant="pf"),
+        _context(definition, plan),
+    )
+    assert outcome.result["rows"][0]["value"] == Decimal("8.0000000000")
+
+
+def test_bound_composed_fallback_uses_the_slot_not_plan_fallbacks():
+    """Составной запас берёт уже решённый слот. ``plan.fallbacks`` снова не читается.
+
+    В плане запас указывает на interest. Слот уже выбрал interest_paid.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import select_ratio
+    from finance_analysis.domain.execution_contract import ResolvedFormulaSlot
+    from finance_analysis.domain.model_type import Composed, Side
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    definition = _definition(
+        "dscr",
+        _expr(numerator_plus=("ebitda",), denominator_plus=("interest",)),
+        executor_key="composed",
+        executor_id="composed_ratio",
+        executor_version="composed_ratio@1",
+        variant="corporate_covenant",
+    )
+    plan = _seal_plan(
+        "dscr",
+        definition,
+        ("ebitda", "interest_paid"),
+        variant="corporate_covenant",
+        variant_source="variant:corporate_covenant",
+        fallbacks=(AppliedFallback("corporate_covenant", "interest", "interest", None),),
+    )
+    slots = (
+        ResolvedFormulaSlot(
+            "interest",
+            ("interest",),
+            ("interest_paid",),
+            "fallback",
+            (("interest_paid", "interest_paid", "interest_paid"),),
+        ),
+    )
+    facts = [_fact("ebitda", "40"), _fact("interest", "-2"), _fact("interest_paid", "-10")]
+    bindings = [
+        _bind("ebitda", "ebitda"),
+        _bind("interest", "interest"),
+        _bind("interest_paid", "interest_paid"),
+    ]
+    got = select_ratio(
+        "dscr",
+        "corporate_covenant",
+        _common(facts, bindings),
+        profile=None,
+        profile_ref=None,
+        composed={"dscr.corporate_covenant": formula},
+        concepts=frozenset({"ebitda", "interest", "interest_paid"}),
+        money=frozenset({"ebitda", "interest", "interest_paid"}),
+        plan=plan,
+        slots=slots,
+    )
+    assert got["rows"][0]["value"] == Decimal("4.0000000000")
+
+
+def test_bound_apply_plan_takes_interest_paid_from_the_slot():
+    """Связанный путь берёт interest_paid из term_rows. plan.inputs на этом пути не читается.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import _apply_plan
+    from finance_analysis.domain.execution_contract import ResolvedFormulaSlot
+    from finance_analysis.domain.model_type import Composed, Side
+
+    def blocked(name):
+        def read(_self):
+            raise AssertionError(name)
+
+        return property(read)
+
+    class Plan:
+        inputs = blocked("plan.inputs")
+        fallbacks = blocked("plan.fallbacks")
+        warnings = blocked("plan.warnings")
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    slots = (
+        ResolvedFormulaSlot(
+            "interest",
+            ("interest",),
+            ("interest_paid",),
+            "fallback",
+            (("interest_paid", "z-paid", "z-paid"),),
+        ),
+    )
+    definition, _notes, bindings = _apply_plan(formula, [], Plan(), [_bind("cash_interest", "z-paid")], slots)
+    assert definition.denominator.plus == ("interest_paid",)
+    paid = [row for row in bindings if row.get("effective_concept") == "interest_paid"]
+    assert [row["binding_key"] for row in paid] == ["z-paid"]
+
+
+def test_confirmed_interest_paid_on_its_own_slot_still_aliases_the_row():
+    """Подтверждённый interest_paid живёт на input:interest_paid, не на слоте interest.
+
+    Ключ указывает на строку с другим понятием, поэтому нужна копия-алиас.
+    Подмена запаса по-прежнему смотрит только слот interest.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import _apply_plan
+    from finance_analysis.domain.execution_contract import ResolvedFormulaSlot
+    from finance_analysis.domain.model_type import Composed, Side
+
+    def blocked(name):
+        def read(_self):
+            raise AssertionError(name)
+
+        return property(read)
+
+    class Plan:
+        inputs = blocked("plan.inputs")
+        fallbacks = blocked("plan.fallbacks")
+        warnings = blocked("plan.warnings")
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    slots = (
+        ResolvedFormulaSlot(
+            "interest",
+            ("interest",),
+            ("interest",),
+            "fallback",
+            (("interest", "bk-interest", "row-interest"),),
+        ),
+        ResolvedFormulaSlot(
+            "input:interest_paid",
+            ("interest_paid",),
+            ("interest_paid",),
+            "confirmed",
+            (("interest_paid", "bk-cash", "row-cash"),),
+        ),
+    )
+    definition, _notes, bindings = _apply_plan(
+        formula,
+        [],
+        Plan(),
+        [_bind("cash_interest", "bk-cash"), _bind("interest", "bk-interest")],
+        slots,
+    )
+    assert definition.denominator.plus == ("interest",)
+    original = [
+        row
+        for row in bindings
+        if row["binding_key"] == "bk-cash" and row.get("effective_concept") == "cash_interest"
+    ]
+    alias = [
+        row
+        for row in bindings
+        if row["binding_key"] == "bk-cash" and row.get("effective_concept") == "interest_paid"
+    ]
+    assert len(original) == 1
+    assert len(alias) == 1
+
+
+@pytest.mark.parametrize(
+    ("terms", "rows", "reason"),
+    [
+        (
+            ((("interest_paid", None, None),),),
+            ["bk-cash"],
+            "bound_slot_without_keys",
+        ),
+        (
+            ((("interest_paid", "bk-missing", "row-missing"),),),
+            ["bk-cash"],
+            "bound_row_not_found",
+        ),
+        (
+            (
+                (("interest_paid", "bk-a", "row-a"),),
+                (("interest_paid", "bk-b", "row-b"),),
+            ),
+            ["bk-a", "bk-b"],
+            "bound_row_conflict",
+        ),
+    ],
+)
+def test_paid_slot_keys_follow_the_coverage_contract(terms, rows, reason):
+    """Дырявый interest_paid не становится тихим None и обычным missing.
+
+    Те же три отказа, что у восстановления строк покрытия.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import _apply_plan
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        ResolvedFormulaSlot,
+    )
+    from finance_analysis.domain.model_type import Composed, Side
+
+    formula = Composed(
+        Side(("ebitda",), ()),
+        Side(("interest",), ()),
+        "period",
+        frozenset({"interest"}),
+    )
+    slots = tuple(
+        ResolvedFormulaSlot(
+            "input:interest_paid",
+            ("interest_paid",),
+            ("interest_paid",),
+            "confirmed",
+            term_rows,
+        )
+        for term_rows in terms
+    )
+    with pytest.raises(ExecutionContractError) as raised:
+        _apply_plan(formula, [], object(), [_bind("cash_interest", key) for key in rows], slots)
+    assert raised.value.reason == reason
+
+
+def test_a_bound_slot_without_a_row_is_a_contract_error():
+    """Ключи слота есть, строки нет. Пропуск заменил бы её другой строкой.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        ResolvedFormulaSlot,
+    )
+    from finance_analysis.domain.metrics import _rows_from_slots
+
+    slot = ResolvedFormulaSlot(
+        "input:cfads",
+        ("cfads",),
+        ("cfads",),
+        "confirmed",
+        (("cfads", "z-confirmed", "z-confirmed"),),
+    )
+    with pytest.raises(ExecutionContractError) as raised:
+        _rows_from_slots((slot,), [_bind("cfads", "a-decoy")])
+    assert raised.value.reason == "bound_row_not_found"
+
+
+def test_a_bound_slot_without_keys_is_a_contract_error():
+    """Слот без ключей — отказ контракта. Пустой список строк его не заменяет.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        ResolvedFormulaSlot,
+    )
+    from finance_analysis.domain.metrics import _rows_from_slots
+
+    slot = ResolvedFormulaSlot("input:cfads", ("cfads",), ("cfads",), "confirmed", ())
+    blank = ResolvedFormulaSlot(
+        "input:cfads",
+        ("cfads",),
+        ("cfads",),
+        "confirmed",
+        (("cfads", None, None),),
+    )
+    with pytest.raises(ExecutionContractError) as raised:
+        _rows_from_slots((slot,), [_bind("cfads", "cfads")])
+    assert raised.value.reason == "bound_slot_without_keys"
+    with pytest.raises(ExecutionContractError) as blank_keys:
+        _rows_from_slots((blank,), [_bind("cfads", "cfads")])
+    assert blank_keys.value.reason == "bound_slot_without_keys"
+
+
+def test_duplicate_bound_concepts_with_different_keys_are_a_contract_error():
+    """Два ключа одного понятия не сливаются. Второй молча затирал бы первый.
+
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        ResolvedFormulaSlot,
+    )
+    from finance_analysis.domain.metrics import _rows_from_slots
+
+    def slot(key):
+        return ResolvedFormulaSlot(
+            "input:cfads",
+            ("cfads",),
+            ("cfads",),
+            "confirmed",
+            (("cfads", key, key),),
+        )
+
+    with pytest.raises(ExecutionContractError) as raised:
+        _rows_from_slots((slot("z-confirmed"), slot("a-decoy")), [_bind("cfads", "z-confirmed"), _bind("cfads", "a-decoy")])
+    assert raised.value.reason == "bound_row_conflict"
 
 
 @pytest.mark.parametrize(

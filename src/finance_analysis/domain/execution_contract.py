@@ -98,6 +98,11 @@ class ResolvedFormulaSlot:
     original_terms: tuple[str, ...]
     resolved_terms: tuple[str, ...]
     resolution_reason: str
+    # (concept, binding_key, row_key). binding_key устойчив, row_key — текущая строка.
+    # Чтение идёт из этого слота, план заново не выбирает строку.
+    # https://www.w3.org/TR/prov-dm/#term-Plan
+    term_rows: tuple[tuple[str, str | None, str | None], ...] = ()
+    warning_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -243,7 +248,15 @@ def slots_for(
             raise ExecutionContractError("undeclared_alternative")
         if not _is_confirmed(chosen):
             raise ExecutionContractError("inconsistent_fallback")
-        found.append(ResolvedFormulaSlot("numerator", expression.one_of, (chosen.concept,), "one_of"))
+        found.append(
+            ResolvedFormulaSlot(
+                "numerator",
+                expression.one_of,
+                (chosen.concept,),
+                "one_of",
+                (_term_row(chosen),),
+            )
+        )
     denominator = set(expression.denominator_plus) | set(expression.denominator_minus)
     confirmed = _confirmed_names(plan)
     seen: set[str] = set()
@@ -258,12 +271,42 @@ def slots_for(
             if "principal" not in confirmed or _unconfirmed(plan, "principal"):
                 raise ExecutionContractError("inconsistent_fallback")
             found.append(
-                ResolvedFormulaSlot("debt_service", ("debt_service",), (item.chosen, "principal"), "fallback")
+                ResolvedFormulaSlot(
+                    "debt_service",
+                    ("debt_service",),
+                    (item.chosen, "principal"),
+                    "fallback",
+                    _rows_of(plan, (item.chosen, "principal")),
+                    item.warning_code,
+                )
             )
         elif item.replaced == "interest":
-            found.append(ResolvedFormulaSlot("interest", ("interest",), (item.chosen,), "fallback"))
+            found.append(
+                ResolvedFormulaSlot(
+                    "interest",
+                    ("interest",),
+                    (item.chosen,),
+                    "fallback",
+                    _rows_of(plan, (item.chosen,)),
+                    item.warning_code,
+                )
+            )
         else:
             raise ExecutionContractError("inconsistent_fallback")
+    covered = {concept for slot in found for concept, _key, _row in slot.term_rows}
+    named = _expression_names(expression)
+    for item in plan.inputs:
+        if not _is_confirmed(item) or item.concept in covered or item.concept not in named:
+            continue
+        found.append(
+            ResolvedFormulaSlot(
+                f"input:{item.concept}",
+                (item.concept,),
+                (item.concept,),
+                "confirmed",
+                (_term_row(item),),
+            )
+        )
     return tuple(found)
 
 
@@ -416,6 +459,29 @@ def _frozen(value: object) -> frozenset[str]:
     if isinstance(value, frozenset):
         return value
     return frozenset()
+
+
+def _term_row(item) -> tuple[str, str | None, str | None]:
+    return (item.concept, item.binding_key, item.row_key)
+
+
+def _rows_of(plan: ResolvedMetricPlan, concepts: tuple[str, ...]) -> tuple[tuple[str, str | None, str | None], ...]:
+    rows = []
+    for concept in concepts:
+        item = next((row for row in plan.inputs if row.concept == concept and _is_confirmed(row)), None)
+        if item is not None:
+            rows.append(_term_row(item))
+    return tuple(rows)
+
+
+def _expression_names(expression: NormalizedExpression) -> set[str]:
+    return (
+        set(expression.numerator_plus)
+        | set(expression.numerator_minus)
+        | set(expression.denominator_plus)
+        | set(expression.denominator_minus)
+        | set(expression.one_of)
+    )
 
 
 def _is_confirmed(item: object) -> bool:

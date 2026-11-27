@@ -317,6 +317,7 @@ def covenant_dscr(
     aggregations: Mapping[str, str] | None = None,
     plan: Any | None = None,
     outflows: frozenset[str] | None = None,
+    slots: tuple | None = None,
 ) -> dict:
     definition, source, ref, notes = resolve_covenant(
         profile, profile_ref, default, concepts=concepts, money=money, composed=composed
@@ -327,7 +328,7 @@ def covenant_dscr(
     if not order:
         order = orders.get("corporate_covenant", ())
     if plan is not None:
-        definition, notes, bindings = _apply_plan(definition, notes, plan, bindings)
+        definition, notes, bindings = _apply_plan(definition, notes, plan, bindings, slots)
     else:
         primaries = _primaries(bindings, absent)
         injected = confirm_paid_interest(primaries, bindings, absent)
@@ -396,6 +397,7 @@ def dscr_ocf_covenant(
     aggregations: Mapping[str, str] | None = None,
     plan: Any | None = None,
     outflows: frozenset[str] | None = None,
+    slots: tuple | None = None,
 ) -> dict:
     """OCF-ковенант по составу каталога. Нет входов состава — метрика не считается, CFADS не подставляется."""
 
@@ -421,6 +423,7 @@ def dscr_ocf_covenant(
         aggregations=aggregations,
         plan=plan,
         outflows=outflows,
+        slots=slots,
     )
 
 
@@ -2586,6 +2589,7 @@ def select_ratio(
             aggregations=aggregations,
             plan=plan,
             outflows=outflows,
+            slots=slots,
         )
     if metric == "dscr" and (variant == "corporate_covenant" or (named and f"dscr.{named}" in composed)):
         attempt = covenant_dscr(
@@ -2606,6 +2610,7 @@ def select_ratio(
             aggregations=aggregations,
             plan=plan,
             outflows=outflows,
+            slots=slots,
         )
         attempt_evidence = None
         if (
@@ -2751,16 +2756,33 @@ def _refuse_branch(metric, definition, plan, *, variant=None, profile=None, leas
     )
 
 
-def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dict]):
-    """Подмена процентов и строка 4123 уже записаны в плане."""
+def _apply_plan(definition: Composed, notes: list, plan: Any, bindings: list[dict], slots=None):
+    """Подмена процентов и строка 4123 уже записаны в плане.
 
-    fallback = next((item for item in plan.fallbacks if item.replaced == "interest"), None)
-    if fallback is not None and fallback.chosen != "interest":
-        definition = _rename(definition, fallback.chosen)
-        warning = next((item.as_dict() for item in plan.warnings if item.code == (fallback.warning_code or "")), None)
+    На связанном пути слот уже выбрал замену. ``plan.fallbacks`` снова не читается.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    if slots is not None:
+        interest = next((slot for slot in slots if slot.slot_id == "interest"), None)
+        chosen = interest.resolved_terms[0] if interest is not None and interest.resolved_terms else None
+        code = None if interest is None else interest.warning_code
+        # interest_paid может лежать на input:interest_paid, не только на слоте interest.
+        # Ключи проверяет то же восстановление, что и покрытие. plan.inputs здесь не читается.
+        # https://www.w3.org/TR/prov-dm/#term-Plan
+        paid = _paid_from_slot(slots, bindings)
+    else:
+        fallback = next((item for item in plan.fallbacks if item.replaced == "interest"), None)
+        chosen = None if fallback is None else fallback.chosen
+        code = None if fallback is None else fallback.warning_code
+        paid = next((item for item in plan.inputs if item.concept == "interest_paid"), None)
+    if chosen is not None and chosen != "interest":
+        definition = _rename(definition, chosen)
+        warning = None
+        if code:
+            warning = next((item.as_dict() for item in plan.warnings if item.code == code), None)
         if warning:
             notes = [*notes, warning]
-    paid = next((item for item in plan.inputs if item.concept == "interest_paid"), None)
     if paid is not None and not any(
         declared_concept(row) == "interest_paid" and row.get("is_primary") for row in bindings
     ):
@@ -2779,6 +2801,22 @@ def _rename(formula: Composed, chosen: str) -> Composed:
 
     terms = frozenset(chosen if name == "interest" else name for name in formula.payment_terms)
     return Composed(replace(formula.numerator), replace(formula.denominator), formula.window, terms)
+
+
+def _paid_from_slot(slots, bindings):
+    from types import SimpleNamespace
+
+    from finance_analysis.domain.metrics import _rows_from_slots
+
+    paid = tuple(
+        SimpleNamespace(term_rows=tuple(row for row in slot.term_rows if row[0] == "interest_paid"))
+        for slot in slots
+        if any(row[0] == "interest_paid" for row in slot.term_rows)
+    )
+    if not paid:
+        return None
+    source = _rows_from_slots(paid, bindings)["interest_paid"]
+    return SimpleNamespace(binding_key=source.get("binding_key"), row_key=source.get("row_key"))
 
 
 def _row_for(bindings: list[dict], item: Any) -> dict | None:
