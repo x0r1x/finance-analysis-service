@@ -103,6 +103,10 @@ class ResolvedFormulaSlot:
     # https://www.w3.org/TR/prov-dm/#term-Plan
     term_rows: tuple[tuple[str, str | None, str | None], ...] = ()
     warning_code: str | None = None
+    # Параметры предупреждения, уже собранные со плана. None — текста на слоте нет.
+    # Связанный путь plan.warnings заново не читает.
+    # https://www.w3.org/TR/prov-dm/#term-Plan
+    warning_params: tuple[tuple[str, str], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -278,6 +282,7 @@ def slots_for(
                     "fallback",
                     _rows_of(plan, (item.chosen, "principal")),
                     item.warning_code,
+                    _ready_params(plan, item.warning_code),
                 )
             )
         elif item.replaced == "interest":
@@ -289,6 +294,7 @@ def slots_for(
                     "fallback",
                     _rows_of(plan, (item.chosen,)),
                     item.warning_code,
+                    _ready_params(plan, item.warning_code),
                 )
             )
         else:
@@ -307,6 +313,7 @@ def slots_for(
                 (_term_row(item),),
             )
         )
+    _place_ready_warnings(found, plan)
     return tuple(found)
 
 
@@ -364,7 +371,7 @@ def execute_bound(
     # Слоты — уже решённый план, в том числе пустой кортеж. Исполнитель их не выбирает заново.
     # https://www.w3.org/TR/prov-dm/#term-Plan
     slots = slots_for(definition, plan)
-    if definition.executor_key == "coverage":
+    if definition.executor_key in {"coverage", "composed"}:
         from finance_analysis.domain.metric_contract import UndeclaredInput
         from finance_analysis.domain.metrics import _guard_declared
 
@@ -459,6 +466,49 @@ def _frozen(value: object) -> frozenset[str]:
     if isinstance(value, frozenset):
         return value
     return frozenset()
+
+
+def _ready_params(plan, code: str | None):
+    """Параметры предупреждения с тем же кодом. Нет записи — на слоте текста нет."""
+
+    if not code:
+        return None
+    found = next((item for item in plan.warnings if item.code == code), None)
+    return None if found is None else found.params
+
+
+# Код предупреждения называет слот. Свободный числитель не выбирается.
+# https://www.w3.org/TR/prov-dm/#term-Plan
+_WARNING_HOME = {
+    "icr_numerator": frozenset({"numerator"}),
+    "interest_basis_fallback": frozenset({"interest", "debt_service"}),
+}
+
+
+def _place_ready_warnings(slots: list, plan) -> None:
+    """Предупреждение без своего запаса ложится на слот, который называет код.
+
+    Предупреждение не всегда про числитель, поэтому свободный числитель его не принимает.
+    Два кода остаются на двух слотах. Калькулятор потом читает слот, а не plan.warnings.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    taken = {slot.warning_code for slot in slots if slot.warning_code}
+    for item in plan.warnings:
+        if item.code in taken:
+            continue
+        homes = _WARNING_HOME.get(item.code)
+        if not homes:
+            continue
+        hits = [
+            index
+            for index, slot in enumerate(slots)
+            if slot.slot_id in homes and slot.warning_code is None
+        ]
+        if len(hits) != 1:
+            continue
+        slots[hits[0]] = replace(slots[hits[0]], warning_code=item.code, warning_params=item.params)
+        taken.add(item.code)
 
 
 def _term_row(item) -> tuple[str, str | None, str | None]:
