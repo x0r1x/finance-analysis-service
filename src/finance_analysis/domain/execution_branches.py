@@ -14,7 +14,6 @@ from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 
-from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.execution_contract import (
     ExecutionBranchDefinition,
     ExecutionContractError,
@@ -57,6 +56,7 @@ class _Run:
     def __init__(self, branch: ExecutionBranchDefinition, trace: ExecutionTrace) -> None:
         self.branch = branch
         self.trace = trace
+        self.cells: list[str] = []
 
 
 _active: ContextVar[_Run | None] = ContextVar("execution_branch_run", default=None)
@@ -413,7 +413,7 @@ def run_branch(
         reset_branch(branch_token)
         _active.reset(active_token)
     if isinstance(result, dict):
-        run.trace = _complete(run.trace, result, facts, bindings, _alignment(periods))
+        run.trace = _complete(run.trace, result, facts, bindings, _alignment(periods), run.cells)
         _hide_horizon(result)
     _last.set(run.trace)
     return result
@@ -435,6 +435,22 @@ def use_branch(branch: ExecutionBranchDefinition, profile_values: Mapping[str, o
             return False
 
     return _Scope()
+
+
+def note_fact(fact) -> None:
+    """Ячейка, чьё число читатель принял. Привязка, которую формула не открыла, сюда не попадает."""
+
+    run = _active.get()
+    if run is None or not isinstance(fact, Mapping):
+        return
+    run.cells.append(_cell_of(fact))
+
+
+def _cell_of(fact: Mapping) -> str:
+    cell = fact.get("cell_id")
+    if cell:
+        return str(cell)
+    return f"{fact.get('row_key')}:{fact.get('axis_id')}:{fact.get('period_id')}"
 
 
 def claim(name: str) -> None:
@@ -513,36 +529,28 @@ def _complete(
     trace: ExecutionTrace,
     result: Mapping[str, object],
     facts,
-    bindings,
+    _bindings,
     aligned: Mapping[tuple[str, str], tuple] | None = None,
+    noted: list[str] | None = None,
 ) -> ExecutionTrace:
     slots = _slots(result)
     aligned = aligned or {}
     raw = set(slots)
     normalized = {aligned[pair] for pair in slots if pair in aligned}
-    claimed = set(trace.actual_inputs)
+    noted_ids = set(noted or ())
     uses: list[str] = []
-    keys: dict[str, str] = {}
-    for row in bindings or []:
-        if not isinstance(row, Mapping):
-            continue
-        concept = declared_concept(row)
-        if concept and concept in claimed and row.get("row_key"):
-            keys[str(row["row_key"])] = concept
-    if slots:
+    if slots and noted_ids:
         for fact in facts or []:
             if not isinstance(fact, Mapping):
                 continue
-            concept = keys.get(str(fact.get("row_key")))
-            if concept is None:
+            cell = _cell_of(fact)
+            if cell not in noted_ids:
                 continue
             pair = (str(fact.get("axis_id")), str(fact.get("period_id") or ""))
             key = aligned.get(pair)
             if pair not in raw and (key is None or key not in normalized):
                 continue
-            period = pair[1]
-            cell = fact.get("cell_id") or f"{concept}:{pair[0]}:{period}"
-            uses.append(str(cell))
+            uses.append(cell)
     return replace(
         trace,
         actual_periods=tuple(dict.fromkeys(period for _axis, period in slots)),

@@ -262,6 +262,9 @@ def _at(facts: list[dict], row: str, period: dict) -> Decimal | None:
         number = fact.get("normalized_value")
         if number is None:
             return None
+        from finance_analysis.domain.execution_branches import note_fact
+
+        note_fact(fact)
         return Decimal(str(number))
     return None
 

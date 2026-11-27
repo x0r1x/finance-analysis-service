@@ -318,6 +318,93 @@ def test_a_reduction_run_records_inputs_periods_and_facts():
     assert "a!c" in trace.actual_fact_uses and "a!d" in trace.actual_fact_uses
 
 
+def test_the_trace_keeps_only_the_binding_row_the_calculator_read():
+    from finance_analysis.domain.cover_metrics import dscr_reductions
+    from finance_analysis.domain.execution_branches import take_trace
+
+    periods = [
+        {
+            "axis_id": "a",
+            "timeline_id": "a",
+            "period_id": "2025",
+            "period_index": 0,
+            "grain": "year",
+            "period_start": __import__("datetime").date(2025, 1, 1),
+            "period_end": __import__("datetime").date(2025, 12, 31),
+        }
+    ]
+    facts = [
+        {
+            "row_key": "c",
+            "axis_id": "a",
+            "period_id": "2025",
+            "normalized_value": Decimal(10),
+            "cell_id": "a!c",
+        },
+        {
+            "row_key": "c",
+            "axis_id": "a",
+            "period_id": "2025",
+            "cell_id": "a!blank",
+        },
+        {
+            "row_key": "alt",
+            "axis_id": "a",
+            "period_id": "2025",
+            "normalized_value": Decimal(99),
+            "cell_id": "a!alt",
+        },
+        {
+            "row_key": "d",
+            "axis_id": "a",
+            "period_id": "2025",
+            "normalized_value": Decimal(-5),
+            "cell_id": "a!d",
+        },
+    ]
+    bindings = [
+        {
+            "row_key": "c",
+            "binding_key": "c",
+            "is_primary": True,
+            "status": "bound",
+            "effective_concept": "cfads",
+            "source": "inferred",
+        },
+        {
+            "row_key": "alt",
+            "binding_key": "alt",
+            "is_primary": False,
+            "status": "bound",
+            "effective_concept": "cfads",
+            "source": "inferred",
+        },
+        {
+            "row_key": "d",
+            "binding_key": "d",
+            "is_primary": True,
+            "status": "bound",
+            "effective_concept": "debt_service",
+            "source": "inferred",
+        },
+    ]
+    result = dscr_reductions(
+        "dscr_min",
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+    )
+    trace = take_trace()
+    assert result["rows"][0]["value"] == Decimal("2.0000000000")
+    assert trace is not None
+    assert "a!c" in trace.actual_fact_uses
+    assert "a!d" in trace.actual_fact_uses
+    assert "a!alt" not in trace.actual_fact_uses
+    assert "a!blank" not in trace.actual_fact_uses
+
+
 def test_effective_rate_is_read_only_on_the_escrow_branch():
     from finance_analysis.domain.execution_branches import (
         DSCR_MIN,
@@ -372,12 +459,15 @@ def test_a_shared_period_id_does_not_pull_the_other_axis():
     from finance_analysis.domain.execution_branches import (
         DSCR_MIN,
         claim,
+        note_fact,
         run_branch,
         take_trace,
     )
 
     def body():
         claim("cfads")
+        for fact in facts:
+            note_fact(fact)
         return {"rows": [{"axis_id": "a", "period_id": "2025"}]}
 
     facts = [
@@ -399,12 +489,14 @@ def test_no_result_rows_do_not_mark_every_fact_used():
     from finance_analysis.domain.execution_branches import (
         DSCR_MIN,
         claim,
+        note_fact,
         run_branch,
         take_trace,
     )
 
     def body():
         claim("cfads")
+        note_fact(facts[0])
         return {"rows": []}
 
     facts = [{"row_key": "c", "axis_id": "a", "period_id": "2025", "cell_id": "a!c"}]
@@ -488,6 +580,7 @@ def test_an_aligned_axis_keeps_the_fact_the_result_used():
     from finance_analysis.domain.execution_branches import (
         DSCR_MIN,
         claim,
+        note_fact,
         run_branch,
         take_trace,
     )
@@ -500,6 +593,8 @@ def test_an_aligned_axis_keeps_the_fact_the_result_used():
 
     def body():
         claim("cfads")
+        for fact in facts:
+            note_fact(fact)
         return {"rows": [{"axis_id": "a", "period_id": "A1"}]}
 
     facts = [

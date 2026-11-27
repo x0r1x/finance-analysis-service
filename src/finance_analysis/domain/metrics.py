@@ -2559,6 +2559,8 @@ def _sums(
     и не выбрасывается: окно само берёт её конец.
     """
 
+    from finance_analysis.domain.execution_branches import note_fact
+
     totals: dict[tuple, Decimal] = {}
     grouped: dict[tuple, list[dict]] = {}
     row_key = binding["row_key"]
@@ -2570,6 +2572,7 @@ def _sums(
         number, field, raw = _figure_taken(fact, sheet=sheet)
         if number is None or field is None or raw is None:
             continue
+        note_fact(fact)
         own = (fact["axis_id"], fact["period_id"])
         key = aligned.get(own, own)
         totals[key] = totals.get(key, Decimal(0)) + Decimal(number)
@@ -2740,6 +2743,10 @@ def _figure(fact: dict, *, sheet: bool = False) -> Decimal | None:
     """
 
     value, _field, _raw = _figure_taken(fact, sheet=sheet)
+    if value is not None:
+        from finance_analysis.domain.execution_branches import note_fact
+
+        note_fact(fact)
     return value
 
 
