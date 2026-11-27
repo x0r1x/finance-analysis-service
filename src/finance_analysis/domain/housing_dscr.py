@@ -169,6 +169,7 @@ def housing_dscr(
                 plan=None,
                 _inside=True,
             ),
+            periods=periods,
         )
     aligned = aligned_keys(periods)
     rows = []

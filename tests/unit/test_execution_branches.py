@@ -482,3 +482,181 @@ async def test_compute_metrics_keeps_the_branch_trace_off_the_public_row(monkeyp
     assert "trace" not in got["rows"][0]
     assert got["branch_traces"] == [{"metric": "dscr", "trace": kept}]
     assert got["branch_traces"][0]["trace"].profile_values == (("llcr_basis", "period_end"),)
+
+
+def test_an_aligned_axis_keeps_the_fact_the_result_used():
+    from finance_analysis.domain.execution_branches import (
+        DSCR_MIN,
+        claim,
+        run_branch,
+        take_trace,
+    )
+
+    periods = [
+        {"axis_id": "a", "period_id": "A1", "timeline_id": "t", "period_index": 0},
+        {"axis_id": "b", "period_id": "B1", "timeline_id": "t", "period_index": 0},
+        {"axis_id": "b", "period_id": "B2", "timeline_id": "t", "period_index": 1},
+    ]
+
+    def body():
+        claim("cfads")
+        return {"rows": [{"axis_id": "a", "period_id": "A1"}]}
+
+    facts = [
+        {"row_key": "c", "axis_id": "a", "period_id": "A1", "cell_id": "a!c"},
+        {"row_key": "c", "axis_id": "b", "period_id": "B1", "cell_id": "b!c"},
+        {"row_key": "c", "axis_id": "b", "period_id": "B2", "cell_id": "b!later"},
+    ]
+    bindings = [{"row_key": "c", "effective_concept": "cfads"}]
+    run_branch(DSCR_MIN, {}, facts, bindings, body, periods=periods)
+    trace = take_trace()
+    assert trace is not None
+    assert "a!c" in trace.actual_fact_uses
+    assert "b!c" in trace.actual_fact_uses
+    assert "b!later" not in trace.actual_fact_uses
+
+
+def test_period_slots_keep_the_axis_when_period_ids_match():
+    from finance_analysis.domain.execution_branches import (
+        DSCR_MIN,
+        claim,
+        run_branch,
+        take_trace,
+    )
+
+    def body():
+        claim("cfads")
+        return {
+            "rows": [
+                {"axis_id": "a", "period_id": "2025"},
+                {"axis_id": "b", "period_id": "2025"},
+            ]
+        }
+
+    run_branch(DSCR_MIN, {}, [], [], body)
+    trace = take_trace()
+    assert trace is not None
+    assert trace.actual_periods == ("2025",)
+    assert trace.actual_period_slots == (("a", "2025"), ("b", "2025"))
+
+
+def _llcr_book(limit: str | None):
+    from finance_analysis.domain.housing_cover import housing_cover
+
+    periods = [
+        {"axis_id": "a", "period_id": "Q1", "period_index": 1, "timeline_id": "t", "grain": "quarter"},
+        {"axis_id": "a", "period_id": "Q2", "period_index": 2, "timeline_id": "t", "grain": "quarter"},
+        {"axis_id": "b", "period_id": "B1", "period_index": 1, "timeline_id": "t", "grain": "quarter"},
+    ]
+    roles = (
+        ("cfo_statement", "cfo"),
+        ("cfi_statement", "cfi"),
+        ("financing_inflows", "inflow"),
+        ("senior_principal", "prin"),
+        ("senior_interest_paid", "intr"),
+    )
+    numbers = {
+        "cfo": ("100", "80"),
+        "cfi": ("0", "0"),
+        "inflow": ("0", "0"),
+        "prin": ("40", "32"),
+        "intr": ("10", "8"),
+    }
+    bindings = [
+        {
+            "effective_concept": concept,
+            "row_key": row,
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        }
+        for concept, row in roles
+    ]
+    facts = []
+    for _concept, row in roles:
+        for period, value in zip(("Q1", "Q2"), numbers[row], strict=True):
+            facts.append(
+                {
+                    "row_key": row,
+                    "axis_id": "a",
+                    "period_id": period,
+                    "value": value,
+                    "normalized_value": value,
+                    "cell_id": f"{row}!{period}",
+                }
+            )
+    facts.append(
+        {
+            "row_key": "cfo",
+            "axis_id": "b",
+            "period_id": "B1",
+            "value": "50",
+            "normalized_value": "50",
+            "cell_id": "b!cfo",
+        }
+    )
+    profile = {"guaranteed_funds_none": True}
+    variant = "cbr590"
+    if limit is not None:
+        bindings.append(
+            {
+                "effective_concept": "credit_limit",
+                "row_key": "lim",
+                "is_primary": True,
+                "status": "bound",
+                "source": "inferred",
+            }
+        )
+        facts.append(
+            {
+                "row_key": "lim",
+                "axis_id": "a",
+                "period_id": "Q2",
+                "value": limit,
+                "normalized_value": limit,
+                "cell_id": "lim!Q2",
+            }
+        )
+        profile = None
+        variant = "domrf"
+    got = housing_cover(
+        "llcr",
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        sign_convention="outflow_negative",
+        absent=frozenset(),
+        profile=profile,
+        variant=variant,
+    )
+    return got
+
+
+def test_nominal_llcr_trace_covers_the_horizon_without_a_public_over():
+    from finance_analysis.domain.execution_branches import take_trace
+    from finance_analysis.domain.metrics import quantize_ratio
+
+    cbr = _llcr_book(None)
+    cbr_trace = take_trace()
+    assert cbr["rows"][0]["value"] == quantize_ratio(Decimal(230) / Decimal(90))
+    assert cbr["rows"][0]["variant"] == "cbr590"
+    assert "over" not in cbr["rows"][0]
+    assert "_trace_periods" not in cbr["rows"][0]
+    assert cbr_trace is not None
+    assert cbr_trace.branch_id == "llcr.cbr590"
+    for cell in ("cfo!Q1", "cfo!Q2", "prin!Q1", "intr!Q2", "b!cfo"):
+        assert cell in cbr_trace.actual_fact_uses
+    assert "Q1" in cbr_trace.actual_periods and "Q2" in cbr_trace.actual_periods
+
+    domrf = _llcr_book("100")
+    domrf_trace = take_trace()
+    assert domrf["rows"][0]["value"] == quantize_ratio(Decimal(230) / Decimal(118))
+    assert domrf["rows"][0]["variant"] == "domrf"
+    assert "over" not in domrf["rows"][0]
+    assert "_trace_periods" not in domrf["rows"][0]
+    assert domrf_trace is not None
+    assert domrf_trace.branch_id == "llcr.domrf"
+    for cell in ("cfo!Q1", "cfo!Q2", "intr!Q1", "lim!Q2", "b!cfo"):
+        assert cell in domrf_trace.actual_fact_uses
+    assert ("a", "Q1") in domrf_trace.actual_period_slots
+    assert ("a", "Q2") in domrf_trace.actual_period_slots

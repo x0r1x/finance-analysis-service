@@ -116,6 +116,7 @@ class ExecutionTrace:
     actual_fact_uses: tuple[str, ...]
     actual_periods: tuple[str, ...]
     profile_values: tuple[tuple[str, object], ...]
+    actual_period_slots: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

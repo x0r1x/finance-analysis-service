@@ -1596,7 +1596,7 @@ def _lease_finish(mode, named, facts, bindings, metric, periods, warnings, prima
     if mode not in {"direct", "pair"}:
         return _body()
     branch = LEASE_DIRECT if mode == "direct" else LEASE_PAIR
-    return run_branch(branch, {}, facts, bindings, _body)
+    return run_branch(branch, {}, facts, bindings, _body, periods=periods)
 
 
 def _lease_body(mode, named, facts, metric, periods, warnings, primaries, sign_convention, marker_class, annual):

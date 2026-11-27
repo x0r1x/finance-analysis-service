@@ -52,6 +52,7 @@ def project_return(
                     plan=plan,
                     _inside=True,
                 ),
+                periods=periods,
             )
     if plan is not None:
         from finance_analysis.domain.resolved_plan import bindings_for_plan

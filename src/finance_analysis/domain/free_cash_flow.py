@@ -88,6 +88,7 @@ def free_cash_flow(
                 plan=plan,
                 _inside=True,
             ),
+            periods=periods,
         )
     if plan is not None:
         if plan.status == "needs_input":

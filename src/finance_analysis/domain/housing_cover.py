@@ -231,6 +231,7 @@ def _llcr(facts, bindings, periods, convention, absent, profile, variant, _insid
             facts,
             bindings,
             lambda: _llcr(facts, bindings, periods, convention, absent, profile, variant, True),
+            periods=periods,
         )
     aligned = aligned_keys(periods)
     rows = []
@@ -300,7 +301,9 @@ def _life_row(choice, axis, ordered, facts, bindings, aligned, convention, absen
             "guaranteed_funds": format(extra, "f"),
             "denominator": format(debt, "f"),
         }
-        return _ratio_row("llcr", axis, cash + extra, debt, choice, text, composition, parts)
+        return _ratio_row(
+            "llcr", axis, cash + extra, debt, choice, text, composition, parts, horizon=_horizon(ordered)
+        )
     from finance_analysis.domain.execution_branches import claim
 
     claim("credit_limit")
@@ -314,7 +317,9 @@ def _life_row(choice, axis, ordered, facts, bindings, aligned, convention, absen
         "credit_limit": format(limit, "f"),
         "senior_interest_paid": format(interest_total, "f"),
     }
-    return _ratio_row("llcr", axis, cash, limit + interest_total, choice, text, composition, parts)
+    return _ratio_row(
+        "llcr", axis, cash, limit + interest_total, choice, text, composition, parts, horizon=_horizon(ordered)
+    )
 
 
 def _family(metric, facts, bindings, periods, convention, absent, profile, direction, basis, _inside=False):
@@ -338,6 +343,7 @@ def _family(metric, facts, bindings, periods, convention, absent, profile, direc
                 lambda: _family(
                     metric, facts, bindings, periods, convention, absent, profile, direction, kept_basis, True
                 ),
+                periods=periods,
             )
     series = housing_dscr(
         facts=facts, bindings=bindings, periods=periods, sign_convention=convention, absent=absent, profile=profile
@@ -532,6 +538,7 @@ def _rate(facts, bindings, periods, convention, absent, profile, _inside=False):
             facts,
             bindings,
             lambda: _rate(facts, bindings, periods, convention, absent, profile, True),
+            periods=periods,
         )
     rows = []
     aligned = aligned_keys(periods)
@@ -759,12 +766,32 @@ def _divide(numerator, denominator):
         return quantize_ratio(numerator / denominator)
 
 
-def _ratio_row(metric, axis, numerator, denominator, variant, methodology, composition, components=None, period=None):
+def _horizon(ordered) -> list[str]:
+    """Периоды, которые строка реально сложила. Не `over`: его забирает публичная строка."""
+
+    return [str(period["period_id"]) for period in ordered if period.get("period_id")]
+
+
+def _ratio_row(
+    metric, axis, numerator, denominator, variant, methodology, composition, components=None, period=None, horizon=None
+):
     if numerator is None or denominator is None:
-        return _metric_row(metric, axis, None, "not_computed", "missing_component", variant, methodology, composition, period=period)
+        return _metric_row(
+            metric, axis, None, "not_computed", "missing_component", variant, methodology, composition, period=period, horizon=horizon
+        )
     if denominator == 0:
         return _metric_row(
-            metric, axis, None, "no_debt_service", "zero_denominator", variant, methodology, composition, period=period, components=components
+            metric,
+            axis,
+            None,
+            "no_debt_service",
+            "zero_denominator",
+            variant,
+            methodology,
+            composition,
+            period=period,
+            components=components,
+            horizon=horizon,
         )
     return _metric_row(
         metric,
@@ -777,6 +804,7 @@ def _ratio_row(metric, axis, numerator, denominator, variant, methodology, compo
         composition,
         period=period,
         components=components,
+        horizon=horizon,
     )
 
 
@@ -797,6 +825,7 @@ def _metric_row(
     reduction=None,
     warnings=None,
     components=None,
+    horizon=None,
 ):
     row = {
         "metric": metric,
@@ -818,6 +847,8 @@ def _metric_row(
         row["excluded_periods"] = excluded
     if over is not None:
         row["over"] = over
+    if horizon is not None:
+        row["_trace_periods"] = horizon
     if reduction is not None:
         row["reduction"] = reduction
     return row

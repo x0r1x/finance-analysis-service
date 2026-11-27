@@ -1775,7 +1775,7 @@ def _bank_icr(
     branch = branch_for("icr", variant="bank", profile=profile)
     if branch is None:
         return _tail()
-    return run_branch(branch, bank_values(profile, kind, mode), facts, bindings, _tail)
+    return run_branch(branch, bank_values(profile, kind, mode), facts, bindings, _tail, periods=periods)
 
 
 def _bank_scored(formula, names, warnings, dep_grains, mode, profile, primaries, facts, periods, sign_convention, marker_class):
@@ -2027,6 +2027,7 @@ def cash_covenant_dscr(
                 plan=None,
                 _inside=True,
             ),
+            periods=periods,
         )
     include_other = _CASH_OTHER not in absent
     needed = (*_CASH_CORE, *((_CASH_OTHER,) if include_other else ()))

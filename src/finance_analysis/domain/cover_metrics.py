@@ -218,6 +218,7 @@ def adscr(
                 collect=collect,
                 _inside=True,
             ),
+            periods=periods,
         )
     source = None
     if collect is None:
@@ -382,6 +383,7 @@ def dscr_reductions(
                 collect=collect,
                 _inside=True,
             ),
+            periods=periods,
         )
     source = None
     if collect is None:
@@ -636,6 +638,7 @@ def loan_life_ratio(
                 plan=plan,
                 _inside=True,
             ),
+            periods=periods,
         )
     if plan is not None:
         from finance_analysis.domain.resolved_plan import bindings_for_plan

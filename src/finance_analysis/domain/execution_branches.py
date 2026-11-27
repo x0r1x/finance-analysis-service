@@ -391,7 +391,15 @@ def refuse_definition(metric: str, branch: ExecutionBranchDefinition | None, def
     return None
 
 
-def run_branch(branch: ExecutionBranchDefinition, profile_values: Mapping[str, object], facts, bindings, function):
+def run_branch(
+    branch: ExecutionBranchDefinition,
+    profile_values: Mapping[str, object],
+    facts,
+    bindings,
+    function,
+    *,
+    periods=None,
+):
     """Прогон внутри ветви. Уже открытая внешняя ветвь остаётся той, что пишет след."""
 
     if _active.get() is not None:
@@ -405,7 +413,8 @@ def run_branch(branch: ExecutionBranchDefinition, profile_values: Mapping[str, o
         reset_branch(branch_token)
         _active.reset(active_token)
     if isinstance(result, dict):
-        run.trace = _complete(run.trace, result, facts, bindings)
+        run.trace = _complete(run.trace, result, facts, bindings, _alignment(periods))
+        _hide_horizon(result)
     _last.set(run.trace)
     return result
 
@@ -500,8 +509,17 @@ def _plan_extra(branch: ExecutionBranchDefinition, plan) -> str | None:
     return None
 
 
-def _complete(trace: ExecutionTrace, result: Mapping[str, object], facts, bindings) -> ExecutionTrace:
+def _complete(
+    trace: ExecutionTrace,
+    result: Mapping[str, object],
+    facts,
+    bindings,
+    aligned: Mapping[tuple[str, str], tuple] | None = None,
+) -> ExecutionTrace:
     slots = _slots(result)
+    aligned = aligned or {}
+    raw = set(slots)
+    normalized = {aligned[pair] for pair in slots if pair in aligned}
     claimed = set(trace.actual_inputs)
     uses: list[str] = []
     keys: dict[str, str] = {}
@@ -519,7 +537,8 @@ def _complete(trace: ExecutionTrace, result: Mapping[str, object], facts, bindin
             if concept is None:
                 continue
             pair = (str(fact.get("axis_id")), str(fact.get("period_id") or ""))
-            if pair not in slots:
+            key = aligned.get(pair)
+            if pair not in raw and (key is None or key not in normalized):
                 continue
             period = pair[1]
             cell = fact.get("cell_id") or f"{concept}:{pair[0]}:{period}"
@@ -527,8 +546,33 @@ def _complete(trace: ExecutionTrace, result: Mapping[str, object], facts, bindin
     return replace(
         trace,
         actual_periods=tuple(dict.fromkeys(period for _axis, period in slots)),
+        actual_period_slots=slots,
         actual_fact_uses=tuple(dict.fromkeys(uses)),
     )
+
+
+def _alignment(periods) -> dict[tuple[str, str], tuple]:
+    """Тот же ключ, что у aligned_keys: (timeline_id, period_index)."""
+
+    if not periods:
+        return {}
+    from finance_analysis.domain.metrics import aligned_keys
+
+    found: dict[tuple[str, str], tuple] = {}
+    for (axis, period_id), key in aligned_keys(list(periods)).items():
+        if axis is None or not period_id:
+            continue
+        found[(str(axis), str(period_id))] = key
+    return found
+
+
+def _hide_horizon(result: dict) -> None:
+    rows = result.get("rows")
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        if isinstance(row, dict):
+            row.pop("_trace_periods", None)
 
 
 def _slots(result: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
@@ -543,7 +587,7 @@ def _slots(result: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
         period = row.get("period_id")
         if axis_text is not None and period:
             found.append((axis_text, str(period)))
-        for key in ("window", "over"):
+        for key in ("window", "over", "_trace_periods"):
             items = row.get(key)
             if not isinstance(items, (list, tuple, set, frozenset)):
                 continue
