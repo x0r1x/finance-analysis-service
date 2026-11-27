@@ -45,6 +45,8 @@ _MARKERS = (
     "_plan_rows",
     "_coverage_from_plan",
     "_core_rows",
+    # Связанный путь читает план через слоты, не вторым проходом по привязкам.
+    "execute_bound(",
 )
 _DISPATCHERS = frozenset(
     {
@@ -308,8 +310,42 @@ def _needs_plan(module: str, name: str, functions: dict, seen: set) -> bool:
     return False
 
 
+def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
 def _call_passes_plan(call: ast.Call) -> bool:
-    return any(keyword.arg == "plan" for keyword in call.keywords)
+    """План передан аргументом ``plan`` или конструктором ``MetricExecutionContext``.
+
+    Вложенный ``build_common(plan=plan)`` планом этой функции не считается.
+    """
+
+    if any(keyword.arg == "plan" for keyword in call.keywords):
+        return True
+    nodes = [arg for arg in call.args if isinstance(arg, ast.Call)]
+    nodes.extend(keyword.value for keyword in call.keywords if isinstance(keyword.value, ast.Call))
+    return any(
+        _call_name(node.func) == "MetricExecutionContext" and any(keyword.arg == "plan" for keyword in node.keywords)
+        for node in nodes
+    )
+
+
+def test_a_nested_builder_plan_is_not_this_call_receiving_the_plan():
+    """plan= у вложенного build_common не делает план аргументом внешней функции.
+
+    Считается plan= самого вызова и конструктор MetricExecutionContext.
+    """
+
+    nested = ast.parse("select_ratio(metric, build_common(plan=plan))").body[0].value
+    assert _call_passes_plan(nested) is False
+    context = ast.parse("run_calculation(route, request, MetricExecutionContext(plan=plan))").body[0].value
+    assert _call_passes_plan(context) is True
+    direct = ast.parse("loan_life_ratio(metric, plan=plan)").body[0].value
+    assert _call_passes_plan(direct) is True
 
 
 def test_dispatchers_pass_the_plan_into_every_formula_reread():

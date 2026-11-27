@@ -19,7 +19,7 @@ from finance_analysis.domain.execution_contract import (
 )
 from finance_analysis.domain.metric_contract import UndeclaredInput
 from finance_analysis.domain.model_type import MetricExpression
-from finance_analysis.domain.resolved_plan import ResolvedInput, seal
+from finance_analysis.domain.resolved_plan import AppliedFallback, ResolvedInput, seal
 from finance_analysis.domain.semantic_input import resolve_metric_plan
 
 _OLD_CALLS = frozenset(
@@ -621,6 +621,609 @@ async def test_compute_metrics_shows_a_missing_executor(monkeypatch):
     )
     assert got["rows"] == []
     assert {"code": "missing_executor", "params": {"metric": "dscr"}} in got["warnings"]
+
+
+def _seal_plan(metric: str, definition, concepts: tuple[str, ...], **kwargs):
+    return seal(
+        metric_id=metric,
+        variant=kwargs.get("variant", definition.variant),
+        variant_source=kwargs.get("variant_source", definition.variant_source),
+        catalog_version=None,
+        semantic_model_version=None,
+        build_key=None,
+        model_id=None,
+        status=kwargs.get("status", "resolved"),
+        inputs=tuple(
+            ResolvedInput(name, "all_of", "formula", name, name, None, False, True) for name in concepts
+        ),
+        diagnostic=(),
+        rejected=(),
+        fallbacks=kwargs.get("fallbacks", ()),
+        warnings=(),
+        needs_input=(),
+        shield=None,
+        definition_hash=kwargs.get("definition_hash", definition.definition_hash),
+    )
+
+
+def _watch_bound(monkeypatch) -> list:
+    from finance_analysis.domain import metric_dispatch
+
+    seen: list = []
+    real = metric_dispatch.execute_bound
+
+    def wrapped(executor, definition, plan, **kwargs):
+        seen.append(definition.metric_id)
+        return real(executor, definition, plan, **kwargs)
+
+    monkeypatch.setattr(metric_dispatch, "execute_bound", wrapped)
+    return seen
+
+
+def _coverage_definition(metric: str, expression: MetricExpression):
+    return _definition(
+        metric,
+        expression,
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+
+
+def _ratio_request(metric: str, facts, bindings, **kwargs):
+    return _request(
+        metric,
+        common=_common(facts, bindings),
+        composed={},
+        concepts=frozenset(name for name in ("cfads", "ebitda", "ebit", "debt_service", "interest", "principal")),
+        money=frozenset(name for name in ("cfads", "ebitda", "ebit", "debt_service", "interest", "principal")),
+        **kwargs,
+    )
+
+
+def test_a_missing_plan_stays_on_todays_calculator(monkeypatch):
+    """Плана нет — прежний калькулятор. Связанный путь не открывается."""
+
+    seen = _watch_bound(monkeypatch)
+    calls = []
+
+    def select_ratio(*_args, **_kwargs):
+        calls.append("select_ratio")
+        return {"metric": "dscr", "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"}
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", select_ratio)
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("dscr", [], []),
+        _context(definition, None),
+    )
+    assert calls == ["select_ratio"]
+    assert seen == []
+    assert outcome.result["status"] == "missing_input"
+
+
+def test_an_unresolved_plan_stays_on_todays_calculator(monkeypatch):
+    """Статус не resolved — прежний калькулятор, даже если хеш совпал."""
+
+    seen = _watch_bound(monkeypatch)
+    calls = []
+
+    def select_ratio(*_args, **_kwargs):
+        calls.append("select_ratio")
+        return {"metric": "dscr", "rows": [], "needs_input": [], "warnings": [], "status": "needs_input"}
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", select_ratio)
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    plan = _seal_plan("dscr", definition, ("cfads", "debt_service"), status="needs_input")
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("dscr", [], []),
+        _context(definition, plan),
+    )
+    assert calls == ["select_ratio"]
+    assert seen == []
+    assert outcome.result["status"] == "needs_input"
+
+
+def test_a_resolved_plan_without_a_definition_stays_on_todays_calculator(monkeypatch):
+    """Решённый план без определения — прежний калькулятор. Сверять не с чем."""
+
+    seen = _watch_bound(monkeypatch)
+    calls = []
+
+    def select_ratio(*_args, **_kwargs):
+        calls.append("select_ratio")
+        return {"metric": "dscr", "rows": [], "needs_input": [], "warnings": [], "status": "missing_input"}
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", select_ratio)
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    plan = _seal_plan("dscr", definition, ("cfads", "debt_service"))
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation("select_ratio", _ratio_request("dscr", [], []), _context(None, plan))
+    assert calls == ["select_ratio"]
+    assert seen == []
+    assert outcome.result["status"] == "missing_input"
+
+
+def test_a_resolved_matching_plan_runs_the_bound_path_and_keeps_the_ratio(monkeypatch):
+    """Совпали метрика, вариант и хеш — связанный путь. Число остаётся числом калькулятора.
+
+    Слоты контекста калькулятору не передаются: это не исполнение из слотов плана.
+    """
+
+    from finance_analysis.domain.metric_dispatch import SelectRatioExecutor
+    from finance_analysis.domain.metrics import coverage_from_definition
+
+    seen = _watch_bound(monkeypatch)
+    entered = {}
+    real_execute = SelectRatioExecutor.execute
+
+    def execute(self, context):
+        entered["slots"] = tuple(slot.resolution_reason for slot in context.slots)
+        return real_execute(self, context)
+
+    monkeypatch.setattr(SelectRatioExecutor, "execute", execute)
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    facts = [_fact("c", "80"), _fact("d", "-10")]
+    bindings = [_bind("cfads", "c"), _bind("debt_service", "d")]
+    plan = _plan_for(definition, bindings)
+    periods = _year_period()
+    direct = coverage_from_definition(
+        definition,
+        plan,
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("dscr", facts, bindings),
+        _context(definition, plan),
+    )
+    assert seen == ["dscr"]
+    assert entered["slots"] == ()
+    assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"] == Decimal("8.0000000000")
+
+
+def test_a_matched_fallback_builds_a_slot_the_calculator_call_does_not_receive(monkeypatch):
+    """Запасной путь виден на контексте. В вызов калькулятора слот не входит."""
+
+    from finance_analysis.domain.covenant import select_ratio
+    from finance_analysis.domain.metric_dispatch import SelectRatioExecutor
+    from finance_analysis.domain.metrics import coverage_from_definition
+
+    seen = _watch_bound(monkeypatch)
+    entered = {}
+    passed = {}
+    real_execute = SelectRatioExecutor.execute
+    real_select = select_ratio
+
+    def execute(self, context):
+        entered["reasons"] = tuple(slot.resolution_reason for slot in context.slots)
+        return real_execute(self, context)
+
+    def wrapped(metric, variant, common, **kwargs):
+        passed["keys"] = set(kwargs)
+        return real_select(metric, variant, common, **kwargs)
+
+    monkeypatch.setattr(SelectRatioExecutor, "execute", execute)
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", wrapped)
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    plan = _seal_plan(
+        "dscr",
+        definition,
+        ("cfads", "interest", "principal"),
+        fallbacks=(AppliedFallback("pf", "debt_service", "interest", None),),
+    )
+    facts = [_fact("cfads", "40"), _fact("interest", "-10"), _fact("principal", "-4")]
+    bindings = [_bind(name, name) for name in ("cfads", "interest", "principal")]
+    periods = _year_period()
+    order = {"pf": ("interest",)}
+    direct = coverage_from_definition(
+        definition,
+        plan,
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+        interest_order=order,
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("dscr", facts, bindings, interest_order=order),
+        _context(definition, plan),
+    )
+    assert seen == ["dscr"]
+    assert entered["reasons"] == ("fallback",)
+    assert "slots" not in passed["keys"]
+    assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"]
+
+
+def test_a_matched_one_of_builds_a_slot_the_calculator_call_does_not_receive(monkeypatch):
+    """one_of виден на контексте. Числитель по-прежнему выбирает калькулятор плана."""
+
+    from finance_analysis.domain.covenant import select_ratio
+    from finance_analysis.domain.metric_dispatch import SelectRatioExecutor
+    from finance_analysis.domain.metrics import coverage_from_definition
+
+    seen = _watch_bound(monkeypatch)
+    entered = {}
+    passed = {}
+    real_execute = SelectRatioExecutor.execute
+    real_select = select_ratio
+
+    def execute(self, context):
+        entered["slots"] = tuple((slot.slot_id, slot.resolution_reason, slot.resolved_terms) for slot in context.slots)
+        return real_execute(self, context)
+
+    def wrapped(metric, variant, common, **kwargs):
+        passed["keys"] = set(kwargs)
+        return real_select(metric, variant, common, **kwargs)
+
+    monkeypatch.setattr(SelectRatioExecutor, "execute", execute)
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", wrapped)
+    definition = _coverage_definition(
+        "icr",
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
+    )
+    facts = [_fact("e", "80"), _fact("b", "20"), _fact("i", "-10")]
+    bindings = [_bind("ebitda", "e"), _bind("ebit", "b"), _bind("interest", "i")]
+    plan = _plan_for(definition, bindings)
+    periods = _year_period()
+    direct = coverage_from_definition(
+        definition,
+        plan,
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("icr", facts, bindings),
+        _context(definition, plan),
+    )
+    assert seen == ["icr"]
+    assert entered["slots"] == (("numerator", "one_of", ("ebitda",)),)
+    assert "slots" not in passed["keys"]
+    assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"] == Decimal("8.0000000000")
+
+
+@pytest.mark.parametrize(
+    ("plan_metric", "variant", "source", "digest", "reason"),
+    [
+        ("icr", None, "formula", None, "metric_mismatch"),
+        ("dscr", "housing", "variant:housing", None, "variant_mismatch"),
+        ("dscr", None, "formula", "other-hash", "definition_mismatch"),
+    ],
+)
+def test_a_resolved_mismatch_is_an_integrity_error(monkeypatch, plan_metric, variant, source, digest, reason):
+    """Решённый план, который не совпал, — явный отказ. Калькулятор не вызывается."""
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("calculator")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", boom)
+    monkeypatch.setattr("finance_analysis.domain.metrics.calculate_coverage", boom)
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    plan = _seal_plan(
+        plan_metric,
+        definition,
+        ("cfads", "debt_service"),
+        variant=variant,
+        variant_source=source,
+        definition_hash=definition.definition_hash if digest is None else digest,
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("dscr", [], []),
+        _context(definition, plan),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == reason
+    assert outcome.result["rows"] == []
+    assert outcome.evidence is None
+
+
+@pytest.mark.parametrize(
+    ("metric", "other", "executor_key", "executor_id", "executor_version", "numerator", "denominator"),
+    [
+        ("icr", "dscr", "coverage", "calculate_coverage", "calculate_coverage@1", "cfads", "debt_service"),
+        (
+            "net_debt_ebitda",
+            "total_debt_ebitda",
+            "composed",
+            "composed_ratio",
+            "composed_ratio@1",
+            "total_debt",
+            "ebitda",
+        ),
+    ],
+)
+def test_a_definition_of_another_metric_is_an_integrity_error(
+    monkeypatch,
+    metric,
+    other,
+    executor_key,
+    executor_id,
+    executor_version,
+    numerator,
+    denominator,
+):
+    """Запрошена одна метрика, определение и план — другая. Исполнитель при этом тот же.
+
+    ``_plan_matches`` сверяет план с определением. ``_rejection`` сверяет исполнителя, не метрику.
+    https://www.w3.org/TR/prov-dm/#term-Activity
+    """
+
+    seen = _watch_bound(monkeypatch)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("calculator")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", boom)
+    monkeypatch.setattr("finance_analysis.domain.metrics.calculate_coverage", boom)
+    definition = _definition(
+        other,
+        _expr(numerator_plus=(numerator,), denominator_plus=(denominator,)),
+        executor_key=executor_key,
+        executor_id=executor_id,
+        executor_version=executor_version,
+    )
+    plan = _seal_plan(other, definition, (numerator, denominator))
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request(metric, [], []),
+        _context(definition, plan),
+    )
+    assert seen == []
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "metric_mismatch"
+    assert outcome.result["metric"] == metric
+    assert outcome.result["rows"] == []
+    assert outcome.evidence is None
+
+
+@pytest.mark.parametrize("metric", ["adscr", "dscr_min", "dscr_avg"])
+def test_a_derived_metric_keeps_todays_calculator_on_the_dscr_plan(monkeypatch, metric):
+    """План DSCR и определение производной метрики различаются. Это не связанное исполнение.
+
+    Определение не подменяется определением DSCR. Калькулятор остаётся сегодняшним.
+    """
+
+    from finance_analysis.domain.cover_metrics import adscr, dscr_reductions
+    from finance_analysis.domain.metric_dispatch import AdscrExecutor, ReducedExecutor
+
+    seen = _watch_bound(monkeypatch)
+    entered = {}
+    route = "adscr" if metric == "adscr" else "reduced"
+    executor_type = AdscrExecutor if metric == "adscr" else ReducedExecutor
+    real_execute = executor_type.execute
+
+    def execute(self, context):
+        entered["metric"] = context.definition.metric_id
+        entered["slots"] = context.slots
+        entered["plan"] = context.plan.metric_id
+        return real_execute(self, context)
+
+    monkeypatch.setattr(executor_type, "execute", execute)
+    definition = _definition(
+        metric,
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key=route,
+    )
+    dscr = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    plan = _seal_plan("dscr", dscr, ("cfads", "debt_service"))
+    common = _common([], [])
+    if metric == "adscr":
+        direct = adscr(direction="lookback", plan=plan, collect=None, **common)
+        request = _request(metric, direction="lookback", common=common)
+    else:
+        direct = dscr_reductions(metric, plan=plan, collect=None, **common)
+        request = _request(metric, common=common)
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(route, request, _context(definition, plan))
+    assert seen == []
+    assert entered == {"metric": metric, "slots": (), "plan": "dscr"}
+    assert outcome.result == direct
+    assert outcome.result.get("reason") != "metric_mismatch"
+
+
+def test_a_derived_metric_with_a_foreign_plan_is_an_integrity_error(monkeypatch):
+    """Чужой план производной метрики — отказ. Исключение есть только у плана DSCR."""
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("calculator")
+
+    monkeypatch.setattr("finance_analysis.domain.cover_metrics.adscr", boom)
+    definition = _definition(
+        "adscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="adscr",
+    )
+    foreign = _coverage_definition(
+        "icr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    plan = _seal_plan("icr", foreign, ("cfads", "debt_service"))
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "adscr",
+        _request("adscr", common=_common([], [])),
+        _context(definition, plan),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "metric_mismatch"
+    assert outcome.result["rows"] == []
+
+
+def test_two_one_of_on_a_matched_plan_keeps_the_calculator_reason():
+    """Слот, который контракт отверг, не роняет прогон: причина та же, что у калькулятора."""
+
+    from finance_analysis.domain.metrics import coverage_from_definition
+
+    definition = _coverage_definition(
+        "icr",
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
+    )
+    plan = seal(
+        metric_id="icr",
+        variant=None,
+        variant_source="formula",
+        catalog_version=None,
+        semantic_model_version=None,
+        build_key=None,
+        model_id=None,
+        status="resolved",
+        inputs=(
+            ResolvedInput("ebitda", "one_of", "formula", "e", "e", None, False, True),
+            ResolvedInput("ebit", "one_of", "formula", "b", "b", None, False, True),
+            ResolvedInput("interest", "all_of", "formula", "i", "i", None, False, True),
+        ),
+        diagnostic=(),
+        rejected=(),
+        fallbacks=(),
+        warnings=(),
+        needs_input=(),
+        shield=None,
+        definition_hash=definition.definition_hash,
+    )
+    facts = [_fact("e", "80"), _fact("b", "20"), _fact("i", "-10")]
+    bindings = [_bind("ebitda", "e"), _bind("ebit", "b"), _bind("interest", "i")]
+    periods = _year_period()
+    direct = coverage_from_definition(
+        definition,
+        plan,
+        facts=facts,
+        bindings=bindings,
+        periods=periods,
+        period_phase={},
+        explicit_phases=False,
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("icr", facts, bindings),
+        _context(definition, plan),
+    )
+    assert outcome.result["status"] == direct["status"] == "not_computed"
+    assert outcome.result["reason"] == direct["reason"] == "ambiguous_one_of"
+    assert outcome.result["rows"] == []
+
+
+def test_execute_bound_is_reached_only_from_the_dispatcher():
+    """Второй диспетчер не появляется. Вызов один, внутри run_calculation."""
+
+    import ast
+    from pathlib import Path
+
+    root = Path("src/finance_analysis")
+    found = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "execute_bound":
+                found.append(path.as_posix())
+    assert found == ["src/finance_analysis/domain/metric_dispatch.py"]
+
+
+@pytest.mark.parametrize("reason", ["metric_mismatch", "variant_mismatch"])
+async def test_compute_metrics_shows_a_plan_integrity_error(monkeypatch, reason):
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.calculation_evidence import CalculationOutcome
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    def refuse(*_args, **_kwargs):
+        return CalculationOutcome(
+            {
+                "metric": "dscr",
+                "rows": [],
+                "needs_input": [],
+                "missing_inputs": [],
+                "warnings": [],
+                "status": "not_computed",
+                "reason": reason,
+                "message": reason,
+            },
+            None,
+        )
+
+    monkeypatch.setattr("finance_analysis.application.analyses.run_calculation", refuse)
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Glossary:
+        async def profile_body(self, _profile_id):
+            return {}
+
+    class _Service:
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset in {"bindings", "fact_observation", "dim_period", "dim_row", "period_semantics", "graph_links"}:
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(("corporate",), "corporate", "confirmed", None, 1, None, 1.0, {"corporate": 1.0}, ())
+
+    service = _Service()
+    service.model_types = load_model_types()
+    service.catalog = load_catalog()
+    service.financial_catalog = None
+    service.guard = _Guard()
+    service.glossary = _Glossary()
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    got = await Analyses(service).compute_metrics(
+        "job", Target(head=head, build="build", manifest={}, fresh=True), ["dscr"]
+    )
+    assert got["rows"] == []
+    assert {"code": reason, "params": {"metric": "dscr"}} in got["warnings"]
 
 
 def test_dispatch_cover_none_is_a_refusal_not_the_next_route(monkeypatch):
