@@ -475,8 +475,8 @@ def _dscr_result(**kwargs) -> dict:
     return calculate_coverage(metric="dscr", evidence=True, **kwargs).result
 
 
-def _period_parents(source) -> tuple[str, ...]:
-    """Узлы периодов, которые свёртка читает, и улика DSCR, которой они принадлежат."""
+def _period_ids(source) -> tuple[str, ...]:
+    """Узлы периодов, которые свёртка читает. Это не идентификаторы улик."""
 
     found: list[str] = []
     seen: set[str] = set()
@@ -488,9 +488,13 @@ def _period_parents(source) -> tuple[str, ...]:
             continue
         seen.add(node)
         found.append(node)
-    if source.evidence_id:
-        found.append(source.evidence_id)
     return tuple(found)
+
+
+def _evidence_parent(source) -> tuple[str, ...]:
+    if source is not None and source.evidence_id:
+        return (source.evidence_id,)
+    return ()
 
 
 def _copy_trace(collect, metric: str) -> None:
@@ -566,14 +570,13 @@ def _keep_adscr(collect, rows, sums, source, *, sign_convention, marker_class, e
         _carry_source(book, source)
     book.periods = [*periods, *(source.period_results if source is not None else ())]
     version = REGISTRY[("adscr", "adscr")].implementation_version
-    parents = (source.evidence_id,) if source is not None and source.evidence_id else ()
     collect.append(
         book.freeze(
             "succeeded",
             version,
             executor_id="adscr",
             executor_version=version,
-            parent_evidence_ids=parents,
+            parent_evidence_ids=_evidence_parent(source),
             calculation_origin="calculated",
         )
     )
@@ -638,7 +641,8 @@ def _keep_reduction(collect, metric, rows, source, *, sign_convention, marker_cl
             version,
             executor_id=metric,
             executor_version=version,
-            parent_evidence_ids=_period_parents(source),
+            parent_evidence_ids=_evidence_parent(source),
+            parent_period_ids=_period_ids(source),
             calculation_origin="calculated",
         )
     )

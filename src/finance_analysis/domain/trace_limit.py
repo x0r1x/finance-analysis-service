@@ -193,6 +193,8 @@ def view_from_evidence(evidence: CalculationEvidence) -> dict:
         limited["profile_values"] = [[name, _plain(value)] for name, value in evidence.profile_values]
     if evidence.parent_evidence_ids:
         limited["parent_evidence_ids"] = list(evidence.parent_evidence_ids)
+    if evidence.parent_period_ids:
+        limited["parent_period_ids"] = list(evidence.parent_period_ids)
     if evidence.calculation_origin is not None:
         limited["calculation_origin"] = evidence.calculation_origin
     if evidence.evidence_id is not None:

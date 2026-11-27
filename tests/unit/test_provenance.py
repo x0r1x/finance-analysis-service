@@ -1,7 +1,7 @@
 """Провенанс лежит на улике. Публичная строка коэффициента его не получает.
 
 Версия определения и версия исполнителя — разные поля. Одно не подставляется вместо другого.
-Родитель ADSCR — улика DSCR. Родители min и avg — периоды, которые они сворачивают, и та же улика.
+Родитель ADSCR — улика DSCR. У min и avg улика DSCR в parent_evidence_ids, периоды — в parent_period_ids.
 https://www.w3.org/TR/prov-dm/#term-Communication
 https://openlineage.io/docs/spec/facets/run-facets/parent_run/
 """
@@ -9,7 +9,11 @@ https://openlineage.io/docs/spec/facets/run-facets/parent_run/
 from decimal import Decimal
 
 from finance_analysis.application.model_types import load_model_types
-from finance_analysis.domain.calculation_evidence import CalculationEvidence
+from finance_analysis.domain.calculation_evidence import (
+    CalculationEvidence,
+    EvidenceBook,
+    FactUse,
+)
 from finance_analysis.domain.covenant import select_ratio
 from finance_analysis.domain.cover_metrics import adscr, dscr_reductions
 from finance_analysis.domain.execution_contract import (
@@ -37,6 +41,7 @@ _ROW_FIELDS = (
     "actual_period_slots",
     "profile_values",
     "parent_evidence_ids",
+    "parent_period_ids",
     "calculation_origin",
     "evidence_id",
     "plan_content_sha256",
@@ -169,6 +174,86 @@ def test_coverage_evidence_keeps_definition_and_executor_apart():
     assert view["calculation_origin"] == "calculated"
 
 
+def _identity_book(sign_convention: str = "outflow_negative", marker_class: str | None = None) -> EvidenceBook:
+    return EvidenceBook(
+        metric="dscr",
+        sign_convention=sign_convention,
+        marker_class=marker_class,
+        explicit_phases=False,
+        plan_content_sha256="same-plan",
+    )
+
+
+def _one_fact() -> FactUse:
+    return FactUse(
+        concept="cfads",
+        cell_id="c!Y1",
+        axis_id="a",
+        period_id="Y1",
+        timeline_id=None,
+        period_index=1,
+        field="value",
+        sheet=False,
+        raw_value=Decimal(80),
+        effective_value=Decimal(80),
+        scale_factor=None,
+        scale_policy="plain",
+        scale_applied=False,
+        normalization_source="none",
+        result_axis_id="a",
+        result_period_id="Y1",
+        operand="numerator",
+    )
+
+
+def test_same_plan_hash_with_a_different_definition_hash_does_not_share_an_evidence_id():
+    """SHA-256 канонического тела, FIPS 180-4. Версия исполнителя не заполняет версию определения.
+
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    left = _identity_book().freeze(
+        "succeeded",
+        "dscr@1",
+        definition_hash="def-a",
+        definition_version="dscr@1",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+        stamp="stamp",
+    )
+    right = _identity_book().freeze(
+        "succeeded",
+        "dscr@1",
+        definition_hash="def-b",
+        definition_version="dscr@1",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+        stamp="stamp",
+    )
+    assert left.plan_content_sha256 == right.plan_content_sha256 == "same-plan"
+    assert left.evidence_id != right.evidence_id
+    assert left.definition_version == "dscr@1"
+    assert left.executor_version == "calculate_coverage@1"
+    assert left.definition_version != left.executor_version
+
+
+def test_same_plan_hash_with_a_different_sign_convention_does_not_share_an_evidence_id():
+    left = _identity_book("outflow_negative").freeze("succeeded", "dscr@1", stamp="stamp")
+    right = _identity_book("outflow_positive").freeze("succeeded", "dscr@1", stamp="stamp")
+    assert left.plan_content_sha256 == right.plan_content_sha256
+    assert left.evidence_id != right.evidence_id
+
+
+def test_stamp_marker_and_facts_change_the_evidence_id():
+    plain = _identity_book().freeze("succeeded", "dscr@1", stamp="stamp-a")
+    other_stamp = _identity_book().freeze("succeeded", "dscr@1", stamp="stamp-b")
+    marked = _identity_book(marker_class="housing").freeze("succeeded", "dscr@1", stamp="stamp-a")
+    used = _identity_book()
+    used.fact_uses.append(_one_fact())
+    with_fact = used.freeze("succeeded", "dscr@1", stamp="stamp-a")
+    assert len({plain.evidence_id, other_stamp.evidence_id, marked.evidence_id, with_fact.evidence_id}) == 4
+
+
 def test_unset_definition_version_is_not_replaced_by_the_executor():
     definition = _definition(_expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)))
     _result, evidence, _plan = _run(definition)
@@ -218,8 +303,12 @@ def test_reductions_point_at_the_periods_and_the_dscr_evidence():
         collected: list = []
         traced = dscr_reductions(metric, collect=collected, **common)
         evidence = collected[0]
-        assert evidence.parent_evidence_ids[:-1] == period_ids
-        assert evidence.parent_evidence_ids[-1] == source.evidence_id
+        assert evidence.parent_period_ids == period_ids
+        assert evidence.parent_evidence_ids == (source.evidence_id,)
+        assert all(item == source.evidence_id for item in evidence.parent_evidence_ids)
+        view = view_from_evidence(evidence)
+        assert view["parent_period_ids"] == list(period_ids)
+        assert view["parent_evidence_ids"] == [source.evidence_id]
         assert evidence.branch_id == metric
         assert evidence.executor_id == metric
         assert evidence.executor_version == f"{metric}@1"
@@ -227,6 +316,116 @@ def test_reductions_point_at_the_periods_and_the_dscr_evidence():
         assert evidence.calculation_origin == "calculated"
         for row in traced["rows"]:
             _row_is_public(row)
+
+
+async def test_compute_metrics_keeps_the_select_ratio_trace_on_the_evidence():
+    """След select_ratio пишется в исходный список улик, не в копию среза."""
+
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+
+    facts = [
+        {
+            "row_key": "project_fcf",
+            "axis_id": "a",
+            "period_id": "Y0",
+            "period_index": 0,
+            "normalized_value": "-100",
+            "cell_id": "a!Y0",
+        },
+        {
+            "row_key": "project_fcf",
+            "axis_id": "a",
+            "period_id": "Y1",
+            "period_index": 1,
+            "normalized_value": "60",
+            "cell_id": "a!Y1",
+        },
+        {
+            "row_key": "discount_rate",
+            "axis_id": "p",
+            "period_id": "R",
+            "normalized_value": "0.10",
+            "cell_id": "p!R",
+        },
+    ]
+    bindings = [
+        {
+            "effective_concept": concept,
+            "row_key": concept,
+            "is_primary": True,
+            "status": "bound",
+            "source": "inferred",
+        }
+        for concept in ("project_fcf", "discount_rate")
+    ]
+    periods = [
+        {"axis_id": "a", "period_id": "Y0", "period_index": 0},
+        {"axis_id": "a", "period_id": "Y1", "period_index": 1},
+        {"axis_id": "p", "period_id": "R", "period_index": None},
+    ]
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Glossary:
+        async def profile_body(self, _profile_id):
+            return {}
+
+    class _Service:
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset == "bindings":
+                return bindings
+            if dataset == "fact_observation":
+                return facts
+            if dataset == "dim_period":
+                return periods
+            if dataset in {"dim_row", "period_semantics", "graph_links"}:
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                ("investment_project",),
+                "investment_project",
+                "confirmed",
+                None,
+                1,
+                None,
+                1.0,
+                {"investment_project": 1.0},
+                (),
+            )
+
+    service = _Service()
+    service.model_types = load_model_types()
+    service.catalog = load_catalog()
+    service.financial_catalog = None
+    service.guard = _Guard()
+    service.glossary = _Glossary()
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    got = await Analyses(service).compute_metrics(
+        "job", Target(head=head, build="build", manifest={}, fresh=True), ["npv"]
+    )
+    trace = got["branch_traces"][0]["trace"]
+    evidence = next(item for item in got["evidences"] if item.metric == "npv")
+    assert trace.branch_id == "npv"
+    assert evidence.branch_id == trace.branch_id
+    assert evidence.actual_inputs == trace.actual_inputs
+    assert "project_fcf" in evidence.actual_inputs
+    assert "discount_rate" in evidence.actual_inputs
+    assert evidence.actual_fact_uses == trace.actual_fact_uses
+    assert "a!Y1" in evidence.actual_fact_uses
+    assert evidence.actual_periods == trace.actual_periods
+    assert evidence.actual_period_slots == trace.actual_period_slots
+    assert evidence.profile_values == trace.profile_values
+    for row in got["rows"]:
+        _row_is_public(row)
 
 
 def test_reported_origin_stays_on_the_publication_evidence():

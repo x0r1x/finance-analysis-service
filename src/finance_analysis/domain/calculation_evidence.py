@@ -14,6 +14,8 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Any
 
+from finance_analysis.domain.book import canonical_json
+
 CALCULATION_ENGINE_VERSION = "1"
 
 
@@ -128,15 +130,51 @@ class CalculationEvidence:
     actual_period_slots: tuple[tuple[str, str], ...] = ()
     profile_values: tuple[tuple[str, Any], ...] = ()
     parent_evidence_ids: tuple[str, ...] = ()
+    parent_period_ids: tuple[str, ...] = ()
     calculation_origin: str | None = None
     evidence_id: str | None = None
 
 
-def evidence_identity(metric: str, execution: str, implementation: str, plan_hash: str | None) -> str:
-    """Идентификатор прохода. Родитель ссылается на него, не на публичную строку."""
+def evidence_identity(
+    *,
+    metric: str,
+    execution: str,
+    implementation: str,
+    plan_hash: str | None,
+    calculation_stamp: str,
+    definition_hash: str | None,
+    sign_convention: str,
+    marker_class: str | None,
+    fact_uses: tuple[FactUse, ...],
+) -> str:
+    """SHA-256 канонического тела. Версия исполнителя сюда не входит и версию определения не заполняет.
 
-    text = "\n".join((metric, execution, implementation, plan_hash or ""))
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    body = {
+        "calculation_stamp": calculation_stamp,
+        "definition_hash": definition_hash or "",
+        "execution": execution,
+        "fact_uses": [_used_fact(item) for item in fact_uses],
+        "implementation": implementation,
+        "marker_class": marker_class or "",
+        "metric": metric,
+        "plan_hash": plan_hash or "",
+        "sign_convention": sign_convention,
+    }
+    return hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
+
+
+def _used_fact(item: FactUse) -> dict[str, str]:
+    return {
+        "axis_id": item.axis_id,
+        "cell_id": item.cell_id or "",
+        "concept": item.concept,
+        "effective_value": format(item.effective_value, "f"),
+        "operand": item.operand,
+        "period_id": item.period_id,
+    }
 
 
 def definition_fields(definition) -> dict[str, Any]:
@@ -223,22 +261,25 @@ class EvidenceBook:
         actual_period_slots: tuple[tuple[str, str], ...] = (),
         profile_values: tuple[tuple[str, Any], ...] = (),
         parent_evidence_ids: tuple[str, ...] = (),
+        parent_period_ids: tuple[str, ...] = (),
         calculation_origin: str | None = None,
         evidence_status: str = "evidence_available",
         stamp: str | None = None,
     ) -> CalculationEvidence:
+        stamped = calculation_stamp() if stamp is None else stamp
+        uses = tuple(self.fact_uses or ())
         return CalculationEvidence(
             metric=self.metric,
             execution_status=execution,
             implementation=implementation,
-            calculation_stamp=calculation_stamp() if stamp is None else stamp,
+            calculation_stamp=stamped,
             plan_content_sha256=self.plan_content_sha256,
             sign_convention=self.sign_convention,
             marker_class=self.marker_class,
             explicit_phases=self.explicit_phases,
             sheet=self.sheet,
             fact_observations=tuple(self.observations or ()),
-            fact_uses=tuple(self.fact_uses or ()),
+            fact_uses=uses,
             period_results=tuple(self.periods or ()),
             basis_sides=tuple(self.basis_sides or ()),
             sums_additions=self.sums_additions,
@@ -256,8 +297,19 @@ class EvidenceBook:
             actual_period_slots=tuple(actual_period_slots),
             profile_values=tuple(profile_values),
             parent_evidence_ids=tuple(parent_evidence_ids),
+            parent_period_ids=tuple(parent_period_ids),
             calculation_origin=calculation_origin,
-            evidence_id=evidence_identity(self.metric, execution, implementation, self.plan_content_sha256),
+            evidence_id=evidence_identity(
+                metric=self.metric,
+                execution=execution,
+                implementation=implementation,
+                plan_hash=self.plan_content_sha256,
+                calculation_stamp=stamped,
+                definition_hash=definition_hash,
+                sign_convention=self.sign_convention,
+                marker_class=self.marker_class,
+                fact_uses=uses,
+            ),
         )
 
 
