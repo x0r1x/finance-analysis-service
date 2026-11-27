@@ -17,7 +17,6 @@ from finance_analysis.domain.execution_contract import (
     MetricExecutionContext,
     compile_definition,
 )
-from finance_analysis.domain.metric_contract import UndeclaredInput
 from finance_analysis.domain.model_type import MetricExpression
 from finance_analysis.domain.resolved_plan import AppliedFallback, ResolvedInput, seal
 from finance_analysis.domain.semantic_input import resolve_metric_plan
@@ -448,6 +447,12 @@ def test_an_in_memory_definition_change_changes_the_result():
 
 
 def test_an_undeclared_concept_refuses_through_the_dispatcher():
+    """Подтверждённое имя вне определения — отказ расчёта, не исключение.
+
+    ``UndeclaredInput`` наследует ``KeyError``. Диспетчер ловит только ошибку контракта.
+    https://www.w3.org/TR/prov-dm/#term-Activity
+    """
+
     definition = _definition(
         "dscr",
         _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
@@ -480,18 +485,20 @@ def test_an_undeclared_concept_refuses_through_the_dispatcher():
         definition_hash=definition.definition_hash,
     )
     _, _, _, run_calculation = _dispatch()
-    with pytest.raises(UndeclaredInput) as raised:
-        run_calculation(
-            "select_ratio",
-            _request(
-                "dscr",
-                common=_common(facts, bindings),
-                definition=definition,
-                composed={},
-            ),
-            _context(definition, foreign),
-        )
-    assert raised.value.name == "ebitda"
+    outcome = run_calculation(
+        "select_ratio",
+        _request(
+            "dscr",
+            common=_common(facts, bindings),
+            definition=definition,
+            composed={},
+        ),
+        _context(definition, foreign),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "undeclared_input"
+    assert outcome.result["rows"] == []
+    assert outcome.evidence is None
 
 
 def test_a_definition_the_specialized_executor_cannot_run_is_not_computed(monkeypatch):
@@ -757,10 +764,95 @@ def test_a_resolved_plan_without_a_definition_stays_on_todays_calculator(monkeyp
     assert outcome.result["status"] == "missing_input"
 
 
+def test_a_resolved_plan_without_a_definition_keeps_todays_ratio():
+    """Пустой кортеж по умолчанию — не связанное исполнение. Слоты не переданы.
+
+    Решённый план без определения считает сегодняшний калькулятор. Подстановка
+    ``()`` вместо ``None`` даёт ``unsupported_formula``.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import select_ratio
+
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    facts = [_fact("c", "80"), _fact("d", "-10")]
+    bindings = [_bind("cfads", "c"), _bind("debt_service", "d")]
+    plan = _plan_for(definition, bindings)
+    assert plan.status == "resolved"
+    request = _ratio_request("dscr", facts, bindings, collect=[])
+    direct = select_ratio(
+        "dscr",
+        None,
+        _common(facts, bindings),
+        profile=None,
+        profile_ref=None,
+        composed={},
+        concepts=request.concepts,
+        money=request.money,
+        plan=plan,
+        collect=[],
+        definition=None,
+        slots=None,
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation("select_ratio", request, _context(None, plan))
+    assert outcome.result.get("reason") != "unsupported_formula"
+    assert outcome.result["status"] == direct["status"]
+    assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"] == Decimal("8.0000000000")
+
+
+def test_a_diagnostic_read_stays_out_of_the_inputs():
+    """Отказ оставляет наблюдение. Диагностика не входит в actual_inputs и fact_uses.
+
+    Использование — это вход расчёта, а не факт, прочитанный до отказа.
+    https://www.w3.org/TR/prov-dm/#term-Usage
+    """
+
+    from finance_analysis.domain.metrics import calculate_coverage
+
+    outcome = calculate_coverage(
+        metric="dscr",
+        facts=[
+            {
+                "row_key": "c",
+                "axis_id": "a",
+                "period_id": "Y1",
+                "normalized_value": "5",
+                "value_dec": Decimal(2),
+                "scale_factor": Decimal(1000),
+                "cell_id": "CFS!A",
+            },
+            {
+                "row_key": "d",
+                "axis_id": "a",
+                "period_id": "Y1",
+                "normalized_value": "1",
+                "value_dec": Decimal(1),
+                "scale_factor": Decimal(1),
+                "cell_id": "Debt!A",
+            },
+        ],
+        bindings=[_bind("cfads", "c"), _bind("debt_service", "d")],
+        periods=_year_period(),
+        period_phase={},
+        explicit_phases=False,
+        slots=(),
+    )
+    observed = {item.concept for item in outcome.evidence.fact_observations}
+    assert outcome.result["status"] == "scale_unconfirmed"
+    assert observed == {"cfads", "debt_service"}
+    assert {item.considered for item in outcome.evidence.fact_observations} == {"scale"}
+    assert outcome.evidence.actual_inputs == ()
+    assert outcome.evidence.fact_uses == ()
+
+
 def test_a_resolved_matching_plan_runs_the_bound_path_and_keeps_the_ratio(monkeypatch):
     """Совпали метрика, вариант и хеш — связанный путь. Число остаётся числом калькулятора.
 
-    Слоты контекста калькулятору не передаются: это не исполнение из слотов плана.
+    Подстановок нет, поэтому кортеж слотов пуст. Калькулятор получает его и не вызывает slots_for снова.
     """
 
     from finance_analysis.domain.metric_dispatch import SelectRatioExecutor
@@ -803,8 +895,8 @@ def test_a_resolved_matching_plan_runs_the_bound_path_and_keeps_the_ratio(monkey
     assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"] == Decimal("8.0000000000")
 
 
-def test_a_matched_fallback_builds_a_slot_the_calculator_call_does_not_receive(monkeypatch):
-    """Запасной путь виден на контексте. В вызов калькулятора слот не входит."""
+def test_a_matched_fallback_slot_is_passed_to_the_calculator(monkeypatch):
+    """Запасной путь виден на контексте и уходит в вызов калькулятора."""
 
     from finance_analysis.domain.covenant import select_ratio
     from finance_analysis.domain.metric_dispatch import SelectRatioExecutor
@@ -821,7 +913,7 @@ def test_a_matched_fallback_builds_a_slot_the_calculator_call_does_not_receive(m
         return real_execute(self, context)
 
     def wrapped(metric, variant, common, **kwargs):
-        passed["keys"] = set(kwargs)
+        passed["slots"] = kwargs.get("slots")
         return real_select(metric, variant, common, **kwargs)
 
     monkeypatch.setattr(SelectRatioExecutor, "execute", execute)
@@ -858,12 +950,13 @@ def test_a_matched_fallback_builds_a_slot_the_calculator_call_does_not_receive(m
     )
     assert seen == ["dscr"]
     assert entered["reasons"] == ("fallback",)
-    assert "slots" not in passed["keys"]
+    assert passed["slots"][0].resolution_reason == "fallback"
+    assert passed["slots"][0].resolved_terms == ("interest", "principal")
     assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"]
 
 
-def test_a_matched_one_of_builds_a_slot_the_calculator_call_does_not_receive(monkeypatch):
-    """one_of виден на контексте. Числитель по-прежнему выбирает калькулятор плана."""
+def test_a_matched_one_of_slot_is_passed_to_the_calculator(monkeypatch):
+    """one_of виден на контексте и уходит в вызов калькулятора. Числитель из слота."""
 
     from finance_analysis.domain.covenant import select_ratio
     from finance_analysis.domain.metric_dispatch import SelectRatioExecutor
@@ -880,7 +973,7 @@ def test_a_matched_one_of_builds_a_slot_the_calculator_call_does_not_receive(mon
         return real_execute(self, context)
 
     def wrapped(metric, variant, common, **kwargs):
-        passed["keys"] = set(kwargs)
+        passed["slots"] = kwargs.get("slots")
         return real_select(metric, variant, common, **kwargs)
 
     monkeypatch.setattr(SelectRatioExecutor, "execute", execute)
@@ -914,8 +1007,147 @@ def test_a_matched_one_of_builds_a_slot_the_calculator_call_does_not_receive(mon
     )
     assert seen == ["icr"]
     assert entered["slots"] == (("numerator", "one_of", ("ebitda",)),)
-    assert "slots" not in passed["keys"]
+    assert passed["slots"][0].resolved_terms == ("ebitda",)
     assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"] == Decimal("8.0000000000")
+
+
+def _count_second_choice(monkeypatch):
+    """Второй slots_for отказывается. Повторный выбор one_of и запаса тоже считается."""
+
+    from finance_analysis.domain import execution_contract, metrics
+    from finance_analysis.domain.execution_contract import ExecutionContractError
+
+    state = {"slots": 0, "one_of": 0, "fallback": 0, "interest": 0}
+    real_slots = execution_contract.slots_for
+    real_one = metrics.choose_one_of
+    real_fallback = metrics.dscr_denominator_plan
+    real_interest = metrics.interest_choice
+
+    def slots_for(definition, plan):
+        state["slots"] += 1
+        if state["slots"] > 1:
+            raise ExecutionContractError("inconsistent_fallback")
+        return real_slots(definition, plan)
+
+    def choose_one_of(*args, **kwargs):
+        state["one_of"] += 1
+        return real_one(*args, **kwargs)
+
+    def dscr_denominator_plan(*args, **kwargs):
+        state["fallback"] += 1
+        return real_fallback(*args, **kwargs)
+
+    def interest_choice(*args, **kwargs):
+        state["interest"] += 1
+        return real_interest(*args, **kwargs)
+
+    monkeypatch.setattr(execution_contract, "slots_for", slots_for)
+    monkeypatch.setattr(metrics, "choose_one_of", choose_one_of)
+    monkeypatch.setattr(metrics, "dscr_denominator_plan", dscr_denominator_plan)
+    monkeypatch.setattr(metrics, "interest_choice", interest_choice)
+    return state
+
+
+def _spy_select(monkeypatch):
+    from finance_analysis.domain.covenant import select_ratio
+
+    passed = {}
+
+    def wrapped(metric, variant, common, **kwargs):
+        passed["slots"] = kwargs.get("slots")
+        return select_ratio(metric, variant, common, **kwargs)
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", wrapped)
+    return passed
+
+
+def test_bound_one_of_is_not_chosen_again_and_the_evidence_records_the_read(monkeypatch):
+    """Калькулятор получает слот one_of. Второй slots_for и choose_one_of не выбирают числитель.
+
+    actual_inputs — понятия, чьи факты прочитаны. Отклонённый член one_of туда не входит.
+    Решённый план не перерешивается: https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    state = _count_second_choice(monkeypatch)
+    passed = _spy_select(monkeypatch)
+    definition = _coverage_definition(
+        "icr",
+        _expr(
+            one_of=frozenset({"ebitda", "ebit"}),
+            one_of_order=("ebitda", "ebit"),
+            denominator_plus=("interest",),
+        ),
+    )
+    facts = [
+        {**_fact("e", "80"), "cell_id": "IS!EBITDA"},
+        {**_fact("b", "20"), "cell_id": "IS!EBIT"},
+        {**_fact("i", "-10"), "cell_id": "IS!INT"},
+    ]
+    bindings = [_bind("ebitda", "e"), _bind("ebit", "b"), _bind("interest", "i")]
+    plan = _plan_for(definition, bindings)
+    collected: list = []
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("icr", facts, bindings, collect=collected),
+        _context(definition, plan),
+    )
+    evidence = collected[0]
+    assert state == {"slots": 1, "one_of": 0, "fallback": 0, "interest": 0}
+    assert passed["slots"][0].resolution_reason == "one_of"
+    assert passed["slots"][0].resolved_terms == ("ebitda",)
+    assert outcome.result["rows"][0]["value"] == Decimal("8.0000000000")
+    assert evidence.actual_inputs == ("ebitda", "interest")
+    assert {item.concept for item in evidence.fact_uses} == {"ebitda", "interest"}
+    assert {item.cell_id for item in evidence.fact_uses} == {"IS!EBITDA", "IS!INT"}
+    assert "ebit" not in evidence.actual_inputs
+
+
+def test_bound_fallback_is_not_chosen_again_and_the_evidence_records_the_read(monkeypatch):
+    """Калькулятор получает слот запаса. Второй slots_for и dscr_denominator_plan его не выбирают.
+
+    actual_inputs — прочитанные факты, не исходный debt_service и не другая строка процентов.
+    Решённый план не перерешивается: https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    state = _count_second_choice(monkeypatch)
+    passed = _spy_select(monkeypatch)
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    plan = _seal_plan(
+        "dscr",
+        definition,
+        ("cfads", "interest", "principal"),
+        fallbacks=(AppliedFallback("pf", "debt_service", "interest", None),),
+    )
+    facts = [
+        {**_fact("cfads", "40"), "cell_id": "CFS!CF"},
+        {**_fact("debt_service", "-99"), "cell_id": "Debt!DS"},
+        {**_fact("interest", "-10"), "cell_id": "Debt!INT"},
+        {**_fact("interest_paid", "-2"), "cell_id": "Debt!PAID"},
+        {**_fact("principal", "-4"), "cell_id": "Debt!PR"},
+    ]
+    bindings = [_bind(name, name) for name in ("cfads", "debt_service", "interest", "interest_paid", "principal")]
+    collected: list = []
+    order = {"pf": ("interest_paid", "interest")}
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _ratio_request("dscr", facts, bindings, interest_order=order, collect=collected),
+        _context(definition, plan),
+    )
+    evidence = collected[0]
+    assert state == {"slots": 1, "one_of": 0, "fallback": 0, "interest": 0}
+    assert passed["slots"][0].resolution_reason == "fallback"
+    assert passed["slots"][0].resolved_terms == ("interest", "principal")
+    assert outcome.result["rows"][0]["value"] == Decimal("2.8571428571")
+    assert evidence.actual_inputs == ("cfads", "interest", "principal")
+    assert {item.concept for item in evidence.fact_uses} == {"cfads", "interest", "principal"}
+    assert {item.cell_id for item in evidence.fact_uses} == {"CFS!CF", "Debt!INT", "Debt!PR"}
+    assert "debt_service" not in evidence.actual_inputs
+    assert "interest_paid" not in evidence.actual_inputs
 
 
 @pytest.mark.parametrize(
@@ -1061,7 +1293,7 @@ def test_a_derived_metric_keeps_todays_calculator_on_the_dscr_plan(monkeypatch, 
     _, _, _, run_calculation = _dispatch()
     outcome = run_calculation(route, request, _context(definition, plan))
     assert seen == []
-    assert entered == {"metric": metric, "slots": (), "plan": "dscr"}
+    assert entered == {"metric": metric, "slots": None, "plan": "dscr"}
     assert outcome.result == direct
     assert outcome.result.get("reason") != "metric_mismatch"
 
@@ -1095,7 +1327,7 @@ def test_a_derived_metric_with_a_foreign_plan_is_an_integrity_error(monkeypatch)
 
 
 def test_two_one_of_on_a_matched_plan_keeps_the_calculator_reason():
-    """Слот, который контракт отверг, не роняет прогон: причина та же, что у калькулятора."""
+    """Два one_of отвергаются до калькулятора. Причина та же, что у прямого прохода."""
 
     from finance_analysis.domain.metrics import coverage_from_definition
 

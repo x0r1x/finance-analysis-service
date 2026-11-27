@@ -2422,6 +2422,7 @@ def select_ratio(
     collect: list | None = None,
     definition: Any | None = None,
     outflows: frozenset[str] | None = None,
+    slots: tuple | None = None,
 ) -> dict:
     """Именованный вариант профиля считает свою формулу на любом типе книги.
 
@@ -2643,6 +2644,7 @@ def select_ratio(
                 profile=profile,
                 plan=plan,
                 definition=definition,
+                slots=slots,
                 **common,
             )
         return remembered(
@@ -2652,6 +2654,7 @@ def select_ratio(
                 profile=profile,
                 plan=plan,
                 definition=definition,
+                slots=slots,
                 evidence=True,
                 **common,
             ),
@@ -2698,6 +2701,7 @@ def select_ratio(
             profile=profile,
             plan=plan,
             definition=definition,
+            slots=slots,
             **common,
         )
     else:
@@ -2708,6 +2712,7 @@ def select_ratio(
             profile=profile,
             plan=plan,
             definition=definition,
+            slots=slots,
             evidence=True,
             **common,
         )
