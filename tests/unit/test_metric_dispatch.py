@@ -757,6 +757,91 @@ def test_a_resolved_plan_without_a_definition_stays_on_todays_calculator(monkeyp
     assert outcome.result["status"] == "missing_input"
 
 
+def test_a_resolved_plan_without_a_definition_keeps_todays_ratio():
+    """Пустой кортеж по умолчанию — не связанное исполнение. Слоты не переданы.
+
+    Решённый план без определения считает сегодняшний калькулятор. Подстановка
+    ``()`` вместо ``None`` даёт ``unsupported_formula``.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    from finance_analysis.domain.covenant import select_ratio
+
+    definition = _coverage_definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+    )
+    facts = [_fact("c", "80"), _fact("d", "-10")]
+    bindings = [_bind("cfads", "c"), _bind("debt_service", "d")]
+    plan = _plan_for(definition, bindings)
+    assert plan.status == "resolved"
+    request = _ratio_request("dscr", facts, bindings, collect=[])
+    direct = select_ratio(
+        "dscr",
+        None,
+        _common(facts, bindings),
+        profile=None,
+        profile_ref=None,
+        composed={},
+        concepts=request.concepts,
+        money=request.money,
+        plan=plan,
+        collect=[],
+        definition=None,
+        slots=None,
+    )
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation("select_ratio", request, _context(None, plan))
+    assert outcome.result.get("reason") != "unsupported_formula"
+    assert outcome.result["status"] == direct["status"]
+    assert outcome.result["rows"][0]["value"] == direct["rows"][0]["value"] == Decimal("8.0000000000")
+
+
+def test_a_diagnostic_read_stays_out_of_the_inputs():
+    """Отказ оставляет наблюдение. Диагностика не входит в actual_inputs и fact_uses.
+
+    Использование — это вход расчёта, а не факт, прочитанный до отказа.
+    https://www.w3.org/TR/prov-dm/#term-Usage
+    """
+
+    from finance_analysis.domain.metrics import calculate_coverage
+
+    outcome = calculate_coverage(
+        metric="dscr",
+        facts=[
+            {
+                "row_key": "c",
+                "axis_id": "a",
+                "period_id": "Y1",
+                "normalized_value": "5",
+                "value_dec": Decimal(2),
+                "scale_factor": Decimal(1000),
+                "cell_id": "CFS!A",
+            },
+            {
+                "row_key": "d",
+                "axis_id": "a",
+                "period_id": "Y1",
+                "normalized_value": "1",
+                "value_dec": Decimal(1),
+                "scale_factor": Decimal(1),
+                "cell_id": "Debt!A",
+            },
+        ],
+        bindings=[_bind("cfads", "c"), _bind("debt_service", "d")],
+        periods=_year_period(),
+        period_phase={},
+        explicit_phases=False,
+        slots=(),
+    )
+    observed = {item.concept for item in outcome.evidence.fact_observations}
+    assert outcome.result["status"] == "scale_unconfirmed"
+    assert observed == {"cfads", "debt_service"}
+    assert {item.considered for item in outcome.evidence.fact_observations} == {"scale"}
+    assert outcome.evidence.actual_inputs == ()
+    assert outcome.evidence.fact_uses == ()
+
+
 def test_a_resolved_matching_plan_runs_the_bound_path_and_keeps_the_ratio(monkeypatch):
     """Совпали метрика, вариант и хеш — связанный путь. Число остаётся числом калькулятора.
 
@@ -1201,7 +1286,7 @@ def test_a_derived_metric_keeps_todays_calculator_on_the_dscr_plan(monkeypatch, 
     _, _, _, run_calculation = _dispatch()
     outcome = run_calculation(route, request, _context(definition, plan))
     assert seen == []
-    assert entered == {"metric": metric, "slots": (), "plan": "dscr"}
+    assert entered == {"metric": metric, "slots": None, "plan": "dscr"}
     assert outcome.result == direct
     assert outcome.result.get("reason") != "metric_mismatch"
 

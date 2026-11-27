@@ -2615,7 +2615,14 @@ def _sums(
         totals[key] = totals.get(key, Decimal(0)) + Decimal(number)
         if book is not None:
             book.sums_additions += 1
-            if concept is not None and book.opened_inputs is not None and concept not in book.opened_inputs:
+            # Наблюдение отказа не становится использованием.
+            # https://www.w3.org/TR/prov-dm/#term-Usage
+            if (
+                considered is None
+                and concept is not None
+                and book.opened_inputs is not None
+                and concept not in book.opened_inputs
+            ):
                 book.opened_inputs.append(concept)
         cell = fact.get("cell_id")
         ref = f"cell:{cell}" if cell else f"fact:{fact['axis_id']}:{fact['period_id']}"

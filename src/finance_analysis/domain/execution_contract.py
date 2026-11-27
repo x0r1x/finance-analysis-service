@@ -123,7 +123,9 @@ class ExecutionTrace:
 class MetricExecutionContext:
     definition: EffectiveMetricDefinition | None = None
     plan: ResolvedMetricPlan | None = None
-    slots: tuple[ResolvedFormulaSlot, ...] = ()
+    # None — слоты не переданы. Пустой кортеж — связанный план без подстановок.
+    # https://www.w3.org/TR/prov-dm/#term-Plan
+    slots: tuple[ResolvedFormulaSlot, ...] | None = None
     calculation_origin: str = "calculated"
     branch_id: str | None = None
 
@@ -316,7 +318,7 @@ def execute_bound(
         raise ExecutionContractError("definition_mismatch")
     if plan.status != "resolved":
         raise ExecutionContractError("plan_not_resolved")
-    # Слоты — уже решённый план. Исполнитель их не выбирает заново.
+    # Слоты — уже решённый план, в том числе пустой кортеж. Исполнитель их не выбирает заново.
     # https://www.w3.org/TR/prov-dm/#term-Plan
     slots = slots_for(definition, plan)
     if definition.executor_key == "coverage":
