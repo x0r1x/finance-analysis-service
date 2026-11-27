@@ -313,6 +313,25 @@ def _plan_rows(plan: Any, bindings: list[dict]) -> dict:
     return bound_rows(plan, bindings)
 
 
+def _rows_from_slots(slots, bindings) -> dict:
+    """Строка, которую слот уже назвал. План и скан основных строк не выбирают её снова."""
+
+    from types import SimpleNamespace
+
+    from finance_analysis.domain.resolved_plan import recover_row
+
+    found: dict[str, dict] = {}
+    for slot in slots:
+        for concept, binding_key, row_key in slot.term_rows:
+            source = recover_row(bindings, SimpleNamespace(binding_key=binding_key, row_key=row_key))
+            if source is None:
+                continue
+            copy = dict(source)
+            copy["effective_concept"] = concept
+            found[concept] = copy
+    return found
+
+
 def _plan_roles(metric: str, plan: Any) -> tuple[tuple[str, str] | None, tuple[str, ...], str, str]:
     pf = next((item for item in plan.fallbacks if item.replaced == "debt_service"), None)
     if metric == "dscr":
@@ -427,6 +446,16 @@ def _seal(book: EvidenceBook, result: dict) -> CalculationOutcome:
                 )
             )
     opened = () if book.opened_inputs is None else tuple(book.opened_inputs)
+    # Использование — принятый факт. Наблюдение отказа (considered) в fact_uses не входит.
+    # https://www.w3.org/TR/prov-dm/#term-Usage
+    used = ()
+    if book.opened_inputs is not None:
+        used = tuple(
+            dict.fromkeys(
+                item.cell_id if item.cell_id else f"fact:{item.axis_id}:{item.period_id}"
+                for item in book.fact_uses or ()
+            )
+        )
     return CalculationOutcome(
         result,
         book.freeze(
@@ -434,6 +463,7 @@ def _seal(book: EvidenceBook, result: dict) -> CalculationOutcome:
             _registered_version(book.metric, book.metric),
             calculation_origin="calculated",
             actual_inputs=opened,
+            actual_fact_uses=used,
             **definition_fields(book.bound_definition),
         ),
     )
@@ -930,7 +960,9 @@ def calculate_coverage(
         early = _coverage_from_plan(metric, plan, bindings)
         if early is not None:
             return _finish(book, early)
-        primaries = _plan_rows(plan, bindings)
+        # Слоты уже несут ключ строки. plan.inputs здесь не читается.
+        # https://www.w3.org/TR/prov-dm/#term-Plan
+        primaries = _rows_from_slots(slots, bindings) if slots is not None else _plan_rows(plan, bindings)
         warnings = [item.as_dict() for item in plan.warnings]
         if slots is not None or definition is not None:
             derived = _roles_from_definition(definition, plan, slots)
@@ -1478,7 +1510,9 @@ def dscr_pf(
 ) -> dict:
     """Проектный DSCR. Те же числа, что coverage_ratio для metric=dscr. Книгу улики не собирает."""
 
-    if plan is not None:
+    # Слоты уже выбраны. bindings_for_plan снова читал бы план.
+    # https://www.w3.org/TR/prov-dm/#term-Plan
+    if plan is not None and slots is None:
         from finance_analysis.domain.resolved_plan import bindings_for_plan
 
         bindings = list(bindings_for_plan(bindings, plan))
@@ -1523,7 +1557,7 @@ def calculate_dscr_pf(
 
     from dataclasses import replace
 
-    if plan is not None:
+    if plan is not None and slots is None:
         from finance_analysis.domain.resolved_plan import bindings_for_plan
 
         bindings = list(bindings_for_plan(bindings, plan))
