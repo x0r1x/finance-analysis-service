@@ -243,6 +243,77 @@ def test_two_different_definitions_refuse_before_the_calculator(monkeypatch):
     assert outcome.result["rows"] == []
 
 
+def test_two_compilations_of_the_same_inputs_share_definition_hash_and_resolve():
+    """Один definition_hash — одно содержание, даже если объекты собраны раздельно."""
+
+    expression = _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",))
+    supplied = _definition(
+        "dscr",
+        expression,
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+    bound = _definition(
+        "dscr",
+        expression,
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+    assert supplied is not bound
+    assert supplied.definition_hash == bound.definition_hash
+    facts = [_fact("c", "80"), _fact("d", "-10")]
+    bindings = [_bind("cfads", "c"), _bind("debt_service", "d")]
+    plan = _plan_for(bound, bindings)
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _request(
+            "dscr",
+            common=_common(facts, bindings),
+            definition=supplied,
+            composed={},
+            concepts=frozenset({"cfads", "debt_service"}),
+            money=frozenset({"cfads", "debt_service"}),
+        ),
+        _context(bound, plan),
+    )
+    assert outcome.result.get("reason") != "definition_mismatch"
+    assert outcome.result["rows"][0]["value"] == Decimal("8.0000000000")
+
+
+def test_a_changed_formula_changes_definition_hash_and_refuses(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("select_ratio")
+
+    monkeypatch.setattr("finance_analysis.domain.covenant.select_ratio", boom)
+    catalog = _definition(
+        "dscr",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+    changed = _definition(
+        "dscr",
+        _expr(numerator_plus=("ebitda",), denominator_plus=("debt_service",)),
+        executor_key="coverage",
+        executor_id="calculate_coverage",
+        executor_version="calculate_coverage@1",
+    )
+    assert catalog.definition_hash != changed.definition_hash
+    _, _, _, run_calculation = _dispatch()
+    outcome = run_calculation(
+        "select_ratio",
+        _request("dscr", common=_common([], []), composed={}, definition=catalog),
+        _context(changed),
+    )
+    assert outcome.result["status"] == "not_computed"
+    assert outcome.result["reason"] == "definition_mismatch"
+    assert outcome.result["rows"] == []
+
+
 def test_the_executor_receives_the_definition_that_was_checked():
     definition = _definition(
         "dscr",

@@ -196,11 +196,15 @@ _require_one_registry()
 
 
 def _resolve_definition(request: CalculationRequest, context: MetricExecutionContext):
-    """Один объект. Два разных определения — отказ, а не выбор одного из них."""
+    """Один definition_hash. Два разных содержания — отказ, а не выбор одного из них.
+
+    Хеш — sha256 канонического тела, FIPS 180-4:
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
 
     supplied = request.definition
     bound = context.definition
-    if supplied is not None and bound is not None and supplied is not bound:
+    if supplied is not None and bound is not None and supplied.definition_hash != bound.definition_hash:
         return _CONFLICT
     if bound is not None:
         return bound
