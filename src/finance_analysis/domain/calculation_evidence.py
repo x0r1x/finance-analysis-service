@@ -133,6 +133,8 @@ class CalculationEvidence:
     parent_period_ids: tuple[str, ...] = ()
     calculation_origin: str | None = None
     evidence_id: str | None = None
+    # Версия семантической модели, на которой посчитан проход. Входит в evidence_id.
+    semantic_model_version: str | None = None
 
 
 def seal(evidence: CalculationEvidence) -> CalculationEvidence:
@@ -173,6 +175,7 @@ def _identity(evidence: CalculationEvidence) -> str:
         "period_results": [_period_body(item) for item in evidence.period_results],
         "plan_hash": evidence.plan_content_sha256 or "",
         "profile_values": [[name, _plain(value)] for name, value in evidence.profile_values],
+        "semantic_model_version": evidence.semantic_model_version or "",
         "sign_convention": evidence.sign_convention,
     }
     return hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
@@ -301,6 +304,7 @@ class EvidenceBook:
     marker_class: str | None
     explicit_phases: bool
     plan_content_sha256: str | None
+    semantic_model_version: str | None = None
     sheet: bool = False
     observations: list[FactObservation] | None = None
     fact_uses: list[FactUse] | None = None
@@ -355,6 +359,7 @@ class EvidenceBook:
                 calculation_stamp=stamped,
                 plan_content_sha256=self.plan_content_sha256,
                 sign_convention=self.sign_convention,
+                semantic_model_version=self.semantic_model_version,
                 marker_class=self.marker_class,
                 explicit_phases=self.explicit_phases,
                 sheet=self.sheet,

@@ -1117,3 +1117,128 @@ async def test_unfinished_pointer_is_not_published_evidence(tmp_path):
         assert missing.status_code == 404
         assert missing.json()["detail"] == "след не найден"
         assert "publication" not in missing.json()
+
+
+def test_expected_sign_change_moves_the_semantic_version_and_refuses_a_stale_plan():
+    """Та же формула, другой expected_sign. Меняется SMV, не definition_hash.
+
+    Старый план отказывается. Улика с другой семантической версией получает другой evidence_id.
+    Знак остаётся свойством понятия: https://www.w3.org/TR/skos-reference/#concepts
+    """
+
+    import hashlib
+
+    from finance_analysis.domain.calculation_evidence import CalculationEvidence
+    from finance_analysis.domain.calculation_evidence import seal as seal_evidence
+    from finance_analysis.domain.execution_contract import (
+        ExecutionContractError,
+        execute_bound,
+    )
+    from finance_analysis.domain.resolved_plan import seal
+    from finance_analysis.domain.semantic_model import semantic_model_version_for
+
+    def stamp(sign: str) -> str:
+        body = (
+            "taxonomy: core-1\n"
+            "concepts:\n"
+            "  interest:\n"
+            "    semantic_role: measure\n"
+            "    dimension: money\n"
+            "    temporal_nature: flow\n"
+            f"    expected_sign: {sign}\n"
+        )
+        digest = hashlib.sha256()
+        digest.update(b"configs/concepts/core.yaml\0")
+        digest.update(body.encode())
+        digest.update(b"\0")
+        return digest.hexdigest()[:16]
+
+    def version(sign: str) -> str:
+        return semantic_model_version_for(
+            {
+                "taxonomy": {"id": "core-1", "stamp": stamp(sign)},
+                "glossary": "none",
+                "metrics": {"version": "e5e47aa50edf3a3e", "stamp": "metrics"},
+                "model_types": "types",
+                "dimensions": {"id": "dimensions", "stamp": "dimensions"},
+                "rules": "rules",
+                "schema": "schema",
+            }
+        )
+
+    outflow = version("outflow")
+    inflow = version("inflow")
+    assert outflow != inflow
+    record = CatalogMetricRecord(
+        metric_id="net_debt_ebitda",
+        expression=_expr(numerator_plus=("ebitda",), denominator_plus=("interest",)),
+        executor_key="composed",
+        executor_id="composed_ratio",
+        executor_version="composed_ratio@1",
+        formula_id="net_debt_ebitda",
+        window="LTM",
+    )
+    signed = compile_definition(record, outflows=frozenset({"interest"}), semantic_model_version=outflow)
+    unsigned = compile_definition(record, outflows=frozenset(), semantic_model_version=inflow)
+    assert signed.definition_hash == unsigned.definition_hash
+    assert signed.payment_terms == frozenset({"interest"})
+    assert unsigned.payment_terms == frozenset()
+    assert signed.semantic_model_version == outflow
+    assert unsigned.semantic_model_version == inflow
+
+    def plan(semantic: str):
+        return seal(
+            metric_id=signed.metric_id,
+            variant=signed.variant,
+            variant_source=signed.variant_source,
+            catalog_version=None,
+            semantic_model_version=semantic,
+            build_key=None,
+            model_id=None,
+            status="resolved",
+            inputs=(),
+            diagnostic=(),
+            rejected=(),
+            fallbacks=(),
+            warnings=(),
+            needs_input=(),
+            shield=None,
+            definition_hash=signed.definition_hash,
+        )
+
+    stale = plan(outflow)
+    current = plan(inflow)
+    assert stale.content_sha256 != current.content_sha256
+
+    class _Idle:
+        def execute(self, context):
+            raise AssertionError("stale plan must not run")
+
+    try:
+        execute_bound(_Idle(), unsigned, stale)
+    except ExecutionContractError as exc:
+        assert exc.reason == "semantic_mismatch"
+    else:
+        raise AssertionError("stale plan must be refused")
+
+    def evidence(semantic: str):
+        return seal_evidence(
+            CalculationEvidence(
+                metric="net_debt_ebitda",
+                execution_status="succeeded",
+                implementation="",
+                calculation_stamp="stamp",
+                plan_content_sha256=plan(semantic).content_sha256,
+                sign_convention="outflow_negative",
+                marker_class=None,
+                explicit_phases=False,
+                sheet=False,
+                fact_observations=(),
+                fact_uses=(),
+                period_results=(),
+                definition_hash=signed.definition_hash,
+                semantic_model_version=semantic,
+            )
+        )
+
+    assert evidence(outflow).evidence_id != evidence(inflow).evidence_id

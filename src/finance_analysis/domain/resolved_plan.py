@@ -355,6 +355,7 @@ def hashed_body(
     variant: str | None,
     variant_source: str,
     catalog_version: str | None,
+    semantic_model_version: str | None = None,
     build_key: str | None,
     model_id: str | None,
     status: str,
@@ -429,6 +430,7 @@ def hashed_body(
             )
         ],
         "resolution_engine_version": resolution_engine_version,
+        "semantic_model_version": _text(semantic_model_version),
         "shield": None
         if shield is None
         else {"basis": shield.basis, "reason": shield.reason},
@@ -470,6 +472,7 @@ def seal(
             variant=variant,
             variant_source=variant_source,
             catalog_version=catalog_version,
+            semantic_model_version=semantic_model_version,
             build_key=build_key,
             model_id=model_id,
             status=status,

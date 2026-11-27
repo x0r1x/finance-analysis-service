@@ -526,6 +526,11 @@ def _open_trace(metric: str, definition, collect, sign_convention: str, plan, ma
         marker_class=marker_class,
         explicit_phases=False,
         plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
+        semantic_model_version=(
+            getattr(plan, "semantic_model_version", None)
+            if plan is not None
+            else getattr(definition, "semantic_model_version", None)
+        ),
     )
 
 
@@ -659,7 +664,16 @@ def composed_ratio(
         return finish(_composed_stop(metric, resolved))
     if resolved is not None:
         formula = resolved
-    if outflows is not None:
+    if definition is not None:
+        # Знак уже на определении. Имя метрики и набор оттоков вызова его не заменяют.
+        # https://www.w3.org/TR/skos-reference/#concepts
+        formula = Composed(
+            formula.numerator,
+            formula.denominator,
+            formula.window,
+            definition.payment_terms,
+        )
+    elif outflows is not None:
         plus_names = (*formula.numerator.plus, *formula.denominator.plus)
         formula = Composed(
             formula.numerator,
@@ -674,6 +688,12 @@ def composed_ratio(
         or plan.definition_hash != definition.definition_hash
     ):
         return finish(_composed_stop(metric, "definition_mismatch"))
+    if definition is not None and plan is not None and (
+        (plan.semantic_model_version or "") != (definition.semantic_model_version or "")
+    ):
+        # Та же сверка, что у execute_bound. Прямой вызов не обходит её.
+        # https://www.w3.org/TR/skos-reference/#concepts
+        return finish(_composed_stop(metric, "semantic_mismatch"))
     blocked = methodology_block(
         profile,
         bindings,
@@ -2361,6 +2381,7 @@ def _reported_book_dscr(
             marker_class=marker_class,
             explicit_phases=explicit_phases,
             plan_content_sha256=(getattr(plan, "content_sha256", None) if plan is not None else None),
+            semantic_model_version=getattr(plan, "semantic_model_version", None) if plan is not None else None,
         )
     reported = _book_dscr_rows(facts, book, periods, reader)
     if not reported:
@@ -2439,6 +2460,7 @@ def _refused_covenant(
         marker_class=marker_class,
         explicit_phases=explicit_phases,
         plan_content_sha256=getattr(plan, "content_sha256", None),
+        semantic_model_version=getattr(plan, "semantic_model_version", None),
         periods=recorded,
     )
     return book.freeze("not_run", REGISTRY[("dscr", "dscr.corporate_covenant")].implementation_version)
@@ -2470,6 +2492,13 @@ def select_ratio(
     Без имени корпоративный тип остаётся на `corporate_covenant`, остальные — на своей формуле.
     """
 
+    if definition is not None and plan is not None and (
+        (getattr(plan, "semantic_model_version", None) or "")
+        != (getattr(definition, "semantic_model_version", None) or "")
+    ):
+        # Прямой вызов не обходит сверку версии. Составной путь сверяет её ещё раз.
+        # https://www.w3.org/TR/skos-reference/#concepts
+        return _composed_stop(metric, "semantic_mismatch")
     if metric == "total_debt":
         from finance_analysis.domain.total_debt import total_debt_result
 

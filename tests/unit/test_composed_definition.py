@@ -8,9 +8,11 @@ import pytest
 from finance_analysis.domain.covenant import composed_ratio, select_ratio
 from finance_analysis.domain.execution_contract import (
     CatalogMetricRecord,
+    MetricExecutionContext,
     compile_definition,
 )
 from finance_analysis.domain.metric_contract import REGISTRY, UndeclaredInput
+from finance_analysis.domain.metric_dispatch import CalculationRequest, run_calculation
 from finance_analysis.domain.model_type import Composed, MetricExpression, Side
 from finance_analysis.domain.resolved_plan import ResolvedInput, seal
 
@@ -351,6 +353,215 @@ def test_profile_overlay_changes_the_formula_only_when_compile_receives_it():
     assert got["definition_source"] == "profile"
     assert got["definition_ref"]["profile_version"] == "book@3"
     assert _value(got) == Decimal("2.4000000000")
+
+
+def test_composed_executor_takes_sign_policy_from_the_definition():
+    """Составной исполнитель берёт знак с определения, не из имени метрики.
+
+    ``net_debt_ebitda`` раньше не брал модуль знаменателя, прочие имена брали.
+    Оба имени считают один состав. Знак задают плюс-термы с ``expected_sign: outflow``
+    на определении. Имя метрики, пустые ``payment_terms`` формулы и чужой набор
+    оттоков этот выбор не делают. Хеш определения от знака не меняется.
+    Понятие несёт признак, не имя показателя:
+    https://www.w3.org/TR/skos-reference/#concepts
+    """
+
+    sides = ((("ebitda",), ()), (("interest",), ()), "LTM")
+    record = CatalogMetricRecord(
+        metric_id="net_debt_ebitda",
+        expression=_expr(sides[0], sides[1]),
+        executor_key="composed",
+        executor_id=_EXECUTOR_ID,
+        executor_version=_EXECUTOR_VERSION,
+        formula_id="net_debt_ebitda",
+        definition_version="net_debt_ebitda@2",
+        window="LTM",
+    )
+    plain = compile_definition(record)
+    signed = compile_definition(record, outflows=frozenset({"interest"}))
+    assert signed.payment_terms == frozenset({"interest"})
+    assert signed.definition_hash == plain.definition_hash
+    open_name = CatalogMetricRecord(
+        metric_id="escrow_coverage",
+        expression=_expr(sides[0], sides[1]),
+        executor_key="composed",
+        executor_id=_EXECUTOR_ID,
+        executor_version=_EXECUTOR_VERSION,
+        formula_id="escrow_coverage",
+        definition_version="escrow_coverage@2",
+        window="LTM",
+    )
+    unsigned = compile_definition(open_name)
+    assert unsigned.payment_terms == frozenset()
+    formula = _formula(*sides)
+    assert formula.payment_terms == frozenset()
+    decoy = frozenset({"capex"})
+
+    def execute(metric: str, definition):
+        outcome = run_calculation(
+            "select_ratio",
+            CalculationRequest(
+                metric=metric,
+                common={
+                    "facts": [_fact("ebitda", "100"), _fact("interest", "-40")],
+                    "bindings": [_bind("ebitda"), _bind("interest")],
+                    "periods": [_year()],
+                    "sign_convention": "outflow_negative",
+                    "marker_class": None,
+                    "absent": frozenset(),
+                },
+                composed={metric: formula},
+                aggregations={"ebitda": "sum", "interest": "sum"},
+                outflows=decoy,
+            ),
+            MetricExecutionContext(definition=definition),
+        )
+        return outcome.result["rows"][0]["value"]
+
+    assert execute("net_debt_ebitda", signed) == Decimal("2.5000000000")
+    assert execute("escrow_coverage", unsigned) == Decimal("-2.5000000000")
+
+
+def test_planless_run_keeps_the_definition_semantic_version_on_evidence():
+    """Плана нет, а версия понятия на определении есть. Улика её не теряет.
+
+    Число по-прежнему зависит от expected_sign. evidence_id тоже: две версии
+    одной формулы получают разные идентификаторы. Путь — run_calculation, не
+    собранная вручную улика.
+    https://www.w3.org/TR/skos-reference/#concepts
+    """
+
+    sides = ((("ebitda",), ()), (("interest",), ()), "LTM")
+    formula = _formula(*sides)
+    record = CatalogMetricRecord(
+        metric_id="net_debt_ebitda",
+        expression=_expr(sides[0], sides[1]),
+        executor_key="composed",
+        executor_id=_EXECUTOR_ID,
+        executor_version=_EXECUTOR_VERSION,
+        formula_id="net_debt_ebitda",
+        definition_version="net_debt_ebitda@2",
+        window="LTM",
+    )
+
+    def run(semantic: str, *, signed: bool):
+        definition = compile_definition(
+            record,
+            outflows=frozenset({"interest"}) if signed else frozenset(),
+            semantic_model_version=semantic,
+        )
+        collected: list = []
+        outcome = run_calculation(
+            "select_ratio",
+            CalculationRequest(
+                metric="net_debt_ebitda",
+                common={
+                    "facts": [_fact("ebitda", "100"), _fact("interest", "-40")],
+                    "bindings": [_bind("ebitda"), _bind("interest")],
+                    "periods": [_year()],
+                    "sign_convention": "outflow_negative",
+                    "marker_class": None,
+                    "absent": frozenset(),
+                },
+                composed={"net_debt_ebitda": formula},
+                aggregations={"ebitda": "sum", "interest": "sum"},
+                collect=collected,
+            ),
+            MetricExecutionContext(definition=definition),
+        )
+        assert outcome.result["rows"][0]["value"] == (
+            Decimal("2.5000000000") if signed else Decimal("-2.5000000000")
+        )
+        assert len(collected) == 1
+        return collected[0]
+
+    outflow = run("smv-outflow", signed=True)
+    inflow = run("smv-inflow", signed=True)
+    unsigned = run("smv-outflow", signed=False)
+    assert unsigned.semantic_model_version == "smv-outflow"
+    assert outflow.semantic_model_version == "smv-outflow"
+    assert inflow.semantic_model_version == "smv-inflow"
+    assert outflow.evidence_id != inflow.evidence_id
+    assert outflow.definition_hash == inflow.definition_hash
+
+
+def test_direct_ratio_refuses_a_plan_from_another_semantic_version():
+    """Прямой composed_ratio и select_ratio сверяют SMV, не только хеш формулы.
+
+    Связанный путь уже отказывает. Обход диспетчера не должен считать чужой план.
+    https://www.w3.org/TR/skos-reference/#concepts
+    """
+
+    sides = ((("ebitda",), ()), (("interest",), ()), "LTM")
+    definition = compile_definition(
+        CatalogMetricRecord(
+            metric_id="net_debt_ebitda",
+            expression=_expr(sides[0], sides[1]),
+            executor_key="composed",
+            executor_id=_EXECUTOR_ID,
+            executor_version=_EXECUTOR_VERSION,
+            formula_id="net_debt_ebitda",
+            definition_version="net_debt_ebitda@2",
+            window="LTM",
+        ),
+        semantic_model_version="smv-now",
+    )
+    plan = seal(
+        metric_id=definition.metric_id,
+        variant=definition.variant,
+        variant_source=definition.variant_source,
+        catalog_version=None,
+        semantic_model_version="smv-then",
+        build_key=None,
+        model_id=None,
+        status="resolved",
+        inputs=tuple(
+            ResolvedInput(name, "all_of", "formula", name, name, None, False, True)
+            for name in ("ebitda", "interest")
+        ),
+        diagnostic=(),
+        rejected=(),
+        fallbacks=(),
+        warnings=(),
+        needs_input=(),
+        shield=None,
+        definition_hash=definition.definition_hash,
+    )
+    common = {
+        "facts": [_fact("ebitda", "100"), _fact("interest", "-40")],
+        "bindings": [_bind("ebitda"), _bind("interest")],
+        "periods": [_year()],
+        "sign_convention": "outflow_negative",
+        "marker_class": None,
+        "absent": frozenset(),
+    }
+    direct = composed_ratio(
+        "net_debt_ebitda",
+        _formula(*sides),
+        facts=common["facts"],
+        bindings=common["bindings"],
+        periods=common["periods"],
+        aggregations={"ebitda": "sum", "interest": "sum"},
+        plan=plan,
+        definition=definition,
+    )
+    assert direct["status"] == "not_computed"
+    assert direct["reason"] == "semantic_mismatch"
+    selected = select_ratio(
+        "net_debt_ebitda",
+        None,
+        common,
+        profile=None,
+        profile_ref=None,
+        composed={"net_debt_ebitda": _formula(*sides)},
+        concepts=frozenset({"ebitda", "interest"}),
+        money=frozenset({"ebitda", "interest"}),
+        aggregations={"ebitda": "sum", "interest": "sum"},
+        plan=plan,
+        definition=definition,
+    )
+    assert selected["status"] == "not_computed"
+    assert selected["reason"] == "semantic_mismatch"
 
 
 def test_denominator_sign_follows_the_declared_concept_not_the_metric_name():

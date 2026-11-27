@@ -976,6 +976,11 @@ def calculate_coverage(
             marker_class=marker_class,
             explicit_phases=explicit_phases,
             plan_content_sha256=getattr(plan, "content_sha256", None) if plan is not None else None,
+            semantic_model_version=(
+                getattr(plan, "semantic_model_version", None)
+                if plan is not None
+                else getattr(definition, "semantic_model_version", None)
+            ),
             bound_definition=definition,
         )
         if slots is not None:
