@@ -7,6 +7,7 @@ https://peps.python.org/pep-0544/
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Protocol
@@ -115,6 +116,7 @@ class ExecutionTrace:
     actual_fact_uses: tuple[str, ...]
     actual_periods: tuple[str, ...]
     profile_values: tuple[tuple[str, object], ...]
+    actual_period_slots: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -123,10 +125,25 @@ class MetricExecutionContext:
     plan: ResolvedMetricPlan | None = None
     slots: tuple[ResolvedFormulaSlot, ...] = ()
     calculation_origin: str = "calculated"
+    branch_id: str | None = None
 
 
 class MetricExecutor(Protocol):
     def execute(self, context: MetricExecutionContext) -> CalculationOutcome: ...
+
+
+# Идентификатор ветви, которую сейчас исполняет контекст. Пусто — охранник не сверяет.
+_branch_context: ContextVar[str | None] = ContextVar("execution_branch_id", default=None)
+
+
+def bind_branch(branch_id: str | None):
+    """Привязывает след к ветви контекста на время прогона."""
+
+    return _branch_context.set(branch_id)
+
+
+def reset_branch(token) -> None:
+    _branch_context.reset(token)
 
 
 def compile_definition(
@@ -252,9 +269,12 @@ def trace_for(
     branch: ExecutionBranchDefinition,
     profile_values: Mapping[str, object],
 ) -> ExecutionTrace:
-    values = tuple(
-        (name, profile_values[name]) for name in branch.profile_dependencies if name in profile_values
-    )
+    """Значение каждой профильной зависимости. Пропуск имени — отказ, не дырка в следе."""
+
+    missing = [name for name in branch.profile_dependencies if name not in profile_values]
+    if missing:
+        raise ExecutionContractError("missing_profile")
+    values = tuple((name, profile_values[name]) for name in branch.profile_dependencies)
     return ExecutionTrace(branch.branch_id, (), (), (), values)
 
 
@@ -263,7 +283,13 @@ def read_input(
     trace: ExecutionTrace,
     name: str,
 ) -> ExecutionTrace:
-    # shortcut: анализ этот охранник не вызывает, PR 4 проводит его внутри каждой специализированной ветви
+    """Чтение входа ветви. Чужое имя и чужой контекст отказываются здесь, не после прогона."""
+
+    expected = _branch_context.get()
+    if expected is not None and expected != branch.branch_id:
+        raise ExecutionContractError("branch_mismatch")
+    if trace.branch_id != branch.branch_id:
+        raise ExecutionContractError("branch_mismatch")
     allowed = set(branch.required_inputs) | set(branch.optional_inputs)
     if name not in allowed:
         raise ExecutionContractError("forbidden_input")

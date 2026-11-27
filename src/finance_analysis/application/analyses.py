@@ -1131,6 +1131,7 @@ class Analyses:
         warnings = []
         uses = []
         evidences: list = []
+        branch_traces: list[dict] = []
         money = frozenset(name for name, item in svc.catalog.concepts.items() if item.unit == "money")
         aggregations = {
             name: item.effective_aggregation for name, item in svc.catalog.concepts.items()
@@ -1228,6 +1229,8 @@ class Analyses:
                 ),
             )
             result = outcome.result
+            if outcome.trace is not None:
+                branch_traces.append({"metric": metric, "trace": outcome.trace})
             if result.get("reason") in {"missing_executor", "incompatible_executor", "definition_mismatch"}:
                 warnings.append({"code": result["reason"], "params": {"metric": metric}})
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
@@ -1275,6 +1278,7 @@ class Analyses:
             "dscr_variant": dscr_variant,
             "plans": plans,
             "evidences": evidences,
+            "branch_traces": branch_traces,
             "book_rows": cite_lbo_book_rows(
                 source=verdict.source,
                 primary=verdict.primary,

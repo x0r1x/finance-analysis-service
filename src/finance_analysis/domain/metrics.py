@@ -1573,6 +1573,33 @@ def lease_interest_coverage(
     elif mode == "pair":
         named["lease_payment"] = primaries["lease_payment"]
         named["lease_principal"] = primaries["lease_principal"]
+    return _lease_finish(
+        mode, named, facts, bindings, metric, periods, warnings, primaries, sign_convention, marker_class, annual
+    )
+
+
+def _lease_finish(mode, named, facts, bindings, metric, periods, warnings, primaries, sign_convention, marker_class, annual):
+    from finance_analysis.domain.execution_branches import (
+        LEASE_DIRECT,
+        LEASE_PAIR,
+        claim,
+        run_branch,
+    )
+
+    def _body():
+        for name in named:
+            claim(name)
+        return _lease_body(
+            mode, named, facts, metric, periods, warnings, primaries, sign_convention, marker_class, annual
+        )
+
+    if mode not in {"direct", "pair"}:
+        return _body()
+    branch = LEASE_DIRECT if mode == "direct" else LEASE_PAIR
+    return run_branch(branch, {}, facts, bindings, _body, periods=periods)
+
+
+def _lease_body(mode, named, facts, metric, periods, warnings, primaries, sign_convention, marker_class, annual):
     if unconfirmed_scale(facts, list(named.values())):
         components, scales = _scale_bundle(facts, named)
         return _explained(
@@ -1631,6 +1658,18 @@ def lease_interest_coverage(
     else:
         status = "missing_input"
     return {"metric": metric, "rows": rows, "needs_input": [], "warnings": warnings, "status": status}
+
+
+def lease_branch_mode(bindings: list[dict], absent: frozenset[str], *, plan=None) -> str | None:
+    """Режим, который выбирает ветвь. Широкий набор входов остаётся у самого расчёта."""
+
+    if plan is not None:
+        from finance_analysis.domain.resolved_plan import bindings_for_plan
+
+        bindings = list(bindings_for_plan(bindings, plan))
+    primaries = BoundInputs(ICR_LEASE_INPUTS, _primaries(bindings, absent))
+    mode = _lease_mode(primaries, bindings, absent)
+    return mode if mode in {"direct", "pair"} else None
 
 
 def _lease_mode(primaries: dict, bindings: list[dict], absent: frozenset[str]) -> str:
@@ -2520,6 +2559,8 @@ def _sums(
     и не выбрасывается: окно само берёт её конец.
     """
 
+    from finance_analysis.domain.execution_branches import note_fact
+
     totals: dict[tuple, Decimal] = {}
     grouped: dict[tuple, list[dict]] = {}
     row_key = binding["row_key"]
@@ -2531,6 +2572,7 @@ def _sums(
         number, field, raw = _figure_taken(fact, sheet=sheet)
         if number is None or field is None or raw is None:
             continue
+        note_fact(fact)
         own = (fact["axis_id"], fact["period_id"])
         key = aligned.get(own, own)
         totals[key] = totals.get(key, Decimal(0)) + Decimal(number)
@@ -2701,6 +2743,10 @@ def _figure(fact: dict, *, sheet: bool = False) -> Decimal | None:
     """
 
     value, _field, _raw = _figure_taken(fact, sheet=sheet)
+    if value is not None:
+        from finance_analysis.domain.execution_branches import note_fact
+
+        note_fact(fact)
     return value
 
 

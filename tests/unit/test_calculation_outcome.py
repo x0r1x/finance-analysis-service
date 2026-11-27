@@ -56,6 +56,7 @@ EXCLUDED = frozenset(
         "_remember",
         "_seal",
         "_note",
+        "note_fact",
         "_uses",
         "_restate_step",
         "_exclusion",

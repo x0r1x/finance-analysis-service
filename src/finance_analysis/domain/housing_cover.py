@@ -213,10 +213,26 @@ _FROM_HOUSING = DynamicInputs(components=(("dscr", "dscr.housing"),))
     dynamic_inputs=_DOMRF_DYNAMIC,
     implementation_version="llcr.domrf@1",
 )
-def _llcr(facts, bindings, periods, convention, absent, profile, variant):
+def _llcr(facts, bindings, periods, convention, absent, profile, variant, _inside=False):
     choice = profile_variant(profile, "llcr_definition") or variant or "cbr590"
     if choice not in _NOMINAL:
         return _envelope("llcr", [], "not_computed", message="llcr_definition.variant: cbr590 или domrf")
+    if not _inside:
+        from finance_analysis.domain.execution_branches import branch_for, run_branch
+
+        confirmed = _none_confirmed(profile)
+        branch = None if choice == "cbr590" and confirmed is None else branch_for("llcr", variant=choice)
+        if branch is None:
+            return _llcr(facts, bindings, periods, convention, absent, profile, variant, True)
+        values = {"guaranteed_funds_none": confirmed is True} if choice == "cbr590" else {}
+        return run_branch(
+            branch,
+            values,
+            facts,
+            bindings,
+            lambda: _llcr(facts, bindings, periods, convention, absent, profile, variant, True),
+            periods=periods,
+        )
     aligned = aligned_keys(periods)
     rows = []
     for axis in _axes([], periods):
@@ -271,6 +287,9 @@ def _life_row(choice, axis, ordered, facts, bindings, aligned, convention, absen
     if blocked:
         return _life_stop(choice, axis, blocked, missing=sorted(set(missing)))
     if choice == "cbr590":
+        from finance_analysis.domain.execution_branches import claim
+
+        claim("guaranteed_funds")
         extra, problem = _stock(facts, bindings, ordered, "guaranteed_funds", convention, absent)
         if problem == "stock_conflict":
             return _life_stop(choice, axis, "stock_conflict")
@@ -282,7 +301,12 @@ def _life_row(choice, axis, ordered, facts, bindings, aligned, convention, absen
             "guaranteed_funds": format(extra, "f"),
             "denominator": format(debt, "f"),
         }
-        return _ratio_row("llcr", axis, cash + extra, debt, choice, text, composition, parts)
+        return _ratio_row(
+            "llcr", axis, cash + extra, debt, choice, text, composition, parts, horizon=_horizon(ordered)
+        )
+    from finance_analysis.domain.execution_branches import claim
+
+    claim("credit_limit")
     limit, problem = _stock(facts, bindings, ordered, "credit_limit", convention, absent)
     if problem == "stock_conflict":
         return _life_stop(choice, axis, "stock_conflict")
@@ -293,11 +317,34 @@ def _life_row(choice, axis, ordered, facts, bindings, aligned, convention, absen
         "credit_limit": format(limit, "f"),
         "senior_interest_paid": format(interest_total, "f"),
     }
-    return _ratio_row("llcr", axis, cash, limit + interest_total, choice, text, composition, parts)
+    return _ratio_row(
+        "llcr", axis, cash, limit + interest_total, choice, text, composition, parts, horizon=_horizon(ordered)
+    )
 
 
-def _family(metric, facts, bindings, periods, convention, absent, profile, direction, basis):
-    del basis
+def _family(metric, facts, bindings, periods, convention, absent, profile, direction, basis, _inside=False):
+    kept_basis = basis
+    if not _inside:
+        from finance_analysis.domain.execution_branches import (
+            branch_for,
+            housing_flags,
+            housing_values,
+            run_branch,
+        )
+
+        parsed = housing_flags(profile)
+        branch = branch_for(metric, variant="housing", profile=profile)
+        if isinstance(parsed, tuple) and branch is not None:
+            return run_branch(
+                branch,
+                housing_values(parsed[0], parsed[1], parsed[2], direction if metric == "adscr" else None),
+                facts,
+                bindings,
+                lambda: _family(
+                    metric, facts, bindings, periods, convention, absent, profile, direction, kept_basis, True
+                ),
+                periods=periods,
+            )
     series = housing_dscr(
         facts=facts, bindings=bindings, periods=periods, sign_convention=convention, absent=absent, profile=profile
     )
@@ -479,9 +526,20 @@ def _adscr(axis, members, ordered, direction):
     dynamic_inputs=DynamicInputs(groups=(ConceptGroup("покрытие", ("escrow_balance", "debt_outstanding")),)),
     implementation_version="escrow_blended_rate@1",
 )
-def _rate(facts, bindings, periods, convention, absent, profile):
+def _rate(facts, bindings, periods, convention, absent, profile, _inside=False):
     scale = (profile or {}).get("escrow_rate_scale")
     problem = None if scale is None else scale_error(scale)
+    if not _inside and scale is not None and not problem:
+        from finance_analysis.domain.execution_branches import ESCROW, run_branch
+
+        return run_branch(
+            ESCROW,
+            {"escrow_rate_scale": scale},
+            facts,
+            bindings,
+            lambda: _rate(facts, bindings, periods, convention, absent, profile, True),
+            periods=periods,
+        )
     rows = []
     aligned = aligned_keys(periods)
     for period in periods:
@@ -499,6 +557,10 @@ _RATE_COMPOSITION = "(covered × special_or_rung + uncovered × base_rate) / deb
 
 
 def _blend(facts, bindings, period, aligned, convention, absent, scale):
+    from finance_analysis.domain.execution_branches import claim
+
+    claim("debt_outstanding")
+    claim("escrow_balance")
     drawn, drawn_missing = _at(facts, bindings, period, aligned, "debt_outstanding", convention, absent)
     escrow, escrow_missing = _at(facts, bindings, period, aligned, "escrow_balance", convention, absent)
     missing = [name for name, flag in (("debt_outstanding", drawn_missing), ("escrow_balance", escrow_missing)) if flag]
@@ -548,6 +610,7 @@ def _blend(facts, bindings, period, aligned, convention, absent, scale):
     uncovered = drawn - covered
     base = _decimal(scale["base_rate"])
     value = _divide(covered * special + uncovered * base, drawn)
+    claim("effective_rate")
     book, book_missing = _at(facts, bindings, period, aligned, "effective_rate", convention, absent)
     warnings = []
     if not book_missing and book is not None and quantize_ratio(book) != value:
@@ -703,12 +766,32 @@ def _divide(numerator, denominator):
         return quantize_ratio(numerator / denominator)
 
 
-def _ratio_row(metric, axis, numerator, denominator, variant, methodology, composition, components=None, period=None):
+def _horizon(ordered) -> list[str]:
+    """Периоды, которые строка реально сложила. Не `over`: его забирает публичная строка."""
+
+    return [str(period["period_id"]) for period in ordered if period.get("period_id")]
+
+
+def _ratio_row(
+    metric, axis, numerator, denominator, variant, methodology, composition, components=None, period=None, horizon=None
+):
     if numerator is None or denominator is None:
-        return _metric_row(metric, axis, None, "not_computed", "missing_component", variant, methodology, composition, period=period)
+        return _metric_row(
+            metric, axis, None, "not_computed", "missing_component", variant, methodology, composition, period=period, horizon=horizon
+        )
     if denominator == 0:
         return _metric_row(
-            metric, axis, None, "no_debt_service", "zero_denominator", variant, methodology, composition, period=period, components=components
+            metric,
+            axis,
+            None,
+            "no_debt_service",
+            "zero_denominator",
+            variant,
+            methodology,
+            composition,
+            period=period,
+            components=components,
+            horizon=horizon,
         )
     return _metric_row(
         metric,
@@ -721,6 +804,7 @@ def _ratio_row(metric, axis, numerator, denominator, variant, methodology, compo
         composition,
         period=period,
         components=components,
+        horizon=horizon,
     )
 
 
@@ -741,6 +825,7 @@ def _metric_row(
     reduction=None,
     warnings=None,
     components=None,
+    horizon=None,
 ):
     row = {
         "metric": metric,
@@ -762,6 +847,8 @@ def _metric_row(
         row["excluded_periods"] = excluded
     if over is not None:
         row["over"] = over
+    if horizon is not None:
+        row["_trace_periods"] = horizon
     if reduction is not None:
         row["reduction"] = reduction
     return row

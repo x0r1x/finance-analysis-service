@@ -124,6 +124,7 @@ class CalculationEvidence:
 class CalculationOutcome:
     result: dict
     evidence: CalculationEvidence | None
+    trace: object | None = None
 
 
 @dataclass

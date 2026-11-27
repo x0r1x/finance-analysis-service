@@ -66,7 +66,30 @@ def free_cash_flow(
     book: list[dict] | None = None,
     statement_sheets: frozenset[str] = frozenset(),
     plan: Any | None = None,
+    _inside: bool = False,
 ) -> dict:
+    if not _inside:
+        from finance_analysis.domain.execution_branches import FCFF, run_branch
+
+        return run_branch(
+            FCFF,
+            {},
+            facts,
+            bindings,
+            lambda: free_cash_flow(
+                facts=facts,
+                bindings=bindings,
+                periods=periods,
+                sign_convention=sign_convention,
+                absent=absent,
+                links=links,
+                book=book,
+                statement_sheets=statement_sheets,
+                plan=plan,
+                _inside=True,
+            ),
+            periods=periods,
+        )
     if plan is not None:
         if plan.status == "needs_input":
             subject = plan.needs_input[0].subject if plan.needs_input else "operating_cash_flow"
@@ -77,6 +100,10 @@ def free_cash_flow(
         from finance_analysis.domain.resolved_plan import bound_rows
 
         primaries = bound_rows(plan, bindings)
+        from finance_analysis.domain.execution_branches import claim
+
+        claim("operating_cash_flow")
+        claim("capex")
         ocf = primaries.get("operating_cash_flow")
         capex = primaries.get("capex")
         if ocf is None:
@@ -89,6 +116,10 @@ def free_cash_flow(
         clash = _ambiguous_primary(bindings, absent)
         if clash:
             return _finish(_ambiguous(clash), [], periods, book)
+        from finance_analysis.domain.execution_branches import claim
+
+        claim("operating_cash_flow")
+        claim("capex")
         ocf = primaries.get("operating_cash_flow")
         capex = primaries.get("capex")
         if ocf is None:
@@ -98,6 +129,10 @@ def free_cash_flow(
         confirm_paid_interest(primaries, bindings, absent)
         statement = frozenset(sheet_name_key(name) for name in statement_sheets)
         basis = _basis(ocf, bindings, absent, facts, links or [], statement)
+    from finance_analysis.domain.execution_branches import claim
+
+    claim("interest_paid")
+    claim("interest")
     paid = primaries.get("interest_paid")
     accrued = primaries.get("interest")
     if (
@@ -126,6 +161,7 @@ def free_cash_flow(
             periods,
             book,
         )
+    claim("income_tax_rate")
     rate_row = primaries.get("income_tax_rate")
     aligned = aligned_keys(periods)
     ocf_flow = _flow(facts, ocf, aligned, periods)
