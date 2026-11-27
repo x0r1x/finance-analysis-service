@@ -722,6 +722,28 @@ def _execution_id(source: str, metric: str, index: int) -> str:
     return f"{metric}-{index}"
 
 
+def _branch_trace(trace: dict) -> str:
+    """Полный след ветви есть только у узла, который сам её выбрал.
+
+    Родитель хранит формулу и результаты периодов. Его ``branch_id`` не
+    достраивается: иначе цепь выглядит как полный прогон каждого узла.
+    Связь родителя — https://www.w3.org/TR/prov-dm/#term-Communication
+    """
+
+    if trace.get("branch_id") and trace.get("actual_inputs"):
+        return "complete"
+    return "incomplete"
+
+
+def _trace_item(execution_id: str, trace: dict) -> dict:
+    return {
+        "execution_id": execution_id,
+        "evidence_id": trace.get("evidence_id"),
+        "metric": trace.get("metric"),
+        "branch_trace": _branch_trace(trace),
+    }
+
+
 def _publication(analysis_id: str, source: str, execution_id: str, metric: str, *, status: str, complete: bool) -> dict:
     return {
         "analysis_id": analysis_id,
@@ -1144,6 +1166,7 @@ class Analyses:
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
         from finance_analysis.domain.covenant import _variant_ids
 
+        coverage_catalog = _coverage_catalog(svc.model_types, getattr(svc, "financial_catalog", None))
         definitions, profile_expression = _coverage_definitions(
             metrics,
             svc.model_types.metric_expressions,
@@ -1154,7 +1177,7 @@ class Analyses:
             concepts=svc.catalog.ids,
             money=money,
             warnings=warnings,
-            catalog=_coverage_catalog(svc.model_types, getattr(svc, "financial_catalog", None)),
+            catalog=coverage_catalog,
             variants=_variant_ids(svc.model_types.composed),
         )
         definitions.update(
@@ -1232,6 +1255,14 @@ class Analyses:
             if outcome.trace is not None:
                 branch_traces.append({"metric": metric, "trace": outcome.trace})
                 _apply_trace(evidences, outcome.trace, before, metric)
+            _bind_definition_hash(
+                evidences,
+                before,
+                metric,
+                coverage_catalog,
+                dscr_variant if metric == "dscr" else variant_of.get(metric),
+                dscr_variant,
+            )
             if result.get("reason") in {"missing_executor", "incompatible_executor", "definition_mismatch"}:
                 warnings.append({"code": result["reason"], "params": {"metric": metric}})
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
@@ -1250,6 +1281,14 @@ class Analyses:
                 evidences.append(_unsupported(metric, common["sign_convention"]))
                 if outcome.trace is not None:
                     _apply_trace(evidences, outcome.trace, len(evidences) - 1, metric)
+                _bind_definition_hash(
+                    evidences,
+                    len(evidences) - 1,
+                    metric,
+                    coverage_catalog,
+                    dscr_variant if metric == "dscr" else variant_of.get(metric),
+                    dscr_variant,
+                )
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
                 entry["definition_source"] = result["definition_source"]
@@ -2093,6 +2132,80 @@ class Analyses:
                     item["evidence_complete"] = False
         return records
 
+    async def traces(self, job_id: str, analysis_id: str) -> dict:
+        """Список подтверждённых улик. Незавершённый указатель — только стадия, без тела.
+
+        Объект до ``committed`` наружу не читается: публикация не объявляется
+        раньше подтверждения указателя.
+        https://microservices.io/patterns/data/transactional-outbox.html
+        """
+
+        await self._require_analysis(job_id, analysis_id)
+        items = []
+        for row in self._trace_rows(analysis_id):
+            state = str(row.get("state") or "committed")
+            if state != "committed":
+                items.append({"execution_id": row["execution_id"], "publication": state})
+                continue
+            trace = await self._saved_trace(analysis_id, row["execution_id"])
+            items.append(_trace_item(row["execution_id"], trace))
+        return {"analysis_id": analysis_id, "items": items}
+
+    async def trace(self, job_id: str, analysis_id: str, execution_id: str) -> dict:
+        """Одна подтверждённая улика. Родитель без следа ветви помечен неполным.
+
+        Нет строки — «след не найден». Строка ``pending_object``,
+        ``pending_retention`` или ``pending_commit`` — «след не опубликован»,
+        объект не читается.
+        https://microservices.io/patterns/data/transactional-outbox.html
+        """
+
+        await self._require_analysis(job_id, analysis_id)
+        row = self._trace_row(analysis_id, execution_id)
+        if row is None:
+            raise NotFound("след не найден")
+        state = str(row.get("state") or "committed")
+        if state != "committed":
+            raise NotFound("след не опубликован", extra={"publication": state})
+        saved = await self._saved_trace(analysis_id, execution_id)
+        if saved.get("reason") == "pointer_missing":
+            raise NotFound("след не найден")
+        return {
+            "analysis_id": analysis_id,
+            "execution_id": execution_id,
+            "branch_trace": _branch_trace(saved),
+            "trace": saved,
+        }
+
+    async def _require_analysis(self, job_id: str, analysis_id: str) -> None:
+        check_ulid(analysis_id)
+        try:
+            await self.store.get(keys.report_index_key(job_id, analysis_id))
+        except NotFound:
+            raise NotFound("анализ не найден") from None
+
+    def _trace_rows(self, analysis_id: str) -> list:
+        pointer = getattr(self.service, "trace_pointer", None)
+        if pointer is None:
+            return []
+        return pointer.list_analysis(analysis_id)
+
+    def _trace_row(self, analysis_id: str, execution_id: str):
+        pointer = getattr(self.service, "trace_pointer", None)
+        if pointer is None:
+            return None
+        return pointer.get(analysis_id, execution_id)
+
+    async def _saved_trace(self, analysis_id: str, execution_id: str) -> dict:
+        from finance_analysis.application.trace_tail import read_trace
+
+        return await read_trace(
+            self.store,
+            self.service.trace_pointer,
+            analysis_id=analysis_id,
+            execution_id=execution_id,
+        )
+
     async def result(self, job_id: str, analysis_id: str) -> dict:
         check_ulid(analysis_id)
         try:
@@ -2281,6 +2394,79 @@ def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
         status = "evidence_available" if (metric, version) in EVIDENCE_AVAILABLE else "evidence_not_supported"
         rows.append((metric, version, status))
     return tuple(rows)
+
+
+def _bind_definition_hash(evidences, start: int, metric: str, catalog, variant, dscr_variant) -> None:
+    """Пишет хеш определения на улики этого прогона, у которых он ещё не задан.
+
+    Уже записанный хеш не подменяется. Исполнитель запрошенной метрики берётся
+    из реестра: ADSCR это ``adscr@1``. Родитель DSCR, которого посчитал
+    ``calculate_coverage(metric="dscr")``, запечатан как ``dscr@1``. Если ``dscr``
+    не запрашивали, плана DSCR нет и вариант книги в этот проход не входил.
+    Такой родитель остаётся без ``definition_hash``: хеш ``dscr.pf`` при
+    ``implementation`` ``dscr@1`` называл бы путь, который не шёл.
+    Хеш — SHA-256 канонического определения, FIPS 180-4:
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    Родитель — связь деятельности с деятельностью:
+    https://www.w3.org/TR/prov-dm/#term-Communication
+    """
+
+    from dataclasses import replace
+
+    from finance_analysis.domain.calculation_evidence import seal
+    from finance_analysis.domain.execution_contract import compile_definition
+    from finance_analysis.domain.metric_contract import REGISTRY, formula_id_of
+
+    if start < 0:
+        return
+    digests: dict[str, str | None] = {}
+
+    def digest_for(name: str) -> str | None:
+        own_variant = dscr_variant if name == "dscr" else (variant if name == metric else None)
+        cache_key = f"{name}.{own_variant}" if own_variant else name
+        if cache_key in digests:
+            return digests[cache_key]
+        digest = None
+        if catalog:
+            record = catalog.get(cache_key) or catalog.get(name)
+            if record is not None:
+                formula = formula_id_of(name, own_variant, {})
+                impl = REGISTRY.get((name, formula))
+                if impl is not None and impl.implementation_version:
+                    record = replace(
+                        record,
+                        executor_key=formula,
+                        executor_id=formula,
+                        executor_version=impl.implementation_version,
+                    )
+                digest = compile_definition(record, catalog).definition_hash
+        digests[cache_key] = digest
+        return digest
+
+    changed: dict[str, str] = {}
+    for index in range(start, len(evidences)):
+        item = evidences[index]
+        if item is None or item.definition_hash:
+            continue
+        if item.metric == "dscr" and metric != "dscr":
+            continue
+        digest = digest_for(item.metric)
+        if not digest:
+            continue
+        nxt = seal(replace(item, definition_hash=digest))
+        if item.evidence_id:
+            changed[item.evidence_id] = nxt.evidence_id
+        evidences[index] = nxt
+    if not changed:
+        return
+    for index in range(start, len(evidences)):
+        item = evidences[index]
+        if item is None or not item.parent_evidence_ids:
+            continue
+        parents = tuple(changed.get(parent, parent) for parent in item.parent_evidence_ids)
+        if parents == item.parent_evidence_ids:
+            continue
+        evidences[index] = seal(replace(item, parent_evidence_ids=parents))
 
 
 def _apply_trace(evidences: list, trace, start: int, metric: str) -> None:

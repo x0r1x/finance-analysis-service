@@ -59,7 +59,7 @@ jobs:
           echo "FAS_TEST_OOM_CGROUP=$target" >> "$GITHUB_ENV"
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev]" "lxml==6.1.3"
 
       - name: ruff
         run: ruff check src tests

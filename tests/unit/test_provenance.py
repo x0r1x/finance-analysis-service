@@ -816,3 +816,304 @@ def test_reported_origin_stays_on_the_publication_evidence():
     assert published.definition_version is None
     assert published.executor_version is None
     assert view_from_evidence(published)["calculation_origin"] == "reported"
+
+
+_AUDIT_FIELDS = (
+    "evidence_id",
+    "branch_id",
+    "actual_inputs",
+    "actual_fact_uses",
+    "actual_periods",
+    "actual_period_slots",
+    "definition_hash",
+    "parent_evidence_ids",
+)
+
+
+async def test_saved_evidence_walks_parents_for_adscr_and_reductions(tmp_path):
+    """Аудитор читает сохранённую улику, а не список branch_traces у compute_metrics.
+
+    Идентификатор родителя находится в той же сохранённой коллекции.
+    https://www.w3.org/TR/prov-dm/#term-Communication
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    import json
+    from contextlib import asynccontextmanager
+    from dataclasses import replace
+
+    from httpx import ASGITransport, AsyncClient
+
+    from finance_analysis.adapters.api.app import create_app
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.adapters.storage.trace_pointer import DuckDBTracePointer
+    from finance_analysis.application.analyses import (
+        Analyses,
+        Target,
+        _coverage_catalog,
+    )
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.keys import report_index_key
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.execution_contract import compile_definition
+    from finance_analysis.domain.metric_contract import REGISTRY
+    from finance_analysis.domain.model_type import Effective
+    from finance_analysis.settings import Settings
+    from tests.unit.test_cover_provenance import _common, _quarters
+
+    periods, facts = _quarters()
+    common = _common(periods, facts)
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Glossary:
+        async def profile_body(self, _profile_id):
+            return {}
+
+    class _Service:
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset == "bindings":
+                return common["bindings"]
+            if dataset == "fact_observation":
+                return facts
+            if dataset == "dim_period":
+                return periods
+            if dataset in {"dim_row", "period_semantics", "graph_links"}:
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                ("project_finance",),
+                "project_finance",
+                "confirmed",
+                None,
+                1,
+                None,
+                1.0,
+                {"project_finance": 1.0},
+                (),
+            )
+
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    service = _Service()
+    service.model_types = load_model_types()
+    service.catalog = load_catalog()
+    service.financial_catalog = None
+    service.guard = _Guard()
+    service.glossary = _Glossary()
+    service.store = store
+    service.trace_pointer = pointer
+    service.trace_retainer = None
+    service.settings = Settings(_env_file=None)
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    analyses = Analyses(service)
+    service.analyses = analyses
+    got = await analyses.compute_metrics(
+        "job",
+        Target(head=head, build="build", manifest={}, fresh=True),
+        ["adscr", "dscr_min", "dscr_avg"],
+    )
+    for row in got["rows"]:
+        _row_is_public(row)
+    analysis_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    job_id = "ab" * 32
+    await analyses._publish_traces(analysis_id, got.get("evidences") or [], execution_source="ratios")
+    await store.put(
+        report_index_key(job_id, analysis_id),
+        json.dumps({"analysis_id": analysis_id, "build_key": "b" * 16}).encode(),
+    )
+
+    class _Support:
+        async def rate_limit(self, _who):
+            return None
+
+        @asynccontextmanager
+        async def user_inflight(self, _who):
+            yield
+
+    app = create_app(service.settings, service=service, support=_Support())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
+        listed = await client.get(f"/v1/books/{job_id}/analyses/{analysis_id}/traces")
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert "branch_traces" not in body
+        assert body["items"]
+        saved = []
+        for item in body["items"]:
+            assert item["execution_id"]
+            one = await client.get(
+                f"/v1/books/{job_id}/analyses/{analysis_id}/traces/{item['execution_id']}"
+            )
+            assert one.status_code == 200, one.text
+            detail = one.json()
+            assert "branch_traces" not in detail
+            assert detail["branch_trace"] == item["branch_trace"]
+            assert detail["execution_id"] == item["execution_id"]
+            saved.append(detail["trace"])
+        foreign = await client.get(f"/v1/books/{'cd' * 32}/analyses/{analysis_id}/traces")
+        assert foreign.status_code == 404
+    by_id = {item["evidence_id"] for item in saved if item.get("evidence_id")}
+    parents = [parent for item in saved for parent in item.get("parent_evidence_ids") or []]
+    assert parents
+    assert set(parents) <= by_id
+    catalog = _coverage_catalog(service.model_types, None)
+
+    def _hash(key: str, executor_id: str, executor_version: str) -> str:
+        record = catalog[key]
+        specialized = replace(
+            record,
+            executor_key=executor_id,
+            executor_id=executor_id,
+            executor_version=executor_version,
+        )
+        return compile_definition(specialized, catalog).definition_hash
+
+    for metric in ("adscr", "dscr_min", "dscr_avg"):
+        view = next(item for item in saved if item.get("metric") == metric)
+        for name in _AUDIT_FIELDS:
+            assert name in view, metric
+            assert view[name], metric
+        assert view["branch_id"] == metric
+        ran = REGISTRY[(metric, metric)]
+        assert view["executor_id"] == metric
+        assert view["executor_version"] == ran.implementation_version
+        assert view["definition_hash"] == _hash(metric, metric, ran.implementation_version)
+        assert view["definition_hash"] != compile_definition(catalog[metric], catalog).definition_hash
+        assert "cfads" in view["actual_inputs"]
+        assert "debt_service" in view["actual_inputs"]
+        assert view["actual_period_slots"]
+        assert all(parent in by_id for parent in view["parent_evidence_ids"])
+        for parent_id in view["parent_evidence_ids"]:
+            parent = next(item for item in saved if item.get("evidence_id") == parent_id)
+            # calculate_coverage(metric="dscr") запечатывает dscr@1. План DSCR
+            # не строился, вариант книги в этот проход не передавался. Хеш
+            # dscr.pf при implementation dscr@1 называл бы другой путь.
+            # https://csrc.nist.gov/publications/detail/fips/180/4/final
+            ran_parent = REGISTRY[("dscr", "dscr")]
+            assert parent["implementation"] == ran_parent.implementation_version
+            assert "definition_hash" not in parent
+            assert parent.get("definition_hash") != _hash(
+                "dscr.pf",
+                "dscr.pf",
+                REGISTRY[("dscr", "dscr.pf")].implementation_version,
+            )
+            assert parent["periods"]
+            assert "branch_id" not in parent
+            assert "actual_inputs" not in parent
+            listed_parent = next(item for item in body["items"] if item.get("evidence_id") == parent_id)
+            assert listed_parent["branch_trace"] == "incomplete"
+        listed_child = next(item for item in body["items"] if item.get("evidence_id") == view["evidence_id"])
+        assert listed_child["branch_trace"] == "complete"
+        if metric == "adscr":
+            assert ["adscr_direction", "lookback"] in view["profile_values"]
+        else:
+            assert view["parent_period_ids"]
+            assert "profile_values" not in view or view["profile_values"] == []
+
+
+async def test_unfinished_pointer_is_not_published_evidence(tmp_path):
+    """Незавершённый указатель не выглядит опубликованной уликой.
+
+    Список называет стадию и не отдаёт тело. Чтение одного такого указателя
+    не возвращает объект. Нет строки — «след не найден».
+    https://microservices.io/patterns/data/transactional-outbox.html
+    """
+
+    import json
+    from contextlib import asynccontextmanager
+
+    from httpx import ASGITransport, AsyncClient
+
+    from finance_analysis.adapters.api.app import create_app
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.adapters.storage.trace_pointer import DuckDBTracePointer
+    from finance_analysis.application.analyses import Analyses
+    from finance_analysis.application.keys import report_index_key
+    from finance_analysis.settings import Settings
+
+    analysis_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    job_id = "ab" * 32
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+
+    class _Service:
+        pass
+
+    class _Support:
+        async def rate_limit(self, _who):
+            return None
+
+        @asynccontextmanager
+        async def user_inflight(self, _who):
+            yield
+
+    service = _Service()
+    service.store = store
+    service.trace_pointer = pointer
+    service.settings = Settings(_env_file=None)
+    service.analyses = Analyses(service)
+    await store.put(
+        report_index_key(job_id, analysis_id),
+        json.dumps({"analysis_id": analysis_id}).encode(),
+    )
+    marker = "secret-uncommitted-cell"
+    for state in ("pending_object", "pending_retention", "pending_commit"):
+        execution_id = f"hold-{state}"
+        key = f"traces/{analysis_id}/{execution_id}.json"
+        pointer.put(
+            {
+                "analysis_id": analysis_id,
+                "execution_id": execution_id,
+                "object_key": key,
+                "evidence_complete": True,
+                "dropped_cell_count": 0,
+                "retained_until": None,
+                "state": state,
+            }
+        )
+        await store.put(
+            key,
+            json.dumps(
+                {
+                    "trace": {
+                        "metric": "adscr",
+                        "evidence_id": marker,
+                        "branch_id": "adscr",
+                        "actual_inputs": ["cfads"],
+                    }
+                }
+            ).encode(),
+        )
+    app = create_app(service.settings, service=service, support=_Support())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
+        listed = await client.get(f"/v1/books/{job_id}/analyses/{analysis_id}/traces")
+        assert listed.status_code == 200, listed.text
+        assert marker not in listed.text
+        body = listed.json()
+        assert "branch_traces" not in body
+        for state in ("pending_object", "pending_retention", "pending_commit"):
+            execution_id = f"hold-{state}"
+            item = next(row for row in body["items"] if row["execution_id"] == execution_id)
+            assert item["publication"] == state
+            assert "branch_trace" not in item
+            assert "trace" not in item
+            assert "evidence_id" not in item
+            one = await client.get(
+                f"/v1/books/{job_id}/analyses/{analysis_id}/traces/{execution_id}"
+            )
+            assert one.status_code == 404, one.text
+            assert marker not in one.text
+            problem = one.json()
+            assert problem["detail"] == "след не опубликован"
+            assert problem["publication"] == state
+            assert "trace" not in problem
+        missing = await client.get(f"/v1/books/{job_id}/analyses/{analysis_id}/traces/missing-0")
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "след не найден"
+        assert "publication" not in missing.json()
