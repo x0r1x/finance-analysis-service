@@ -1144,6 +1144,7 @@ class Analyses:
         dscr_variant = _dscr_variant(svc.model_types, verdict, body)
         from finance_analysis.domain.covenant import _variant_ids
 
+        coverage_catalog = _coverage_catalog(svc.model_types, getattr(svc, "financial_catalog", None))
         definitions, profile_expression = _coverage_definitions(
             metrics,
             svc.model_types.metric_expressions,
@@ -1154,7 +1155,7 @@ class Analyses:
             concepts=svc.catalog.ids,
             money=money,
             warnings=warnings,
-            catalog=_coverage_catalog(svc.model_types, getattr(svc, "financial_catalog", None)),
+            catalog=coverage_catalog,
             variants=_variant_ids(svc.model_types.composed),
         )
         definitions.update(
@@ -1232,6 +1233,14 @@ class Analyses:
             if outcome.trace is not None:
                 branch_traces.append({"metric": metric, "trace": outcome.trace})
                 _apply_trace(evidences, outcome.trace, before, metric)
+            _bind_definition_hash(
+                evidences,
+                before,
+                metric,
+                definitions,
+                coverage_catalog,
+                dscr_variant if metric == "dscr" else variant_of.get(metric),
+            )
             if result.get("reason") in {"missing_executor", "incompatible_executor", "definition_mismatch"}:
                 warnings.append({"code": result["reason"], "params": {"metric": metric}})
             if use == "optional" and result["status"] in {"needs_input", "missing_input"}:
@@ -1250,6 +1259,14 @@ class Analyses:
                 evidences.append(_unsupported(metric, common["sign_convention"]))
                 if outcome.trace is not None:
                     _apply_trace(evidences, outcome.trace, len(evidences) - 1, metric)
+                _bind_definition_hash(
+                    evidences,
+                    len(evidences) - 1,
+                    metric,
+                    definitions,
+                    coverage_catalog,
+                    dscr_variant if metric == "dscr" else variant_of.get(metric),
+                )
             entry = {"metric": metric, "applicability": use}
             if result.get("definition_source"):
                 entry["definition_source"] = result["definition_source"]
@@ -2281,6 +2298,65 @@ def evidence_matrix() -> tuple[tuple[str, str, str], ...]:
         status = "evidence_available" if (metric, version) in EVIDENCE_AVAILABLE else "evidence_not_supported"
         rows.append((metric, version, status))
     return tuple(rows)
+
+
+def _bind_definition_hash(evidences, start: int, metric: str, definitions, catalog, variant) -> None:
+    """Пишет хеш определения на улики этого прогона, включая родителя.
+
+    Уже записанный хеш не подменяется. Смена хеша родителя переписывает ссылку
+    ребёнка в том же списке, иначе цепь остаётся на старом идентификаторе.
+    Хеш — SHA-256 канонического определения, FIPS 180-4:
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    Родитель — связь деятельности с деятельностью:
+    https://www.w3.org/TR/prov-dm/#term-Communication
+    """
+
+    from dataclasses import replace
+
+    from finance_analysis.domain.calculation_evidence import seal
+    from finance_analysis.domain.execution_contract import compile_definition
+
+    if start < 0:
+        return
+    digests: dict[str, str | None] = {}
+
+    def digest_for(name: str) -> str | None:
+        if name in digests:
+            return digests[name]
+        own_variant = variant if name == metric else None
+        bound = definitions.get(name) if definitions else None
+        found = getattr(bound, "definition_hash", None)
+        digest = found if isinstance(found, str) and found else None
+        if digest is None and catalog:
+            key = f"{name}.{own_variant}" if own_variant else name
+            record = catalog.get(key) or catalog.get(name)
+            if record is not None:
+                digest = compile_definition(record, catalog).definition_hash
+        digests[name] = digest
+        return digest
+
+    changed: dict[str, str] = {}
+    for index in range(start, len(evidences)):
+        item = evidences[index]
+        if item is None or item.definition_hash:
+            continue
+        digest = digest_for(item.metric)
+        if not digest:
+            continue
+        nxt = seal(replace(item, definition_hash=digest))
+        if item.evidence_id:
+            changed[item.evidence_id] = nxt.evidence_id
+        evidences[index] = nxt
+    if not changed:
+        return
+    for index in range(start, len(evidences)):
+        item = evidences[index]
+        if item is None or not item.parent_evidence_ids:
+            continue
+        parents = tuple(changed.get(parent, parent) for parent in item.parent_evidence_ids)
+        if parents == item.parent_evidence_ids:
+            continue
+        evidences[index] = seal(replace(item, parent_evidence_ids=parents))
 
 
 def _apply_trace(evidences: list, trace, start: int, metric: str) -> None:

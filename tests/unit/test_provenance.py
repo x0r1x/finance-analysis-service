@@ -816,3 +816,126 @@ def test_reported_origin_stays_on_the_publication_evidence():
     assert published.definition_version is None
     assert published.executor_version is None
     assert view_from_evidence(published)["calculation_origin"] == "reported"
+
+
+_AUDIT_FIELDS = (
+    "evidence_id",
+    "branch_id",
+    "actual_inputs",
+    "actual_fact_uses",
+    "actual_periods",
+    "actual_period_slots",
+    "definition_hash",
+    "parent_evidence_ids",
+)
+
+
+async def test_saved_evidence_walks_parents_for_adscr_and_reductions(tmp_path):
+    """Аудитор читает сохранённую улику, а не список branch_traces у compute_metrics.
+
+    Идентификатор родителя находится в той же сохранённой коллекции.
+    https://www.w3.org/TR/prov-dm/#term-Communication
+    https://csrc.nist.gov/publications/detail/fips/180/4/final
+    """
+
+    import json
+
+    from finance_analysis.adapters.storage.store import LocalStore
+    from finance_analysis.adapters.storage.trace_pointer import DuckDBTracePointer
+    from finance_analysis.application.analyses import Analyses, Target
+    from finance_analysis.application.catalog import load_catalog
+    from finance_analysis.application.model_types import load_model_types
+    from finance_analysis.application.trace_tail import read_trace
+    from finance_analysis.domain.book import Head
+    from finance_analysis.domain.errors import NotFound
+    from finance_analysis.domain.model_type import Effective
+    from finance_analysis.settings import Settings
+    from tests.unit.test_cover_provenance import _common, _quarters
+
+    periods, facts = _quarters()
+    common = _common(periods, facts)
+
+    class _Guard:
+        async def read_all(self, _job_id):
+            return []
+
+    class _Glossary:
+        async def profile_body(self, _profile_id):
+            return {}
+
+    class _Service:
+        async def _dataset_rows(self, _job_id, _head, dataset):
+            if dataset == "bindings":
+                return common["bindings"]
+            if dataset == "fact_observation":
+                return facts
+            if dataset == "dim_period":
+                return periods
+            if dataset in {"dim_row", "period_semantics", "graph_links"}:
+                return []
+            raise NotFound(dataset)
+
+        async def resolve_model_type(self, _job_id, _head):
+            return Effective(
+                ("project_finance",),
+                "project_finance",
+                "confirmed",
+                None,
+                1,
+                None,
+                1.0,
+                {"project_finance": 1.0},
+                (),
+            )
+
+    store = LocalStore(tmp_path / "objects")
+    pointer = DuckDBTracePointer(tmp_path / "pointers.duckdb")
+    service = _Service()
+    service.model_types = load_model_types()
+    service.catalog = load_catalog()
+    service.financial_catalog = None
+    service.guard = _Guard()
+    service.glossary = _Glossary()
+    service.store = store
+    service.trace_pointer = pointer
+    service.trace_retainer = None
+    service.settings = Settings(_env_file=None)
+    head = Head(build_key="build", state_seq=1, derive_key="derive", versions={})
+    analyses = Analyses(service)
+    got = await analyses.compute_metrics(
+        "job",
+        Target(head=head, build="build", manifest={}, fresh=True),
+        ["adscr", "dscr_min", "dscr_avg"],
+    )
+    for row in got["rows"]:
+        _row_is_public(row)
+    analysis_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    await analyses._publish_traces(analysis_id, got.get("evidences") or [], execution_source="ratios")
+    saved = []
+    for row in pointer.list_analysis(analysis_id):
+        payload = json.loads(await store.get(row["object_key"]))
+        assert "branch_traces" not in payload
+        assert "branch_traces" not in payload["trace"]
+        saved.append(await read_trace(store, pointer, analysis_id=analysis_id, execution_id=row["execution_id"]))
+    by_id = {item["evidence_id"] for item in saved if item.get("evidence_id")}
+    parents = [parent for item in saved for parent in item.get("parent_evidence_ids") or []]
+    assert parents
+    assert set(parents) <= by_id
+    for metric in ("adscr", "dscr_min", "dscr_avg"):
+        view = next(item for item in saved if item.get("metric") == metric)
+        for name in _AUDIT_FIELDS:
+            assert name in view, metric
+            assert view[name], metric
+        assert view["branch_id"] == metric
+        assert "cfads" in view["actual_inputs"]
+        assert "debt_service" in view["actual_inputs"]
+        assert view["actual_period_slots"]
+        assert all(parent in by_id for parent in view["parent_evidence_ids"])
+        for parent_id in view["parent_evidence_ids"]:
+            parent = next(item for item in saved if item.get("evidence_id") == parent_id)
+            assert parent["definition_hash"]
+        if metric == "adscr":
+            assert ["adscr_direction", "lookback"] in view["profile_values"]
+        else:
+            assert view["parent_period_ids"]
+            assert "profile_values" not in view or view["profile_values"] == []
