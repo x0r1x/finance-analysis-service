@@ -290,8 +290,12 @@ _COMPOSED_METRICS = frozenset(
 )
 
 
-def _composed_definitions(model_types, financial) -> dict:
-    """Составные формулы каталога. Версия определения не выдумывается, исполнитель свой."""
+def _composed_definitions(model_types, financial, outflows: frozenset[str] | None = None) -> dict:
+    """Составные формулы каталога. Версия определения не выдумывается, исполнитель свой.
+
+    ``outflows`` — понятия с ``expected_sign: outflow``. Нормализация кладёт их
+    плюс-термы на определение. Имя метрики знак не выбирает.
+    """
 
     from finance_analysis.application.model_types import load_coverage_document
     from finance_analysis.domain.execution_contract import (
@@ -323,7 +327,8 @@ def _composed_definitions(model_types, financial) -> dict:
                 formula_id=formula_id,
                 definition_version=version,
                 window=window,
-            )
+            ),
+            outflows=outflows,
         )
     return found
 
@@ -1181,7 +1186,11 @@ class Analyses:
             variants=_variant_ids(svc.model_types.composed),
         )
         definitions.update(
-            _composed_definitions(svc.model_types, getattr(svc, "financial_catalog", None))
+            _composed_definitions(
+                svc.model_types,
+                getattr(svc, "financial_catalog", None),
+                outflows=outflows,
+            )
         )
         plans = plans_for(
             metrics,

@@ -8,9 +8,11 @@ import pytest
 from finance_analysis.domain.covenant import composed_ratio, select_ratio
 from finance_analysis.domain.execution_contract import (
     CatalogMetricRecord,
+    MetricExecutionContext,
     compile_definition,
 )
 from finance_analysis.domain.metric_contract import REGISTRY, UndeclaredInput
+from finance_analysis.domain.metric_dispatch import CalculationRequest, run_calculation
 from finance_analysis.domain.model_type import Composed, MetricExpression, Side
 from finance_analysis.domain.resolved_plan import ResolvedInput, seal
 
@@ -351,6 +353,73 @@ def test_profile_overlay_changes_the_formula_only_when_compile_receives_it():
     assert got["definition_source"] == "profile"
     assert got["definition_ref"]["profile_version"] == "book@3"
     assert _value(got) == Decimal("2.4000000000")
+
+
+def test_composed_executor_takes_sign_policy_from_the_definition():
+    """Составной исполнитель берёт знак с определения, не из имени метрики.
+
+    ``net_debt_ebitda`` раньше не брал модуль знаменателя, прочие имена брали.
+    Оба имени считают один состав. Знак задают плюс-термы с ``expected_sign: outflow``
+    на определении. Имя метрики, пустые ``payment_terms`` формулы и чужой набор
+    оттоков этот выбор не делают. Хеш определения от знака не меняется.
+    Понятие несёт признак, не имя показателя:
+    https://www.w3.org/TR/skos-reference/#concepts
+    """
+
+    sides = ((("ebitda",), ()), (("interest",), ()), "LTM")
+    record = CatalogMetricRecord(
+        metric_id="net_debt_ebitda",
+        expression=_expr(sides[0], sides[1]),
+        executor_key="composed",
+        executor_id=_EXECUTOR_ID,
+        executor_version=_EXECUTOR_VERSION,
+        formula_id="net_debt_ebitda",
+        definition_version="net_debt_ebitda@2",
+        window="LTM",
+    )
+    plain = compile_definition(record)
+    signed = compile_definition(record, outflows=frozenset({"interest"}))
+    assert signed.payment_terms == frozenset({"interest"})
+    assert signed.definition_hash == plain.definition_hash
+    open_name = CatalogMetricRecord(
+        metric_id="escrow_coverage",
+        expression=_expr(sides[0], sides[1]),
+        executor_key="composed",
+        executor_id=_EXECUTOR_ID,
+        executor_version=_EXECUTOR_VERSION,
+        formula_id="escrow_coverage",
+        definition_version="escrow_coverage@2",
+        window="LTM",
+    )
+    unsigned = compile_definition(open_name)
+    assert unsigned.payment_terms == frozenset()
+    formula = _formula(*sides)
+    assert formula.payment_terms == frozenset()
+    decoy = frozenset({"capex"})
+
+    def execute(metric: str, definition):
+        outcome = run_calculation(
+            "select_ratio",
+            CalculationRequest(
+                metric=metric,
+                common={
+                    "facts": [_fact("ebitda", "100"), _fact("interest", "-40")],
+                    "bindings": [_bind("ebitda"), _bind("interest")],
+                    "periods": [_year()],
+                    "sign_convention": "outflow_negative",
+                    "marker_class": None,
+                    "absent": frozenset(),
+                },
+                composed={metric: formula},
+                aggregations={"ebitda": "sum", "interest": "sum"},
+                outflows=decoy,
+            ),
+            MetricExecutionContext(definition=definition),
+        )
+        return outcome.result["rows"][0]["value"]
+
+    assert execute("net_debt_ebitda", signed) == Decimal("2.5000000000")
+    assert execute("escrow_coverage", unsigned) == Decimal("-2.5000000000")
 
 
 def test_denominator_sign_follows_the_declared_concept_not_the_metric_name():

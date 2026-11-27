@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Protocol
 
@@ -90,6 +90,10 @@ class EffectiveMetricDefinition:
     executor_key: str
     executor_id: str
     executor_version: str
+    # Плюс-термы с expected_sign outflow. Модуль платежа берётся отсюда.
+    # В хеш не входит: знак живёт на понятии, не в теле формулы.
+    # https://www.w3.org/TR/skos-reference/#concepts
+    payment_terms: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,7 @@ def compile_definition(
     *,
     profile: ProfileDscrRecord | None = None,
     covenant: Mapping[str, object] | None = None,
+    outflows: frozenset[str] | None = None,
 ) -> EffectiveMetricDefinition:
     """Сборка из одной записи, ``_active``, замены ``plans_for`` и ``resolve_covenant``.
 
@@ -206,6 +211,7 @@ def compile_definition(
     formula_id = formula_id_of(record.metric_id, record.variant, body)
     if not record.executor_key or not record.executor_id or not record.executor_version:
         raise ExecutionContractError("executor_identity")
+    payment_terms = _sign_policy(normalized, outflows)
     hashed = _definition_body(
         metric_id=record.metric_id,
         formula_id=formula_id,
@@ -234,7 +240,21 @@ def compile_definition(
         executor_key=record.executor_key,
         executor_id=record.executor_id,
         executor_version=record.executor_version,
+        payment_terms=payment_terms,
     )
+
+
+def _sign_policy(expression: NormalizedExpression, outflows: frozenset[str] | None) -> frozenset[str]:
+    """Плюс-термы с expected_sign outflow. Имя метрики не выбирает знак.
+
+    Признак живёт на понятии каталога. SKOS описывает понятие, не показатель:
+    https://www.w3.org/TR/skos-reference/#concepts
+    """
+
+    if not outflows:
+        return frozenset()
+    names = (*expression.numerator_plus, *expression.denominator_plus)
+    return frozenset(name for name in names if name in outflows)
 
 
 def slots_for(

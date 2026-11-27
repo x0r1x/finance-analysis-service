@@ -659,7 +659,16 @@ def composed_ratio(
         return finish(_composed_stop(metric, resolved))
     if resolved is not None:
         formula = resolved
-    if outflows is not None:
+    if definition is not None:
+        # Знак уже на определении. Имя метрики и набор оттоков вызова его не заменяют.
+        # https://www.w3.org/TR/skos-reference/#concepts
+        formula = Composed(
+            formula.numerator,
+            formula.denominator,
+            formula.window,
+            definition.payment_terms,
+        )
+    elif outflows is not None:
         plus_names = (*formula.numerator.plus, *formula.denominator.plus)
         formula = Composed(
             formula.numerator,
