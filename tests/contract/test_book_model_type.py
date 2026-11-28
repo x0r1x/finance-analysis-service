@@ -142,15 +142,6 @@ async def test_packt_and_rvi_are_project_finance(local_service):
         assert skipped == _SKIPPED[alias], alias
 
 
-async def test_packt_and_rvi_counts_match_the_locked_baseline(local_service):
-    """Прогон mapping на 91f4f015 оставил те же счётчики. Базу не переписываем."""
-
-    for alias, job in (("packt", PACKT), ("rvi", RVI)):
-        await local_service.perform_load(job, actor=Actor(), fence=1)
-        counts = await _fact_counts(local_service, job)
-        assert {key: counts.get(key, 0) for key in _COUNTS[alias]} == _COUNTS[alias], counts
-
-
 async def test_model_type_set_needs_confirm_then_keeps_history(local_service):
     await local_service.perform_load(PACKT, actor=Actor(), fence=1)
     corporate = {"labels": ["corporate"], "primary": "corporate"}

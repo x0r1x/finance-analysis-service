@@ -1,0 +1,154 @@
+{
+  "books": [
+    {
+      "counts": {
+        "ambiguous": 2,
+        "bound": 11,
+        "not_applicable": 4,
+        "unknown": 80
+      },
+      "derive_key": "8b310e3be2d3a418",
+      "id": "packt",
+      "job_id": "2eca70a9acd0c7b1812adcb2e1a4aacc84092f52726d001a93b9564950e5dd5e"
+    },
+    {
+      "counts": {
+        "ambiguous": 6,
+        "bound": 11,
+        "not_applicable": 9,
+        "unknown": 212
+      },
+      "derive_key": "8b310e3be2d3a418",
+      "id": "rvi",
+      "job_id": "2f180b3eec3b8557908beafa659af75dd7c2e93dab02b176f3cab1d625ee7bac"
+    }
+  ],
+  "calibrator": "none",
+  "catalog_version": "e5e47aa50edf3a3e",
+  "changed_members": [
+    "application/mapping_pipeline.py",
+    "application/project.py",
+    "domain/semantics.py"
+  ],
+  "command": "uv run fas eval mapping",
+  "commit": "91f4f0151c9b04030abb47b1ad5aa94ce6589d64",
+  "comparable_to_previous": false,
+  "derive_inputs": {
+    "calibrator_version": "none",
+    "clm_model": "",
+    "embed_model": "",
+    "glossary_version": "g-0001:abb472e2c064",
+    "model_type_seq": 0,
+    "model_types_version": "dd84154239228158",
+    "profile_version": "p-0",
+    "rerank_model": "",
+    "sheet_roles_version": "14de2fdd4ed0c548",
+    "state_seq": 0,
+    "taxonomy_version": "core-1"
+  },
+  "derive_key": "8b310e3be2d3a418",
+  "fas_derive_version": "03e31052da6cb264dcf60eec2979f4a5a8d5438ff7db5944a7c8d94f3a3b9d60",
+  "glossary": "g-0001:abb472e2c064",
+  "metrics": {
+    "accepted": 7,
+    "books": 2,
+    "brier": null,
+    "ece": null,
+    "false_binding_rate": 0.0,
+    "false_binding_rate_metric": 0.0,
+    "nil_precision": 0.785714,
+    "nil_recall": 1.0,
+    "nil_recall_critical": 1.0,
+    "targets_passed": false,
+    "top1": {
+      "cfads": 1.0,
+      "debt_service": 1.0,
+      "interest": 0.5
+    },
+    "top1_by_book": {
+      "packt": {
+        "cfads": {
+          "correct": 1,
+          "rate": 1.0,
+          "total": 1
+        },
+        "debt_service": {
+          "correct": 1,
+          "rate": 1.0,
+          "total": 1
+        },
+        "interest": {
+          "correct": 3,
+          "rate": 1.0,
+          "total": 3
+        }
+      },
+      "rvi": {
+        "cfads": {
+          "correct": 1,
+          "rate": 1.0,
+          "total": 1
+        },
+        "debt_service": {
+          "correct": 1,
+          "rate": 1.0,
+          "total": 1
+        },
+        "interest": {
+          "correct": 0,
+          "rate": 0.0,
+          "total": 3
+        }
+      }
+    }
+  },
+  "models": "off",
+  "parent": {
+    "commit": "068b24cd0145ba432e6adc6bece6a91e08b18d3b",
+    "derive_key": "68f1c9d7b83b8621",
+    "fas_derive_version": "cfd5ac68a8a7690015619589e6af5f4318c96393e6da79ba8516346ce50852a6",
+    "members": {
+      "application/catalog.py": "fbd6918230385ab667d473cac4921bc8363c9012d39e442642e335f8ec2e0d5d",
+      "application/mapping_pipeline.py": "8d1a84d6a9232a88a80bf702b74511bd89eebb0d4e3c9f7d3f97c9d0b844b8ea",
+      "application/project.py": "ab90b7840d89ffe7d271391ad9238ce00cb3fa69537d26ed89d40c74217f6024",
+      "application/sheet_roles.py": "e1a2ed8dc886834e21f58c7ade677202cfb4eb71a68333da1c900901f38c418b",
+      "configs/concepts/core.yaml": "335def7b3a75f0a7b73d04f951b4f619e55bf2e7e044819dc7fd372b97c132b1",
+      "configs/glossary/dictionaries.yaml": "72b0bbeea77308c51a03e311757b4521a5f3faacc6d304c5edc7718db2a056a5",
+      "configs/identities/cash_corkscrew.yaml": "46b905437528f063b67d3c3fdf5340c11b4861e1d83ed2a1309ab8212d3f69e0",
+      "configs/identities/debt.yaml": "bece158268de004150c920d29a7d6802b0c25b778b7eeedc81e889d2b0d1a598",
+      "configs/identities/noi.yaml": "130b317614fc131e4dcb61af6bf81853650353e45ad68b2e7104a18fe6b3d6a2",
+      "configs/model_types/_common.yaml": "76d691d0c4173a8e1642cb51cf8778f8e1457962223947a4589df1a3f3206793",
+      "configs/model_types/bank_leasing.yaml": "db66377198a95775b941e46956a6480dff923f239e51b5698a74e0ad4d247bbe",
+      "configs/model_types/corporate.yaml": "e8dbfce16b9410ec52ed6b5d43d640d849b1ec0f95068189da99123e9b2ce843",
+      "configs/model_types/dcf_valuation.yaml": "f0eb7f64d85bf5fcfaf086bcc5e4bc6f464ae27b2ac43c7bbfcfefce8ec7550c",
+      "configs/model_types/development_escrow.yaml": "c7b847a225112513b2fcd68e85f84f9f76ce759d9aad39c7e68a6aeec1285f68",
+      "configs/model_types/investment_project.yaml": "01be0aa165dfb103ada7e63dbab15941ed304be381eaeddda1132c093e97a6d5",
+      "configs/model_types/lbo_ma.yaml": "dc9c5c961b7952ddde45cfa130b154d10c64db9a7abe6c42c8e31885d49c6fa9",
+      "configs/model_types/matrix.json": "50f007fac57aa5229fcb3181569433c284a65d933afd0ad0543f0bf3ed68547d",
+      "configs/model_types/other.yaml": "7500a6cc764ce5ea17dd1bc3a152019b77e1b16d6b51f8730a02a914187af4f1",
+      "configs/model_types/ppp_concession.yaml": "e9957b48d91cd2b43ea2e1f4acbb9c57b1660e079e1514baca9cc410af1df9af",
+      "configs/model_types/project_finance.yaml": "a0cf8aedc92dc9c2f2e19980dfd2888c643339e3b51fc129da4bc556709e1e47",
+      "configs/model_types/real_estate_income.yaml": "7ce56fba80ae9308d071fd839bf1bfb62a34a09d3668e76ed30db907199f6646",
+      "configs/model_types/renewables_dpm.yaml": "0ceb1f96fb00fb10ec72eca4b379e0947bd40e7a2bbd8247746143dfa05c386f",
+      "configs/sheet_roles.yaml": "2e28706715aa461431da0ef4c4075e53fce7e52b2500c9387c8e099715b384ce",
+      "domain/calibration.py": "8f1f551e03ea082344608079e8937ccba3584c5047b0a03f2d34b85ba9c54b4a",
+      "domain/candidates.py": "b149afae4465ebfec195445e2aa54eacc6b971e353ba203804fef66e85d5b2b5",
+      "domain/components.py": "650b1bee565ba05f51f56f054964ae81e24e34d5027effaed4682cdd05fe8160",
+      "domain/currency.py": "0bb6ff6e0386dcdcc10d4de7aefc131721c17c2045d4cfc29c02d4a96625df98",
+      "domain/derive_fingerprint.py": "69f2396d971b8cf0e1f6ae43b8ff4eea103d36abac3a4114f98fbf15570131d7",
+      "domain/dictionaries.py": "bb5e51785b49e18c41c1fcb9ae5f8fb50b4a262b80134fc7df94fb3651dd38db",
+      "domain/glossary.py": "df3f09917f5d7e32c75be082df6aba8649cb26d91d273ac28e0b0468b92005e8",
+      "domain/mapping.py": "9839ca2c6b7cacddcc1b1e1db3bde7e59376e83a82d8f2c9a21d569cda952b00",
+      "domain/model_type.py": "ff4ce527bb1d3cbe5300156f5f1dd90fa5243ec2dfdfa725ceb434b5c5a67908",
+      "domain/period_basis.py": "1e04a09e86c6d825ae2d07b2e0de4fb86b003c7e0d766424b34359c7d3254313",
+      "domain/periods.py": "2e831c2da3dce15ff4dccedbb02f9d77809c699c53a979249402dcd90a392d69",
+      "domain/phases.py": "20560d094c98c97ffe17b72506de9b4c5b137be73983c7fbf9834376cd23e445",
+      "domain/references.py": "95503d5b30e36e6648704462f8c108a0c6c7196180b8eeeace898fd3ca81485c",
+      "domain/semantic_compatibility.py": "54fb95e36d8e06028c04ba228d7c82aee4ed394e87560bd2d64b0c78af5cbdbf",
+      "domain/semantics.py": "a403d00b81f5b104b4966f8d60e03c5da9bfd93c1664c6479827fa71e0883e7f",
+      "domain/state.py": "ebf9da3da6cd7a90ea7a0c9d2bd26151aceea67d96f7f53c9ca6f632bd9c26a8"
+    }
+  },
+  "schema": "mapping-baseline-1",
+  "taxonomy": "core-1"
+}
