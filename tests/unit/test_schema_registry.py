@@ -1,12 +1,25 @@
 """Реестр публичных ответов: схема с версией или исключение с причиной и задачей.
 
-Закрытый объект отвергает незнакомое имя, поэтому пробел схемы нельзя оставлять
-молча. https://json-schema.org/understanding-json-schema/reference/object
+Реестр проверяет, что контракт есть и привязан. Живое тело обработчика схемой не проверяется.
+
+Следующий шаг, не этот PR: прогнать через TestClient ответы metric_trace_view,
+financial_model_catalog и book_rows и сверить тело со схемой. Для этого нужен
+собранный сервис или фикстура книги. Этот PR фикстуру, живой стек и тело ответа не добавляет.
+
+404 problem+json привязан, только если функция маршрута или её HTTP-обёртка поднимает NotFound.
+NotFound глубже в сервисе этот реестр не выводит.
+
+Компонент и ответ разделены, как components и path item:
+https://spec.openapis.org/oas/v3.1.0#components-object
+
+Закрытый объект отвергает незнакомое имя:
+https://json-schema.org/understanding-json-schema/reference/object
 """
 
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import re
 from dataclasses import dataclass
@@ -36,10 +49,24 @@ class ResponseRecord:
     version: str = ""
     pointer: str = ""
     routes: tuple[str, ...] = ()
+    role: str = "response"
 
 
 _ADD_SCHEMA = "Следующая задача — JSON Schema этого ответа. Этот PR схему не добавляет."
 _CATALOG_ID = "https://fas.local/contracts/financial_model_catalog.json"
+_PROBLEM_TYPE = "application/problem+json"
+
+
+@dataclass(frozen=True)
+class ProblemBinding:
+    method: str
+    path: str
+    http_status: int
+    content_type: str
+    schema_path: str = ""
+    reason: str = ""
+    follow_up: str = ""
+    wanted: str = "schema"
 
 
 def _gap(
@@ -87,6 +114,7 @@ REGISTRY: tuple[ResponseRecord, ...] = (
     ResponseRecord(
         name="book_rows",
         status="documented",
+        role="component",
         schema_path="src/finance_analysis/adapters/storage/schemas/book_rows.json",
         version="1.0",
     ),
@@ -98,11 +126,6 @@ REGISTRY: tuple[ResponseRecord, ...] = (
             "Следующая задача — схема аудита formula_origin с полным content_sha256. "
             "Этот PR схему не добавляет."
         ),
-    ),
-    _gap(
-        "problem",
-        "problem_response собирает application/problem+json без локального файла JSON Schema. "
-        "Поля extra копируются в тело.",
     ),
     _gap(
         "operation_event",
@@ -160,7 +183,7 @@ REGISTRY: tuple[ResponseRecord, ...] = (
     _gap(
         "analysis",
         "Конверт анализа, список, сравнение, удаление и отчёт json|md не описаны JSON Schema. "
-        "book_rows и formula_origin — отдельные записи и не заменяют конверт.",
+        "book_rows — компонент, не HTTP-ответ. formula_origin — отдельная запись.",
         "DELETE /v1/books/{job_id}/analyses/{analysis_id}",
         "GET /v1/books/{job_id}/analyses",
         "GET /v1/books/{job_id}/analyses/{analysis_id}",
@@ -231,7 +254,142 @@ REGISTRY: tuple[ResponseRecord, ...] = (
             "Тело этот PR не меняет."
         ),
     ),
+    _gap(
+        "openapi_document",
+        "GET /openapi.json — документ, который собирает FastAPI. Предметной JSON Schema FAS у него нет.",
+        "GET /openapi.json",
+    ),
+    _media(
+        "swagger_ui",
+        "Swagger UI отдаёт HTML, не JSON-документ API.",
+        "Следующая задача — не подменять этот HTML JSON Schema тела API.",
+        "GET /docs",
+    ),
+    _media(
+        "redoc",
+        "ReDoc отдаёт HTML, не JSON-документ API.",
+        "Следующая задача — не подменять этот HTML JSON Schema тела API.",
+        "GET /redoc",
+    ),
+    _media(
+        "swagger_oauth",
+        "Страница oauth2-redirect отдаёт HTML, не JSON-документ API.",
+        "Следующая задача — не подменять этот HTML JSON Schema тела API.",
+        "GET /docs/oauth2-redirect",
+    ),
 )
+
+
+def _mounted(routes, prefix: str = ""):
+    for route in routes:
+        if type(route).__name__ == "_IncludedRouter":
+            extra = route.include_context.prefix or ""
+            yield from _mounted(route.original_router.routes, prefix + extra)
+            continue
+        path = getattr(route, "path", None)
+        if path is None:
+            continue
+        yield route, prefix + path
+
+
+def _live_table(app) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for route, path in _mounted(app.routes):
+        methods = getattr(route, "methods", None) or ()
+        endpoint = getattr(route, "endpoint", None)
+        try:
+            source = inspect.getsource(endpoint) if endpoint is not None else ""
+        except (OSError, TypeError):
+            source = ""
+        for method in methods:
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            found[f"{method} {path}"] = source
+    return found
+
+
+def _function_source(path: Path, name: str) -> str:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name:
+            return ast.get_source_segment(source, node) or ""
+    return ""
+
+
+_ROUTE_INIT = _API / "route" / "__init__.py"
+_HTTP = _API / "http.py"
+_RUNTIME = _REPO / "src/finance_analysis/adapters/redis/runtime.py"
+_IDS = _REPO / "src/finance_analysis/domain/ids.py"
+_HELPERS = {
+    name: _function_source(_ROUTE_INIT, name)
+    for name in ("calc", "write", "read", "book_get", "findings_read", "_json_object")
+}
+_ACTOR = _function_source(_HTTP, "actor")
+_ACTOR_TOKEN = _function_source(_IDS, "actor_token")
+_HTTP_IDEM = _function_source(_HTTP, "idem_begin")
+_RUNTIME_IDEM = _function_source(_RUNTIME, "idem_begin")
+_CHECK = _function_source(_IDS, "_check")
+_JOB_ID = _function_source(_IDS, "job_id")
+_SYNC_SKIP = ("/health/", "/metrics", "/v1/operations", "/v1/capabilities")
+_PROBLEM_REASON = (
+    "Код уже возвращает application/problem+json с этим статусом. "
+    "Файла JSON Schema problem+json нет. Это пробел, не цель."
+)
+_PROBLEM_FOLLOW = (
+    "Следующая задача — JSON Schema problem+json и привязка к статусу. Этот PR схему не добавляет."
+)
+
+
+def _evidence(source: str) -> str:
+    blob = source
+    for name, body in _HELPERS.items():
+        if name == "_json_object":
+            continue
+        if f"await {name}(" in source:
+            blob += "\n" + body
+    if "_json_object(" in blob:
+        blob += "\n" + _HELPERS["_json_object"]
+    if "idem_begin(" in blob:
+        blob += "\n" + _HTTP_IDEM + "\n" + _RUNTIME_IDEM
+    if "actor(request)" in blob:
+        blob += "\n" + _ACTOR + "\n" + _ACTOR_TOKEN
+    if "check_job(" in blob:
+        blob += "\n" + _JOB_ID + "\n" + _CHECK
+    return blob
+
+
+def problem_bindings(sources: dict[str, str]) -> tuple[ProblemBinding, ...]:
+    rows: list[ProblemBinding] = []
+    for key in sorted(sources):
+        method, path = key.split(" ", 1)
+        endpoint = sources[key]
+        blob = _evidence(endpoint)
+        # shortcut: 503 на каждом маршруте — middleware DependencyUnavailable, не raise в обработчике
+        statuses = {503}
+        if not any(path.startswith(prefix) for prefix in _SYNC_SKIP) and ":load" not in path:
+            statuses.add(504)
+        if "InvalidArgument" in blob or "InvalidId" in blob:
+            statuses.add(400)
+        # shortcut: 404 только из текста самого обработчика, NotFound сервиса не выводится
+        if "NotFound" in endpoint:
+            statuses.add(404)
+        if "RequestInProgress" in blob:
+            statuses.add(409)
+        if "IdempotencyReused" in blob:
+            statuses.add(422)
+        for status in sorted(statuses):
+            rows.append(
+                ProblemBinding(
+                    method=method,
+                    path=path,
+                    http_status=status,
+                    content_type=_PROBLEM_TYPE,
+                    reason=_PROBLEM_REASON,
+                    follow_up=_PROBLEM_FOLLOW,
+                )
+            )
+    return tuple(rows)
 
 
 def discover_handlers() -> dict[str, str]:
@@ -401,32 +559,94 @@ def test_public_response_without_a_schema_is_a_named_exception() -> None:
                 duplicates.append(route)
             owners[route] = entry
     assert duplicates == []
-    missing = sorted(set(handlers) - set(owners))
-    assert missing == []
-    extra = sorted(set(owners) - set(handlers))
+
+    from finance_analysis.adapters.api.app import create_app
+    from finance_analysis.settings import Settings
+
+    live = _live_table(create_app(Settings(_env_file=None)).fastapi)
+    assert set(handlers) < set(live)
+    assert "GET /docs" in live
+    assert "GET /docs" not in handlers
+    missing_live = sorted(set(live) - set(owners))
+    assert missing_live == []
+    extra = sorted(set(owners) - set(live))
     assert extra == []
+    guard = (_API / "app.py").read_text(encoding="utf-8")
+    assert 'media_type="application/problem+json"' in (_API / "problems.py").read_text(encoding="utf-8")
+    assert "DependencyUnavailable" in guard
+    assert "DeadlineExceeded" in guard
+    assert '_SYNC_SKIP = ("/health/", "/metrics", "/v1/operations", "/v1/capabilities")' in guard
+    assert '":load" not in path' in guard
+    assert _HELPERS["calc"] and "idem_begin(" in _HELPERS["calc"]
+    assert "InvalidArgument" in _HELPERS["_json_object"]
+    assert "RequestInProgress" in _RUNTIME_IDEM and "IdempotencyReused" in _RUNTIME_IDEM
+    assert "InvalidId" in _ACTOR_TOKEN and "InvalidId" in _CHECK
 
-    schema_names: dict[str, str] = {}
+    bindings = problem_bindings(live)
+    problem_keys = {
+        (item.method, item.path, item.http_status, item.content_type, item.schema_path) for item in bindings
+    }
+    assert len(problem_keys) == len(bindings)
+    assert {item.http_status for item in bindings} <= {400, 404, 409, 422, 503, 504}
+    assert all(item.content_type == _PROBLEM_TYPE and item.schema_path == "" for item in bindings)
+    for item in bindings:
+        probe = ResponseRecord(
+            name="problem",
+            status="uncovered",
+            reason=item.reason,
+            follow_up=item.follow_up,
+            wanted=item.wanted,
+        )
+        assert exception_errors(probe) == ()
+    assert ("GET", "/health/live", 503, _PROBLEM_TYPE, "") in problem_keys
+    assert ("GET", "/v1/metrics/{metric_id}", 404, _PROBLEM_TYPE, "") in problem_keys
+    assert ("POST", "/v1/books/{job_id}/analyses", 422, _PROBLEM_TYPE, "") in problem_keys
+    assert ("POST", "/v1/books/{job_id}/analyses", 409, _PROBLEM_TYPE, "") in problem_keys
+    assert ("POST", "/v1/books/{job_id}/analyses", 400, _PROBLEM_TYPE, "") in problem_keys
+    assert ("POST", "/v1/books/{job_id}:load", 409, _PROBLEM_TYPE, "") in problem_keys
+    assert ("POST", "/v1/books/{job_id}:load", 422, _PROBLEM_TYPE, "") in problem_keys
+    assert ("GET", "/health/live", 504, _PROBLEM_TYPE, "") not in problem_keys
+    assert ("GET", "/health/live", 422, _PROBLEM_TYPE, "") not in problem_keys
+    assert ("GET", "/health/live", 400, _PROBLEM_TYPE, "") not in problem_keys
+    assert ("POST", "/v1/books/{job_id}:load", 504, _PROBLEM_TYPE, "") not in problem_keys
+    assert ("GET", "/metrics", 504, _PROBLEM_TYPE, "") not in problem_keys
+    assert ("GET", "/v1/operations", 504, _PROBLEM_TYPE, "") not in problem_keys
+    assert ("GET", "/v1/capabilities", 504, _PROBLEM_TYPE, "") not in problem_keys
+    assert ("GET", "/v1/books/{job_id}/analyses/{analysis_id}", 404, _PROBLEM_TYPE, "") not in problem_keys
+    assert ("GET", "/docs", 503, _PROBLEM_TYPE, "") in problem_keys
+    assert ("GET", "/docs", 400, _PROBLEM_TYPE, "") not in problem_keys
+
+    response_schemas = {entry.schema_path for entry in REGISTRY if entry.role == "response" and entry.schema_path}
+    component_schemas = {entry.schema_path for entry in REGISTRY if entry.role == "component" and entry.schema_path}
+    assert response_schemas.isdisjoint(component_schemas)
+    assert response_schemas | component_schemas == set(discover_api_schemas())
+    assert any(path.endswith("book_rows.json") for path in component_schemas)
+    assert any(path.endswith("meta_layer_graphs.json") for path in response_schemas)
+    assert any(path.endswith("financial_model_catalog.json") for path in response_schemas)
     for entry in REGISTRY:
-        if not entry.schema_path:
-            continue
-        assert entry.schema_path not in schema_names
-        schema_names[entry.schema_path] = entry.name
-        assert binding_errors(entry) == ()
-    assert set(schema_names) == set(discover_api_schemas())
+        if entry.schema_path:
+            assert binding_errors(entry) == ()
+        if entry.role == "component":
+            assert entry.routes == ()
 
-    for route, source in handlers.items():
+    for route, source in live.items():
         entry = owners[route]
-        if "StreamingResponse" in source or "CONTENT_TYPE_LATEST" in source:
+        ast_source = handlers.get(route, source)
+        html = route in {"GET /docs", "GET /redoc", "GET /docs/oauth2-redirect"}
+        if "StreamingResponse" in ast_source or "CONTENT_TYPE_LATEST" in ast_source or html:
             assert entry.status == "other_media"
             assert exception_errors(entry) == ()
         elif entry.schema_path:
             assert entry.status == "documented"
+            assert entry.role == "response"
         else:
             assert entry.status == "uncovered"
             assert exception_errors(entry) == ()
 
     for name in embedded_names():
+        if name == "problem":
+            assert bindings
+            continue
         assert name in by_name, name
         entry = by_name[name]
         assert entry.routes == ()
@@ -458,6 +678,34 @@ def test_public_response_without_a_schema_is_a_named_exception() -> None:
     assert catalog.routes == ("GET /v1/metrics",)
     assert "financial_model_catalog" in handlers[catalog.routes[0]]
     assert "GET /v1/metrics/{metric_id}" not in catalog.routes
+
+    assert by_name["book_rows"].role == "component"
+    assert by_name["book_rows"].routes == ()
+    assert by_name["metricTrace"].role == "response"
+    assert by_name["financialModelCatalog"].role == "response"
+    doc = __doc__ or ""
+    assert "Реестр проверяет, что контракт есть и привязан." in doc
+    assert "Живое тело обработчика схемой не проверяется." in doc
+    assert "TestClient" in doc and "metric_trace_view" in doc
+    assert "financial_model_catalog" in doc and "book_rows" in doc
+    assert "фикстура книги" in doc
+    assert "NotFound глубже в сервисе этот реестр не выводит." in doc
+    assert "https://spec.openapis.org/oas/v3.1.0#components-object" in doc
+
+
+def test_live_table_sees_router_get_the_ast_misses() -> None:
+    from fastapi import APIRouter, FastAPI
+
+    router = APIRouter()
+
+    @router.get("/only-on-router")
+    async def only_on_router() -> dict:
+        return {"ok": True}
+
+    app = FastAPI()
+    app.include_router(router)
+    assert "GET /only-on-router" in _live_table(app)
+    assert "GET /only-on-router" not in discover_handlers()
 
 
 def _route(deco: ast.expr) -> str | None:
