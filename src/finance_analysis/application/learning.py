@@ -23,7 +23,7 @@ from finance_analysis.application.examples import (
     pack_vector,
     unpack_vector,
 )
-from finance_analysis.application.mapping_pipeline import few_shot_state
+from finance_analysis.application.mapping_pipeline import _breathe, few_shot_state
 from finance_analysis.domain.binding_resolution import declared_concept
 from finance_analysis.domain.deadline import Deadline
 from finance_analysis.domain.errors import (
@@ -229,6 +229,7 @@ class Learning:
         batch = list(facts or [])
         for start in range(0, len(batch), _FACT_SLICE):
             chunk = batch[start : start + _FACT_SLICE]
+            await _breathe()
             await anyio.to_thread.run_sync(
                 lambda chunk=chunk: _absorb_facts(chunk, order, cell_row, values),
                 limiter=self._cpu,
@@ -240,6 +241,7 @@ class Learning:
         batch = list(facts or [])
         for start in range(0, len(batch), _FACT_SLICE):
             chunk = batch[start : start + _FACT_SLICE]
+            await _breathe()
             part = await anyio.to_thread.run_sync(lambda chunk=chunk: _abs_by_row(chunk), limiter=self._cpu)
             for key, amount in part.items():
                 totals[key] = totals.get(key, Decimal(0)) + amount

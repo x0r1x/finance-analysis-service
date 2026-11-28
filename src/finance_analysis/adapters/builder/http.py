@@ -36,6 +36,15 @@ from finance_analysis.settings import Settings
 _END = object()
 
 
+async def _breathe() -> None:
+    """Отдать цикл таймеру. sleep(0) и checkpoint AnyIO ставят задачу впереди него."""
+
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+    loop.call_later(0, done.set_result, None)
+    await done
+
+
 def _advance(steps):
     try:
         return next(steps)
@@ -148,6 +157,7 @@ class HttpBuilder:
         steps = context_steps(payload)
         snapshot = None
         while snapshot is None:
+            await _breathe()
             step = await anyio.to_thread.run_sync(_advance, steps, limiter=self._cpu)
             if step is PAUSE:
                 continue

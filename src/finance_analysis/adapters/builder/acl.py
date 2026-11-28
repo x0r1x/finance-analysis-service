@@ -291,7 +291,7 @@ def _axis_from(key: str, axis: dict, missing: list[str], max_col: dict[str, int]
 
 
 # Между пачками строк разбор отдаёт цикл. Меньше, если один заход снова длиннее 0,1 с.
-_ROW_SLICE = 1000
+_ROW_SLICE = 250
 PAUSE = object()
 
 

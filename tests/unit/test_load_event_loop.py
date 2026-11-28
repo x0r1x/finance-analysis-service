@@ -308,7 +308,8 @@ async def test_large_synthetic_book_does_not_block_the_event_loop():
     assert len(snapshot.rows) == 15_000
     assert result.evidence
     assert derived["unmapped"] == 1
-    assert max(gaps) < LIMIT
+    worst = max(range(len(gaps)), key=gaps.__getitem__)
+    assert gaps[worst] < LIMIT, (worst, [round(gap, 3) for gap in gaps[max(0, worst - 2) : worst + 3]])
 
 
 def _sheet_row(key: str, label: str, **extra) -> dict:
