@@ -1,5 +1,6 @@
 """Загрузка большой книги не держит цикл событий: разбор снимка, привязка без embed, суммы фактов."""
 
+import gc
 import json
 import threading
 import time
@@ -248,6 +249,9 @@ async def test_large_synthetic_book_does_not_block_the_event_loop():
 
     Маленькая книга не дотягивает до 0,1 с. Здесь разбор снимка, привязка без embed
     и сумма фактов сами по себе дольше порога, если идут в цикле.
+
+    Сборщик выключен на время пульса: фикстура из сотен тысяч фактов оставляет мусор,
+    и его пауза попадает в первый рабочий поток. Это не простой разбора.
     """
 
     raw = json.dumps(_context(15_000)).encode()
@@ -278,9 +282,14 @@ async def test_large_synthetic_book_does_not_block_the_event_loop():
     learning._cpu = anyio.CapacityLimiter(2)
     prepared = [_row("a")]
     bindings = [{"binding_key": "a", "status": "unknown", "source": "inferred", "importance": "peripheral", "row_key": "a"}]
+    phases: list[tuple[str, int]] = []
+    gc.collect()
+    gc.disable()
     try:
         async with loop_gaps() as gaps:
+            phases.append(("context", len(gaps)))
             snapshot = await builder.context("job")
+            phases.append(("score", len(gaps)))
             result = await pipeline.score(
                 "job",
                 "run",
@@ -290,6 +299,7 @@ async def test_large_synthetic_book_does_not_block_the_event_loop():
                 deadline=Deadline.after_ms(5000),
                 clm=False,
             )
+            phases.append(("learn", len(gaps)))
             derived = await learning.after_derive(
                 "job",
                 prepared=prepared,
@@ -303,13 +313,20 @@ async def test_large_synthetic_book_does_not_block_the_event_loop():
                 profile=None,
                 identities={},
             )
+            phases.append(("done", len(gaps)))
     finally:
+        gc.enable()
         await client.aclose()
     assert len(snapshot.rows) == 15_000
     assert result.evidence
     assert derived["unmapped"] == 1
     worst = max(range(len(gaps)), key=gaps.__getitem__)
-    assert gaps[worst] < LIMIT, (worst, [round(gap, 3) for gap in gaps[max(0, worst - 2) : worst + 3]])
+    where = phases[-1][0]
+    for name, start in phases:
+        if start <= worst:
+            where = name
+    near = [round(gap, 3) for gap in gaps[max(0, worst - 2) : worst + 3]]
+    assert gaps[worst] < LIMIT, (where, worst, near)
 
 
 def _sheet_row(key: str, label: str, **extra) -> dict:
