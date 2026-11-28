@@ -47,6 +47,7 @@ def declared_resolution_dependencies() -> tuple[tuple[str, Any], ...]:
     named = (
         ("AppliedFallback", AppliedFallback),
         ("DiagnosticCandidate", DiagnosticCandidate),
+        ("ExecutionControlInput", ExecutionControlInput),
         ("ExecutionContractError", ExecutionContractError),
         ("HUMAN_SOURCES", HUMAN_SOURCES),
         ("LineageRow", LineageRow),
@@ -188,6 +189,21 @@ class LineageRow:
 
 
 @dataclass(frozen=True)
+class ExecutionControlInput:
+    """Вспомогательный вход плана. Не слагаемое формулы.
+
+    Роль — зачем расчёт читает строку: тестовый период или граница горизонта.
+    Строка входит в хеш: смена привязки меняет план.
+    https://www.w3.org/TR/prov-dm/#term-Plan
+    """
+
+    concept: str
+    role: str
+    binding_key: str | None = None
+    row_key: str | None = None
+
+
+@dataclass(frozen=True)
 class ResolvedMetricPlan:
     schema: str
     plan_id: str
@@ -209,6 +225,7 @@ class ResolvedMetricPlan:
     needs_input: tuple[NeedsInput, ...]
     shield: ShieldDecision | None
     lineage: tuple[LineageRow, ...] = ()
+    execution_control: tuple[ExecutionControlInput, ...] = ()
     # Ссылка на EffectiveMetricDefinition. В хеш плана не входит: стороны формулы здесь не живут.
     definition_hash: str | None = None
 
@@ -246,8 +263,9 @@ def bindings_for_plan(
 ) -> Sequence[Mapping[str, Any]]:
     """Строки калькулятора, у которого план уже есть.
 
-    Понятие, о котором план говорит, берётся только из подтверждённого входа.
-    Кэш самой метрики и окно, которого формула не называет, остаются.
+    Понятие, о котором план говорит, берётся только из подтверждённого входа
+    или вспомогательного входа. Кэш самой метрики и окно, которого план не
+    называет, остаются.
     Без плана список тот же: это фасад старых тестов и golden.
     """
 
@@ -255,13 +273,18 @@ def bindings_for_plan(
         return bindings
     from finance_analysis.domain.binding_resolution import declared_concept
 
-    owned = {item.concept for item in (*plan.inputs, *plan.diagnostic, *plan.rejected)}
+    controls = tuple(
+        item
+        for item in (getattr(plan, "execution_control", ()) or ())
+        if getattr(item, "binding_key", None) or getattr(item, "row_key", None)
+    )
+    owned = {item.concept for item in (*plan.inputs, *plan.diagnostic, *plan.rejected, *controls)}
     kept: list[Mapping[str, Any]] = []
     for row in bindings:
         if declared_concept(row) not in owned:
             kept.append(row)
             continue
-        if any(recover_row((row,), item) is not None for item in plan.inputs):
+        if any(recover_row((row,), item) is not None for item in (*plan.inputs, *controls)):
             kept.append(row)
     return kept
 
@@ -282,6 +305,39 @@ def bound_rows(plan: ResolvedMetricPlan, bindings: Sequence[Mapping[str, Any]]) 
 
 def content_digest(body: dict) -> str:
     return hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class ExecutionConfiguration:
+    """Параметры прогона. Это не выбранные факты плана.
+
+    ``profile`` — настройки, которые меняют выборку или число.
+    Отпечаток входит в идентичность прогона и не в ``content_sha256`` плана.
+    https://www.w3.org/TR/prov-dm/#term-Activity
+    """
+
+    basis: str = "period_end"
+    marker_class: str | None = None
+    explicit_phases: bool = False
+    sign_convention: str = "outflow_negative"
+    profile: tuple[tuple[str, str], ...] = ()
+
+    def fingerprint(self) -> str:
+        return content_digest(
+            {
+                "basis": self.basis,
+                "explicit_phases": self.explicit_phases,
+                "marker_class": self.marker_class or "",
+                "profile": [list(item) for item in sorted(self.profile)],
+                "sign_convention": self.sign_convention,
+            }
+        )
+
+
+def run_identity(plan_content_sha256: str, configuration: ExecutionConfiguration) -> str:
+    """Идентичность прогона: хеш плана и отпечаток параметров."""
+
+    return content_digest({"configuration": configuration.fingerprint(), "plan": plan_content_sha256})
 
 
 def _text(value: str | None) -> str:
@@ -336,6 +392,15 @@ def _need_row(item: NeedsInput) -> dict:
     return {"kind": item.kind, "reason": item.reason, "subject": item.subject}
 
 
+def _control_row(item: ExecutionControlInput) -> dict:
+    return {
+        "binding_key": _text(item.binding_key),
+        "concept": item.concept,
+        "role": item.role,
+        "row_key": _text(item.row_key),
+    }
+
+
 def _lineage_row(item: LineageRow) -> dict:
     return {
         "ambiguous": item.ambiguous,
@@ -367,6 +432,7 @@ def hashed_body(
     needs_input: tuple[NeedsInput, ...],
     shield: ShieldDecision | None,
     lineage: tuple[LineageRow, ...] = (),
+    execution_control: tuple[ExecutionControlInput, ...] = (),
 ) -> dict:
     """Тело хеша. Массивы уже отсортированы: canonical_json ключи сортирует, списки нет."""
 
@@ -378,6 +444,13 @@ def hashed_body(
             for item in sorted(
                 diagnostic,
                 key=lambda item: (item.concept, _text(item.binding_key), _text(item.row_key)),
+            )
+        ],
+        "execution_control": [
+            _control_row(item)
+            for item in sorted(
+                execution_control,
+                key=lambda item: (item.concept, item.role, _text(item.binding_key), _text(item.row_key)),
             )
         ],
         "fallbacks": [
@@ -462,6 +535,7 @@ def seal(
     needs_input: tuple[NeedsInput, ...],
     shield: ShieldDecision | None,
     lineage: tuple[LineageRow, ...] = (),
+    execution_control: tuple[ExecutionControlInput, ...] = (),
     resolution_engine_version: str = RESOLUTION_ENGINE_VERSION,
     definition_hash: str | None = None,
 ) -> ResolvedMetricPlan:
@@ -484,6 +558,7 @@ def seal(
             needs_input=needs_input,
             shield=shield,
             lineage=lineage,
+            execution_control=execution_control,
         )
     )
     return ResolvedMetricPlan(
@@ -507,5 +582,6 @@ def seal(
         needs_input=needs_input,
         shield=shield,
         lineage=lineage,
+        execution_control=execution_control,
         definition_hash=definition_hash,
     )
