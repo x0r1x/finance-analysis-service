@@ -327,6 +327,7 @@ class FasService:
         cluster=None,
         trace_pointer=None,
         trace_retainer=None,
+        cpu=None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -357,7 +358,7 @@ class FasService:
         # Публикация указателя — только при публикации актуального набора (глоссарий).
         self.glossary.on_publish = self.publish_semantic_model
         self._tasks: set[asyncio.Task] = set()
-        self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
+        self._cpu = cpu if cpu is not None else anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
         self.instance_id = str(ULID())
         self._owner_held = False
@@ -371,7 +372,7 @@ class FasService:
         )
         self.calibrators = CalibratorStore(store)
         self.pipeline = MappingPipeline(self.models, self.examples, support, settings=settings)
-        self.learning = Learning(store, parquet, self.glossary, self.examples, self.models, cluster, settings)
+        self.learning = Learning(store, parquet, self.glossary, self.examples, self.models, cluster, settings, cpu=self._cpu)
         self.identities = load_identities()
         self.evaluator = Evaluator(self)
         self.glossary.gate = self.evaluator.shadow

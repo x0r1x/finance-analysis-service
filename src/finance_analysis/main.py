@@ -8,6 +8,7 @@ import os
 import signal
 from pathlib import Path
 
+import anyio
 import uvicorn
 
 LOG = logging.getLogger("fas.main")
@@ -44,11 +45,12 @@ async def assemble(settings: Settings) -> tuple[FasService, RedisRuntime]:
         from finance_analysis.domain.errors import StartupError
 
         raise StartupError(f"нужен Redis 8.6.5 или новее, сейчас {version}")
+    cpu = anyio.CapacityLimiter(settings.cpu_threads)
     fixture = os.environ.get("FAS_FIXTURE_DIR")
     if fixture:
         builder = FixtureBuilder(Path(fixture))
     else:
-        builder = HttpBuilder(settings)
+        builder = HttpBuilder(settings, cpu=cpu)
     from finance_analysis.adapters.storage.trace_wiring import open_trace_tail
 
     pointer, retainer = open_trace_tail(settings)
@@ -64,6 +66,7 @@ async def assemble(settings: Settings) -> tuple[FasService, RedisRuntime]:
         cluster=HdbscanCluster(),
         trace_pointer=pointer,
         trace_retainer=retainer,
+        cpu=cpu,
     )
     service.jobs = await TaskiqJobs.open(settings)
     await service.jobs.startup()

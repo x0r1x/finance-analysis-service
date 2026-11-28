@@ -30,11 +30,12 @@ from finance_analysis.settings import Settings
 
 
 class HttpBuilder:
-    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None, *, cpu=None) -> None:
         self._settings = settings
         self._base = (settings.builder_base_url or "").rstrip("/")
         self._client = client
         self._owns = client is None
+        self._cpu = cpu
         self._failures = 0
         self._open_until: datetime | None = None
 
@@ -129,7 +130,7 @@ class HttpBuilder:
         def _snapshot():
             return parse_context(response.json())
 
-        return await anyio.to_thread.run_sync(_snapshot)
+        return await anyio.to_thread.run_sync(_snapshot, limiter=self._cpu)
 
     async def graph(self, job_id: str) -> tuple[GraphLink, ...] | ReportNotReady:
         response = await self._request("GET", self._path(job_id, "graph.json"))

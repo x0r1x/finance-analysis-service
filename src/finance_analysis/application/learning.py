@@ -75,7 +75,7 @@ def _signal(job_id: str, profile: str | None, key: str | None, label: str, conce
 
 
 class Learning:
-    def __init__(self, store, parquet, glossary, examples, models, cluster, settings) -> None:
+    def __init__(self, store, parquet, glossary, examples, models, cluster, settings, *, cpu=None) -> None:
         self.store = store
         self.parquet = parquet
         self.glossary = glossary
@@ -83,6 +83,7 @@ class Learning:
         self.models = models
         self.cluster = cluster
         self.settings = settings
+        self._cpu = cpu
         model = getattr(models.embed, "model", "") or "none"
         self.signals = AppendOnlyParquet(store, parquet, dataset="signals", prefix="glossary/signals/", sort_key="signal_id")
         self.unmapped = AppendOnlyParquet(store, parquet, dataset="unmapped", prefix=f"unmapped/{model}/", sort_key="unmapped_id")
@@ -239,7 +240,7 @@ class Learning:
         def _votes():
             return run_all(labeling_input(prepared, bindings, facts, links, package, identities))
 
-        votes = await anyio.to_thread.run_sync(_votes)
+        votes = await anyio.to_thread.run_sync(_votes, limiter=self._cpu)
         rows = {row["binding_key"]: row for row in prepared}
         signals = [
             _signal(
@@ -250,7 +251,7 @@ class Learning:
             if vote.binding_key in rows and str(rows[vote.binding_key].get("label") or "").strip()
         ]
         await self._signals(signals)
-        totals = await anyio.to_thread.run_sync(lambda: _abs_by_row(facts))
+        totals = await anyio.to_thread.run_sync(lambda: _abs_by_row(facts), limiter=self._cpu)
         grand = sum(totals.values()) or Decimal(0)
         unknown = []
         now = datetime.now(UTC)
