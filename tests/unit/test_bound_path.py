@@ -296,12 +296,15 @@ def test_unbound_legacy_path_is_explicit(monkeypatch):
     """Плана нет, он не resolved или определения нет — прежний калькулятор.
 
     Тот же обход у ADSCR, dscr_min и dscr_avg, когда план — план DSCR.
+    Пустые факты доказывают только развилку. dscr_min с фактами читает CFADS,
+    которую выбрал план DSCR, и не читает вторую строку.
     Чужой план не становится использованием этого определения:
     https://www.w3.org/TR/prov-dm/#term-Usage
     """
 
     from finance_analysis.domain import metric_dispatch
     from finance_analysis.domain.cover_metrics import adscr, dscr_reductions
+    from finance_analysis.domain.semantic_input import resolve_metric_plan
 
     seen: list[str] = []
     real_bound = metric_dispatch.execute_bound
@@ -360,4 +363,25 @@ def test_unbound_legacy_path_is_explicit(monkeypatch):
         outcome = run_calculation(route, request, _context(derived, resolved))
         assert outcome.result == direct
         assert outcome.result.get("reason") != "metric_mismatch"
+    assert seen == []
+
+    confirmed = _bind("cfads", "z-confirmed")
+    decoy = _bind("cfads", "a-decoy")
+    debt = _bind("debt_service", "debt")
+    selected = resolve_metric_plan("dscr", [confirmed, debt], None, definition=dscr)
+    facts = [_fact("z-confirmed", "80"), _fact("a-decoy", "8"), _fact("debt", "-10")]
+    bindings = [decoy, confirmed, debt]
+    reduction = _definition(
+        "dscr_min",
+        _expr(numerator_plus=("cfads",), denominator_plus=("debt_service",)),
+        executor_key="reduced",
+    )
+    lowest = run_calculation(
+        "reduced",
+        _request("dscr_min", facts, bindings),
+        _context(reduction, selected),
+    )
+    assert lowest.result["status"] == "succeeded"
+    assert lowest.result["rows"][0]["value"] == _EIGHT
+    assert lowest.result["rows"][0]["value"] != Decimal("0.8000000000")
     assert seen == []
