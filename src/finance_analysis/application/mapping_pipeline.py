@@ -266,8 +266,17 @@ class MappingPipeline:
             return out
 
         ranked: list[list[Candidate]] = []
+        loop = asyncio.get_running_loop()
+
+        async def breathe() -> None:
+            # sleep(0) ставит эту задачу впереди таймера цикла, и пачки слипаются в один зазор.
+            future = loop.create_future()
+            loop.call_later(0, future.set_result, None)
+            await future
+
         # shortcut: 1000 строк за gather, уменьшить если один заход длиннее 0,1 с
         for start in range(0, len(texts), 1000):
+            await breathe()
             ranked.extend(await asyncio.gather(*(one(index) for index in range(start, min(start + 1000, len(texts))))))
         if failures:
             result.degraded.append(failures[0])
