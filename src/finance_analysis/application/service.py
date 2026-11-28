@@ -327,6 +327,7 @@ class FasService:
         cluster=None,
         trace_pointer=None,
         trace_retainer=None,
+        cpu=None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -357,7 +358,7 @@ class FasService:
         # Публикация указателя — только при публикации актуального набора (глоссарий).
         self.glossary.on_publish = self.publish_semantic_model
         self._tasks: set[asyncio.Task] = set()
-        self._cpu = anyio.CapacityLimiter(settings.cpu_threads)
+        self._cpu = cpu if cpu is not None else anyio.CapacityLimiter(settings.cpu_threads)
         self.draining = False
         self.instance_id = str(ULID())
         self._owner_held = False
@@ -371,7 +372,7 @@ class FasService:
         )
         self.calibrators = CalibratorStore(store)
         self.pipeline = MappingPipeline(self.models, self.examples, support, settings=settings)
-        self.learning = Learning(store, parquet, self.glossary, self.examples, self.models, cluster, settings)
+        self.learning = Learning(store, parquet, self.glossary, self.examples, self.models, cluster, settings, cpu=self._cpu)
         self.identities = load_identities()
         self.evaluator = Evaluator(self)
         self.glossary.gate = self.evaluator.shadow
@@ -789,11 +790,16 @@ class FasService:
         """Привязка книги: правила + стадии моделей (§5.5). Сбор сигналов и unknown-строк — в фоне.
 
         `learn=False` — свёртка на прошлой сборке: сигналы этой сборки уже собраны при её загрузке.
+        Подготовка строк и свёртка синхронные и идут в рабочем потоке, как проекция.
         """
 
         package = await self._book_package(versions.get("glossary", "none"), events)
         calibrator = await self.calibrators.active()
-        prepared = prepare_rows(projected, events, package, facts)
+
+        def _prepare():
+            return prepare_rows(projected, events, package, facts)
+
+        prepared = await anyio.to_thread.run_sync(_prepare, limiter=self._cpu)
         scored = None
         if self.pipeline.enabled:
             scored = await self.pipeline.score(
@@ -806,18 +812,23 @@ class FasService:
                 skip=_human_keys(events),
                 calibrator=calibrator,
             )
-        derived = derive_rows(
-            projected,
-            state_seq=state_seq,
-            derive=derive,
-            versions=versions,
-            events=events,
-            glossary=package,
-            facts=facts,
-            evidence=None if scored is None else scored.evidence,
-            calibrator=calibrator,
-            prepared=prepared,
-        )
+        evidence = None if scored is None else scored.evidence
+
+        def _bind():
+            return derive_rows(
+                projected,
+                state_seq=state_seq,
+                derive=derive,
+                versions=versions,
+                events=events,
+                glossary=package,
+                facts=facts,
+                evidence=evidence,
+                calibrator=calibrator,
+                prepared=prepared,
+            )
+
+        derived = await anyio.to_thread.run_sync(_bind, limiter=self._cpu)
         if not learn:
             return derived
         nearest = {}

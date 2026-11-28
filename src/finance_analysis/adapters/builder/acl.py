@@ -295,7 +295,23 @@ def _axis_from(key: str, axis: dict, missing: list[str], max_col: dict[str, int]
     )
 
 
+# Между пачками строк разбор отдаёт цикл. Меньше, если один заход снова длиннее 0,1 с.
+_ROW_SLICE = 250
+PAUSE = object()
+
+
 def parse_context(payload: dict) -> WorkbookSnapshot:
+    snapshot = None
+    for step in context_steps(payload):
+        if step is not PAUSE:
+            snapshot = step
+    if not isinstance(snapshot, WorkbookSnapshot):
+        raise UnsupportedBuilderShape("context.json не объект", extra={"fields": ["context"]})
+    return snapshot
+
+
+def context_steps(payload: dict):
+    """Шаги разбора. Между пачками строк — PAUSE, в конце — снимок."""
     missing: list[str] = []
     if not isinstance(payload, dict):
         raise UnsupportedBuilderShape("context.json не объект", extra={"fields": ["context"]})
@@ -328,6 +344,8 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         row_start = len(rows)
         before = len(missing)
         for rindex, row in enumerate(parsed.rows):
+            if rindex and rindex % _ROW_SLICE == 0:
+                yield PAUSE
             built = _read_row(row, parsed, bindex, rindex, missing, max_row)
             if built is not None:
                 rows.append(built)
@@ -347,7 +365,7 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
             extra={"fields": missing},
         )
     used = {sheet: (max_row.get(sheet, 1), max_col.get(sheet, 1)) for sheet in set(max_row) | set(max_col)}
-    return WorkbookSnapshot(axes=axes, rows=tuple(rows), links=(), used_range=used)
+    yield WorkbookSnapshot(axes=axes, rows=tuple(rows), links=(), used_range=used)
 
 
 def _is_heading_only_block(block: BlockIn, rows: list[SnapshotRow]) -> bool:

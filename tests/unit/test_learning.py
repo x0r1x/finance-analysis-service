@@ -429,6 +429,39 @@ def test_labeling_input_passes_the_unit_catalog():
     assert data.units["RUB/MWh"].currency == "RUB"
 
 
+def test_fact_slices_match_one_pass():
+    from collections import defaultdict
+
+    from finance_analysis.application.learning import (
+        _abs_by_row,
+        _absorb_facts,
+        _labeling_from,
+        labeling_input,
+    )
+
+    facts = [
+        {"axis_id": "a", "period_id": "p1", "row_key": "r", "cell_id": "c1", "value_dec": "1"},
+        {"axis_id": "a", "period_id": "p2", "row_key": "r", "cell_id": "c2", "value_dec": "-2"},
+        {"axis_id": "a", "period_id": "p1", "row_key": "r", "cell_id": "c1", "normalized_value": "9"},
+    ]
+    links = [{"row_key": "parent", "ref_cell": "c2"}]
+    whole = labeling_input([], [], facts, links, CATALOG, {"r": ["x"]})
+    order: dict = {}
+    cell_row: dict = {}
+    values: dict = defaultdict(dict)
+    totals: dict = {}
+    for fact in facts:
+        _absorb_facts([fact], order, cell_row, values)
+        for key, amount in _abs_by_row([fact]).items():
+            totals[key] = totals.get(key, Decimal(0)) + amount
+    sliced = _labeling_from([], [], links, CATALOG, {"r": ["x"]}, values, cell_row, order)
+    assert sliced.order == whole.order
+    assert sliced.values == whole.values
+    assert sliced.precedents == whole.precedents
+    assert sliced.identities == whole.identities
+    assert totals == _abs_by_row(facts)
+
+
 def test_unit_sign_votes_against():
     rows = [{"binding_key": "r", "row_key": "r", "label": "x", "unit": "%"}]
     votes = unit_sign(_input({"r": [1, 1, 1, 1, 1]}, {}, [_binding("r", "cfads")], rows=rows))

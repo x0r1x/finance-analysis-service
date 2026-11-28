@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import anyio
+
 from finance_analysis.adapters.builder.fixture import FixtureBuilder
 from finance_analysis.adapters.builder.http import HttpBuilder
 from finance_analysis.adapters.ml.cluster import HdbscanCluster
@@ -30,6 +32,19 @@ RECALIBRATE_TASK = "fas.recalibrate"
 
 _CACHE: dict = {}
 _SERVICE: dict = {}
+_CPU: dict = {}
+
+
+def _shared_cpu(settings):
+    """Один ограничитель на процесс воркера. Второй с тем же числом — уже не потолок."""
+
+    rt = runtime_mod.RUNTIME
+    key = id(rt) if rt is not None else id(settings)
+    found = _CPU.get(key)
+    if found is None:
+        found = anyio.CapacityLimiter(settings.cpu_threads)
+        _CPU[key] = found
+    return found
 
 
 def _learning() -> tuple[Learning, GlossaryStore, CalibratorStore]:
@@ -44,7 +59,7 @@ def _learning() -> tuple[Learning, GlossaryStore, CalibratorStore]:
     models = build_models(settings)
     glossary = GlossaryStore(rt.store, rt.locks, lock_ttl_ms=settings.lock_ttl_ms)
     examples = ExampleStore(rt.store, parquet, NumpyIndex(), model=settings.embed_model if models.embed else "")
-    learning = Learning(rt.store, parquet, glossary, examples, models, HdbscanCluster(), settings)
+    learning = Learning(rt.store, parquet, glossary, examples, models, HdbscanCluster(), settings, cpu=_shared_cpu(settings))
     built = (learning, glossary, CalibratorStore(rt.store))
     _CACHE.clear()
     _CACHE[id(rt)] = built
@@ -85,8 +100,9 @@ async def _mine_service() -> FasService:
         cached.hold_owner()
         return cached
     settings = rt.settings
+    cpu = _shared_cpu(settings)
     fixture = os.environ.get("FAS_FIXTURE_DIR")
-    builder = FixtureBuilder(Path(fixture)) if fixture else HttpBuilder(settings)
+    builder = FixtureBuilder(Path(fixture)) if fixture else HttpBuilder(settings, cpu=cpu)
     from finance_analysis.adapters.storage.trace_wiring import open_trace_tail
 
     pointer, retainer = open_trace_tail(settings)
@@ -102,6 +118,7 @@ async def _mine_service() -> FasService:
         cluster=HdbscanCluster(),
         trace_pointer=pointer,
         trace_retainer=retainer,
+        cpu=cpu,
     )
     await service.refresh_owner_lease()
     service.hold_owner()

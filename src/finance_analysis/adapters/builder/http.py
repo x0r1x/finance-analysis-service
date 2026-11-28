@@ -8,10 +8,12 @@ import random
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
+import anyio
 import httpx
 
 from finance_analysis.adapters.builder.acl import (
-    parse_context,
+    PAUSE,
+    context_steps,
     parse_links,
     parse_summary,
     parse_trace,
@@ -24,16 +26,39 @@ from finance_analysis.domain.book import (
     Summary,
     WorkbookSnapshot,
 )
-from finance_analysis.domain.errors import DependencyUnavailable, NotFound
+from finance_analysis.domain.errors import (
+    DependencyUnavailable,
+    NotFound,
+    UnsupportedBuilderShape,
+)
 from finance_analysis.settings import Settings
+
+_END = object()
+
+
+async def _breathe() -> None:
+    """Отдать цикл таймеру. sleep(0) и checkpoint AnyIO ставят задачу впереди него."""
+
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+    loop.call_later(0, done.set_result, None)
+    await done
+
+
+def _advance(steps):
+    try:
+        return next(steps)
+    except StopIteration:
+        return _END
 
 
 class HttpBuilder:
-    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None, *, cpu=None) -> None:
         self._settings = settings
         self._base = (settings.builder_base_url or "").rstrip("/")
         self._client = client
         self._owns = client is None
+        self._cpu = cpu
         self._failures = 0
         self._open_until: datetime | None = None
 
@@ -124,7 +149,22 @@ class HttpBuilder:
         if response.status_code == 404:
             raise NotFound("книга builder не найдена")
         response.raise_for_status()
-        return parse_context(response.json())
+
+        def _payload():
+            return response.json()
+
+        payload = await anyio.to_thread.run_sync(_payload, limiter=self._cpu)
+        steps = context_steps(payload)
+        snapshot = None
+        while snapshot is None:
+            await _breathe()
+            step = await anyio.to_thread.run_sync(_advance, steps, limiter=self._cpu)
+            if step is PAUSE:
+                continue
+            if step is _END or not isinstance(step, WorkbookSnapshot):
+                raise UnsupportedBuilderShape("context.json не объект", extra={"fields": ["context"]})
+            snapshot = step
+        return snapshot
 
     async def graph(self, job_id: str) -> tuple[GraphLink, ...] | ReportNotReady:
         response = await self._request("GET", self._path(job_id, "graph.json"))

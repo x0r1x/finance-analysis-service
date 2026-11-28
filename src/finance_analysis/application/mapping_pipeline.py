@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import weakref
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -25,6 +26,15 @@ from finance_analysis.domain.glossary import GlossaryPackage
 from finance_analysis.domain.mapping import lexical_hit
 
 EMBED_BATCH = 64
+
+
+async def _breathe() -> None:
+    """Отдать цикл таймеру. sleep(0) ставит задачу впереди него, и заходы слипаются."""
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    loop.call_later(0, future.set_result, None)
+    await future
 CLM_GAP = 0.1
 CLM_MAX_CRITERIA = 8
 CLM_BUDGET_TTL = 86_400
@@ -45,14 +55,39 @@ def concept_document(package: GlossaryPackage, concept_id: str) -> str:
     return " · ".join(part for part in parts if part)
 
 
+# id пакета → (слабая ссылка, шаблоны). Пакет глоссария нехешируемый, поэтому не WeakKeyDictionary.
+_EXPANSIONS: dict[int, tuple[weakref.ReferenceType, tuple[tuple[re.Pattern[str], str], ...]]] = {}
+
+
+def _expansion_pairs(package: GlossaryPackage) -> tuple[tuple[re.Pattern[str], str], ...]:
+    """Отдельный шаблон на каждую аббревиатуру. Общий `|` теряет перекрывающиеся совпадения."""
+
+    ident = id(package)
+    cached = _EXPANSIONS.get(ident)
+    if cached is not None and cached[0]() is package:
+        return cached[1]
+    pairs = tuple(
+        (re.compile(rf"(?<!\w){re.escape(short)}(?!\w)", re.IGNORECASE), full)
+        for concept in package.concepts.values()
+        for short, full in concept.expand.items()
+    )
+
+    def _drop(ref, ident=ident):
+        current = _EXPANSIONS.get(ident)
+        if current is not None and current[0] is ref:
+            _EXPANSIONS.pop(ident, None)
+
+    try:
+        _EXPANSIONS[ident] = (weakref.ref(package, _drop), pairs)
+    except TypeError:
+        return pairs
+    return pairs
+
+
 def expand(text: str, package: GlossaryPackage) -> str:
     """Стадия 1: аббревиатуры понятий раскрываются рядом с исходным текстом."""
 
-    extra = []
-    for concept in package.concepts.values():
-        for short, full in concept.expand.items():
-            if re.search(rf"(?<!\w){re.escape(short)}(?!\w)", text, flags=re.IGNORECASE):
-                extra.append(full)
+    extra = [full for pattern, full in _expansion_pairs(package) if pattern.search(text)]
     if not extra:
         return text
     return f"{text} ({'; '.join(sorted(set(extra)))})"
@@ -101,18 +136,29 @@ class MappingPipeline:
     ) -> PipelineResult:
         result = PipelineResult()
         shot_hits: dict[str, list] = {}
-        targets = [
-            row
-            for row in rows
-            if row.get("kind") == "fact"
-            and not row.get("excluded")
-            and row["binding_key"] not in skip
-            and lexical_hit(row, package) is None
-            and len(package.ambiguous_hits(str(row.get("label") or ""))) < 2
-        ]
-        if not targets or not self.enabled:
+        if not self.enabled:
             return result
-        texts = [expand(row_text(row), package) for row in targets]
+
+        # shortcut: 100 строк за заход, уменьшить если один заход на CI снова длиннее 0,1 с
+        targets = []
+        for index, row in enumerate(rows):
+            if index % 100 == 0:
+                await _breathe()
+            if (
+                row.get("kind") == "fact"
+                and not row.get("excluded")
+                and row["binding_key"] not in skip
+                and lexical_hit(row, package) is None
+                and len(package.ambiguous_hits(str(row.get("label") or ""))) < 2
+            ):
+                targets.append(row)
+        if not targets:
+            return result
+        texts = []
+        for index, row in enumerate(targets):
+            if index % 1000 == 0:
+                await _breathe()
+            texts.append(expand(row_text(row), package))
         concept_ids = sorted(package.concepts)
         recall: list[list[Candidate]] = [[] for _ in targets]
         nearest_concept: list[float | None] = [None for _ in targets]
@@ -140,17 +186,20 @@ class MappingPipeline:
                 nearest_example = [None for _ in targets]
         if not any(recall):
             # Без embed кандидаты для rerank — все понятия каталога.
-            recall = [[Candidate(name) for name in concept_ids] for _ in targets]
+            # Candidate неизменяем, а _rerank собирает новые списки, поэтому список один на все строки.
+            shared = [Candidate(name) for name in concept_ids]
+            recall = [shared for _ in targets]
         reranked = await self._rerank(texts, recall, package, deadline, result)
-        evidence = {
-            row["binding_key"]: RowEvidence(
+        evidence = {}
+        for index, row in enumerate(targets):
+            if index % 1000 == 0:
+                await _breathe()
+            evidence[row["binding_key"]] = RowEvidence(
                 candidates=tuple(reranked[index]),
                 nearest_concept_cos=nearest_concept[index],
                 nearest_example_cos=nearest_example[index],
                 degraded=tuple(result.degraded),
             )
-            for index, row in enumerate(targets)
-        }
         if clm:
             await self._adjudicate(job_id, run_id, targets, texts, evidence, package, deadline, result, calibrator, shot_hits)
         result.evidence = evidence
@@ -202,12 +251,19 @@ class MappingPipeline:
         if self.models.rerank is None:
             return [sorted(items, key=lambda c: -(c.recall_cos or 0.0))[: max(top_n, 1) * 2] for items in recall]
         failures: list[dict] = []
+        # Один и тот же список кандидатов — те же документы. Без кэша книга считает их на каждую строку.
+        ready: dict[int, tuple[list[Candidate], list[str]]] = {}
 
         async def one(index: int) -> list[Candidate]:
-            items = [item for item in recall[index] if item.concept in package.concepts]
+            found = ready.get(id(recall[index]))
+            if found is None:
+                items = [item for item in recall[index] if item.concept in package.concepts]
+                docs = [concept_document(package, item.concept) for item in items]
+                ready[id(recall[index])] = (items, docs)
+            else:
+                items, docs = found
             if not items:
                 return []
-            docs = [concept_document(package, item.concept) for item in items]
             try:
                 ranked = await self.models.rerank.rerank(texts[index], docs, deadline=deadline, top_n=top_n)
             except ModelDegraded as exc:
@@ -223,7 +279,11 @@ class MappingPipeline:
             out.extend(item for item in items if item.knn_cos is not None and item.concept not in kept)
             return out
 
-        ranked = await asyncio.gather(*(one(index) for index in range(len(texts))))
+        ranked: list[list[Candidate]] = []
+        # shortcut: 200 строк за gather, уменьшить если один заход на CI длиннее 0,1 с
+        for start in range(0, len(texts), 200):
+            await _breathe()
+            ranked.extend(await asyncio.gather(*(one(index) for index in range(start, min(start + 200, len(texts))))))
         if failures:
             result.degraded.append(failures[0])
         return list(ranked)
