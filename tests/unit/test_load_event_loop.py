@@ -245,7 +245,7 @@ async def test_heartbeat_notices_a_blocked_loop():
 
 
 async def test_large_synthetic_book_does_not_block_the_event_loop():
-    """Тот же порог, что test_event_loop_not_blocked_on_health, на синтетической книге.
+    """Разбор большой синтетической книги остаётся короче порога 0,1 с.
 
     Маленькая книга не дотягивает до 0,1 с. Здесь разбор снимка, привязка без embed
     и сумма фактов сами по себе дольше порога, если идут в цикле.
