@@ -1,8 +1,8 @@
 """Загрузка большой книги не держит цикл событий: разбор снимка, привязка без embed, суммы фактов."""
 
-import asyncio
 import json
 import threading
+import time
 from types import SimpleNamespace
 
 import anyio
@@ -20,6 +20,7 @@ from finance_analysis.domain.candidates import Candidate
 from finance_analysis.domain.deadline import Deadline
 from finance_analysis.settings import Settings
 from tests.models import FakeRerank
+from tests.unit.loop_gap import LIMIT, loop_gaps
 
 CATALOG = load_catalog()
 
@@ -236,25 +237,17 @@ async def test_after_derive_sums_facts_off_the_event_loop(monkeypatch):
     assert limiters == [limiter, limiter]
 
 
-def _watch_slow_callbacks(loop):
-    slow = []
-
-    def handler(_loop, context):
-        message = context.get("message", "")
-        if "Executing" in message and "took" in message:
-            slow.append(message)
-
-    previous = loop.get_exception_handler()
-    loop.set_exception_handler(lambda _loop, context: handler(_loop, context) or None)
-    loop.set_debug(True)
-    return slow, previous
+async def test_heartbeat_notices_a_blocked_loop():
+    async with loop_gaps() as gaps:
+        time.sleep(0.25)  # noqa: ASYNC251 — stall the test must notice
+    assert max(gaps) >= LIMIT
 
 
 async def test_large_synthetic_book_does_not_block_the_event_loop():
-    """Тот же признак, что test_event_loop_not_blocked_on_health, на синтетической книге.
+    """Тот же порог, что test_event_loop_not_blocked_on_health, на синтетической книге.
 
-    Маленькая книга не дотягивает до порога asyncio (0,1 с). Здесь разбор снимка,
-    привязка без embed и сумма фактов сами по себе дольше порога, если идут в цикле.
+    Маленькая книга не дотягивает до 0,1 с. Здесь разбор снимка, привязка без embed
+    и сумма фактов сами по себе дольше порога, если идут в цикле.
     """
 
     raw = json.dumps(_context(15_000)).encode()
@@ -263,9 +256,6 @@ async def test_large_synthetic_book_does_not_block_the_event_loop():
         {"row_key": f"r{index % 1000}", "axis_id": "ax", "period_id": f"p{index % 11}", "normalized_value": "12.5"}
         for index in range(600_000)
     ]
-    await asyncio.sleep(0)
-    loop = asyncio.get_running_loop()
-    slow, previous = _watch_slow_callbacks(loop)
 
     class _Rerank:
         async def rerank(self, _query, _documents, *, deadline, top_n):
@@ -289,37 +279,36 @@ async def test_large_synthetic_book_does_not_block_the_event_loop():
     prepared = [_row("a")]
     bindings = [{"binding_key": "a", "status": "unknown", "source": "inferred", "importance": "peripheral", "row_key": "a"}]
     try:
-        snapshot = await builder.context("job")
-        result = await pipeline.score(
-            "job",
-            "run",
-            rows,
-            CATALOG,
-            glossary_version="g",
-            deadline=Deadline.after_ms(5000),
-            clm=False,
-        )
-        derived = await learning.after_derive(
-            "job",
-            prepared=prepared,
-            bindings=bindings,
-            facts=facts,
-            links=[],
-            embeddings={},
-            nearest={},
-            package=CATALOG,
-            glossary_version="g",
-            profile=None,
-            identities={},
-        )
+        async with loop_gaps() as gaps:
+            snapshot = await builder.context("job")
+            result = await pipeline.score(
+                "job",
+                "run",
+                rows,
+                CATALOG,
+                glossary_version="g",
+                deadline=Deadline.after_ms(5000),
+                clm=False,
+            )
+            derived = await learning.after_derive(
+                "job",
+                prepared=prepared,
+                bindings=bindings,
+                facts=facts,
+                links=[],
+                embeddings={},
+                nearest={},
+                package=CATALOG,
+                glossary_version="g",
+                profile=None,
+                identities={},
+            )
     finally:
         await client.aclose()
-        loop.set_exception_handler(previous)
-        loop.set_debug(False)
     assert len(snapshot.rows) == 15_000
     assert result.evidence
     assert derived["unmapped"] == 1
-    assert slow == []
+    assert max(gaps) < LIMIT
 
 
 def _sheet_row(key: str, label: str, **extra) -> dict:
@@ -349,7 +338,7 @@ def _without_clock(derived: dict) -> dict:
 
 
 async def test_large_derive_does_not_block_the_event_loop():
-    """Полный `_derive` на книге, где синхронный проход фактов дольше порога asyncio."""
+    """Полный `_derive` на книге, где синхронный проход фактов дольше 0,1 с."""
 
     rows = [
         _sheet_row("valued", "Выручка"),
@@ -403,9 +392,6 @@ async def test_large_derive_does_not_block_the_event_loop():
         facts=facts,
         prepared=prepare_rows(projected, [], CATALOG, facts),
     )
-    await asyncio.sleep(0)
-    loop = asyncio.get_running_loop()
-    slow, previous = _watch_slow_callbacks(loop)
     service = FasService.__new__(FasService)
     service._cpu = anyio.CapacityLimiter(2)
 
@@ -419,7 +405,7 @@ async def test_large_derive_does_not_block_the_event_loop():
     service._book_package = package
     service.calibrators = _Calibrators()
     service.pipeline = SimpleNamespace(enabled=False)
-    try:
+    async with loop_gaps() as gaps:
         derived = await service._derive(
             "job",
             projected,
@@ -431,10 +417,7 @@ async def test_large_derive_does_not_block_the_event_loop():
             links=[],
             learn=False,
         )
-    finally:
-        loop.set_exception_handler(previous)
-        loop.set_debug(False)
-    assert slow == []
+    assert max(gaps) < LIMIT
     assert _without_clock(derived) == _without_clock(direct)
     reasons = {row["row_key"]: row["exclusion_reason"] for row in derived["row_semantics"]}
     assert reasons == {

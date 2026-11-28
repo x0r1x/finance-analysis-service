@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -72,27 +71,13 @@ async def test_event_loop_not_blocked_on_health(settings, local_service, redis_r
 
     from finance_analysis.adapters.api.app import create_app
     from tests.conftest import JOB
+    from tests.unit.loop_gap import LIMIT, loop_gaps
 
     app = create_app(settings, service=local_service, support=redis_runtime)
-    loop = asyncio.get_running_loop()
-    loop.set_debug(True)
-    slow = []
-
-    def handler(loop, context):
-        message = context.get("message", "")
-        if "Executing" in message and "took" in message:
-            slow.append(message)
-
-    previous = loop.get_exception_handler()
-    loop.set_exception_handler(lambda _loop, context: handler(_loop, context) or None)
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
-            for path in ("/health/live", "/health/ready", "/v1/capabilities"):
-                response = await client.get(path)
-                assert response.status_code in {200, 503}
-            loaded = await client.post(f"/v1/books/{JOB}:load")
-            assert loaded.status_code in {200, 202}
-    finally:
-        loop.set_exception_handler(previous)
-        loop.set_debug(False)
-    assert slow == []
+    async with loop_gaps() as gaps, AsyncClient(transport=ASGITransport(app=app), base_url="http://fas") as client:
+        for path in ("/health/live", "/health/ready", "/v1/capabilities"):
+            response = await client.get(path)
+            assert response.status_code in {200, 503}
+        loaded = await client.post(f"/v1/books/{JOB}:load")
+        assert loaded.status_code in {200, 202}
+    assert max(gaps) < LIMIT

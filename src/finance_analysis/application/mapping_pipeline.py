@@ -127,16 +127,23 @@ class MappingPipeline:
     ) -> PipelineResult:
         result = PipelineResult()
         shot_hits: dict[str, list] = {}
-        targets = [
-            row
-            for row in rows
-            if row.get("kind") == "fact"
-            and not row.get("excluded")
-            and row["binding_key"] not in skip
-            and lexical_hit(row, package) is None
-            and len(package.ambiguous_hits(str(row.get("label") or ""))) < 2
-        ]
-        if not targets or not self.enabled:
+        if not self.enabled:
+            return result
+
+        # shortcut: 250 строк за заход. Таймер цикла исполняется через несколько заходов, уменьшить если зазор снова больше 0,1 с.
+        targets = []
+        for index, row in enumerate(rows):
+            if index % 250 == 0:
+                await asyncio.sleep(0)
+            if (
+                row.get("kind") == "fact"
+                and not row.get("excluded")
+                and row["binding_key"] not in skip
+                and lexical_hit(row, package) is None
+                and len(package.ambiguous_hits(str(row.get("label") or ""))) < 2
+            ):
+                targets.append(row)
+        if not targets:
             return result
         texts = [expand(row_text(row), package) for row in targets]
         concept_ids = sorted(package.concepts)
@@ -230,12 +237,19 @@ class MappingPipeline:
         if self.models.rerank is None:
             return [sorted(items, key=lambda c: -(c.recall_cos or 0.0))[: max(top_n, 1) * 2] for items in recall]
         failures: list[dict] = []
+        # Один и тот же список кандидатов — те же документы. Без кэша книга считает их на каждую строку.
+        ready: dict[int, tuple[list[Candidate], list[str]]] = {}
 
         async def one(index: int) -> list[Candidate]:
-            items = [item for item in recall[index] if item.concept in package.concepts]
+            found = ready.get(id(recall[index]))
+            if found is None:
+                items = [item for item in recall[index] if item.concept in package.concepts]
+                docs = [concept_document(package, item.concept) for item in items]
+                ready[id(recall[index])] = (items, docs)
+            else:
+                items, docs = found
             if not items:
                 return []
-            docs = [concept_document(package, item.concept) for item in items]
             try:
                 ranked = await self.models.rerank.rerank(texts[index], docs, deadline=deadline, top_n=top_n)
             except ModelDegraded as exc:
@@ -251,7 +265,10 @@ class MappingPipeline:
             out.extend(item for item in items if item.knn_cos is not None and item.concept not in kept)
             return out
 
-        ranked = await asyncio.gather(*(one(index) for index in range(len(texts))))
+        ranked: list[list[Candidate]] = []
+        # shortcut: 1000 строк за gather, уменьшить если один заход длиннее 0,1 с
+        for start in range(0, len(texts), 1000):
+            ranked.extend(await asyncio.gather(*(one(index) for index in range(start, min(start + 1000, len(texts))))))
         if failures:
             result.degraded.append(failures[0])
         return list(ranked)
