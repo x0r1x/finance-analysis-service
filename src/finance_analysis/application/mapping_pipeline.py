@@ -26,6 +26,15 @@ from finance_analysis.domain.glossary import GlossaryPackage
 from finance_analysis.domain.mapping import lexical_hit
 
 EMBED_BATCH = 64
+
+
+async def _breathe() -> None:
+    """Отдать цикл таймеру. sleep(0) ставит задачу впереди него, и заходы слипаются."""
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    loop.call_later(0, future.set_result, None)
+    await future
 CLM_GAP = 0.1
 CLM_MAX_CRITERIA = 8
 CLM_BUDGET_TTL = 86_400
@@ -130,11 +139,11 @@ class MappingPipeline:
         if not self.enabled:
             return result
 
-        # shortcut: 250 строк за заход. Таймер цикла исполняется через несколько заходов, уменьшить если зазор снова больше 0,1 с.
+        # shortcut: 100 строк за заход, уменьшить если один заход на CI снова длиннее 0,1 с
         targets = []
         for index, row in enumerate(rows):
-            if index % 250 == 0:
-                await asyncio.sleep(0)
+            if index % 100 == 0:
+                await _breathe()
             if (
                 row.get("kind") == "fact"
                 and not row.get("excluded")
@@ -145,7 +154,11 @@ class MappingPipeline:
                 targets.append(row)
         if not targets:
             return result
-        texts = [expand(row_text(row), package) for row in targets]
+        texts = []
+        for index, row in enumerate(targets):
+            if index % 1000 == 0:
+                await _breathe()
+            texts.append(expand(row_text(row), package))
         concept_ids = sorted(package.concepts)
         recall: list[list[Candidate]] = [[] for _ in targets]
         nearest_concept: list[float | None] = [None for _ in targets]
@@ -177,15 +190,16 @@ class MappingPipeline:
             shared = [Candidate(name) for name in concept_ids]
             recall = [shared for _ in targets]
         reranked = await self._rerank(texts, recall, package, deadline, result)
-        evidence = {
-            row["binding_key"]: RowEvidence(
+        evidence = {}
+        for index, row in enumerate(targets):
+            if index % 1000 == 0:
+                await _breathe()
+            evidence[row["binding_key"]] = RowEvidence(
                 candidates=tuple(reranked[index]),
                 nearest_concept_cos=nearest_concept[index],
                 nearest_example_cos=nearest_example[index],
                 degraded=tuple(result.degraded),
             )
-            for index, row in enumerate(targets)
-        }
         if clm:
             await self._adjudicate(job_id, run_id, targets, texts, evidence, package, deadline, result, calibrator, shot_hits)
         result.evidence = evidence
@@ -266,18 +280,10 @@ class MappingPipeline:
             return out
 
         ranked: list[list[Candidate]] = []
-        loop = asyncio.get_running_loop()
-
-        async def breathe() -> None:
-            # sleep(0) ставит эту задачу впереди таймера цикла, и пачки слипаются в один зазор.
-            future = loop.create_future()
-            loop.call_later(0, future.set_result, None)
-            await future
-
-        # shortcut: 1000 строк за gather, уменьшить если один заход длиннее 0,1 с
-        for start in range(0, len(texts), 1000):
-            await breathe()
-            ranked.extend(await asyncio.gather(*(one(index) for index in range(start, min(start + 1000, len(texts))))))
+        # shortcut: 200 строк за gather, уменьшить если один заход на CI длиннее 0,1 с
+        for start in range(0, len(texts), 200):
+            await _breathe()
+            ranked.extend(await asyncio.gather(*(one(index) for index in range(start, min(start + 200, len(texts))))))
         if failures:
             result.degraded.append(failures[0])
         return list(ranked)
