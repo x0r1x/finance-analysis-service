@@ -34,6 +34,7 @@ from finance_analysis.domain.resolved_plan import (
     RESOLUTION_ENGINE_VERSION,
     AppliedFallback,
     DiagnosticCandidate,
+    ExecutionControlInput,
     LineageRow,
     NeedsInput,
     PlanWarning,
@@ -333,6 +334,52 @@ def resolve_metric_plan(
         ),
         resolution_engine_version=RESOLUTION_ENGINE_VERSION,
         definition_hash=bound_hash,
+        execution_control=_execution_control(metric, active, bindings, absent, row_keys),
+    )
+
+
+def _execution_control(
+    metric: str,
+    active: tuple[MetricExpression, str, str] | None,
+    bindings: Sequence[Mapping[str, Any]],
+    absent: frozenset[str],
+    row_keys: Mapping[str, str] | None,
+) -> tuple[ExecutionControlInput, ...]:
+    """Строка debt_service, которую LLCR и PLCR читают не как слагаемое.
+
+    Обе роли у LLCR. У PLCR только допуск тестового периода: горизонт она не режет.
+    """
+
+    if active is None or metric not in {"llcr", "plcr"} or not _discounted_loan_life(active[0]):
+        return ()
+    roles = (
+        ("coverage_test_eligibility", "horizon_boundary")
+        if metric == "llcr"
+        else ("coverage_test_eligibility",)
+    )
+    primary, _missing, ambiguous = _select_primary(_with_confirmed_paid(bindings, absent), "debt_service")
+    binding_key = None
+    row_key = None
+    # Неоднозначная строка не подтверждается: калькулятор по-прежнему спрашивает, а не выбирает молча.
+    if primary is not None and not ambiguous:
+        raw = primary.get("binding_key")
+        binding_key = str(raw) if raw else None
+        row_key = str(primary.get("row_key") or (row_keys or {}).get(binding_key or "") or "") or None
+    return tuple(ExecutionControlInput("debt_service", role, binding_key, row_key) for role in roles)
+
+
+def _discounted_loan_life(expr: MetricExpression) -> bool:
+    return (
+        expr.numerator_plus == ("cfads",)
+        and not expr.numerator_minus
+        and expr.denominator_plus == ("debt_outstanding",)
+        and not expr.denominator_minus
+        and expr.rate == "discount_rate"
+        and not expr.one_of
+        and not expr.rates
+        and expr.terminal is None
+        and expr.compare_with is None
+        and expr.add_back is None
     )
 
 
