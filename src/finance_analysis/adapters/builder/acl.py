@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from datetime import date
 from typing import Any
@@ -323,6 +324,9 @@ def parse_context(payload: dict) -> WorkbookSnapshot:
         row_start = len(rows)
         before = len(missing)
         for rindex, row in enumerate(parsed.rows):
+            # shortcut: 1000 строк и 1 мс. Ноль не отдаёт цикл: поток сразу забирает GIL обратно. Уменьшить пачку, если зазор снова больше 0,1 с.
+            if rindex % 1000 == 0:
+                time.sleep(0.001)
             built = _read_row(row, parsed, bindex, rindex, missing, max_row)
             if built is not None:
                 rows.append(built)
