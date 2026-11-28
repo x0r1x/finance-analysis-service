@@ -222,6 +222,29 @@ class Learning:
 
     # --- после привязки: LF и unmapped/ ---------------------------------------------------
 
+    async def _labeling(self, prepared, bindings, facts, links, package, identities):
+        order: dict = {}
+        cell_row: dict = {}
+        values: dict = defaultdict(dict)
+        batch = list(facts or [])
+        for start in range(0, len(batch), _FACT_SLICE):
+            chunk = batch[start : start + _FACT_SLICE]
+            await anyio.to_thread.run_sync(
+                lambda chunk=chunk: _absorb_facts(chunk, order, cell_row, values),
+                limiter=self._cpu,
+            )
+        return _labeling_from(prepared, bindings, links, package, identities, values, cell_row, order)
+
+    async def _totals(self, facts) -> dict[str, Decimal]:
+        totals: dict[str, Decimal] = {}
+        batch = list(facts or [])
+        for start in range(0, len(batch), _FACT_SLICE):
+            chunk = batch[start : start + _FACT_SLICE]
+            part = await anyio.to_thread.run_sync(lambda chunk=chunk: _abs_by_row(chunk), limiter=self._cpu)
+            for key, amount in part.items():
+                totals[key] = totals.get(key, Decimal(0)) + amount
+        return totals
+
     async def after_derive(
         self,
         job_id: str,
@@ -237,8 +260,10 @@ class Learning:
         profile: str | None,
         identities: dict[str, list[str]],
     ) -> dict:
+        labeling = await self._labeling(prepared, bindings, facts, links, package, identities)
+
         def _votes():
-            return run_all(labeling_input(prepared, bindings, facts, links, package, identities))
+            return run_all(labeling)
 
         votes = await anyio.to_thread.run_sync(_votes, limiter=self._cpu)
         rows = {row["binding_key"]: row for row in prepared}
@@ -251,7 +276,7 @@ class Learning:
             if vote.binding_key in rows and str(rows[vote.binding_key].get("label") or "").strip()
         ]
         await self._signals(signals)
-        totals = await anyio.to_thread.run_sync(lambda: _abs_by_row(facts), limiter=self._cpu)
+        totals = await self._totals(facts)
         grand = sum(totals.values()) or Decimal(0)
         unknown = []
         now = datetime.now(UTC)
@@ -707,10 +732,11 @@ def _stamp(value) -> datetime:
     return datetime.strptime(str(value)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
 
 
-def labeling_input(prepared, bindings, facts, links, package, identities) -> LabelingInput:
-    values: dict[str, dict[tuple[str, str], Decimal]] = defaultdict(dict)
-    cell_row: dict[str, str] = {}
-    order: dict[tuple[str, str], int] = {}
+# Пачка фактов в одном потоке. Меньше, если один заход на CI снова длиннее 0,1 с.
+_FACT_SLICE = 20_000
+
+
+def _absorb_facts(facts, order, cell_row, values) -> None:
     for fact in facts or []:
         # Проекция пишет факты строки по index периода оси: первый порядок появления и есть порядок оси.
         order.setdefault((fact["axis_id"], fact["period_id"]), len(order))
@@ -723,6 +749,17 @@ def labeling_input(prepared, bindings, facts, links, package, identities) -> Lab
             number = fact.get("value_dec")
         if number is not None and fact.get("row_key"):
             values[fact["row_key"]][(fact["axis_id"], fact["period_id"])] = Decimal(str(number))
+
+
+def labeling_input(prepared, bindings, facts, links, package, identities) -> LabelingInput:
+    values: dict[str, dict[tuple[str, str], Decimal]] = defaultdict(dict)
+    cell_row: dict[str, str] = {}
+    order: dict[tuple[str, str], int] = {}
+    _absorb_facts(facts, order, cell_row, values)
+    return _labeling_from(prepared, bindings, links, package, identities, values, cell_row, order)
+
+
+def _labeling_from(prepared, bindings, links, package, identities, values, cell_row, order) -> LabelingInput:
     precedents: dict[str, set[str]] = defaultdict(set)
     for link in links or []:
         parent = link.get("row_key")

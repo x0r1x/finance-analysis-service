@@ -151,13 +151,13 @@ async def test_context_parse_runs_off_the_event_loop(monkeypatch):
 
     main = threading.get_ident()
     seen = []
-    real = http_module.parse_context
+    real = http_module._advance
 
-    def marking(payload):
+    def marking(steps):
         seen.append(threading.get_ident())
-        return real(payload)
+        return real(steps)
 
-    monkeypatch.setattr(http_module, "parse_context", marking)
+    monkeypatch.setattr(http_module, "_advance", marking)
     raw = json.dumps(_context(2, periods=1)).encode()
     limiter = anyio.CapacityLimiter(2)
     limiters = []
@@ -179,7 +179,7 @@ async def test_context_parse_runs_off_the_event_loop(monkeypatch):
     assert len(snapshot.rows) == 2
     assert seen == [seen[0]]
     assert seen[0] != main
-    assert limiters == [limiter]
+    assert limiters == [limiter, limiter]
 
 
 class _Append:
@@ -234,7 +234,7 @@ async def test_after_derive_sums_facts_off_the_event_loop(monkeypatch):
     assert found["unmapped"] == 1
     assert seen == [seen[0]]
     assert seen[0] != main
-    assert limiters == [limiter, limiter]
+    assert limiters == [limiter, limiter, limiter]
 
 
 async def test_heartbeat_notices_a_blocked_loop():
